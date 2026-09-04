@@ -12,20 +12,27 @@ Artifactは v2 の**再開の単位**である。工程ごとの再開フラグ�
 ## 保存先
 
 - **本体**: MinIO（INV-9）。キーは content-addressed
-  （`artifacts/{episode_id}/{schema_name}/{content_sha256}`）
+  （`artifacts/{episode_id}/{artifact_type}/{sha256}.json`）。
+  キーの形は `domain/artifact/keys.py` の `artifact_object_key()` が唯一の定義
 - **参照とメタ**: PostgreSQL
 
 DBにバイナリを入れない。書き順は必ず MinIO → DB。
 
 ## 属性
 
-- `id`, `episode_id`, `schema_name`, `schema_version`
-- `version` — 同じ `(episode_id, schema_name)` 内で単調増加（INV-10）
-- `bucket`, `object_key`, `content_sha256`, `size_bytes`, `content_type`
+**Phase 1 で実装済み**（`infrastructure/db/models.py` の `ArtifactMetadataRow`）:
+
+- `id`, `episode_id`, `artifact_type`, `schema_version`
+- `bucket`, `object_key`, `sha256`, `size_bytes`
 - `produced_by_job_id`
-- `input_hash` — この成果物を作った入力の指紋
-- `status`: `current` / `superseded`
 - `created_at`
+
+**Phase 2 発効**（ADR-0010。まだ列が存在しない）:
+
+- `version` — 同じ `(episode_id, artifact_type)` 内で単調増加（INV-10 の Phase 2 部分）
+- `status`: `current` / `superseded`
+- `input_hash` — この成果物を作った入力の指紋（工程skipによる途中再開に使う）
+- `content_type`
 
 ## immutability
 
@@ -38,14 +45,15 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 
 ## schema
 
-- すべてのArtifactは `contracts/schemas/` にスキーマを持つ（INV-10）
+- すべてのArtifactはスキーマを持つ（INV-10）。Phase 1 の置き場は
+  `contracts/artifacts.py`（`contracts/schemas/` への分割は Phase 2）
 - 読み込み時に必ず検証する。想定外の `schema_version` は
   `permanent` 失敗（推測して読まない）
 - 後方互換を壊すスキーマ変更はADRを要する（AGENTS.md §6）
 
 ## 想定するschema（Phase 1で定義予定）
 
-| schema_name | 生成worker | 内容 |
+| artifact_type | 生成worker | 内容 |
 |---|---|---|
 | `episode_plan` | planning | 企画（トピック、切り口、想定尺） |
 | `script` | planning | 台本と出典 |

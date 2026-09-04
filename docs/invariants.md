@@ -61,7 +61,8 @@ UIに出すのはdomain state。
 ### INV-9 MinIOがArtifact本体を保持する
 バイナリ（動画・音声・画像）をPostgreSQLに入れない。DBが持つのは
 参照（bucket/key/etag/size）とメタデータのみ。
-**機械検査**: 未検査
+**機械検査**: `tests/integration/test_minio_store.py`（本体が実MinIOに置かれ読み戻せること）
+/ `scripts/smoke.sh`（Episode完了後の読み戻しとsha256照合）
 
 ### INV-10 Artifactはversionとschemaを持つ
 **Phase 1 から有効**: すべてのArtifactは `artifact_type` と `schema_version` を持ち、

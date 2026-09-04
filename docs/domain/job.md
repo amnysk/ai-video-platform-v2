@@ -10,7 +10,8 @@ v2のJobは**書き込み先が主に事後**であり、誰もJobをpollしな�
 
 ## 同一性
 
-`job_id`（UUIDv7）。同じ工程を3回試みたら3つのJobが残る。
+`job_id`。同じ工程を3回試みたら3つのJobが残る。
+Phase 1 の生成は `uuid.uuid4()`（[[episode]] と同じ。UUIDv7 は Phase 2 の課題）。
 
 ## 属性
 

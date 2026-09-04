@@ -75,7 +75,7 @@ workerを直接叩かない（INV-2）。
 Temporalは「その実行がどこまで進んだか」を持ち、PostgreSQLは
 「このEpisodeは業務上どういう状態か」を持つ。両者は対応しない（INV-8）。
 
-- workflowがcompletedでも、Episodeは `needs_review`（人間待ち）でありうる
+- workflowがcompletedでも、Episodeは `ready_for_review`（人間待ち）でありうる
 - workflowがterminatedでも、Episodeは `blocked` であって `failed` ではない
 - UIに出すのは常にdomain state
 

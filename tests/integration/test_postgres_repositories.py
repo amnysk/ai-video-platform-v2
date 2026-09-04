@@ -1,6 +1,8 @@
 """実PostgreSQLに対するリポジトリ検査（INV-7）。docker compose が必要。
 
-tests/unit/test_repositories.py と同じコードパスを、実DBとAlembicの実スキーマで走らせる。
+tests/unit/test_repositories.py と同じコードパスを実PostgreSQLで走らせる。
+スキーマは `Base.metadata.create_all` で作る（**Alembicは通さない**）。
+Alembic の実スキーマ検証は tests/integration/test_migration_against_postgres.py が担当する。
 """
 
 from __future__ import annotations

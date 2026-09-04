@@ -39,11 +39,10 @@ services:
     ports: ["9000:9000", "9001:9001"]
     volumes:
       # 実データはHDDの実パスへ。シンボリックリンクを挟まない。
-      #
-      # !! 警告 !! このパスは fuseblk（非POSIX）でマウントされており、
-      # MinIO は書き込み成功後に読み戻せない状態になる。
-      # 詳細と選択肢: docs/operations/storage-backend.md
-      # 変更は所有者の判断（Phase 1 固定の前提条件）。
+      # このパスは ext4（POSIX）でマウントされていること。
+      # MinIO は非POSIXファイルシステム（NTFS/exFAT等のFUSEマウント）では
+      # 書き込み成功後に読み戻せなくなる。経緯と検証:
+      # docs/operations/storage-backend.md
       - /mnt/minio-hdd/minio-data:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]

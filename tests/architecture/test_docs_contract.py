@@ -77,3 +77,30 @@ def test_every_adr_is_listed_in_the_index() -> None:
         if adr.name not in index
     ]
     assert not missing, f"docs/decisions/README.md の一覧に載っていないADR: {missing}"
+
+
+def test_every_test_referenced_by_the_docs_actually_exists() -> None:
+    """設計書が名指ししたテストが実在すること。
+
+    「設計書に書いてある != 実装されている」を機械で止める（AGENTS.md）。
+    docs/invariants.md の「機械検査」欄のように、テスト名を書いた文書は多いが、
+    その名前が腐っていないことを保証する機械は無かった。
+    """
+    reference = re.compile(r"tests/[\w/]+\.py(?:::(\w+))?")
+    problems: list[str] = []
+    # 旧repo(ai-video-pipeline)のファイルを棚卸しする文書。ここの tests/ は他repoのもの。
+    foreign = {REPO / "docs" / "operations" / "legacy-asset-inventory.md"}
+
+    docs = sorted(REPO.glob("docs/**/*.md")) + [REPO / "AGENTS.md", REPO / "README.md"]
+    for doc in (d for d in docs if d not in foreign):
+        text = doc.read_text(encoding="utf-8")
+        for match in reference.finditer(text):
+            path = REPO / match.group(0).split("::")[0]
+            if not path.exists():
+                problems.append(f"{doc.relative_to(REPO)}: missing file {match.group(0)}")
+                continue
+            function = match.group(1)
+            if function and f"def {function}" not in path.read_text(encoding="utf-8"):
+                problems.append(f"{doc.relative_to(REPO)}: missing test {match.group(0)}")
+
+    assert not problems, "\n".join(problems)

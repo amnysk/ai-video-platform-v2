@@ -62,7 +62,9 @@
 |---|---|
 | `db/` | SQLAlchemy モデル、マイグレーション（Alembic）、リポジトリ実装 |
 | `storage/` | MinIO クライアント、Artifactの put/get、キー規約 |
-| `temporal/` | Temporal client の生成、task queue名、worker起動 |
+| `temporal/` | Temporal client の生成、task queue名、worker起動。**Phase 1 では空**。
+  実体は `apps/api/workflow_starter.py` と `workers/dummy/run_worker.py` にあり、
+  task queue名は `infrastructure/config.py` の `Settings`。worker が増える前にここへ寄せる |
 | `providers/` | fal.ai / YouTube / LLM の adapter。**必ずProtocolの背後に置く** |
 | `observability/` | OpenTelemetry のtracer/meter設定、Prometheus exporter |
 

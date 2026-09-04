@@ -9,7 +9,9 @@ Episodeは**長生きする**。工程が失敗しても、原則としてEpisod
 
 ## 同一性
 
-`episode_id`（UUIDv7）。外部からの再実行・再投稿でも同じEpisodeを指す。
+`episode_id`。外部からの再実行・再投稿でも同じEpisodeを指す。
+Phase 1 の生成は `uuid.uuid4()`（`infrastructure/db/repositories.py`）。
+生成順ソート可能な UUIDv7 への移行は Phase 2 の課題。
 
 ## 状態
 
@@ -35,8 +37,13 @@ Episodeは**長生きする**。工程が失敗しても、原則としてEpisod
 
 ## 属性
 
+**Phase 1 で実装済み**（`infrastructure/db/models.py` の `EpisodeRow`）:
+
 - `id`, `created_at`, `updated_at`
 - `status`, `status_changed_at`（列名。本文では state と同義）
+- `topic`, `workflow_id`, `blocked_reason`
+
+**Phase 2 発効**（まだ列が存在しない）:
 - `title_draft`, `topic`, `format`（例: `youtube_short`）
 - `workflow_id`, `workflow_run_id` — Temporal参照。**状態の権威ではない**（INV-8）
 - `blocked_reason` — `blocked` のときのみ非NULL。失敗クラスと人間向け説明
