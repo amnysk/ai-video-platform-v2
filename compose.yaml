@@ -1,0 +1,72 @@
+# ローカル開発環境（ADR-0005）。本番構成ではない。
+# 軽い起動: docker compose --profile core up -d
+name: avp2
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    profiles: [core]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-avp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-avp}
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-avp}"]
+      interval: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    profiles: [core]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change-me}
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [miniodata:/data]
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    profiles: [core]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-avp}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_SEEDS: postgres
+    ports: ["7233:7233"]
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    profiles: [core]
+    depends_on: [temporal]
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports: ["8233:8080"]
+
+  # --- 以下は Phase 1 以降で有効化する（イメージのビルド定義が未整備） ---
+  # api:      apps/api の FastAPI
+  # worker-*: workers/<stage> の Temporal worker
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: [observability]
+    ports: ["9090:9090"]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: [observability]
+    depends_on: [prometheus]
+    ports: ["3001:3000"]
+    volumes: [grafanadata:/var/lib/grafana]
+
+volumes:
+  pgdata:
+  miniodata:
+  grafanadata:

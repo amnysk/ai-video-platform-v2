@@ -1,0 +1,39 @@
+[project]
+name = "ai-video-platform-v2"
+version = "0.0.0"
+description = "AI video generation & publishing platform (v2 foundation)"
+requires-python = ">=3.13"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+  "pyright>=1.1.380",
+]
+
+[tool.setuptools.packages.find]
+include = ["apps*", "workers*", "domain*", "infrastructure*", "contracts*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# 層の逆流はarchitecture testが本命だが、明白なものはlintでも止める
+"workers.render".msg = "workers must not import other workers (INV-3)"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: requires docker compose services",
+]
+
+[tool.pyright]
+include = ["apps", "workers", "domain", "infrastructure", "contracts", "tests"]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"

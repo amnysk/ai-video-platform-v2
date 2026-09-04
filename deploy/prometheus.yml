@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: avp-api
+    static_configs:
+      - targets: ["api:8000"]
+  - job_name: avp-workers
+    static_configs:
+      - targets: []   # Phase 1 で worker の metrics endpoint を追加

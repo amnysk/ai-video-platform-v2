@@ -1,0 +1,54 @@
+# Episode
+
+## 定義
+
+**Episode = 1本の動画作品**。企画されてから、投稿され、実績が回収されるまでの
+ライフサイクル全体を指す集約ルート。
+
+Episodeは**長生きする**。工程が失敗しても、原則としてEpisodeは死なない（INV-12）。
+
+## 同一性
+
+`episode_id`（UUIDv7）。外部からの再実行・再投稿でも同じEpisodeを指す。
+
+## 状態
+
+| 状態 | 意味 | terminal |
+|---|---|---|
+| `planned` | 企画が確定した。まだ何も作っていない | |
+| `in_progress` | いずれかの工程が進行中 | |
+| `needs_work` | retryable失敗または品質ゲート未達。自動再試行の対象 | |
+| `blocked` | 人間の判断待ち（予算・権利・分類不能な失敗） | |
+| `ready_for_review` | 成果物が揃い、人間の確認を待つ | |
+| `approved` | 投稿してよいと判定された | |
+| `uploaded` | private投稿済み | |
+| `analyzed` | 実績を回収し、学習へ反映済み | ✔ |
+| `failed` | permanent失敗。回復経路なし | ✔ |
+| `cancelled` | 所有者が明示的に中止した | ✔ |
+
+**terminalは3つだけ**（`analyzed` / `failed` / `cancelled`）。
+それ以外の状態は必ず自動または人間による出口を持つ。
+出口の無い状態を追加してはならない。
+
+## 属性
+
+- `id`, `created_at`, `updated_at`
+- `state`, `state_changed_at`
+- `title_draft`, `topic`, `format`（例: `youtube_short`）
+- `workflow_id`, `workflow_run_id` — Temporal参照。**状態の権威ではない**（INV-8）
+- `blocked_reason` — `blocked` のときのみ非NULL。失敗クラスと人間向け説明
+- `retry_budget_used` — 課金を伴う再生成の消費数
+- `cost_jpy_committed`, `cost_jpy_reserved`
+
+## 不変条件
+
+- 状態遷移は [state-transitions.md](./state-transitions.md) の表に無いものを行わない
+- `blocked` なら `blocked_reason` が必ずある
+- terminal状態から他状態へ戻らない（再挑戦は新しいEpisodeを作る）
+- `failed` へ落とせるのは failure-policy §2 の3条件を全て満たすときだけ
+
+## Episodeが持たないもの
+
+- 工程の順序（Temporal workflowが持つ）
+- 成果物の本体（Artifactが持つ）
+- 個々の試行の記録（Jobが持つ）
