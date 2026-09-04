@@ -66,3 +66,14 @@ def test_adrs_have_all_required_sections() -> None:
 def test_adr_numbers_are_unique() -> None:
     numbers = [p.name.split("-")[0] for p in (REPO / "docs" / "decisions").glob("[0-9]*.md")]
     assert len(numbers) == len(set(numbers)), "duplicate ADR number (番号は再利用しない)"
+
+
+def test_every_adr_is_listed_in_the_index() -> None:
+    """ADRを書いたのに README の一覧へ足し忘れる、という片側更新を防ぐ。"""
+    index = (REPO / "docs" / "decisions" / "README.md").read_text(encoding="utf-8")
+    missing = [
+        adr.name
+        for adr in sorted((REPO / "docs" / "decisions").glob("[0-9]*.md"))
+        if adr.name not in index
+    ]
+    assert not missing, f"docs/decisions/README.md の一覧に載っていないADR: {missing}"

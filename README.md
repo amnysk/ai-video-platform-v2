@@ -26,6 +26,13 @@ POST /episodes → episodes(planned) → EpisodeSkeletonWorkflow start
 GET /episodes/{id} → Episode + Jobs + Artifact metadata
 ```
 
+### ⚠ 既知の重大問題（Phase 1 固定の前提）
+
+MinIO のデータ保存先 `/mnt/minio-hdd/minio-data` は fuseblk（非POSIX）で
+マウントされており、**書き込みは成功するが読み戻せない**。
+INV-9 がこの構成では破れている。
+詳細・対照実験・選択肢: [docs/operations/storage-backend.md](./docs/operations/storage-backend.md)
+
 ### 動かす
 
 ```bash

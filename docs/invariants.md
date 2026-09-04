@@ -64,10 +64,14 @@ UIに出すのはdomain state。
 **機械検査**: 未検査
 
 ### INV-10 Artifactはversionとschemaを持つ
-すべてのArtifactは `schema_name` と `schema_version`、および
-同一論理成果物内での単調増加 `version` を持つ。スキーマ無しの成果物を作らない。
-**機械検査**: `tests/contract/test_artifact_schema.py`
-（`version` 列は Phase 2。Phase 1 は content-addressed キーで同一性を表す）
+**Phase 1 から有効**: すべてのArtifactは `artifact_type` と `schema_version` を持ち、
+読み込み時にスキーマ検証を通る。スキーマ無しの成果物を作らない。
+**Phase 2 発効**（ADR-0010）: 同一論理成果物内での単調増加 `version` と
+`superseded` による世代管理。Phase 1 は content-addressed キー
+（`artifacts/{episode_id}/{artifact_type}/{sha256}.json`）と
+`UNIQUE(episode_id, artifact_type, sha256)` で同一性を表す。
+**機械検査**: `tests/contract/test_artifact_schema.py`（Phase 1 部分）/
+`version` 部分は Phase 2 で実装と同時に入れる
 
 ### INV-11 Artifactはimmutable
 一度書かれたArtifactオブジェクトは上書きしない。作り直しは新しい `version` を作る。
@@ -88,10 +92,12 @@ Episode間に暗黙の直列依存を作らない。あるEpisodeの停止は
 **機械検査**: 未検査
 
 ### INV-14 Upload処理はidempotentである
+**Phase 2 発効**（ADR-0010。upload工程が存在する時点から有効）。
 同じ `(episode_id, artifact_version)` に対するuploadは、何度実行しても
 最大1件のYouTube動画しか生成しない。冪等キーを永続化してから外部呼び出しを行う。
-**機械検査**: 未検査（upload工程は Phase 2。Phase 1 は Artifact の冪等性のみ
-`tests/unit/test_artifact_store.py` / `tests/unit/test_repositories.py` で検査）
+**機械検査**: 未検査（対象コードが未実装）。Phase 1 の Artifact 冪等性は
+`tests/unit/test_artifact_store.py` / `tests/unit/test_repositories.py` で検査済み。
+**upload worker を実装するコミットで、この検査を同時に入れること。**
 
 ### INV-15 課金を伴う外部呼び出しは予約を先に永続化する
 provider呼び出しの前に予約レコードをcommitする。プロセスがクラッシュしても

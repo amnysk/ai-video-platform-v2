@@ -17,6 +17,9 @@ architecture / invariant / contract に触れる変更は、コードより先�
 
 Alternatives と Consequences の悪い側を書いていないADRは未完成として扱う。
 
+新しいADRを足したら**この一覧にも同じコミットで追記する**
+（検査: `tests/architecture/test_docs_contract.py::test_every_adr_is_listed_in_the_index`）。
+
 ## 一覧
 
 | ADR | タイトル | Status |
@@ -26,3 +29,8 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0003](./0003-adopt-minio.md) | MinIOでArtifact本体を保持する | Accepted |
 | [0004](./0004-adopt-fastapi.md) | FastAPIをAPI層に採用する | Accepted |
 | [0005](./0005-adopt-docker-compose.md) | Docker Composeでローカル環境を組む | Accepted |
+| [0006](./0006-skeleton-episode-state-subset.md) | 骨組み用のEpisode `completed` とJob状態語彙 | Accepted |
+| [0007](./0007-infrastructure-may-depend-on-domain.md) | infrastructure → domain の依存を許可 | Accepted |
+| [0008](./0008-adopt-psycopg3-as-the-only-postgres-driver.md) | PostgreSQLドライバを psycopg v3 に一本化 | Accepted |
+| [0009](./0009-python-dependency-single-source.md) | Python依存の宣言元を pyproject.toml ひとつに | Accepted |
+| [0010](./0010-phase1-artifact-versioning-deferral.md) | INV-10 の `version` と INV-14 を Phase 2 発効に | Accepted |

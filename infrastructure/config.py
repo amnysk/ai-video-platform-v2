@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+asyncpg://avp:change-me@localhost:5432/avp"
+    database_url: str = "postgresql+psycopg://avp:change-me@localhost:5432/avp"
 
     minio_endpoint: str = "http://localhost:9000"
     minio_access_key: str = "minioadmin"

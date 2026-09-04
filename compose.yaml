@@ -4,7 +4,7 @@
 name: avp2
 
 x-app-env: &app-env
-  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-avp}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-avp}
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-avp}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-avp}
   MINIO_ENDPOINT: http://minio:9000
   MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change-me}
@@ -39,6 +39,11 @@ services:
     ports: ["9000:9000", "9001:9001"]
     volumes:
       # 実データはHDDの実パスへ。シンボリックリンクを挟まない。
+      #
+      # !! 警告 !! このパスは fuseblk（非POSIX）でマウントされており、
+      # MinIO は書き込み成功後に読み戻せない状態になる。
+      # 詳細と選択肢: docs/operations/storage-backend.md
+      # 変更は所有者の判断（Phase 1 固定の前提条件）。
       - /mnt/minio-hdd/minio-data:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]

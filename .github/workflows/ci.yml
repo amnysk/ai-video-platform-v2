@@ -77,9 +77,15 @@ jobs:
         run: sudo mkdir -p /mnt/minio-hdd/minio-data && sudo chmod 777 /mnt/minio-hdd/minio-data
       - name: Start core services
         run: docker compose --profile core up -d --wait
+      - name: Assert the migration container succeeded
+        # --wait の依存条件に頼らず、ワンショットの migrate が 0 で終わったことを直接見る
+        run: |
+          code=$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose ps -aq migrate)")
+          docker compose logs --no-color migrate
+          test "$code" = "0" || { echo "migrate exited with $code"; exit 1; }
       - run: pytest tests/integration -q -m integration
         env:
-          DATABASE_URL: postgresql+asyncpg://avp:change-me@localhost:5432/avp
+          DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
           MINIO_ENDPOINT: http://localhost:9000
           MINIO_ACCESS_KEY: minioadmin
           MINIO_SECRET_KEY: change-me
@@ -116,3 +122,14 @@ jobs:
           tags: avp2-app:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Runtime imports resolve inside the image
+        # 「ビルドは通るが import で落ちる」（psycopg2 未導入で migrate が落ちた形）を
+        # 重い integration ジョブを待たずに検出する
+        run: |
+          docker run --rm avp2-app:ci python -c "
+          import alembic, fastapi, minio, psycopg, pydantic, sqlalchemy, temporalio
+          import apps.api.main, workers.dummy.workflows, infrastructure.db.models
+          print('runtime imports OK')
+          "
+      - name: Alembic is usable inside the image
+        run: docker run --rm avp2-app:ci alembic --help

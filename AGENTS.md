@@ -102,6 +102,12 @@ grep -rn "<キー名>" apps/ workers/ domain/ infrastructure/ contracts/ docs/
 
 を**実際に走らせ**、ヒットを「読み手／書き手／無関係」に分類して設計書に件数付きで書く。
 
+**この規律は Python コードの中の値だけでなく、Python パッケージ依存にも及ぶ**
+（ADR-0009）。依存を宣言する場所は `pyproject.toml` ひとつ。`Dockerfile` や
+CI にパッケージ名を書き足さないこと（検査:
+`tests/contract/test_dependency_single_source.py`）。版の固定は
+`constraints.txt` が担う（宣言と固定は役割が違う）。
+
 ## 9. お金と外部副作用
 
 まだ実装は無いが、方針は前身repoから引き継ぐ。

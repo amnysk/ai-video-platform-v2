@@ -12,6 +12,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from infrastructure.db.models import Base
+from infrastructure.db.urls import sync_database_url
 
 config = context.config
 
@@ -22,10 +23,14 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    """優先順位: alembic の -x/ini 指定 > DATABASE_URL > Settings の既定値。"""
+    """優先順位: alembic の -x/ini 指定 > DATABASE_URL > Settings の既定値。
+
+    マイグレーションは同期ドライバで実行する。どのドライバに落とすかの写像は
+    ``infrastructure/db/urls.py`` が唯一の定義（ADR-0008）。
+    """
     configured = config.get_main_option("sqlalchemy.url", None)
     if configured:
-        return configured
+        return sync_database_url(configured)
 
     url = os.environ.get("DATABASE_URL")
     if not url:
@@ -33,8 +38,7 @@ def _database_url() -> str:
 
         url = Settings().database_url
 
-    # マイグレーションは同期ドライバで実行する。
-    return url.replace("+asyncpg", "").replace("+aiosqlite", "")
+    return sync_database_url(url)
 
 
 def run_migrations_offline() -> None:
