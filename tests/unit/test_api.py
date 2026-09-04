@@ -19,9 +19,11 @@ class FakeWorkflowStarter:
     def __init__(self) -> None:
         self.started: list[dict[str, object]] = []
 
-    async def start_episode_workflow(self, *, episode_id: str) -> str:
+    async def start_episode_workflow(self, *, episode_id: str, pipeline: str = "skeleton") -> str:
         workflow_id = f"episode-{episode_id}"
-        self.started.append({"episode_id": episode_id, "workflow_id": workflow_id})
+        self.started.append(
+            {"episode_id": episode_id, "workflow_id": workflow_id, "pipeline": pipeline}
+        )
         return workflow_id
 
 
@@ -119,3 +121,36 @@ async def test_episode_status_comes_from_the_database_not_the_workflow(
 
     body = (await client.get(f"/episodes/{created['id']}")).json()
     assert body["status"] == EpisodeStatus.IN_PROGRESS.value
+
+
+# --- Phase 2: どのパイプラインを起動するかを選べる（既定は Phase 1 の骨組み） ---
+
+
+async def test_post_episodes_defaults_to_the_skeleton_pipeline(api) -> None:
+    """既定を変えない。Phase 1 の smoke が壊れないことが最優先。"""
+    client, starter = api
+    await client.post("/episodes", json={"topic": "dummy"})
+    assert starter.started[-1]["pipeline"] == "skeleton"
+
+
+async def test_post_episodes_can_start_the_script_pipeline(api) -> None:
+    client, starter = api
+    response = await client.post("/episodes", json={"topic": "縄文土器", "pipeline": "script"})
+
+    assert response.status_code == 202, response.text
+    assert starter.started[-1]["pipeline"] == "script"
+    assert response.json()["status"] == EpisodeStatus.PLANNED.value
+
+
+async def test_unknown_pipeline_is_rejected(api) -> None:
+    client, _ = api
+    response = await client.post("/episodes", json={"topic": "x", "pipeline": "storyboard"})
+    assert response.status_code == 422
+
+
+async def test_api_still_does_not_wait_for_the_script_workflow(api) -> None:
+    """INV-16: 生成の完了を待たない。202 を即返す。"""
+    client, starter = api
+    response = await client.post("/episodes", json={"topic": "x", "pipeline": "script"})
+    assert response.status_code == 202
+    assert len(starter.started) == 1

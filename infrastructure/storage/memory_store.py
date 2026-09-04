@@ -16,7 +16,9 @@ class InMemoryArtifactStore:
         self._writes: dict[str, int] = {}
 
     async def put_json(self, key: str, payload: Mapping[str, Any]) -> PutResult:
-        body = canonical_json_bytes(payload)
+        return self._put(key, canonical_json_bytes(payload))
+
+    def _put(self, key: str, body: bytes) -> PutResult:
         digest = sha256_hex(body)
         existing = self._objects.get(key)
         if existing is not None:
@@ -33,6 +35,12 @@ class InMemoryArtifactStore:
     async def get_json(self, key: str) -> dict[str, Any]:
         body = self._objects[key]
         return json.loads(body.decode("utf-8"))
+
+    async def put_text(self, key: str, body: str) -> PutResult:
+        return self._put(key, body.encode("utf-8"))
+
+    async def get_text(self, key: str) -> str:
+        return self._objects[key].decode("utf-8")
 
     async def exists(self, key: str) -> bool:
         return key in self._objects

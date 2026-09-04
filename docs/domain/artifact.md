@@ -27,11 +27,16 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 - `produced_by_job_id`
 - `created_at`
 
-**Phase 2 発効**（ADR-0010。まだ列が存在しない）:
+**Phase 2 で実装済み**（ADR-0012）:
 
-- `version` — 同じ `(episode_id, artifact_type)` 内で単調増加（INV-10 の Phase 2 部分）
-- `status`: `current` / `superseded`
-- `input_hash` — この成果物を作った入力の指紋（工程skipによる途中再開に使う）
+- `input_hash` — この成果物を作った**入力**の指紋。非決定的な生成器（LLM）では
+  sha256 が毎回変わるため、**同一性の軸はこちら**
+- `version` — 同じ `(episode_id, artifact_type)` 内で単調増加
+- `superseded_at` — NULL なら現行世代。partial unique index により
+  「現行は常に1本」を DB が保証する
+
+**まだ無いもの**:
+
 - `content_type`
 
 ## immutability
@@ -56,7 +61,7 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 | artifact_type | 生成worker | 内容 |
 |---|---|---|
 | `episode_plan` | planning | 企画（トピック、切り口、想定尺） |
-| `script` | planning | 台本と出典 |
+| `script` | planning（Phase 2 実装済み） | 台本（title / hook / scenes / metadata） |
 | `scene_plan` | planning | シーン分割と各シーンの指示 |
 | `asset_manifest` | generation | 生成素材の一覧と参照 |
 | `edit_decisions` | render | 編集判断（字幕、オーバーレイ、BGM） |
@@ -65,6 +70,17 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 | `video_metadata` | upload | タイトル・説明・タグ |
 | `upload_receipt` | upload | YouTube video_id と投稿時刻 |
 | `performance_report` | analytics | 実績メトリクス |
+
+## 再開判定（Phase 2 以降）
+
+非決定的な生成器（LLM）は同じ入力でも違う内容を返すので、
+**「同じ内容なら同じキー」では「同じ入力から作られたか」を判定できない**。
+したがって再開判定は `input_hash` で行う（ADR-0012）。
+
+- **生成器を呼ばない条件（skip）**: `superseded_at IS NULL` かつ `input_hash` 一致の
+  Artifact が既にある → それを返し、Job を `skipped` にする
+- **呼ぶ条件**: `input_hash` が変わった / 前ラウンドが検証で落ちた /
+  人間が明示的に再生成を要求した。**この3つ以外で有料呼び出しをしない**
 
 ## Artifactが持たないもの
 

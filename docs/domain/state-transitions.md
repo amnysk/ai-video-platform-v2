@@ -16,6 +16,8 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 | `in_progress` | `failed` | `permanent` 失敗 | workflow |
 | `in_progress` | `ready_for_review` | 全成果物が揃った（`ARTIFACTS_READY`） | workflow |
 | `in_progress` | `completed` | 骨組みworkflowの正常終了（`SKELETON_COMPLETED`、ADR-0006） | workflow |
+| `in_progress` | `script_ready` | 台本が生成・検証された（`SCRIPT_READY`、ADR-0011） | script worker |
+| `script_ready` | `in_progress` | 次工程を開始（`STAGE_ADMITTED`、Phase 3 の入口） | workflow |
 | `needs_work` | `in_progress` | 自動再試行が枠内 | workflow |
 | `needs_work` | `blocked` | 再生成の枠を使い切った | workflow |
 | `blocked` | `in_progress` | 人間が再開をsignal | API (人間) |
@@ -45,6 +47,7 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 - `ready_for_review` → 人間の承認/差し戻し（通報される）
 - `approved` → 投稿（自動）
 - `uploaded` → 成熟後に実績回収（自動、timer）
+- `script_ready` → 次工程の開始（自動。Phase 3 で実装。**それまでは駐機点**）
 
 `completed` は骨組みworkflow専用の終端であり、本番パイプラインの正常系は
 `ready_for_review` を通る（ADR-0006）。

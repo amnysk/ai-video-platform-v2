@@ -1,4 +1,4 @@
-.PHONY: help up down logs migrate smoke lint fmt types test test-unit test-integration check
+.PHONY: help up down logs migrate smoke smoke-script script-worker lint fmt types test test-unit test-integration test-live check
 
 help:
 	@grep -E '^[a-z-]+:' Makefile | cut -d: -f1 | tail -n +2
@@ -15,8 +15,14 @@ logs:
 migrate:
 	docker compose --profile core run --rm migrate
 
-smoke:          ## 起動中のスタックに対してEpisodeを1本流す
+smoke:          ## 起動中のスタックに対してEpisodeを1本流す（Phase 1 骨組み）
 	./scripts/smoke.sh
+
+script-worker:  ## Script Worker をホストプロセスとして起動（Codex CLI を使う）
+	./scripts/run-script-worker.sh
+
+smoke-script:   ## 本物のCodexで台本を1本生成する。課金/外部呼び出しあり
+	./scripts/smoke-script.sh
 
 lint:
 	ruff check .
@@ -32,6 +38,9 @@ test-unit:
 
 test-integration:
 	pytest tests/integration -m integration
+
+test-live:      ## 本物のCodexを呼ぶ。所有者の明示操作のみ。CIからは走らない
+	AVP_LIVE_CODEX=1 pytest tests/live -m live
 
 test: test-unit
 

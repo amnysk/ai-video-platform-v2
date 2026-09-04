@@ -36,4 +36,16 @@ class ArtifactStore(Protocol):
 
     async def get_json(self, key: str) -> dict[str, Any]: ...
 
+    async def put_text(self, key: str, body: str) -> PutResult:
+        """検証を通らない生テキスト（provider の生出力）を保存する（ADR-0013）。
+
+        これは **Artifact ではない**。スキーマを持たないので
+        ``artifact_metadata`` には載せず、予約台帳の ``raw_output_key`` からのみ
+        参照する。immutability（INV-11）は Artifact と同じく適用する
+        ── 「呼んだ証拠」を書き換えられては照合の意味が無い。
+        """
+        ...
+
+    async def get_text(self, key: str) -> str: ...
+
     async def exists(self, key: str) -> bool: ...

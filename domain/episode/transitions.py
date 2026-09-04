@@ -22,6 +22,8 @@ class EpisodeEvent(StrEnum):
     PERMANENT_FAILURE = "permanent_failure"
     ARTIFACTS_READY = "artifacts_ready"
     SKELETON_COMPLETED = "skeleton_completed"
+    SCRIPT_READY = "script_ready"
+    STAGE_ADMITTED = "stage_admitted"
     RETRY_ADMITTED = "retry_admitted"
     RETRY_BUDGET_EXHAUSTED = "retry_budget_exhausted"
     RESUMED = "resumed"
@@ -48,6 +50,10 @@ _TABLE: dict[tuple[EpisodeStatus, EpisodeEvent], EpisodeStatus] = {
     (EpisodeStatus.IN_PROGRESS, EpisodeEvent.ARTIFACTS_READY): EpisodeStatus.READY_FOR_REVIEW,
     # ADR-0006: 骨組みworkflowの終端。本番パイプラインでは ARTIFACTS_READY を使う。
     (EpisodeStatus.IN_PROGRESS, EpisodeEvent.SKELETON_COMPLETED): EpisodeStatus.COMPLETED,
+    # ADR-0011: 台本が生成・検証された。Phase 2 の workflow の終端であり駐機点。
+    (EpisodeStatus.IN_PROGRESS, EpisodeEvent.SCRIPT_READY): EpisodeStatus.SCRIPT_READY,
+    # ADR-0011: 駐機点の出口。Phase 3 の次工程が呼ぶ。
+    (EpisodeStatus.SCRIPT_READY, EpisodeEvent.STAGE_ADMITTED): EpisodeStatus.IN_PROGRESS,
     (EpisodeStatus.NEEDS_WORK, EpisodeEvent.RETRY_ADMITTED): EpisodeStatus.IN_PROGRESS,
     (EpisodeStatus.NEEDS_WORK, EpisodeEvent.RETRY_BUDGET_EXHAUSTED): EpisodeStatus.BLOCKED,
     (EpisodeStatus.BLOCKED, EpisodeEvent.RESUMED): EpisodeStatus.IN_PROGRESS,

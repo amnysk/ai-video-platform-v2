@@ -14,7 +14,11 @@ from temporalio.client import Client
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from contracts.artifacts import DUMMY_ARTIFACT_SCHEMA_VERSION, parse_artifact
+from contracts.artifacts import (
+    DUMMY_ARTIFACT_SCHEMA_VERSION,
+    DummyArtifact,
+    parse_artifact,
+)
 from contracts.states import EpisodeStatus, JobStatus, JobType
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.errors import NeedsInputError, PermanentError, TransientError
@@ -153,6 +157,7 @@ async def test_workflow_completes_and_persists_everything(harness) -> None:
 
     stored = await store.get_json(meta.object_key)
     parsed = parse_artifact(stored)
+    assert isinstance(parsed, DummyArtifact), "dummy payload は DummyArtifact へディスパッチされる"
     assert parsed.episode_id == harness.episode_id
     assert parsed.message == "workflow completed"
     assert meta.sha256 == sha256_hex(canonical_json_bytes(stored)) == result.sha256

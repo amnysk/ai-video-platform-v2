@@ -33,4 +33,8 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0007](./0007-infrastructure-may-depend-on-domain.md) | infrastructure → domain の依存を許可 | Accepted |
 | [0008](./0008-adopt-psycopg3-as-the-only-postgres-driver.md) | PostgreSQLドライバを psycopg v3 に一本化 | Accepted |
 | [0009](./0009-python-dependency-single-source.md) | Python依存の宣言元を pyproject.toml ひとつに | Accepted |
-| [0010](./0010-phase1-artifact-versioning-deferral.md) | INV-10 の `version` と INV-14 を Phase 2 発効に | Accepted |
+| [0010](./0010-phase1-artifact-versioning-deferral.md) | INV-10 の `version` と INV-14 を Phase 2 発効に | Accepted（0012 が version 部分を発効） |
+| [0011](./0011-episode-script-ready-state.md) | Episode に `script_ready` を導入 | Accepted |
+| [0012](./0012-artifact-identity-for-nondeterministic-generators.md) | Artifact の同一性を input_hash へ移す | Accepted |
+| [0013](./0013-provider-reservation-ledger.md) | 外部AI呼び出しの予約台帳と INV-15 の意味論 | Accepted |
+| [0014](./0014-llm-output-defects-are-retryable.md) | LLM出力の形式不正は retryable | Accepted |

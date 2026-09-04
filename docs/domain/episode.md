@@ -26,6 +26,7 @@ Phase 1 の生成は `uuid.uuid4()`（`infrastructure/db/repositories.py`）。
 | `uploaded` | private投稿済み | |
 | `analyzed` | 実績を回収し、学習へ反映済み | ✔ |
 | `completed` | 骨組みworkflowが正常終了した（ADR-0006） | ✔ |
+| `script_ready` | 台本が生成・検証され、次工程を待つ（ADR-0011） | |
 | `failed` | permanent失敗。回復経路なし | ✔ |
 | `cancelled` | 所有者が明示的に中止した | ✔ |
 

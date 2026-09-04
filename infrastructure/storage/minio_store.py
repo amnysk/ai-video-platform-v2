@@ -17,6 +17,7 @@ from infrastructure.config import Settings
 from infrastructure.storage.artifact_store import ArtifactConflictError, PutResult
 
 CONTENT_TYPE = "application/json"
+TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
 
 
 class MinioArtifactStore:
@@ -47,7 +48,18 @@ class MinioArtifactStore:
         await asyncio.to_thread(_ensure)
 
     async def put_json(self, key: str, payload: Mapping[str, Any]) -> PutResult:
-        body = canonical_json_bytes(payload)
+        return await self._put(key, canonical_json_bytes(payload), CONTENT_TYPE)
+
+    async def put_text(self, key: str, body: str) -> PutResult:
+        return await self._put(key, body.encode("utf-8"), TEXT_CONTENT_TYPE)
+
+    async def get_text(self, key: str) -> str:
+        body = await self._get_bytes(key)
+        if body is None:
+            raise KeyError(key)
+        return body.decode("utf-8")
+
+    async def _put(self, key: str, body: bytes, content_type: str) -> PutResult:
         digest = sha256_hex(body)
 
         existing = await self._get_bytes(key)
@@ -64,7 +76,7 @@ class MinioArtifactStore:
                 key,
                 io.BytesIO(body),
                 length=len(body),
-                content_type=CONTENT_TYPE,
+                content_type=content_type,
             )
 
         await asyncio.to_thread(_put)

@@ -30,7 +30,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["apps*", "workers*", "domain*", "infrastructure*", "contracts*"]
+include = ["apps*", "workers*", "domain*", "infrastructure*", "contracts*", "prompts*"]
 
 [tool.ruff]
 line-length = 100
@@ -49,7 +49,10 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
   "integration: requires docker compose services",
+  "live: calls the real Codex CLI (opt-in via AVP_LIVE_CODEX=1)",
 ]
+# 既定の実行では live テストを収集しない（tests/live/conftest.py と二重の防御）
+addopts = "-m 'not live'"
 
 [tool.pyright]
 include = ["apps", "workers", "domain", "infrastructure", "contracts", "tests"]

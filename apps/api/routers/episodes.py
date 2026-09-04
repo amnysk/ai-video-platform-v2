@@ -43,7 +43,9 @@ async def create_episode(
         episode = await EpisodeRepository(session).create(topic=payload.topic)
         await session.commit()
 
-    workflow_id = await starter.start_episode_workflow(episode_id=episode.id)
+    workflow_id = await starter.start_episode_workflow(
+        episode_id=episode.id, pipeline=payload.pipeline
+    )
 
     async with session_factory() as session:
         # Temporal参照は相関のためだけに持つ。状態の権威はDB（INV-7 / INV-8）。

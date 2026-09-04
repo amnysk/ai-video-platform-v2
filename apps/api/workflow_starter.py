@@ -9,16 +9,20 @@ from typing import Protocol
 
 from temporalio.client import Client
 
+from contracts.states import PIPELINE_WORKFLOWS, Pipeline
 from infrastructure.config import Settings
 
 
 class WorkflowStarter(Protocol):
-    async def start_episode_workflow(self, *, episode_id: str) -> str: ...
+    async def start_episode_workflow(
+        self, *, episode_id: str, pipeline: Pipeline | str = Pipeline.SKELETON
+    ) -> str: ...
 
 
 class TemporalWorkflowStarter:
     def __init__(self, client: Client, task_queue: str) -> None:
         self._client = client
+        #: 骨組みworkflowの既定 queue。他は PIPELINE_WORKFLOWS から引く。
         self._task_queue = task_queue
 
     @classmethod
@@ -28,13 +32,20 @@ class TemporalWorkflowStarter:
         )
         return cls(client, settings.temporal_task_queue)
 
-    async def start_episode_workflow(self, *, episode_id: str) -> str:
+    async def start_episode_workflow(
+        self, *, episode_id: str, pipeline: Pipeline | str = Pipeline.SKELETON
+    ) -> str:
+        selected = Pipeline(pipeline)
+        workflow_name, task_queue = PIPELINE_WORKFLOWS[selected]
+        if selected is Pipeline.SKELETON:
+            task_queue = self._task_queue
         workflow_id = f"episode-{episode_id}"
         # workflow定義そのものはworkerが持つ。APIは名前と引数だけを知る（INV-1 / INV-3）。
+        # **完了は待たない**（INV-16）。
         await self._client.start_workflow(
-            "EpisodeSkeletonWorkflow",
+            workflow_name,
             {"episode_id": episode_id},
             id=workflow_id,
-            task_queue=self._task_queue,
+            task_queue=task_queue,
         )
         return workflow_id

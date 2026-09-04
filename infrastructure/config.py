@@ -19,5 +19,15 @@ class Settings(BaseSettings):
     temporal_namespace: str = "default"
     temporal_task_queue: str = "episode-skeleton"
 
+    # --- Codex CLI（台本生成） ---
+    #: 実行ファイルの絶対パス。空なら ``shutil.which("codex")`` で解決する。
+    #: nvm 配下の codex は PATH に無いことがあるので明示できるようにしてある。
+    codex_binary: str = ""
+    codex_model: str = ""  # 空なら codex の既定（~/.codex/config.toml）に従う
+    #: CLI 側にタイムアウトオプションが無いので、Python 側の上限がこれだけ。
+    codex_timeout_seconds: int = 900
+    #: codex を ``-C`` で走らせる作業ディレクトリ（sandbox は read-only）。
+    codex_workspace: str = "."
+
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"

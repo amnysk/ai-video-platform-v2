@@ -67,12 +67,14 @@ UIに出すのはdomain state。
 ### INV-10 Artifactはversionとschemaを持つ
 **Phase 1 から有効**: すべてのArtifactは `artifact_type` と `schema_version` を持ち、
 読み込み時にスキーマ検証を通る。スキーマ無しの成果物を作らない。
-**Phase 2 発効**（ADR-0010）: 同一論理成果物内での単調増加 `version` と
-`superseded` による世代管理。Phase 1 は content-addressed キー
-（`artifacts/{episode_id}/{artifact_type}/{sha256}.json`）と
-`UNIQUE(episode_id, artifact_type, sha256)` で同一性を表す。
-**機械検査**: `tests/contract/test_artifact_schema.py`（Phase 1 部分）/
-`version` 部分は Phase 2 で実装と同時に入れる
+**Phase 2 から有効**（ADR-0012）: 同一論理成果物内での単調増加 `version` と
+`superseded_at` による世代管理、および `input_hash` による再開判定。
+content-addressed キー（`artifacts/{episode_id}/{artifact_type}/{sha256}.json`）と
+`UNIQUE(episode_id, artifact_type, sha256)` は immutability の担保として残る。
+非決定的な生成器（LLM）では sha256 が毎回変わるため、
+**同一性の軸は `input_hash`** である。
+**機械検査**: `tests/contract/test_artifact_schema.py` /
+`tests/unit/test_artifact_generations.py`
 
 ### INV-11 Artifactはimmutable
 一度書かれたArtifactオブジェクトは上書きしない。作り直しは新しい `version` を作る。
@@ -103,7 +105,8 @@ Episode間に暗黙の直列依存を作らない。あるEpisodeの停止は
 ### INV-15 課金を伴う外部呼び出しは予約を先に永続化する
 provider呼び出しの前に予約レコードをcommitする。プロセスがクラッシュしても
 未照合の予約が残り、**自動で再送も解放もしない**。
-**機械検査**: 未検査
+意味論と再開時の分岐は ADR-0013（予約台帳）が権威。
+**機械検査**: `tests/unit/test_provider_reservations.py`
 
 ## D. 実行モデル
 
@@ -120,7 +123,8 @@ Temporalは同じActivityを複数回実行しうる。全Activityは再実行�
 
 ### INV-18 テストとCIから有料API・実投稿を呼ばない
 外部provider（fal.ai / YouTube）へ到達しうるコードパスは、テストでは
-必ずfake/adapterで置換する。
+必ずfake/adapterで置換する。**外部AIプロセス（Codex CLI）も対象**であり、
+実呼び出しは `tests/live/` からのみ、環境変数 `AVP_LIVE_CODEX=1` を明示した場合に限る。
 **機械検査**: `tests/architecture/test_no_live_calls.py`
 
 ## E. 外部副作用（前身repoから継承・非交渉）

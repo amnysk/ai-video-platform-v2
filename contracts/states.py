@@ -21,6 +21,7 @@ class EpisodeStatus(StrEnum):
     UPLOADED = "uploaded"
     ANALYZED = "analyzed"
     COMPLETED = "completed"
+    SCRIPT_READY = "script_ready"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -71,15 +72,64 @@ RETRYABLE_FAILURE_CLASSES: frozenset[FailureClass] = frozenset(
 
 
 class JobType(StrEnum):
-    """工程の種類。Phase 1 は骨組みの dummy だけ。"""
+    """工程の種類。
+
+    job（工程）と artifact（成果物）は同名にしない。「script が失敗した」が
+    どちらの話か決まらなくなるため（Phase 2 のレビュー指摘）。
+    """
 
     DUMMY = "dummy"
+    WRITE_SCRIPT = "write_script"
 
 
 class ArtifactType(StrEnum):
     """Artifactの種類。docs/domain/artifact.md の表に対応する。"""
 
     DUMMY = "dummy"
+    SCRIPT = "script"
+
+
+class Pipeline(StrEnum):
+    """どの workflow を起動するか。
+
+    workflow 名と task queue の対応は ``PIPELINE_WORKFLOWS`` が唯一の定義元。
+    """
+
+    SKELETON = "skeleton"
+    SCRIPT = "script"
+
+
+#: パイプライン -> (workflow名, task queue)。API と worker がここから導出する。
+PIPELINE_WORKFLOWS: dict[Pipeline, tuple[str, str]] = {
+    Pipeline.SKELETON: ("EpisodeSkeletonWorkflow", "episode-skeleton"),
+    Pipeline.SCRIPT: ("ScriptWorkflow", "script"),
+}
+
+
+class ProviderCall(StrEnum):
+    """予約台帳が扱う外部呼び出しの種類（ADR-0013）。
+
+    provider を増やすときはここに足す。台帳のテーブル定義は共有する。
+    """
+
+    CODEX_SCRIPT = "codex_script"
+
+
+class ReservationStatus(StrEnum):
+    """予約台帳の状態（ADR-0013）。
+
+    ``reserved`` から自動で出られるのは evidence による照合だけ。
+    「自動で解放しない」は遷移表に辺を**書かないこと**で表現する。
+    """
+
+    RESERVED = "reserved"
+    SPENT = "spent"
+    ABANDONED = "abandoned"
+
+
+RESERVATION_TERMINAL_STATUSES: frozenset[ReservationStatus] = frozenset(
+    {ReservationStatus.SPENT, ReservationStatus.ABANDONED}
+)
 
 
 DEFAULT_MAX_ATTEMPTS = 3

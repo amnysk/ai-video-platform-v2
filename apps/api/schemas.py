@@ -6,13 +6,15 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from contracts.states import ArtifactType, EpisodeStatus, JobStatus, JobType
+from contracts.states import ArtifactType, EpisodeStatus, JobStatus, JobType, Pipeline
 
 
 class CreateEpisodeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     topic: str | None = Field(default=None, max_length=500)
+    #: 既定は Phase 1 の骨組み。Phase 1 の smoke を壊さないため。
+    pipeline: Pipeline = Pipeline.SKELETON
 
 
 class CreateEpisodeResponse(BaseModel):

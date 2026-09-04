@@ -14,10 +14,24 @@
 | `transient` | 一時障害（ネットワーク、5xx、rate limit） | 自動retry（指数backoff） | なし |
 | `retryable` | 再実行で解決しうる（provider側の生成失敗、品質ゲート未達） | 上限付きretry / 再生成 | `needs_work` へ。terminalにしない |
 | `needs_input` | 人間の判断が要る（予算超過、権利判定、分類不能） | retryせずsignal待ち | `blocked` へ。terminalにしない |
-| `permanent` | 入力自体が不正で再実行しても同じ（スキーマ違反、存在しない素材） | retryしない | `failed`（terminal） |
+| `permanent` | **決定論的な**入力自体が不正で再実行しても同じ（存在しない入力Artifact、未知の schema_version） | retryしない | `failed`（terminal） |
 
 **分類できない例外は `needs_input` として扱う**（INV-12）。
 `permanent` は「同じ入力で必ず同じ失敗になる」と示せる場合だけ。
+
+### 非決定的な生成器（LLM）の出力欠陥（ADR-0014）
+
+**LLM は同じ入力でも違う出力を返す**ので、出力の形式不正に `permanent` の条件
+（「同じ入力で必ず同じ失敗になる」）は成立しない。したがって:
+
+| 事象 | クラス |
+|---|---|
+| 出力が invalid JSON（截断・前置き混入） | `retryable` |
+| パースできたがスキーマ違反 | `retryable` |
+| 同じ `input_hash` で規定ラウンド連続して同種の違反 | `needs_input`（プロンプトとスキーマの不整合。人間が直す） |
+| 入力Artifactが存在しない / 未知の schema_version | `permanent` |
+
+**出力の修復（截断JSONの補完など）はしない。** 推測して読まない（artifact.md）。
 
 ## 2. Episodeをterminal failedにしてよい条件
 
@@ -49,7 +63,10 @@
 
 ## 5. retry予算
 
-- `transient`: Temporal の RetryPolicy に委ねる（回数上限あり、無限retry禁止）
+- `transient`: Temporal の RetryPolicy に委ねる（回数上限あり、無限retry禁止）。
+  **ただし課金を伴う外部呼び出しの Activity は例外**（ADR-0013）:
+  `maximum_attempts=1` とし、retry は workflow のラウンドとして予約台帳を通す。
+  Temporal の自動retryに委ねると、課金呼び出しが台帳を経ずに増える
 - `retryable`: Episodeごとに**課金を伴う再生成の上限**を持つ。上限に達したら `blocked`
 - retryラウンドは1日の制作枠を消費しない（枠は「開始したEpisode」を数える）
 
