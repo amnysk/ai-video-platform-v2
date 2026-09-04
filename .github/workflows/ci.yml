@@ -31,8 +31,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e ".[dev]"
-      - run: pyright
+      - name: Create venv (pyright resolves imports from .venv)
+        run: python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+      - run: .venv/bin/pyright
 
   unit:
     name: Unit tests
@@ -72,10 +73,17 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
       - run: pip install -e ".[dev]"
+      - name: Prepare MinIO data directory
+        run: sudo mkdir -p /mnt/minio-hdd/minio-data && sudo chmod 777 /mnt/minio-hdd/minio-data
       - name: Start core services
         run: docker compose --profile core up -d --wait
       - run: pytest tests/integration -q -m integration
         env:
+          DATABASE_URL: postgresql+asyncpg://avp:change-me@localhost:5432/avp
+          MINIO_ENDPOINT: http://localhost:9000
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: change-me
+          MINIO_BUCKET: artifacts
           # 有料provider・実投稿へは絶対に到達させない (INV-18)
           FAL_KEY: ""
           YOUTUBE_CLIENT_ID: ""
@@ -87,6 +95,8 @@ jobs:
         with:
           name: compose-logs
           path: compose-logs.txt
+      - name: Smoke test the running stack
+        run: ./scripts/smoke.sh
       - if: always()
         run: docker compose --profile core down -v
 
@@ -98,5 +108,11 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Validate compose file
         run: docker compose --profile core --profile observability config -q
-      # Phase 1 で apps/api と workers の Dockerfile を追加したら、
-      # ここで docker/build-push-action@v6 (push:false, cache:gha) を実行する
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: avp2-app:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

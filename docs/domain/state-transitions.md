@@ -14,7 +14,8 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 | `in_progress` | `needs_work` | `retryable` 失敗 / 品質ゲート未達 | workflow |
 | `in_progress` | `blocked` | `needs_input` 失敗 / 分類不能 | workflow |
 | `in_progress` | `failed` | `permanent` 失敗 | workflow |
-| `in_progress` | `ready_for_review` | 全成果物が揃った | workflow |
+| `in_progress` | `ready_for_review` | 全成果物が揃った（`ARTIFACTS_READY`） | workflow |
+| `in_progress` | `completed` | 骨組みworkflowの正常終了（`SKELETON_COMPLETED`、ADR-0006） | workflow |
 | `needs_work` | `in_progress` | 自動再試行が枠内 | workflow |
 | `needs_work` | `blocked` | 再生成の枠を使い切った | workflow |
 | `blocked` | `in_progress` | 人間が再開をsignal | API (人間) |
@@ -30,7 +31,7 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 
 ## terminal状態
 
-`analyzed` / `failed` / `cancelled`。ここから出る遷移は無い。
+`analyzed` / `completed` / `failed` / `cancelled`。ここから出る遷移は無い。
 再挑戦は新しいEpisodeを作る。
 
 ## 出口の保証
@@ -45,6 +46,9 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 - `approved` → 投稿（自動）
 - `uploaded` → 成熟後に実績回収（自動、timer）
 
+`completed` は骨組みworkflow専用の終端であり、本番パイプラインの正常系は
+`ready_for_review` を通る（ADR-0006）。
+
 **出口の無い状態を追加してはならない。** 追加時はこの節に出口を書く。
 
 ## 遷移の実装規則
@@ -56,6 +60,10 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 
 ## テスト
 
-- 表の全行を網羅するテスト（`tests/unit/test_state_transitions.py`、Phase 1）
-- 表に無い組み合わせが全て `Rejected` になることの網羅テスト
-- 全非terminal状態から少なくとも1つのterminalへ到達可能であることの探索テスト
+- 表の全行を網羅するテスト: `tests/unit/test_episode_transitions.py`
+- 表に無い組み合わせが `Rejected` になること: 同ファイル
+  `test_invalid_transitions_are_rejected` / `test_rejection_is_a_value_not_an_exception`
+- 全非terminal状態から少なくとも1つのterminalへ到達可能:
+  `test_every_non_terminal_status_can_reach_a_terminal_status`
+- terminalから出る遷移が無いこと: `test_terminal_statuses_have_no_outgoing_transitions`
+- 実装表: `domain/episode/transitions.py` の `EPISODE_TRANSITIONS`

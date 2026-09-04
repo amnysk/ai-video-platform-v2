@@ -1,0 +1,51 @@
+"""APIの入出力スキーマ。domain state だけを外へ出す（INV-8）。"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from contracts.states import ArtifactType, EpisodeStatus, JobStatus, JobType
+
+
+class CreateEpisodeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str | None = Field(default=None, max_length=500)
+
+
+class CreateEpisodeResponse(BaseModel):
+    id: str
+    status: EpisodeStatus
+    workflow_id: str
+
+
+class JobView(BaseModel):
+    id: str
+    type: JobType
+    status: JobStatus
+    attempts: int
+    max_attempts: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ArtifactView(BaseModel):
+    id: str
+    artifact_type: ArtifactType
+    schema_version: str
+    bucket: str
+    object_key: str
+    sha256: str
+    created_at: datetime
+
+
+class EpisodeView(BaseModel):
+    id: str
+    status: EpisodeStatus
+    topic: str | None
+    created_at: datetime
+    updated_at: datetime
+    jobs: list[JobView]
+    artifacts: list[ArtifactView]

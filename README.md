@@ -8,9 +8,47 @@ AIでYouTube動画を自動生成・投稿するプラットフォームの**第
 
 ## 現在のフェーズ
 
-**Phase 0: 土台のみ。** 動画生成機能は未実装。このrepoにあるのは
-ディレクトリ構成・契約文書・不変条件・CI設計だけ。
+**Phase 1: 最小の縦切り。** 1つのEpisodeが Temporal / PostgreSQL / MinIO を
+使って安全に状態遷移するところまで通っている。
+**動画生成・YouTube投稿・Storyboard・Production は未実装**（Phase 2以降）。
+
 実装を始める前に [AGENTS.md](./AGENTS.md) を読むこと。
+
+### 動く経路
+
+```text
+POST /episodes → episodes(planned) → EpisodeSkeletonWorkflow start
+  → mark_episode_in_progress   : episodes(in_progress)
+  → create_dummy_job           : jobs(queued)
+  → produce_dummy_artifact     : jobs(running) → MinIOへdummy JSON
+                                 → artifact_metadata(sha256) → jobs(succeeded)
+  → complete_episode           : episodes(completed)
+GET /episodes/{id} → Episode + Jobs + Artifact metadata
+```
+
+### 動かす
+
+```bash
+cp .env.example .env            # secretはここに。コミットしない
+docker compose --profile core up -d --wait
+./scripts/smoke.sh              # Episodeを1本流して completed を確認
+```
+
+- API: http://localhost:8000/docs
+- Temporal UI: http://localhost:8233
+- MinIO console: http://localhost:9001（実データは `/mnt/minio-hdd/minio-data`）
+
+### テスト
+
+```bash
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest tests/unit tests/contract tests/architecture   # Docker不要
+.venv/bin/pytest tests/integration -m integration               # 要 docker compose
+.venv/bin/ruff check . && .venv/bin/pyright
+```
+
+`tests/integration/test_episode_workflow.py` は Temporal の time-skipping
+テスト環境を使うので Docker なしでも走る（実PG・実MinIOのテストだけがskipされる）。
 
 ## 設計の柱
 
@@ -44,14 +82,24 @@ GitHub Actions / OpenTelemetry / Prometheus / Grafana
 ## ディレクトリ
 
 ```text
-apps/          FastAPI (apps/api) と Next.js (apps/web)。I/O境界のみ
-workers/       Temporal worker。1工程1モジュール。相互import禁止
-domain/        純粋なドメインモデルと状態遷移。I/O・框組みに依存しない
+apps/api       FastAPI。検証 → 永続化 → workflow起動だけ（INV-16）
+apps/web       Next.js（未実装）
+workers/dummy  Temporal worker（骨組み）。workflows.py が順序を持つ唯一の場所
+domain/        純粋なドメインモデルと状態遷移。I/O・フレームワークに依存しない
 infrastructure/ DB・MinIO・Temporal client・provider adapter・計装
-contracts/     Artifact schema と worker間のpayload契約（versioned）
+contracts/     状態値の語彙(states.py)とArtifactスキーマ(artifacts.py)。定義はここに1つだけ
 docs/          設計・不変条件・ADR
 tests/         unit / integration / contract / architecture
 ```
+
+## 次に実装すべきこと（Phase 2 の入口）
+
+1. `contracts/schemas/` に本番Artifactのスキーマ（`episode_plan` / `script`）
+2. Artifact の `version` 列と `superseded` 状態（INV-10 / INV-11 の残り）
+3. `input_hash` による工程skip（failure-policy §4 の「途中再開」）
+4. OpenTelemetry の実配線と Prometheus メトリクス
+5. Next.js UI（一覧・詳細・再実行）
+6. 旧repoからの移植: `youtube_uploader/` → upload worker、fal adapter → generation worker
 
 ## 旧repoについて
 

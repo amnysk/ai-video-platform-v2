@@ -56,7 +56,7 @@ workerを直接叩かない（INV-2）。
 | Execution | `workers/*/activities.py` | 1工程の実行 | domain, contracts, infrastructure |
 | Domain | `domain/` | Episode/Job/Artifactのモデルと遷移規則 | contracts のみ |
 | Contracts | `contracts/` | Artifactスキーマ・payload定義 | なし |
-| Infrastructure | `infrastructure/` | DB / MinIO / Temporal client / provider adapter / 計装 | contracts |
+| Infrastructure | `infrastructure/` | DB / MinIO / Temporal client / provider adapter / 計装 | domain, contracts（ADR-0007） |
 
 依存は上から下への一方向のみ（INV-6）。
 
@@ -81,5 +81,10 @@ Temporalは「その実行がどこまで進んだか」を持ち、PostgreSQL�
 
 ## 現在の実装状況
 
-Phase 0（土台のみ）。上の箱はどれもまだ実装されていない。
-実装順は README の「次に実装すべき最小機能」に従う。
+**Phase 1（最小の縦切り）**。上の箱のうち、UI以外は骨組みが通っている:
+FastAPI が Episode を作って workflow を start し、
+`EpisodeSkeletonWorkflow` が dummy Activity を1つ実行し、
+Artifact を MinIO へ、メタデータを PostgreSQL へ書き、Episode を `completed` にする。
+
+まだ無いもの: Next.js UI、企画/台本/素材生成/レンダー/投稿/分析の各worker、
+有料provider adapter、OpenTelemetry の実配線。

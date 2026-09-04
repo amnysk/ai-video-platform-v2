@@ -23,17 +23,20 @@ Episodeは**長生きする**。工程が失敗しても、原則としてEpisod
 | `approved` | 投稿してよいと判定された | |
 | `uploaded` | private投稿済み | |
 | `analyzed` | 実績を回収し、学習へ反映済み | ✔ |
+| `completed` | 骨組みworkflowが正常終了した（ADR-0006） | ✔ |
 | `failed` | permanent失敗。回復経路なし | ✔ |
 | `cancelled` | 所有者が明示的に中止した | ✔ |
 
-**terminalは3つだけ**（`analyzed` / `failed` / `cancelled`）。
+**terminalは4つだけ**（`analyzed` / `completed` / `failed` / `cancelled`）。
+語彙の権威は `contracts/states.py` の `EpisodeStatus` と
+`EPISODE_TERMINAL_STATUSES`。ここと一致していなければならない。
 それ以外の状態は必ず自動または人間による出口を持つ。
 出口の無い状態を追加してはならない。
 
 ## 属性
 
 - `id`, `created_at`, `updated_at`
-- `state`, `state_changed_at`
+- `status`, `status_changed_at`（列名。本文では state と同義）
 - `title_draft`, `topic`, `format`（例: `youtube_short`）
 - `workflow_id`, `workflow_run_id` — Temporal参照。**状態の権威ではない**（INV-8）
 - `blocked_reason` — `blocked` のときのみ非NULL。失敗クラスと人間向け説明

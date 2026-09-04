@@ -1,6 +1,17 @@
 # ローカル開発環境（ADR-0005）。本番構成ではない。
-# 軽い起動: docker compose --profile core up -d
+# 起動:      docker compose --profile core up -d
+# 監視つき:  docker compose --profile core --profile observability up -d
 name: avp2
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-avp}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-avp}
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change-me}
+  MINIO_BUCKET: ${MINIO_BUCKET:-artifacts}
+  TEMPORAL_ADDRESS: temporal:7233
+  TEMPORAL_NAMESPACE: default
+  TEMPORAL_TASK_QUEUE: episode-skeleton
 
 services:
   postgres:
@@ -15,7 +26,8 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-avp}"]
       interval: 5s
-      retries: 10
+      timeout: 3s
+      retries: 20
 
   minio:
     image: minio/minio:latest
@@ -25,7 +37,14 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-change-me}
     ports: ["9000:9000", "9001:9001"]
-    volumes: [miniodata:/data]
+    volumes:
+      # 実データはHDDの実パスへ。シンボリックリンクを挟まない。
+      - /mnt/minio-hdd/minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   temporal:
     image: temporalio/auto-setup:latest
@@ -46,11 +65,47 @@ services:
     depends_on: [temporal]
     environment:
       TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8233
     ports: ["8233:8080"]
 
-  # --- 以下は Phase 1 以降で有効化する（イメージのビルド定義が未整備） ---
-  # api:      apps/api の FastAPI
-  # worker-*: workers/<stage> の Temporal worker
+  migrate:
+    build: .
+    profiles: [core]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      <<: *app-env
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    build: .
+    profiles: [core]
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      temporal: {condition: service_started}
+      minio: {condition: service_started}
+    environment:
+      <<: *app-env
+    ports: ["8000:8000"]
+    command:
+      ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  dummy-worker:
+    build: .
+    profiles: [core]
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      temporal: {condition: service_started}
+      minio: {condition: service_started}
+    environment:
+      <<: *app-env
+    command: ["python", "-m", "workers.dummy.run_worker"]
+    # Workerは水平に増やせる。互いを直接呼ばない（INV-3）。
+    deploy:
+      replicas: 1
 
   prometheus:
     image: prom/prometheus:latest
@@ -68,5 +123,4 @@ services:
 
 volumes:
   pgdata:
-  miniodata:
   grafanadata:

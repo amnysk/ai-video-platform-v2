@@ -15,7 +15,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 ALLOWED: dict[str, set[str]] = {
     "contracts": set(),
     "domain": {"contracts"},
-    "infrastructure": {"contracts"},
+    "infrastructure": {"contracts", "domain"},  # ADR-0007
     "workers": {"domain", "contracts", "infrastructure"},
     "apps": {"domain", "contracts", "infrastructure"},
 }
