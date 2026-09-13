@@ -62,7 +62,7 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 |---|---|---|
 | `episode_plan` | planning | 企画（トピック、切り口、想定尺） |
 | `script` | planning（Phase 2 実装済み） | 台本（title / hook / scenes / metadata） |
-| `scene_plan` | planning | シーン分割と各シーンの指示 |
+| `storyboard` | storyboard（Phase 3 実装済み、ADR-0015） | シーン分割と各シーンの映像指示・尺（旧予定名 `scene_plan`）。ナレーションは持たず `script_scene_id` で台本を参照 |
 | `asset_manifest` | generation | 生成素材の一覧と参照 |
 | `edit_decisions` | render | 編集判断（字幕、オーバーレイ、BGM） |
 | `final_video` | render | 完成動画 |

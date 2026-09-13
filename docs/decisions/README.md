@@ -38,3 +38,5 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0012](./0012-artifact-identity-for-nondeterministic-generators.md) | Artifact の同一性を input_hash へ移す | Accepted |
 | [0013](./0013-provider-reservation-ledger.md) | 外部AI呼び出しの予約台帳と INV-15 の意味論 | Accepted |
 | [0014](./0014-llm-output-defects-are-retryable.md) | LLM出力の形式不正は retryable | Accepted |
+| [0015](./0015-storyboard-stage.md) | Storyboard 工程と Episode `storyboard_ready` | Accepted |
+| [0016](./0016-openmontage-guided-storyboard-generation.md) | Storyboard 生成は固定した OpenMontage 仕様で誘導した Codex | Accepted |

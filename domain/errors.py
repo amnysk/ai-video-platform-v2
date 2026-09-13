@@ -67,6 +67,33 @@ class UnreconciledReservationError(NeedsInputError):
     """
 
 
+class StoryboardOutputUnparseableError(RetryableError):
+    """storyboard 生成器の出力が JSON として読めない（ADR-0014 / ADR-0015）。"""
+
+
+class StoryboardSchemaViolationError(RetryableError):
+    """storyboard の出力が schema・時間軸・台本カバレッジの検査に落ちた（ADR-0014）。"""
+
+
+class StoryboardInputMissingError(NeedsInputError):
+    """現行の台本 Artifact が無い。台本工程の再実行（人間の判断）で回復する。"""
+
+
+class StoryboardInputInvalidError(NeedsInputError):
+    """保存された台本が読めない、または sha256 がメタデータと一致しない。"""
+
+
+class GenerationSpecUnavailableError(NeedsInputError):
+    """固定した生成仕様（commit / blob）が読めない（ADR-0016）。人間が checkout か設定を直す。"""
+
+
+class WorkspaceUnavailableError(RetryableError):
+    """一時作業領域を安全に用意・削除できない（ADR-0016）。
+
+    root の検査違反・symlink・OS エラーを infrastructure がここへ写像する。
+    """
+
+
 class InvalidTransitionError(DomainError):
     """表に無い状態遷移を永続化しようとした。"""
 

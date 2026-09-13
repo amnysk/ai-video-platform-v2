@@ -103,3 +103,54 @@ def test_check_constraints_survive_on_postgres(probe_url) -> None:
 
     for expected in ("ck_episodes_status", "ck_jobs_status", "ck_artifact_metadata_type"):
         assert expected in names, f"{expected} が実PostgreSQLに作られていない"
+
+
+def test_storyboard_vocabulary_is_accepted_by_postgres_checks(probe_url) -> None:
+    """0003: storyboard の語彙が実PostgreSQLの CHECK を通り、downgrade で再び拒否される。"""
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    config = _config(probe_url)
+    command.upgrade(config, "head")
+    engine = create_engine(probe_url)
+    episode_id = uuid.uuid4()
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'storyboard_ready', 't')"),
+            {"id": episode_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO jobs (id, episode_id, type, status, attempts, max_attempts) "
+                "VALUES (:id, :ep, 'plan_storyboard', 'queued', 0, 1)"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO artifact_metadata (id, episode_id, artifact_type, schema_version, "
+                "bucket, object_key, sha256, input_hash, version) VALUES "
+                "(:id, :ep, 'storyboard', '1.0', 'b', 'k', :sha, :sha, 1)"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id, "sha": "a" * 64},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO provider_reservations (id, episode_id, provider, idempotency_key, "
+                "input_hash, round, status) VALUES "
+                "(:id, :ep, 'codex_storyboard', :key, :key, 1, 'reserved')"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id, "key": "k" * 64},
+        )
+        conn.execute(text("DELETE FROM episodes"))
+    engine.dispose()
+
+    command.downgrade(config, "0002")
+    engine = create_engine(probe_url)
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'storyboard_ready', 't')"),
+            {"id": uuid.uuid4()},
+        )
+    engine.dispose()

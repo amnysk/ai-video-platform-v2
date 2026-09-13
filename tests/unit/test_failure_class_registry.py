@@ -89,3 +89,24 @@ def test_needs_input_subclasses_are_not_retried_by_temporal() -> None:
 def test_retryable_subclasses_are_not_marked_non_retryable() -> None:
     for name in ("ScriptOutputUnparseableError", "ProviderTimeoutError"):
         assert name not in NON_RETRYABLE_ERROR_TYPE_NAMES
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (errors.StoryboardOutputUnparseableError("x"), FailureClass.RETRYABLE),
+        (errors.StoryboardSchemaViolationError("x"), FailureClass.RETRYABLE),
+        (errors.WorkspaceUnavailableError("x"), FailureClass.RETRYABLE),
+        (errors.StoryboardInputMissingError("x"), FailureClass.NEEDS_INPUT),
+        (errors.StoryboardInputInvalidError("x"), FailureClass.NEEDS_INPUT),
+        (errors.GenerationSpecUnavailableError("x"), FailureClass.NEEDS_INPUT),
+    ],
+)
+def test_storyboard_exceptions_classify_by_their_base(
+    exc: Exception, expected: FailureClass
+) -> None:
+    """ADR-0015 の失敗クラス。型名経由（Temporal）と isinstance 分類が一致すること。"""
+    assert classify_failure(exc) is expected
+    assert failure_class_from_type_name(type(exc).__name__) is expected
+    non_retryable = expected in {FailureClass.NEEDS_INPUT, FailureClass.PERMANENT}
+    assert (type(exc).__name__ in NON_RETRYABLE_ERROR_TYPE_NAMES) is non_retryable

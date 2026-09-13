@@ -33,6 +33,21 @@
 
 **出力の修復（截断JSONの補完など）はしない。** 推測して読まない（artifact.md）。
 
+### Storyboard 工程（ADR-0015 / ADR-0016）
+
+| 例外 | クラス | 事象 |
+|---|---|---|
+| `StoryboardOutputUnparseableError` | `retryable` | 生成出力が JSON として読めない |
+| `StoryboardSchemaViolationError` | `retryable` | 固定 schema 違反 / 時間軸が正規化の許容を超える / 台本のカバレッジ不足 |
+| `StoryboardInputMissingError` | `needs_input` | 現行の台本 Artifact が無い |
+| `StoryboardInputInvalidError` | `needs_input` | 保存された台本が読めない / sha256 不一致 |
+| `GenerationSpecUnavailableError` | `needs_input` | 固定した OpenMontage commit / blob が読めない |
+| `WorkspaceUnavailableError` | `retryable` | 一時作業領域を安全に用意・削除できない |
+
+入力台本が無い・壊れている場合を上表の「入力Artifactが存在しない → `permanent`」に落とさないのは、
+台本工程を人間が再実行すれば回復する（回復経路がある）ため。検査:
+`tests/unit/test_failure_class_registry.py::test_storyboard_exceptions_classify_by_their_base`。
+
 ## 2. Episodeをterminal failedにしてよい条件
 
 次の全てを満たすときだけ `failed`：

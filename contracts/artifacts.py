@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from contracts.states import ArtifactType
 
@@ -117,12 +119,140 @@ class ScriptArtifact(BaseModel):
         return self
 
 
+STORYBOARD_ARTIFACT_SCHEMA_VERSION = "1.0"
+STORYBOARD_MIN_SCENES = 1
+STORYBOARD_MAX_SCENES = 24
+STORYBOARD_MIN_SCENE_DURATION_MS = 500
+STORYBOARD_MAX_SCENE_DURATION_MS = 20_000
+#: 総尺の範囲は台本と同じ（storyboard の総尺は台本の総尺に一致しなければならない）。
+STORYBOARD_MIN_TOTAL_DURATION_MS = SCRIPT_MIN_TOTAL_DURATION_MS
+STORYBOARD_MAX_TOTAL_DURATION_MS = SCRIPT_MAX_TOTAL_DURATION_MS
+#: storyboard シーンIDの語彙。``sb1`` .. ``sb99``。システムが order から採番する。
+STORYBOARD_SCENE_ID_PATTERN = r"^sb[0-9]{1,2}$"
+SHA256_HEX_PATTERN = r"^[0-9a-f]{64}$"
+
+
+class StoryboardVisualKind(StrEnum):
+    """シーンの映像の種類（ADR-0015）。platform 所有の語彙。
+
+    生成器側の語彙（例: 外部スキーマの scene type）からの変換はアダプタが持つ。
+    """
+
+    TALKING_HEAD = "talking_head"
+    BROLL = "broll"
+    ANIMATION = "animation"
+    CHARACTER = "character"
+    DIAGRAM = "diagram"
+    TEXT_CARD = "text_card"
+    TRANSITION = "transition"
+    GENERATED = "generated"
+    SCREEN_RECORDING = "screen_recording"
+
+
+class StoryboardSourceScript(BaseModel):
+    """storyboard の入力台本の固定（artifact_id / sha256 / schema_version）。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    artifact_id: str
+    sha256: str = Field(pattern=SHA256_HEX_PATTERN)
+    schema_version: Literal["1.0"]
+
+    @field_validator("artifact_id")
+    @classmethod
+    def _canonical_uuid(cls, value: str) -> str:
+        if str(uuid.UUID(value)) != value:
+            raise ValueError(f"artifact_id must be a canonical UUID: {value!r}")
+        return value
+
+
+class StoryboardScene(BaseModel):
+    """storyboard の1シーン。時間は int ミリ秒（ScriptScene と同じ理由）。
+
+    ``scene_id`` / ``order`` / ``start_ms`` はシステムが採番する。生成器に決めさせない。
+    ナレーションは持たない。``script_scene_id`` で台本を参照する（単一の真実）。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    scene_id: str = Field(pattern=STORYBOARD_SCENE_ID_PATTERN)
+    order: int = Field(ge=1)
+    script_scene_id: str = Field(pattern=SCRIPT_SCENE_ID_PATTERN)
+    start_ms: int = Field(ge=0)
+    duration_ms: int = Field(
+        ge=STORYBOARD_MIN_SCENE_DURATION_MS, le=STORYBOARD_MAX_SCENE_DURATION_MS
+    )
+    visual_kind: StoryboardVisualKind
+    visual_description: str = Field(min_length=1, max_length=600)
+    framing: str | None = Field(default=None, max_length=120)
+    camera_movement: str | None = Field(default=None, max_length=120)
+    transition_in: str | None = Field(default=None, max_length=60)
+
+
+class StoryboardMetadata(BaseModel):
+    """storyboard の来歴。``generation_spec_id`` は不透明な仕様の同一性（ADR-0016）。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    generator: str = Field(min_length=1, max_length=128)
+    generator_model: str = Field(min_length=1, max_length=64)
+    generation_spec_id: str = Field(min_length=1, max_length=128)
+
+
+class StoryboardArtifact(BaseModel):
+    """storyboard 成果物（ADR-0015）。外部の scene_plan スキーマとは別の platform 契約。
+
+    ``total_duration_ms`` は保存する（台本の総尺との一致をドメインで検査するため）。
+    ただしシーンの尺の合計と一致しなければならない（ここで検査する）。
+    台本シーンの順序・カバレッジは台本が要るので ``domain/storyboard/coverage.py`` が検査する。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    episode_id: str = Field(min_length=1, max_length=64)
+    type: Literal[ArtifactType.STORYBOARD]
+    schema_version: Literal["1.0"]
+    source_script: StoryboardSourceScript
+    scenes: Annotated[
+        tuple[StoryboardScene, ...],
+        Field(min_length=STORYBOARD_MIN_SCENES, max_length=STORYBOARD_MAX_SCENES),
+    ]
+    total_duration_ms: int = Field(
+        ge=STORYBOARD_MIN_TOTAL_DURATION_MS, le=STORYBOARD_MAX_TOTAL_DURATION_MS
+    )
+    metadata: StoryboardMetadata
+
+    @model_validator(mode="after")
+    def _check_timeline(self) -> StoryboardArtifact:
+        expected_start = 0
+        for index, scene in enumerate(self.scenes, start=1):
+            if scene.order != index:
+                raise ValueError(
+                    f"scene orders must be 1..N consecutive; got {scene.order} at {index}"
+                )
+            if scene.scene_id != f"sb{index}":
+                raise ValueError(f"scene_id must be sb{index}, got {scene.scene_id}")
+            if scene.start_ms != expected_start:
+                raise ValueError(
+                    f"scene {scene.scene_id} must start at {expected_start} ms, "
+                    f"got {scene.start_ms}"
+                )
+            expected_start += scene.duration_ms
+        if expected_start != self.total_duration_ms:
+            raise ValueError(
+                f"sum of scene durations {expected_start} != total_duration_ms "
+                f"{self.total_duration_ms}"
+            )
+        return self
+
+
 #: ArtifactType -> モデル。``parse_artifact`` のディスパッチ表。
 #: 新しい ArtifactType を足したらここにも登録する
 #: （``test_every_artifact_type_has_a_registered_model`` が強制する）。
 ARTIFACT_MODELS: dict[ArtifactType, type[BaseModel]] = {
     ArtifactType.DUMMY: DummyArtifact,
     ArtifactType.SCRIPT: ScriptArtifact,
+    ArtifactType.STORYBOARD: StoryboardArtifact,
 }
 
 
@@ -171,7 +301,38 @@ def parse_script_artifact(payload: dict[str, Any]) -> ScriptArtifact:
     return ScriptArtifact.model_validate(payload)
 
 
-def parse_artifact(payload: dict[str, Any]) -> DummyArtifact | ScriptArtifact:
+def build_storyboard_artifact(
+    *,
+    episode_id: str,
+    source_script: Any,
+    scenes: Any,
+    total_duration_ms: int,
+    metadata: Any,
+) -> dict[str, Any]:
+    """生成側。build の時点で検証を通してから dict を返す。
+
+    理由は ``build_script_artifact`` と同じ（中身が外部生成器由来）。
+    """
+    artifact = StoryboardArtifact.model_validate(
+        {
+            "episode_id": episode_id,
+            "type": ArtifactType.STORYBOARD.value,
+            "schema_version": STORYBOARD_ARTIFACT_SCHEMA_VERSION,
+            "source_script": source_script,
+            "scenes": scenes,
+            "total_duration_ms": total_duration_ms,
+            "metadata": metadata,
+        }
+    )
+    return artifact.model_dump(mode="json")
+
+
+def parse_storyboard_artifact(payload: dict[str, Any]) -> StoryboardArtifact:
+    """取り込み側。想定外の schema_version は推測せず ValidationError にする。"""
+    return StoryboardArtifact.model_validate(payload)
+
+
+def parse_artifact(payload: dict[str, Any]) -> DummyArtifact | ScriptArtifact | StoryboardArtifact:
     """取り込み側の唯一の入口。payload の ``type`` でディスパッチする。
 
     未知の type・type 欠落は推測せず ``ValueError``。「読めそうな型で試す」を

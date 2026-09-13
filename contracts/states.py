@@ -22,6 +22,7 @@ class EpisodeStatus(StrEnum):
     ANALYZED = "analyzed"
     COMPLETED = "completed"
     SCRIPT_READY = "script_ready"
+    STORYBOARD_READY = "storyboard_ready"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -80,6 +81,7 @@ class JobType(StrEnum):
 
     DUMMY = "dummy"
     WRITE_SCRIPT = "write_script"
+    PLAN_STORYBOARD = "plan_storyboard"  # ADR-0015
 
 
 class ArtifactType(StrEnum):
@@ -87,6 +89,7 @@ class ArtifactType(StrEnum):
 
     DUMMY = "dummy"
     SCRIPT = "script"
+    STORYBOARD = "storyboard"  # ADR-0015
 
 
 class Pipeline(StrEnum):
@@ -105,6 +108,11 @@ PIPELINE_WORKFLOWS: dict[Pipeline, tuple[str, str]] = {
     Pipeline.SCRIPT: ("ScriptWorkflow", "script"),
 }
 
+#: storyboard 工程の (workflow名, task queue)（ADR-0015）。
+#: ``Pipeline`` には載せない。Pipeline は Episode **作成時**に起動する workflow の語彙で、
+#: storyboard は既存 Episode（``script_ready``）に対して起動するため。
+STORYBOARD_WORKFLOW: tuple[str, str] = ("StoryboardWorkflow", "storyboard")
+
 
 class ProviderCall(StrEnum):
     """予約台帳が扱う外部呼び出しの種類（ADR-0013）。
@@ -113,6 +121,8 @@ class ProviderCall(StrEnum):
     """
 
     CODEX_SCRIPT = "codex_script"
+    #: 台本と値を分け、未照合予約の検査を工程ごとに独立させる（ADR-0015）。
+    CODEX_STORYBOARD = "codex_storyboard"
 
 
 class ReservationStatus(StrEnum):
