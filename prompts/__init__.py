@@ -12,6 +12,8 @@ from pathlib import Path
 
 PROMPT_TEMPLATE_ID = "script_ja"
 PROMPT_TEMPLATE_VERSION = "1"
+STORYBOARD_PROMPT_TEMPLATE_ID = "storyboard_ja"
+STORYBOARD_PROMPT_TEMPLATE_VERSION = "1"
 
 PROMPTS_DIR = Path(__file__).resolve().parent
 _NAME_RE = re.compile(r"\A[a-z0-9_]+\Z")
@@ -47,6 +49,30 @@ def render_script_prompt(
         "schema_json": schema_json,
         "duration_hint": duration_hint,
     }
+    return _render(template_name, values)
+
+
+def render_storyboard_prompt(
+    *,
+    spec_markdown: str,
+    output_schema_json: str,
+    script_json: str,
+    total_duration_seconds: str,
+    language: str = "ja",
+    template_name: str = STORYBOARD_PROMPT_TEMPLATE_ID,
+) -> str:
+    """storyboard 生成プロンプトを組み立てる。値は1回だけ置換する（値の中の ``{{}}`` は残る）。"""
+    values = {
+        "spec_markdown": spec_markdown,
+        "output_schema_json": output_schema_json,
+        "script_json": script_json,
+        "total_duration_seconds": total_duration_seconds,
+        "language": language,
+    }
+    return _render(template_name, values)
+
+
+def _render(template_name: str, values: dict[str, str]) -> str:
     template = load_prompt_template(template_name)
     missing = {m.group(1) for m in _PLACEHOLDER_RE.finditer(template)} - set(values)
     if missing:
