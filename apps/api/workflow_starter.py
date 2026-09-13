@@ -9,7 +9,7 @@ from typing import Protocol
 
 from temporalio.client import Client
 
-from contracts.states import PIPELINE_WORKFLOWS, Pipeline
+from contracts.states import PIPELINE_WORKFLOWS, STORYBOARD_WORKFLOW, Pipeline
 from infrastructure.config import Settings
 
 
@@ -17,6 +17,10 @@ class WorkflowStarter(Protocol):
     async def start_episode_workflow(
         self, *, episode_id: str, pipeline: Pipeline | str = Pipeline.SKELETON
     ) -> str: ...
+
+    async def start_storyboard_workflow(self, *, episode_id: str) -> str:
+        """既存 Episode に対して StoryboardWorkflow を起動する（ADR-0015）。"""
+        ...
 
 
 class TemporalWorkflowStarter:
@@ -49,3 +53,20 @@ class TemporalWorkflowStarter:
             task_queue=task_queue,
         )
         return workflow_id
+
+    async def start_storyboard_workflow(self, *, episode_id: str) -> str:
+        workflow_name, task_queue = STORYBOARD_WORKFLOW
+        workflow_id = storyboard_workflow_id(episode_id)
+        # 同じ id の実行が走っていれば Temporal が拒否する（二重起動しない）。
+        # 完了済みの id は再利用できる（再実行は activity 側の skip 判定で冪等 / INV-17）。
+        await self._client.start_workflow(
+            workflow_name,
+            {"episode_id": episode_id},
+            id=workflow_id,
+            task_queue=task_queue,
+        )
+        return workflow_id
+
+
+def storyboard_workflow_id(episode_id: str) -> str:
+    return f"episode-{episode_id}-storyboard"

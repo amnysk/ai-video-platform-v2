@@ -31,6 +31,7 @@
 | worker | 入力Artifact | 出力Artifact | 外部副作用 |
 |---|---|---|---|
 | `planning` | （なし / 学習ログ） | `episode_plan` | LLM |
+| `storyboard` | 現行の `script` | `storyboard`（ADR-0015） | LLM（Codex CLI + OpenMontage 仕様、**有料**・予約台帳） |
 | `generation` | `episode_plan`, `scene_plan` | `asset_manifest`, 素材本体 | **有料** provider |
 | `render` | `asset_manifest`, `edit_decisions` | `final_video` | なし（ローカル計算） |
 | `upload` | `final_video`, `video_metadata` | `upload_receipt` | **YouTube投稿** |

@@ -9,7 +9,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from contracts.artifacts import ScriptArtifact, StoryboardVisualKind, extract_json_object
+from domain.errors import StoryboardOutputUnparseableError, StoryboardSchemaViolationError
 from domain.script.ports import GenerationRequest, GenerationResult
+from domain.storyboard.ports import StoryboardRawResult, StoryboardRequest, StoryboardSceneDraft
 from infrastructure.providers.process import ProcessResult
 
 
@@ -102,3 +105,85 @@ class FakeStoryGenerator:
             model=self.model,
             raw_log="",
         )
+
+
+def interpret_fake_storyboard(
+    raw_text: str, script: ScriptArtifact
+) -> tuple[StoryboardSceneDraft, ...]:
+    """``FakeStoryboardGenerator`` の既定の解釈。決定的で、外部仕様を知らない。
+
+    期待する形: ``{"scenes": [{"script_scene_id", "start_ms", "duration_ms",
+    "visual_kind", "visual_description"}, ...]}``。読めなければ unparseable、
+    形が違えば schema violation（本物の adapter と同じ失敗クラス）。
+    """
+    del script  # カバレッジ検査は activity 側（domain）が行う
+    try:
+        parsed = extract_json_object(raw_text)
+    except ValueError as exc:
+        raise StoryboardOutputUnparseableError(str(exc)) from exc
+    try:
+        return tuple(
+            StoryboardSceneDraft(
+                script_scene_id=str(scene["script_scene_id"]),
+                start_ms=int(scene["start_ms"]),
+                duration_ms=int(scene["duration_ms"]),
+                visual_kind=StoryboardVisualKind(scene["visual_kind"]),
+                visual_description=str(scene["visual_description"]),
+            )
+            for scene in parsed["scenes"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StoryboardSchemaViolationError(f"fake storyboard shape: {exc!r}") from exc
+
+
+class FakeStoryboardGenerator:
+    """``StoryboardGenerator`` のフェイク。最初の ``fail_times`` 回だけ ``generate`` が失敗する。
+
+    ``calls`` は ``generate``（有料呼び出しに相当）の回数、``interpret_calls`` は解釈の回数。
+    """
+
+    def __init__(
+        self,
+        *,
+        output: str | Callable[[StoryboardRequest], str] = "{}",
+        fail_times: int = 0,
+        error: BaseException | None = None,
+        interpret: Callable[[str, ScriptArtifact], tuple[StoryboardSceneDraft, ...]] | None = None,
+        generator_id: str = "fake-storyboard:fake-model",
+        generation_spec_id: str = "fake-spec@1",
+        provider_id: str = "fake",
+        model: str = "fake-model",
+    ) -> None:
+        self.output = output
+        self.fail_times = fail_times
+        self.error = error
+        self._interpret = interpret or interpret_fake_storyboard
+        self._generator_id = generator_id
+        self._generation_spec_id = generation_spec_id
+        self.provider_id = provider_id
+        self.model = model
+        self.calls = 0
+        self.requests: list[StoryboardRequest] = []
+        self.interpret_calls = 0
+
+    @property
+    def generator_id(self) -> str:
+        return self._generator_id
+
+    @property
+    def generation_spec_id(self) -> str:
+        return self._generation_spec_id
+
+    async def generate(self, request: StoryboardRequest) -> StoryboardRawResult:
+        self.calls += 1
+        self.requests.append(request)
+        if self.calls <= self.fail_times:
+            raise self.error or RuntimeError("FakeStoryboardGenerator failure")
+        text = self.output(request) if callable(self.output) else self.output
+        return StoryboardRawResult(
+            text=text, provider_id=self.provider_id, model=self.model, raw_log=""
+        )
+
+    def interpret(self, raw_text: str, script: ScriptArtifact) -> tuple[StoryboardSceneDraft, ...]:
+        self.interpret_calls += 1
+        return self._interpret(raw_text, script)

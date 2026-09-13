@@ -133,7 +133,7 @@ jobs:
           docker run --rm avp2-app:ci python -c "
           import alembic, fastapi, minio, psycopg, pydantic, sqlalchemy, temporalio
           import apps.api.main, workers.dummy.workflows, infrastructure.db.models
-          import workers.planning.workflows, contracts.artifacts
+          import workers.planning.workflows, workers.storyboard.workflows, contracts.artifacts
           print('runtime imports OK')
           "
       - name: Alembic is usable inside the image
