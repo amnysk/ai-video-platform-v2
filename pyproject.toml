@@ -17,6 +17,8 @@ dependencies = [
   "temporalio>=1.7",
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
+  # storyboard 生成出力を固定 schema で検証する（ADR-0016）
+  "jsonschema>=4.23",
 ]
 
 [project.optional-dependencies]
