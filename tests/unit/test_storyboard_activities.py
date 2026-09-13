@@ -226,7 +226,7 @@ async def test_generate_stores_a_validated_storyboard_with_system_fields(
     assert artifact.total_duration_ms == 25000
     assert [s.scene_id for s in artifact.scenes] == ["sb1", "sb2", "sb3"]
     assert artifact.metadata.generator == generator.generator_id
-    assert artifact.metadata.generator_model == "gen-model"
+    assert artifact.metadata.generator_model == "label-model", "設定ラベル。生成器の報告値ではない"
     assert artifact.metadata.generation_spec_id == generator.generation_spec_id
     (row,) = await artifact_rows(session_factory, episode_id, ArtifactType.STORYBOARD)
     assert row.input_hash == await expected_input_hash(session_factory, episode_id, generator)
@@ -703,3 +703,48 @@ async def test_record_failure_from_a_stale_run_does_not_write(
     async with session_factory() as session:
         episode = await EpisodeRepository(session).get(episode_id)
     assert episode is not None and episode.status is EpisodeStatus.IN_PROGRESS
+
+
+# ------------------------------------------------------------------ 決定的なメタデータ
+
+
+async def test_fresh_and_resumed_generation_produce_identical_canonical_bytes(
+    session_factory,
+) -> None:
+    """generator_model は設定ラベル。生成器の報告値に依存すると再開で sha256 が変わる。"""
+    fresh_store = InMemoryArtifactStore()
+    fresh_episode = await create_episode_at_script_ready(session_factory, fresh_store)
+    fresh_gen = FakeStoryboardGenerator(output=good_storyboard(), model="reported-model")
+    fresh = make_activities(session_factory, fresh_store, fresh_gen)
+    fresh_job = await admitted_job(fresh, fresh_episode)
+    fresh_result = await fresh.generate_storyboard(
+        GenerateStoryboardRequest(episode_id=fresh_episode, job_id=fresh_job, round=1)
+    )
+
+    resume_store = InMemoryArtifactStore()
+    resume_episode = await create_episode_at_script_ready(session_factory, resume_store)
+    resume_gen = FakeStoryboardGenerator(output="never used", model="other-model")
+    resume = make_activities(session_factory, resume_store, resume_gen)
+    resume_job = await admitted_job(resume, resume_episode)
+    reservation = await _reserve(session_factory, resume_episode, resume_job, resume_gen)
+    raw_key = f"provider-raw/{resume_episode}/{reservation.id}.txt"
+    await resume_store.put_text(raw_key, good_storyboard())
+    async with session_factory() as session:
+        await ProviderReservationRepository(session).mark_spent(
+            reservation.id, raw_output_key=raw_key, reconciled_by="evidence"
+        )
+        await session.commit()
+    resume_result = await resume.generate_storyboard(
+        GenerateStoryboardRequest(episode_id=resume_episode, job_id=resume_job, round=1)
+    )
+    assert resume_gen.calls == 0
+
+    def _normalized(payload: dict[str, Any]) -> bytes:
+        # Episode 固有の値（episode_id / 入力台本の artifact_id と sha256）だけを揃えて比べる。
+        source = dict(payload["source_script"], artifact_id="-", sha256="-")
+        return canonical_json_bytes({**payload, "episode_id": "-", "source_script": source})
+
+    fresh_payload = await fresh_store.get_json(fresh_result.object_key)
+    resume_payload = await resume_store.get_json(resume_result.object_key)
+    assert fresh_payload["metadata"] == resume_payload["metadata"]
+    assert _normalized(fresh_payload) == _normalized(resume_payload)

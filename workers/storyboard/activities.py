@@ -445,12 +445,12 @@ class StoryboardActivities:
                 await session.commit()
 
         raw_key = f"{raw_key_prefix}/{reservation.id}.txt"
-        raw_text, model = await self._raw_output(
+        raw_text = await self._raw_output(
             request=request, call=call, paid=paid, reservation=reservation, raw_key=raw_key
         )
 
         # (6) ここで初めて解釈・検証する。失敗は retryable（ADR-0014）
-        artifact = self._build(raw_text, loaded=loaded, episode_id=request.episode_id, model=model)
+        artifact = self._build(raw_text, loaded=loaded, episode_id=request.episode_id)
 
         body = canonical_json_bytes(artifact)
         digest = sha256_hex(body)
@@ -495,11 +495,11 @@ class StoryboardActivities:
         paid: _PaidOutput,
         reservation: ProviderReservation,
         raw_key: str,
-    ) -> tuple[str, str]:
+    ) -> str:
         """生出力を得る。ADR-0013 の再開分岐表に従い、**呼ぶのは未 dispatch のときだけ**。"""
         if reservation.raw_output_key is not None:
             # spent + 生出力あり: 呼び出し後に解釈・保存の前で落ちていた。再送しない。
-            return await self._store.get_text(reservation.raw_output_key), self._model_label
+            return await self._store.get_text(reservation.raw_output_key)
 
         if reservation.status is not ReservationStatus.RESERVED:
             # spent/abandoned + 生出力なし: このラウンドは消費済み。次ラウンドは workflow が決める。
@@ -516,7 +516,7 @@ class StoryboardActivities:
                         reservation.id, raw_output_key=raw_key, reconciled_by="evidence"
                     )
                     await session.commit()
-                return await self._store.get_text(raw_key), self._model_label
+                return await self._store.get_text(raw_key)
             # 曖昧（呼んだか分からない）。呼ばない・消さない・解放しない。
             raise UnreconciledReservationError(
                 f"reservation {reservation.id} was dispatched without evidence"
@@ -551,11 +551,17 @@ class StoryboardActivities:
                 reservation.id, raw_output_key=raw_key, reconciled_by="evidence"
             )
             await session.commit()
-        return raw.text, raw.model or self._model_label
+        # 生成器が報告したモデル名はログにだけ残す。Artifact には設定値を入れる（下記 _build）。
+        logger.info(
+            "storyboard provider call returned episode=%s reservation=%s provider=%s model=%s",
+            request.episode_id,
+            reservation.id,
+            raw.provider_id,
+            raw.model,
+        )
+        return raw.text
 
-    def _build(
-        self, raw_text: str, *, loaded: _LoadedScript, episode_id: str, model: str
-    ) -> dict[str, object]:
+    def _build(self, raw_text: str, *, loaded: _LoadedScript, episode_id: str) -> dict[str, object]:
         """生出力 → 下書き → 時間軸正規化 → 採番 → 契約 → 台本カバレッジ。修復はしない。
 
         時間軸の正規化はドメイン規則なので**ここだけ**が適用する（生成器の実装に委ねない）。
@@ -579,7 +585,9 @@ class StoryboardActivities:
                 total_duration_ms=script.total_duration_ms,
                 metadata={
                     "generator": self._generator.generator_id,
-                    "generator_model": model or self._model_label,
+                    # 設定したモデルラベル。生成器の報告値は使わない: 新規生成と
+                    # 生出力からの再開で正準バイト（sha256）が変わらないようにする。
+                    "generator_model": self._model_label,
                     "generation_spec_id": self._generator.generation_spec_id,
                 },
             )
