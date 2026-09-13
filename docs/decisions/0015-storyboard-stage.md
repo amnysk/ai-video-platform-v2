@@ -60,6 +60,24 @@ downgrade 語彙だけ（0002 と同じ構造）。
      （保存台本が読めない・sha 不一致）/ `GenerationSpecUnavailableError`（固定した仕様が読めない）: `needs_input`
    - `WorkspaceUnavailableError`（一時作業領域を安全に用意できない）: `retryable`
 
+### 入場トークン
+
+storyboard の入場（admit）では `episodes.workflow_id` 列（migration なし）に **`<workflow_id>:<run_id>`** を記録する。
+workflow id（`episode-<id>-storyboard`）は完了後に再利用されるため、id だけでは「どの実行が入場したか」を区別できない。
+
+- `in_progress` への再入場（Activity の再実行）は、記録されたトークンと**完全一致**する場合だけ許す。
+  同じ workflow id で run id が違う実行は入れない
+- `mark_ready` / `record_failure` も同じ照合をする。一致しなければ Episode も job も書かず、
+  警告ログを出して `owned=False` を返す。workflow はその時点の状態で終わる
+- **INV-8 との関係**: この値は PostgreSQL 上の入場記録であり、判定に Temporal の実行状態（実行中か・完了したか）は
+  一切読まない。状態の権威は PostgreSQL のまま
+- 台本工程は `episode-<id>`（run id なし）を書くので、台本工程が `in_progress` にした Episode とは一致しない
+
+**残るリスク**: トークンが別の実行へ移った後も、古い実行の generate Activity（ゾンビ）は走り続けうる。
+内容アドレスなので書く Artifact 自体は正しいが、`artifact_metadata` の現行行は置き換わりうる。
+その job が既に終端なら `jobs.succeed` が遷移違反で例外を投げ、Activity の失敗として記録される。
+根本対策（generate Activity の heartbeat と、トークン移動時の cancel）は今後の作業。
+
 入力台本が無いことを `permanent` にしないのは、Phase 2 の台本 workflow を人間が再実行すれば
 回復するから（failure-policy §1 の `permanent` は「同じ入力で必ず同じ失敗」かつ回復経路が無い場合）。
 

@@ -73,16 +73,43 @@ ADMISSIBLE_STATUSES = frozenset({EpisodeStatus.SCRIPT_READY, EpisodeStatus.STORY
 _JOB_DONE = frozenset({JobStatus.SUCCEEDED, JobStatus.SKIPPED, JobStatus.TERMINAL_FAILED})
 
 
-@dataclass
-class EpisodeRef:
-    episode_id: str
+def admission_token(workflow_id: str, run_id: str) -> str:
+    """入場トークン（ADR-0015「入場トークン」）。
+
+    workflow id は完了後に再利用されるので run id まで含める。
+    """
+    return f"{workflow_id}:{run_id}"
 
 
 @dataclass
 class AdmitRequest:
     episode_id: str
-    #: 入場を主張する workflow。``in_progress`` の再入場は同じ workflow にだけ許す。
+    #: 入場を主張する workflow 実行。``in_progress`` の再入場は同じ実行（トークン一致）にだけ許す。
     workflow_id: str
+    run_id: str
+
+    @property
+    def token(self) -> str:
+        return admission_token(self.workflow_id, self.run_id)
+
+
+@dataclass
+class MarkReadyRequest:
+    episode_id: str
+    workflow_id: str
+    run_id: str
+
+    @property
+    def token(self) -> str:
+        return admission_token(self.workflow_id, self.run_id)
+
+
+@dataclass
+class MarkReadyResult:
+    #: 判定時点（または書いた後）の Episode 状態
+    status: str
+    #: False: 入場トークンが一致せず何も書かなかった（古い実行からの呼び出し）
+    owned: bool = True
 
 
 @dataclass
@@ -124,11 +151,19 @@ class RecordFailureRequest:
     failure_class: str
     error_summary: str
     retry_exhausted: bool
+    workflow_id: str
+    run_id: str
+
+    @property
+    def token(self) -> str:
+        return admission_token(self.workflow_id, self.run_id)
 
 
 @dataclass
 class FailureOutcome:
     episode_status: str
+    #: False: 入場トークンが一致せず job も Episode も書かなかった
+    owned: bool = True
 
 
 @dataclass
@@ -196,8 +231,9 @@ class StoryboardActivities:
         """駐機点から工程へ入れる。
 
         - ``script_ready`` / ``storyboard_ready`` → ``stage_admitted`` で ``in_progress``。
-          同じトランザクションで ``episodes.workflow_id`` に入場した workflow を記録する
-        - ``in_progress`` → **記録された workflow_id が自分と一致する場合だけ**何もせず通す
+          同じトランザクションで ``episodes.workflow_id`` に入場トークン
+          （``<workflow_id>:<run_id>``）を記録する
+        - ``in_progress`` → **記録されたトークンが自分と完全一致する場合だけ**何もせず通す
           （Activity 再実行で二重遷移しない / INV-17）。他の workflow（例: 実行中の台本工程）
           が ``in_progress`` にしている Episode へは入らない。入ると台本未完成のまま
           needs_input で失敗し、他工程の Episode を ``blocked`` へ落としてしまう
@@ -205,8 +241,9 @@ class StoryboardActivities:
           失敗として記録もしない: 工程に入っていないので job も Episode 事象も無い。
           ``blocked`` からの再開は ``resumed``（人間の判断）であり、この API の責務ではない。
 
-        workflow_id は相関用の列（INV-8）だが、ここでは PostgreSQL 上の入場記録として読む。
-        権威は依然 PostgreSQL であり Temporal の実行状態ではない。
+        workflow_id 列は相関用（INV-8）だが、ここでは PostgreSQL 上の入場記録として読む。
+        workflow id は完了後に再利用されるので run id まで含めて照合する。
+        権威は依然 PostgreSQL であり Temporal の実行状態は参照しない。
         """
         async with self._session_factory() as session:
             episodes = EpisodeRepository(session)
@@ -215,13 +252,11 @@ class StoryboardActivities:
                 return AdmitResult(admitted=False, status="")
             if episode.status is EpisodeStatus.IN_PROGRESS:
                 owner = await episodes.get_workflow_id(request.episode_id)
-                return AdmitResult(
-                    admitted=owner == request.workflow_id, status=episode.status.value
-                )
+                return AdmitResult(admitted=owner == request.token, status=episode.status.value)
             if episode.status not in ADMISSIBLE_STATUSES:
                 return AdmitResult(admitted=False, status=episode.status.value)
             updated = await episodes.apply_event(request.episode_id, EpisodeEvent.STAGE_ADMITTED)
-            await episodes.set_workflow_id(request.episode_id, request.workflow_id)
+            await episodes.set_workflow_id(request.episode_id, request.token)
             await session.commit()
             return AdmitResult(admitted=True, status=updated.status.value)
 
@@ -246,15 +281,34 @@ class StoryboardActivities:
             return job.id
 
     @activity.defn(name="storyboard_mark_ready")
-    async def mark_ready(self, request: EpisodeRef) -> str:
+    async def mark_ready(self, request: MarkReadyRequest) -> MarkReadyResult:
+        """入場トークンが一致する実行だけが ``storyboard_ready`` へ進める。"""
         async with self._session_factory() as session:
             episodes = EpisodeRepository(session)
             current = await episodes.get(request.episode_id)
-            if current is not None and current.status is EpisodeStatus.STORYBOARD_READY:
-                return current.status.value  # 再実行で二重遷移しない（INV-17）
+            if current is None:
+                return MarkReadyResult(status="", owned=False)
+            if not await self._owns(episodes, request.episode_id, request.token, "mark_ready"):
+                return MarkReadyResult(status=current.status.value, owned=False)
+            if current.status is EpisodeStatus.STORYBOARD_READY:
+                return MarkReadyResult(status=current.status.value)  # 再実行（INV-17）
             episode = await episodes.apply_event(request.episode_id, EpisodeEvent.STORYBOARD_READY)
             await session.commit()
-            return episode.status.value
+            return MarkReadyResult(status=episode.status.value)
+
+    @staticmethod
+    async def _owns(episodes: EpisodeRepository, episode_id: str, token: str, action: str) -> bool:
+        owner = await episodes.get_workflow_id(episode_id)
+        if owner == token:
+            return True
+        logger.warning(
+            "storyboard %s refused: admission token mismatch episode=%s recorded=%s caller=%s",
+            action,
+            episode_id,
+            owner,
+            token,
+        )
+        return False
 
     # ------------------------------------------------------------------ 生成
 
@@ -540,6 +594,12 @@ class StoryboardActivities:
     async def record_failure(self, request: RecordFailureRequest) -> FailureOutcome:
         failure_class = FailureClass(request.failure_class)
         async with self._session_factory() as session:
+            episodes = EpisodeRepository(session)
+            if not await self._owns(episodes, request.episode_id, request.token, "record_failure"):
+                current = await episodes.get(request.episode_id)
+                return FailureOutcome(
+                    episode_status=current.status.value if current else "", owned=False
+                )
             jobs = JobRepository(session)
             job = await jobs.get(request.job_id)
             if job is not None and job.status not in _JOB_DONE:
@@ -552,7 +612,6 @@ class StoryboardActivities:
                     error_summary=request.error_summary,
                 )
 
-            episodes = EpisodeRepository(session)
             current = await episodes.get(request.episode_id)
             if current is not None and current.status is not EpisodeStatus.IN_PROGRESS:
                 # 再実行で二重遷移しない（INV-17）。既に blocked 等へ落ちている。
@@ -607,7 +666,9 @@ __all__ = [
     "PROVIDER_RAW_PREFIX",
     "AdmitResult",
     "CreateJobRequest",
-    "EpisodeRef",
+    "MarkReadyRequest",
+    "MarkReadyResult",
+    "admission_token",
     "FailureOutcome",
     "GenerateStoryboardRequest",
     "RecordFailureRequest",

@@ -32,8 +32,8 @@ from tests.support.storyboard import (
 from workers.storyboard.activities import (
     AdmitRequest,
     CreateJobRequest,
-    EpisodeRef,
     GenerateStoryboardRequest,
+    MarkReadyRequest,
     StoryboardActivities,
 )
 
@@ -44,6 +44,7 @@ pytestmark = pytest.mark.skipif(
     reason="DATABASE_URL (PostgreSQL) and MINIO_ENDPOINT must be set (docker compose core)",
 )
 
+RUN_ID = "run-1"
 WORKFLOW_ID = "episode-test-storyboard"
 
 
@@ -88,14 +89,16 @@ async def _run(session_factory, store, episode_id: str, generator) -> None:
         prompt_template_version=PROMPT_VERSION,
     )
     admit = await activities.admit_episode(
-        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID)
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID, run_id=RUN_ID)
     )
     assert admit.admitted
     job_id = await activities.create_job(CreateJobRequest(episode_id=episode_id, max_attempts=3))
     await activities.generate_storyboard(
         GenerateStoryboardRequest(episode_id=episode_id, job_id=job_id, round=1)
     )
-    await activities.mark_ready(EpisodeRef(episode_id=episode_id))
+    await activities.mark_ready(
+        MarkReadyRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID, run_id=RUN_ID)
+    )
 
 
 async def test_storyboard_roundtrip_and_versioning_against_real_services(

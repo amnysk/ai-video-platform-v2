@@ -42,6 +42,7 @@ from infrastructure.db.repositories import (
     JobRepository,
     ProviderReservationRepository,
 )
+from infrastructure.storage.artifact_store import PutResult
 from infrastructure.storage.memory_store import InMemoryArtifactStore
 from tests.support.fakes import FakeStoryboardGenerator
 from tests.support.storyboard import (
@@ -57,9 +58,13 @@ from workers.storyboard.activities import (
     AdmitRequest,
     CreateJobRequest,
     GenerateStoryboardRequest,
+    MarkReadyRequest,
+    RecordFailureRequest,
     StoryboardActivities,
+    admission_token,
 )
 
+RUN_ID = "run-1"
 WORKFLOW_ID = "episode-test-storyboard"
 
 
@@ -78,7 +83,7 @@ def make_activities(session_factory, store, generator) -> StoryboardActivities:
 
 async def admitted_job(activities: StoryboardActivities, episode_id: str) -> str:
     admit = await activities.admit_episode(
-        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID)
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID, run_id=RUN_ID)
     )
     assert admit.admitted
     return await activities.create_job(CreateJobRequest(episode_id=episode_id, max_attempts=3))
@@ -119,10 +124,10 @@ async def test_admit_moves_script_ready_to_in_progress_and_is_idempotent(
     activities = make_activities(session_factory, artifact_store, FakeStoryboardGenerator())
 
     first = await activities.admit_episode(
-        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID)
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID, run_id=RUN_ID)
     )
     again = await activities.admit_episode(
-        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID)
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID, run_id=RUN_ID)
     )
 
     assert first.admitted and first.status == EpisodeStatus.IN_PROGRESS.value
@@ -146,7 +151,9 @@ async def test_admit_refuses_an_episode_in_progress_under_another_workflow(
     activities = make_activities(session_factory, artifact_store, generator)
 
     result = await activities.admit_episode(
-        AdmitRequest(episode_id=episode.id, workflow_id=f"episode-{episode.id}-storyboard")
+        AdmitRequest(
+            episode_id=episode.id, workflow_id=f"episode-{episode.id}-storyboard", run_id=RUN_ID
+        )
     )
 
     assert result.admitted is False
@@ -172,7 +179,7 @@ async def test_admit_refuses_episodes_outside_the_parking_points(
     activities = make_activities(session_factory, artifact_store, FakeStoryboardGenerator())
 
     result = await activities.admit_episode(
-        AdmitRequest(episode_id=episode.id, workflow_id=WORKFLOW_ID)
+        AdmitRequest(episode_id=episode.id, workflow_id=WORKFLOW_ID, run_id=RUN_ID)
     )
 
     assert result.admitted is False
@@ -559,7 +566,7 @@ async def test_invalid_input_in_prepare_is_needs_input_without_reservation(
 
 
 class _FailingRawStore(InMemoryArtifactStore):
-    async def put_text(self, key: str, text: str) -> Any:
+    async def put_text(self, key: str, body: str) -> PutResult:
         raise OSError("minio down")
 
 
@@ -631,3 +638,68 @@ async def test_skip_path_neither_prepares_nor_generates(session_factory, artifac
 
     assert result.reused is True
     assert (second.prepare_calls, second.calls, second.release_calls) == (0, 0, 0)
+
+
+# ------------------------------------------------------------------ 入場トークン
+
+
+async def test_same_workflow_id_with_another_run_id_is_refused(
+    session_factory, artifact_store
+) -> None:
+    episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
+    activities = make_activities(session_factory, artifact_store, FakeStoryboardGenerator())
+    first = await activities.admit_episode(
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID, run_id=RUN_ID)
+    )
+    stale = await activities.admit_episode(
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID, run_id="run-2")
+    )
+
+    assert first.admitted is True
+    assert stale.admitted is False and stale.status == EpisodeStatus.IN_PROGRESS.value
+    async with session_factory() as session:
+        recorded = await EpisodeRepository(session).get_workflow_id(episode_id)
+    assert recorded == admission_token(WORKFLOW_ID, RUN_ID)
+
+
+async def test_mark_ready_from_a_stale_run_does_not_write(session_factory, artifact_store) -> None:
+    episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
+    activities = make_activities(session_factory, artifact_store, FakeStoryboardGenerator())
+    await admitted_job(activities, episode_id)
+
+    stale = await activities.mark_ready(
+        MarkReadyRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID, run_id="old-run")
+    )
+    assert stale.owned is False and stale.status == EpisodeStatus.IN_PROGRESS.value
+
+    owned = await activities.mark_ready(
+        MarkReadyRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID, run_id=RUN_ID)
+    )
+    assert owned.owned is True and owned.status == EpisodeStatus.STORYBOARD_READY.value
+
+
+async def test_record_failure_from_a_stale_run_does_not_write(
+    session_factory, artifact_store
+) -> None:
+    episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
+    activities = make_activities(session_factory, artifact_store, FakeStoryboardGenerator())
+    job_id = await admitted_job(activities, episode_id)
+
+    outcome = await activities.record_failure(
+        RecordFailureRequest(
+            episode_id=episode_id,
+            job_id=job_id,
+            failure_class=FailureClass.NEEDS_INPUT.value,
+            error_summary="stale",
+            retry_exhausted=False,
+            workflow_id=WORKFLOW_ID,
+            run_id="old-run",
+        )
+    )
+
+    assert outcome.owned is False
+    assert outcome.episode_status == EpisodeStatus.IN_PROGRESS.value
+    assert await job_status(session_factory, job_id) is JobStatus.QUEUED
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+    assert episode is not None and episode.status is EpisodeStatus.IN_PROGRESS

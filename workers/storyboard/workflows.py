@@ -25,8 +25,8 @@ with workflow.unsafe.imports_passed_through():
     from workers.storyboard.activities import (
         AdmitRequest,
         CreateJobRequest,
-        EpisodeRef,
         GenerateStoryboardRequest,
+        MarkReadyRequest,
         RecordFailureRequest,
         StoryboardActivities,
     )
@@ -67,17 +67,20 @@ class StoryboardWorkflowResult:
     reused_existing_artifact: bool = False
     #: 駐機点に居なかったため工程に入らなかった（何も書いていない）。
     admitted: bool = True
+    #: False: 途中で入場トークンが他の実行に置き換わっていた。最後の状態書き込みをしていない。
+    owned: bool = True
 
 
 @workflow.defn(name=WORKFLOW_NAME)
 class StoryboardWorkflow:
     @workflow.run
     async def run(self, request: StoryboardWorkflowInput) -> StoryboardWorkflowResult:
-        episode_ref = EpisodeRef(episode_id=request.episode_id)
-
+        info = workflow.info()
         admit = await workflow.execute_activity_method(
             StoryboardActivities.admit_episode,
-            AdmitRequest(episode_id=request.episode_id, workflow_id=workflow.info().workflow_id),
+            AdmitRequest(
+                episode_id=request.episode_id, workflow_id=info.workflow_id, run_id=info.run_id
+            ),
             start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
             retry_policy=STATE_RETRY_POLICY,
         )
@@ -110,15 +113,18 @@ class StoryboardWorkflow:
                     break  # needs_input / permanent は課金を増やさず打ち切る
                 continue
 
-            status: str = await workflow.execute_activity_method(
+            ready = await workflow.execute_activity_method(
                 StoryboardActivities.mark_ready,
-                episode_ref,
+                MarkReadyRequest(
+                    episode_id=request.episode_id, workflow_id=info.workflow_id, run_id=info.run_id
+                ),
                 start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
                 retry_policy=STATE_RETRY_POLICY,
             )
             return StoryboardWorkflowResult(
                 episode_id=request.episode_id,
-                status=status,
+                status=ready.status,
+                owned=ready.owned,
                 artifact_object_key=result.object_key,
                 sha256=result.sha256,
                 rounds_used=round_number,
@@ -150,10 +156,12 @@ class StoryboardWorkflow:
                 failure_class=failure_class.value,
                 error_summary=summary,
                 retry_exhausted=failure_class in {FailureClass.TRANSIENT, FailureClass.RETRYABLE},
+                workflow_id=workflow.info().workflow_id,
+                run_id=workflow.info().run_id,
             ),
             start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
             retry_policy=STATE_RETRY_POLICY,
         )
         return StoryboardWorkflowResult(
-            episode_id=request.episode_id, status=outcome.episode_status
+            episode_id=request.episode_id, status=outcome.episode_status, owned=outcome.owned
         )
