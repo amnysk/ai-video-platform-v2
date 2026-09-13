@@ -29,5 +29,14 @@ class Settings(BaseSettings):
     #: codex を ``-C`` で走らせる作業ディレクトリ（sandbox は read-only）。
     codex_workspace: str = "."
 
+    # --- storyboard（ADR-0015 / ADR-0016） ---
+    #: 一時作業領域の root。正式Artifactの保存先ではない（docs/operations/work-directories.md）。
+    ai_video_work_root: str = "/mnt/minio-hdd/ai-video-work"
+    #: OpenMontage の共有 checkout。**読み取り専用**。未設定なら storyboard 生成器を組めない。
+    openmontage_repo_path: str | None = None
+    #: 仕様 blob を読む固定 commit。作業ツリーの未コミット変更は読まない。
+    openmontage_commit: str = "2fa571e39ad0632148dad77c7a2134f7e6fe0797"
+    storyboard_timeout_seconds: int = 900
+
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"
