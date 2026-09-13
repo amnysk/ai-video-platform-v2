@@ -110,3 +110,25 @@ def test_storyboard_exceptions_classify_by_their_base(
     assert failure_class_from_type_name(type(exc).__name__) is expected
     non_retryable = expected in {FailureClass.NEEDS_INPUT, FailureClass.PERMANENT}
     assert (type(exc).__name__ in NON_RETRYABLE_ERROR_TYPE_NAMES) is non_retryable
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (errors.ProviderSubmitAmbiguousError("x"), FailureClass.NEEDS_INPUT),
+        (errors.ProviderRejectedError("x"), FailureClass.NEEDS_INPUT),
+        (errors.ProviderJobFailedError("x"), FailureClass.RETRYABLE),
+        (errors.ProviderPollDeadlineError("x"), FailureClass.RETRYABLE),
+        (errors.MediaValidationError("x"), FailureClass.RETRYABLE),
+        (errors.ProductionInputMissingError("x"), FailureClass.NEEDS_INPUT),
+        (errors.ProductionInputInvalidError("x"), FailureClass.NEEDS_INPUT),
+    ],
+)
+def test_production_exceptions_classify_by_their_base(
+    exc: Exception, expected: FailureClass
+) -> None:
+    """ADR-0017 の失敗クラス。型名経由（Temporal）と isinstance 分類が一致すること。"""
+    assert classify_failure(exc) is expected
+    assert failure_class_from_type_name(type(exc).__name__) is expected
+    non_retryable = expected in {FailureClass.NEEDS_INPUT, FailureClass.PERMANENT}
+    assert (type(exc).__name__ in NON_RETRYABLE_ERROR_TYPE_NAMES) is non_retryable

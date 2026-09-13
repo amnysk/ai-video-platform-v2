@@ -20,6 +20,15 @@ FORBIDDEN_TOKENS = {
 SEARCHED_DIRS = ["apps", "workers", "domain", "infrastructure", "contracts", "tests"]
 SELF = pathlib.Path(__file__).resolve()
 
+#: fal の endpoint を書いてよいのは provider adapter だけ（ADR-0017）。
+FAL_TOKENS = frozenset({"fal.run", "fal.ai", "queue.fal"})
+
+
+def _sanctioned_for(token: str, rel: pathlib.PurePosixPath) -> bool:
+    if token in FAL_TOKENS:
+        return rel.match("infrastructure/providers/fal_*.py")
+    return False
+
 
 def test_no_live_provider_endpoints_in_the_codebase() -> None:
     violations: list[str] = []
@@ -28,10 +37,27 @@ def test_no_live_provider_endpoints_in_the_codebase() -> None:
             if path.resolve() == SELF:
                 continue
             source = path.read_text(encoding="utf-8")
+            rel = pathlib.PurePosixPath(path.relative_to(REPO).as_posix())
             for token, label in FORBIDDEN_TOKENS.items():
-                if token in source:
+                if token in source and not _sanctioned_for(token, rel):
                     violations.append(f"{path.relative_to(REPO)}: mentions {label} (INV-18)")
     assert not violations, "\n".join(violations)
+
+
+def test_fal_tokens_are_sanctioned_only_in_fal_adapters() -> None:
+    assert _sanctioned_for(
+        "queue.fal", pathlib.PurePosixPath("infrastructure/providers/fal_image.py")
+    )
+    for rel in (
+        "infrastructure/providers/codex_cli.py",
+        "workers/production_image/activities.py",
+        "tests/unit/test_fal_image.py",
+        "domain/production/ports.py",
+    ):
+        assert not _sanctioned_for("fal.ai", pathlib.PurePosixPath(rel)), rel
+    assert not _sanctioned_for(
+        "api.openai.com", pathlib.PurePosixPath("infrastructure/providers/fal_image.py")
+    )
 
 
 # --- live テストの隔離（AGENTS.md §9） ------------------------------------

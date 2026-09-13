@@ -5,12 +5,14 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from contracts.states import (
     DEFAULT_MAX_ATTEMPTS,
+    JOB_TERMINAL_STATUSES,
     ArtifactType,
     EpisodeStatus,
     FailureClass,
@@ -63,6 +65,7 @@ def _to_job(row: JobRow) -> Job:
         failure_class=FailureClass(row.failure_class) if row.failure_class else None,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        scene_id=row.scene_id,
     )
 
 
@@ -76,7 +79,15 @@ def _to_artifact(row: ArtifactMetadataRow) -> ArtifactMetadata:
         object_key=row.object_key,
         sha256=row.sha256,
         created_at=row.created_at,
+        scene_id=row.scene_id,
     )
+
+
+def _artifact_scene_filter(scene_id: str | None):
+    """scene キーの一致条件（ADR-0018）。None は「Episode 単位の行」だけを指す。"""
+    if scene_id is None:
+        return ArtifactMetadataRow.scene_id.is_(None)
+    return ArtifactMetadataRow.scene_id == scene_id
 
 
 class EpisodeRepository:
@@ -150,8 +161,10 @@ class JobRepository:
         episode_id: uuid.UUID | str,
         type: JobType,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        scene_id: str | None = None,
     ) -> Job:
         row = JobRow(
+            scene_id=scene_id,
             id=uuid.uuid4(),
             episode_id=_as_uuid(episode_id),
             type=type.value,
@@ -179,6 +192,26 @@ class JobRepository:
             .order_by(JobRow.created_at, JobRow.id)
         )
         return [_to_job(row) for row in (await self._session.scalars(stmt)).all()]
+
+    async def find_open(
+        self, episode_id: uuid.UUID | str, type: JobType, scene_id: str | None = None
+    ) -> Job | None:
+        """非終端の job を ``(type, scene_id)`` で引く（再実行で重複生成しない / ADR-0018）。"""
+        scene_filter = (
+            JobRow.scene_id.is_(None) if scene_id is None else JobRow.scene_id == scene_id
+        )
+        stmt = (
+            select(JobRow)
+            .where(
+                JobRow.episode_id == _as_uuid(episode_id),
+                JobRow.type == type.value,
+                scene_filter,
+                JobRow.status.not_in([s.value for s in JOB_TERMINAL_STATUSES]),
+            )
+            .order_by(JobRow.created_at, JobRow.id)
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_job(row) if row else None
 
     async def _apply(self, job_id: uuid.UUID | str, event: JobEvent) -> JobRow:
         row = await self._row(job_id)
@@ -259,8 +292,13 @@ class ArtifactMetadataRepository:
         input_hash: str | None = None,
         size_bytes: int | None = None,
         produced_by_job_id: uuid.UUID | str | None = None,
+        scene_id: str | None = None,
     ) -> ArtifactMetadata:
         """同じ内容の再記録は既存行を返す（INV-17）。UNIQUE制約と同じ鍵で引く。
+
+        ``scene_id``（ADR-0018）を渡すと、同一性・世代・現行の判定はすべて
+        ``(episode_id, artifact_type, scene_id)`` の中で閉じる。省略時は Episode 単位の行
+        （``scene_id IS NULL``）だけを対象にし、Phase 3 までと同じ挙動になる。
 
         新しい内容は**新しい世代**として記録する（ADR-0012）:
         ``version`` を同 ``(episode_id, artifact_type)`` の最大+1で採番し、
@@ -279,6 +317,7 @@ class ArtifactMetadataRepository:
             ArtifactMetadataRow.episode_id == episode_uuid,
             ArtifactMetadataRow.artifact_type == artifact_type.value,
             ArtifactMetadataRow.sha256 == sha256,
+            _artifact_scene_filter(scene_id),
         )
         existing = (await self._session.scalars(stmt)).first()
         now = _now()
@@ -292,7 +331,7 @@ class ArtifactMetadataRepository:
                 return _to_artifact(existing)
             # A→B→A: 同じ内容が過去世代に居る。降ろされた行を「現行」として返すと
             # find_current_by_type と食い違うので、現行を降ろして過去行を復帰させる。
-            await self._supersede_current(episode_uuid, artifact_type, now)
+            await self._supersede_current(episode_uuid, artifact_type, now, scene_id)
             existing.superseded_at = None
             if input_hash is not None:
                 existing.input_hash = input_hash
@@ -303,9 +342,10 @@ class ArtifactMetadataRepository:
             select(func.max(ArtifactMetadataRow.version)).where(
                 ArtifactMetadataRow.episode_id == episode_uuid,
                 ArtifactMetadataRow.artifact_type == artifact_type.value,
+                _artifact_scene_filter(scene_id),
             )
         )
-        await self._supersede_current(episode_uuid, artifact_type, now)
+        await self._supersede_current(episode_uuid, artifact_type, now, scene_id)
 
         row = ArtifactMetadataRow(
             id=uuid.uuid4(),
@@ -319,6 +359,7 @@ class ArtifactMetadataRepository:
             version=(max_version or 0) + 1,
             superseded_at=None,
             size_bytes=size_bytes,
+            scene_id=scene_id,
             produced_by_job_id=_as_uuid(produced_by_job_id) if produced_by_job_id else None,
             created_at=now,
         )
@@ -327,12 +368,20 @@ class ArtifactMetadataRepository:
         return _to_artifact(row)
 
     async def _supersede_current(
-        self, episode_uuid: uuid.UUID, artifact_type: ArtifactType, now: datetime
+        self,
+        episode_uuid: uuid.UUID,
+        artifact_type: ArtifactType,
+        now: datetime,
+        scene_id: str | None = None,
     ) -> None:
-        """現行世代を降ろす唯一の場所。partial unique index より先に flush する。"""
+        """現行世代を降ろす唯一の場所。partial unique index より先に flush する。
+
+        同じ scene キーの行だけを降ろす（別シーンの現行を巻き込まない / ADR-0018）。
+        """
         current_stmt = select(ArtifactMetadataRow).where(
             ArtifactMetadataRow.episode_id == episode_uuid,
             ArtifactMetadataRow.artifact_type == artifact_type.value,
+            _artifact_scene_filter(scene_id),
             ArtifactMetadataRow.superseded_at.is_(None),
         )
         for current in (await self._session.scalars(current_stmt)).all():
@@ -340,12 +389,16 @@ class ArtifactMetadataRepository:
         await self._session.flush()
 
     async def find_current_by_type(
-        self, episode_id: uuid.UUID | str, artifact_type: ArtifactType
+        self,
+        episode_id: uuid.UUID | str,
+        artifact_type: ArtifactType,
+        scene_id: str | None = None,
     ) -> ArtifactMetadata | None:
-        """``(episode_id, artifact_type)`` の現行世代を引く（入力の特定に使う。ADR-0015）。"""
+        """``(episode_id, artifact_type, scene_id)`` の現行世代を引く（ADR-0015 / ADR-0018）。"""
         stmt = select(ArtifactMetadataRow).where(
             ArtifactMetadataRow.episode_id == _as_uuid(episode_id),
             ArtifactMetadataRow.artifact_type == artifact_type.value,
+            _artifact_scene_filter(scene_id),
             ArtifactMetadataRow.superseded_at.is_(None),
         )
         row = (await self._session.scalars(stmt)).first()
@@ -356,6 +409,7 @@ class ArtifactMetadataRepository:
         episode_id: uuid.UUID | str,
         artifact_type: ArtifactType,
         input_hash: str,
+        scene_id: str | None = None,
     ) -> ArtifactMetadata | None:
         """現行世代かつ同じ入力から作られた成果物を引く（ADR-0012 の skip 判定）。
 
@@ -364,10 +418,30 @@ class ArtifactMetadataRepository:
         stmt = select(ArtifactMetadataRow).where(
             ArtifactMetadataRow.episode_id == _as_uuid(episode_id),
             ArtifactMetadataRow.artifact_type == artifact_type.value,
+            _artifact_scene_filter(scene_id),
             ArtifactMetadataRow.input_hash == input_hash,
             ArtifactMetadataRow.superseded_at.is_(None),
         )
         row = (await self._session.scalars(stmt)).first()
+        return _to_artifact(row) if row else None
+
+    async def list_current_by_type(
+        self, episode_id: uuid.UUID | str, artifact_type: ArtifactType
+    ) -> list[ArtifactMetadata]:
+        """全 scene キーの現行世代（マニフェストの組み立てに使う / ADR-0018）。scene_id 順。"""
+        stmt = (
+            select(ArtifactMetadataRow)
+            .where(
+                ArtifactMetadataRow.episode_id == _as_uuid(episode_id),
+                ArtifactMetadataRow.artifact_type == artifact_type.value,
+                ArtifactMetadataRow.superseded_at.is_(None),
+            )
+            .order_by(ArtifactMetadataRow.scene_id, ArtifactMetadataRow.id)
+        )
+        return [_to_artifact(row) for row in (await self._session.scalars(stmt)).all()]
+
+    async def get(self, artifact_id: uuid.UUID | str) -> ArtifactMetadata | None:
+        row = await self._session.get(ArtifactMetadataRow, _as_uuid(artifact_id))
         return _to_artifact(row) if row else None
 
     async def list_for_episode(self, episode_id: uuid.UUID | str) -> list[ArtifactMetadata]:
@@ -399,6 +473,9 @@ class ProviderReservation:
     dispatched_at: datetime | None
     reconciled_at: datetime | None
     reconciled_by: str | None
+    scene_id: str | None = None
+    provider_job_ref: str | None = None
+    estimated_cost_usd: Decimal | None = None
 
 
 def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
@@ -419,6 +496,9 @@ def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
         dispatched_at=row.dispatched_at,
         reconciled_at=row.reconciled_at,
         reconciled_by=row.reconciled_by,
+        scene_id=row.scene_id,
+        provider_job_ref=row.provider_job_ref,
+        estimated_cost_usd=row.estimated_cost_usd,
     )
 
 
@@ -428,6 +508,9 @@ class ProviderReservationRepository:
     書き込み順序（この順序が INV-15 の実体）:
     ``reserve`` → commit → ``mark_dispatched`` → commit → 外部呼び出し →
     ``mark_spent`` → commit → パース/検証 → ``attach_artifact``。
+
+    非同期ジョブ型（ADR-0017）は submit と結果取得の間に
+    ``record_provider_job_ref`` → commit が入る。
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -448,19 +531,32 @@ class ProviderReservationRepository:
         return _to_reservation(row) if row else None
 
     async def find_unreconciled(
-        self, episode_id: uuid.UUID | str, provider: ProviderCall
+        self,
+        episode_id: uuid.UUID | str,
+        provider: ProviderCall,
+        scene_id: str | None = None,
     ) -> list[ProviderReservation]:
         """evidence（生出力）の無い ``reserved`` を探す。
 
         新しいラウンドを開始する前に必ず呼ぶ。1件でも残っていれば
         ``UnreconciledReservationError`` を投げて Episode を blocked にする。
         これがラウンドを跨いだ二重呼び出しの最後の砦である。
+
+        ``scene_id``（ADR-0018）で範囲を閉じる。並行するシーンが互いを止めない。
+        省略時は Episode 単位の予約（``scene_id IS NULL``）だけを見る。
+        provider job 参照を持つ ``reserved`` も含む（進行中の課金ジョブなので新ラウンドを止める）。
         """
+        scene_filter = (
+            ProviderReservationRow.scene_id.is_(None)
+            if scene_id is None
+            else ProviderReservationRow.scene_id == scene_id
+        )
         stmt = (
             select(ProviderReservationRow)
             .where(
                 ProviderReservationRow.episode_id == _as_uuid(episode_id),
                 ProviderReservationRow.provider == provider.value,
+                scene_filter,
                 ProviderReservationRow.status == ReservationStatus.RESERVED.value,
                 ProviderReservationRow.raw_output_key.is_(None),
             )
@@ -477,9 +573,13 @@ class ProviderReservationRepository:
         input_hash: str,
         round: int,
         job_id: uuid.UUID | str | None = None,
+        scene_id: str | None = None,
+        estimated_cost_usd: Decimal | None = None,
     ) -> ProviderReservation:
         """予約を INSERT する。呼び出し側がこの直後に commit すること。"""
         row = ProviderReservationRow(
+            scene_id=scene_id,
+            estimated_cost_usd=estimated_cost_usd,
             id=uuid.uuid4(),
             episode_id=_as_uuid(episode_id),
             job_id=_as_uuid(job_id) if job_id else None,
@@ -504,6 +604,40 @@ class ProviderReservationRepository:
         row.dispatched_at = _now()
         await self._session.flush()
         return _to_reservation(row)
+
+    async def record_provider_job_ref(
+        self, reservation_id: uuid.UUID | str, provider_job_ref: str
+    ) -> ProviderReservation:
+        """submit が返した provider job 参照を**1度だけ**書く（ADR-0017）。commit は直後に。
+
+        - 同じ参照の再記録は no-op（Activity 再実行）
+        - 異なる参照で上書きしようとしたら ``InvalidTransitionError``（二重 submit の兆候）
+        - ``reserved`` かつ ``dispatched_at`` ありの行にだけ新規に書ける
+        """
+        if not provider_job_ref:
+            raise ValueError("provider_job_ref must be non-empty")
+        row = await self._row(reservation_id)
+        if row.provider_job_ref is not None:
+            if row.provider_job_ref == provider_job_ref:
+                return _to_reservation(row)
+            raise InvalidTransitionError(
+                f"reservation {reservation_id} already has a different provider job ref"
+            )
+        if ReservationStatus(row.status) is not ReservationStatus.RESERVED:
+            raise InvalidTransitionError(
+                f"reservation {reservation_id} is {row.status}; job ref needs reserved"
+            )
+        if row.dispatched_at is None:
+            raise InvalidTransitionError(
+                f"reservation {reservation_id} is not dispatched; job ref needs dispatched_at"
+            )
+        row.provider_job_ref = provider_job_ref
+        await self._session.flush()
+        return _to_reservation(row)
+
+    async def get(self, reservation_id: uuid.UUID | str) -> ProviderReservation | None:
+        row = await self._session.get(ProviderReservationRow, _as_uuid(reservation_id))
+        return _to_reservation(row) if row else None
 
     async def _apply(
         self, reservation_id: uuid.UUID | str, event: ReservationEvent

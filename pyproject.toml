@@ -19,6 +19,9 @@ dependencies = [
   "pydantic-settings>=2.4",
   # storyboard 生成出力を固定 schema で検証する（ADR-0016）
   "jsonschema>=4.23",
+  # 生成メディアのデコード検査と 9:16 正規化（ADR-0017）。infrastructure/media だけが使う
+  "pillow>=11.0",
+  "av>=14.0",
 ]
 
 [project.optional-dependencies]

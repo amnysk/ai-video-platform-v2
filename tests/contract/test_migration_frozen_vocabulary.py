@@ -1,4 +1,11 @@
-"""0003 の downgrade が凍結した Phase 2 語彙が ced2aae の enum 値と一致すること。
+"""migration の downgrade が凍結した語彙が、その時点の enum 値と一致すること。
+
+- 0003 → Phase 2（ced2aae）
+- 0004 → Phase 3（c80a987）
+
+以下は 0003 についての元の説明。
+
+0003 の downgrade が凍結した Phase 2 語彙が ced2aae の enum 値と一致すること。
 
 期待値は ``git show ced2aae:contracts/states.py`` から書き写した literal。現在の
 ``contracts.states`` から導出しない（enum が将来変わっても履歴の downgrade 先は変わらない）。
@@ -54,3 +61,65 @@ def test_downgrade_checks_cover_every_upgraded_check() -> None:
     upgraded = {(t, n, c) for t, n, c, _ in migration._CHECKS}
     downgraded = {(t, n, c) for t, n, c, _ in migration._PHASE2_CHECKS}
     assert upgraded == downgraded
+
+
+MIGRATION_0004 = REPO / "infrastructure/db/migrations/versions/0004_production_stage.py"
+
+#: c80a987:contracts/states.py の EpisodeStatus（定義順）
+C80A987_EPISODE_STATUSES = [
+    *CED2AAE_EPISODE_STATUSES[:10],
+    "storyboard_ready",
+    "failed",
+    "cancelled",
+]
+C80A987_JOB_TYPES = ["dummy", "write_script", "plan_storyboard"]
+C80A987_ARTIFACT_TYPES = ["dummy", "script", "storyboard"]
+C80A987_PROVIDER_CALLS = ["codex_script", "codex_storyboard"]
+
+
+def _load_0004() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("migration_0004", MIGRATION_0004)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_0004_downgrade_vocabulary_is_frozen_at_c80a987() -> None:
+    migration = _load_0004()
+    assert list(migration.PHASE3_EPISODE_STATUSES) == C80A987_EPISODE_STATUSES
+    assert list(migration.PHASE3_JOB_TYPES) == C80A987_JOB_TYPES
+    assert list(migration.PHASE3_ARTIFACT_TYPES) == C80A987_ARTIFACT_TYPES
+    assert list(migration.PHASE3_PROVIDER_CALLS) == C80A987_PROVIDER_CALLS
+
+
+def test_0004_downgrade_checks_cover_every_upgraded_check() -> None:
+    migration = _load_0004()
+    upgraded = {(t, n, c) for t, n, c, _ in migration._CHECKS}
+    downgraded = {(t, n, c) for t, n, c, _ in migration._PHASE3_CHECKS}
+    assert upgraded == downgraded
+
+
+def test_0004_upgrade_adds_exactly_the_phase4_values() -> None:
+    from contracts.states import ArtifactType, EpisodeStatus, JobType, ProviderCall
+
+    migration = _load_0004()
+    assert {s.value for s in EpisodeStatus} - set(migration.PHASE3_EPISODE_STATUSES) == {
+        "assets_ready"
+    }
+    assert {t.value for t in JobType} - set(migration.PHASE3_JOB_TYPES) == {
+        "produce_scene_image",
+        "produce_scene_voice",
+        "produce_scene_video",
+        "assemble_production",
+    }
+    assert {t.value for t in ArtifactType} - set(migration.PHASE3_ARTIFACT_TYPES) == {
+        "scene_image",
+        "scene_voice",
+        "scene_video",
+        "production_manifest",
+    }
+    assert {p.value for p in ProviderCall} - set(migration.PHASE3_PROVIDER_CALLS) == {
+        "fal_image",
+        "fal_video",
+    }

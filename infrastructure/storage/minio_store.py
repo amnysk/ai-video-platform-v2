@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -14,7 +15,12 @@ from minio.error import S3Error
 
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from infrastructure.config import Settings
-from infrastructure.storage.artifact_store import ArtifactConflictError, PutResult
+from infrastructure.storage.artifact_store import (
+    ArtifactConflictError,
+    ObjectStat,
+    PutResult,
+    read_bytes_source,
+)
 
 CONTENT_TYPE = "application/json"
 TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
@@ -58,6 +64,31 @@ class MinioArtifactStore:
         if body is None:
             raise KeyError(key)
         return body.decode("utf-8")
+
+    async def put_bytes(self, key: str, data: bytes | Path, content_type: str) -> PutResult:
+        return await self._put(key, read_bytes_source(data), content_type)
+
+    async def get_bytes(self, key: str) -> bytes:
+        body = await self._get_bytes(key)
+        if body is None:
+            raise KeyError(key)
+        return body
+
+    async def stat(self, key: str) -> ObjectStat:
+        def _stat() -> ObjectStat:
+            try:
+                info = self._client.stat_object(self._bucket, key)
+            except S3Error as err:
+                if err.code in {"NoSuchKey", "NoSuchObject", "NotFound"}:
+                    raise KeyError(key) from err
+                raise
+            return ObjectStat(
+                size=int(info.size or 0),
+                etag=str(info.etag or ""),
+                content_type=info.content_type,
+            )
+
+        return await asyncio.to_thread(_stat)
 
     async def _put(self, key: str, body: bytes, content_type: str) -> PutResult:
         digest = sha256_hex(body)

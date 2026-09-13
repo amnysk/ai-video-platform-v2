@@ -53,3 +53,22 @@ def test_downgrade_removes_the_tables(tmp_path: pathlib.Path) -> None:
     command.downgrade(config, "base")
     remaining = set(inspect(create_engine(url)).get_table_names()) - {"alembic_version"}
     assert remaining == set()
+
+
+def test_migration_creates_the_modelled_indexes(tmp_path: pathlib.Path) -> None:
+    """式索引（ADR-0018 の scene キー）は列の比較では見えないので名前で照合する。"""
+    import sqlite3
+
+    engine = _upgraded_engine(tmp_path)
+    db_path = str(engine.url.database)
+    with sqlite3.connect(db_path) as conn:
+        migrated = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+    modelled = {
+        str(index.name) for table in Base.metadata.tables.values() for index in table.indexes
+    }
+    assert modelled <= migrated, sorted(modelled - migrated)

@@ -18,3 +18,5 @@ class ArtifactMetadata:
     object_key: str
     sha256: str
     created_at: datetime
+    #: シーン単位の Artifact（ADR-0018）。Episode 単位なら None。
+    scene_id: str | None = None

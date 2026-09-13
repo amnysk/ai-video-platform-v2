@@ -38,5 +38,20 @@ class Settings(BaseSettings):
     openmontage_commit: str = "2fa571e39ad0632148dad77c7a2134f7e6fe0797"
     storyboard_timeout_seconds: int = 900
 
+    # --- production（ADR-0017） ---
+    #: 有料の画像・動画 provider の鍵。**secret**。未設定なら該当 worker を組めない。
+    fal_key: str | None = None
+    #: task queue ごとの並行 Activity 数（worker が max_concurrent_activities に使う）
+    image_concurrency: int = 2
+    voice_concurrency: int = 1
+    video_concurrency: int = 1
+    #: ローカル TTS の音声モデル。未設定なら voice worker を組めない。
+    piper_voice_path: str | None = None
+    production_submit_timeout_seconds: int = 120
+    production_await_timeout_seconds: int = 40 * 60
+    production_await_heartbeat_seconds: int = 90
+    production_poll_interval_seconds: int = 10
+    production_voice_timeout_seconds: int = 300
+
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"

@@ -23,6 +23,8 @@ class EpisodeStatus(StrEnum):
     COMPLETED = "completed"
     SCRIPT_READY = "script_ready"
     STORYBOARD_READY = "storyboard_ready"
+    #: 画像・音声・動画が揃った駐機点（ADR-0017）。Phase 5 Render の入口。
+    ASSETS_READY = "assets_ready"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -82,6 +84,11 @@ class JobType(StrEnum):
     DUMMY = "dummy"
     WRITE_SCRIPT = "write_script"
     PLAN_STORYBOARD = "plan_storyboard"  # ADR-0015
+    # ADR-0017: Production（シーン単位の job は jobs.scene_id で区別する / ADR-0018）
+    PRODUCE_SCENE_IMAGE = "produce_scene_image"
+    PRODUCE_SCENE_VOICE = "produce_scene_voice"
+    PRODUCE_SCENE_VIDEO = "produce_scene_video"
+    ASSEMBLE_PRODUCTION = "assemble_production"
 
 
 class ArtifactType(StrEnum):
@@ -90,6 +97,11 @@ class ArtifactType(StrEnum):
     DUMMY = "dummy"
     SCRIPT = "script"
     STORYBOARD = "storyboard"  # ADR-0015
+    # ADR-0017 / ADR-0018: シーン単位の成果物（artifact_metadata.scene_id で区別する）
+    SCENE_IMAGE = "scene_image"
+    SCENE_VOICE = "scene_voice"
+    SCENE_VIDEO = "scene_video"
+    PRODUCTION_MANIFEST = "production_manifest"
 
 
 class Pipeline(StrEnum):
@@ -113,6 +125,15 @@ PIPELINE_WORKFLOWS: dict[Pipeline, tuple[str, str]] = {
 #: storyboard は既存 Episode（``script_ready``）に対して起動するため。
 STORYBOARD_WORKFLOW: tuple[str, str] = ("StoryboardWorkflow", "storyboard")
 
+#: production 工程の (workflow名, task queue)（ADR-0017）。
+#: storyboard と同じ理由で Pipeline に載せない。
+PRODUCTION_WORKFLOW: tuple[str, str] = ("ProductionWorkflow", "production")
+
+#: メディア種別ごとの task queue（ADR-0017）。並行数は worker 側の設定で queue ごとに決める。
+PRODUCTION_IMAGE_TASK_QUEUE = "production-image"
+PRODUCTION_VOICE_TASK_QUEUE = "production-voice"
+PRODUCTION_VIDEO_TASK_QUEUE = "production-video"
+
 
 class ProviderCall(StrEnum):
     """予約台帳が扱う外部呼び出しの種類（ADR-0013）。
@@ -123,6 +144,9 @@ class ProviderCall(StrEnum):
     CODEX_SCRIPT = "codex_script"
     #: 台本と値を分け、未照合予約の検査を工程ごとに独立させる（ADR-0015）。
     CODEX_STORYBOARD = "codex_storyboard"
+    #: 有料の非同期ジョブ型 provider（ADR-0017）。ローカルの非課金 TTS は台帳に載せない。
+    FAL_IMAGE = "fal_image"
+    FAL_VIDEO = "fal_video"
 
 
 class ReservationStatus(StrEnum):

@@ -19,3 +19,5 @@ class Job:
     failure_class: FailureClass | None
     created_at: datetime
     updated_at: datetime
+    #: シーン単位の job（ADR-0018）。Episode 単位なら None。
+    scene_id: str | None = None

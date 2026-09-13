@@ -154,3 +154,117 @@ def test_storyboard_vocabulary_is_accepted_by_postgres_checks(probe_url) -> None
             {"id": uuid.uuid4()},
         )
     engine.dispose()
+
+
+def test_production_vocabulary_and_scene_keys_on_postgres(probe_url) -> None:
+    """0004: Phase 4 の語彙と scene キーの一意性が実PostgreSQLで効く。
+
+    downgrade は Phase 4 の行が残ると失敗する。
+    """
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    config = _config(probe_url)
+    command.upgrade(config, "head")
+    engine = create_engine(probe_url)
+    episode_id = uuid.uuid4()
+    artifact_insert = text(
+        "INSERT INTO artifact_metadata (id, episode_id, artifact_type, schema_version, "
+        "bucket, object_key, sha256, input_hash, version, scene_id) VALUES "
+        "(:id, :ep, :type, '1.0', 'b', 'k', :sha, :sha, :version, :scene)"
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'assets_ready', 't')"),
+            {"id": episode_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO jobs (id, episode_id, type, status, attempts, max_attempts, scene_id) "
+                "VALUES (:id, :ep, 'produce_scene_image', 'queued', 0, 1, 'sb1')"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id},
+        )
+        for scene in ("sb1", "sb2"):
+            conn.execute(
+                artifact_insert,
+                {
+                    "id": uuid.uuid4(),
+                    "ep": episode_id,
+                    "type": "scene_image",
+                    "sha": "a" * 64,  # 同じ内容でもシーンが違えば別行
+                    "version": 1,
+                    "scene": scene,
+                },
+            )
+        conn.execute(
+            text(
+                "INSERT INTO provider_reservations (id, episode_id, provider, idempotency_key, "
+                "input_hash, round, status, scene_id, provider_job_ref, estimated_cost_usd) "
+                "VALUES (:id, :ep, 'fal_video', :key, :key, 1, 'reserved', 'sb1', 'req', 0.1234)"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id, "key": "k" * 64},
+        )
+
+    # 同じ scene キーに2本目の現行は作れない（Episode 単位の NULL キーも同様）
+    def _artifact(artifact_type: str, sha: str, version: int, scene: str | None) -> dict:
+        return {
+            "id": uuid.uuid4(),
+            "ep": episode_id,
+            "type": artifact_type,
+            "sha": sha,
+            "version": version,
+            "scene": scene,
+        }
+
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(artifact_insert, _artifact("scene_image", "c" * 64, 2, "sb1"))
+    with engine.begin() as conn:
+        conn.execute(artifact_insert, _artifact("script", "b" * 64, 1, None))
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(artifact_insert, _artifact("script", "c" * 64, 2, None))
+    engine.dispose()
+
+    # Phase 4 の行が残っていれば downgrade は失敗し、スキーマは 0004 のまま
+    with pytest.raises(IntegrityError):
+        command.downgrade(config, "0003")
+    engine = create_engine(probe_url)
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
+        conn.execute(text("DELETE FROM episodes"))
+    engine.dispose()
+
+    command.downgrade(config, "0003")
+    engine = create_engine(probe_url)
+    columns = {c["name"] for c in inspect(engine).get_columns("provider_reservations")}
+    assert {"scene_id", "provider_job_ref", "estimated_cost_usd"}.isdisjoint(columns)
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'assets_ready', 't')"),
+            {"id": uuid.uuid4()},
+        )
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'storyboard_ready', 't')"),
+            {"id": episode_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO artifact_metadata (id, episode_id, artifact_type, schema_version, "
+                "bucket, object_key, sha256, input_hash, version) VALUES "
+                "(:id, :ep, 'storyboard', '1.0', 'b', 'k', :sha, :sha, 1)"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id, "sha": "d" * 64},
+        )
+    with pytest.raises(IntegrityError), engine.begin() as conn:  # 0003 の現行一意性が戻っている
+        conn.execute(
+            text(
+                "INSERT INTO artifact_metadata (id, episode_id, artifact_type, schema_version, "
+                "bucket, object_key, sha256, input_hash, version) VALUES "
+                "(:id, :ep, 'storyboard', '1.0', 'b', 'k', :sha, :sha, 2)"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id, "sha": "e" * 64},
+        )
+    engine.dispose()
+    command.upgrade(config, "head")  # 再 upgrade が通る

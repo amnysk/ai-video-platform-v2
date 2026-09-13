@@ -94,6 +94,41 @@ class WorkspaceUnavailableError(RetryableError):
     """
 
 
+class ProviderSubmitAmbiguousError(NeedsInputError):
+    """有料ジョブの submit が戻らず、provider job 参照を記録できなかった（ADR-0017）。
+
+    呼んだか分からない。``UnreconciledReservationError`` と同じ意味論で、再送しない・消さない。
+    """
+
+
+class ProviderRejectedError(NeedsInputError):
+    """provider が依頼を拒否した（コンテンツポリシー・入力不正）。
+
+    同じ入力を再送しても同じ結果になるが、プロンプトや素材を人間が直せば回復するので
+    ``permanent`` にしない（ADR-0017）。
+    """
+
+
+class ProviderJobFailedError(RetryableError):
+    """provider 側のジョブが失敗した。新しいラウンド（新しい予約）で再生成しうる。"""
+
+
+class ProviderPollDeadlineError(RetryableError):
+    """provider ジョブの完了を待ち切れなかった。参照は台帳に残るので再 await できる。"""
+
+
+class MediaValidationError(RetryableError):
+    """生成メディアが検査規則（形式・解像度・尺など）を満たさない。生成揺れとして扱う。"""
+
+
+class ProductionInputMissingError(NeedsInputError):
+    """production の入力（現行の storyboard / 台本 / シーン画像）が無い。"""
+
+
+class ProductionInputInvalidError(NeedsInputError):
+    """production の入力が読めない・sha256 不一致・相互に食い違う。"""
+
+
 class InvalidTransitionError(DomainError):
     """表に無い状態遷移を永続化しようとした。"""
 

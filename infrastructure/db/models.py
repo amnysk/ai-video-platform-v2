@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import (
@@ -17,7 +18,9 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     func,
@@ -93,6 +96,8 @@ class JobRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    #: シーン単位の job（ADR-0018）。NULL は Episode 単位の job。
+    scene_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     failure_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_summary: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -112,24 +117,8 @@ class ArtifactMetadataRow(Base):
     __tablename__ = "artifact_metadata"
     __table_args__ = (
         _check("artifact_type", ArtifactType, "ck_artifact_metadata_type"),
-        # INV-17: 同じ内容の再記録が重複行を作らない。制約で保証する。
-        # ADR-0012: content-addressed な同一性は残す（INV-11 immutable の担保）。
-        UniqueConstraint(
-            "episode_id", "artifact_type", "sha256", name="uq_artifact_metadata_content"
-        ),
-        UniqueConstraint(
-            "episode_id", "artifact_type", "version", name="uq_artifact_metadata_version"
-        ),
-        # ADR-0012: 現行世代（superseded_at IS NULL）は常に1本。partial unique index
-        # なので SQLite / PostgreSQL の両方に方言別の WHERE を渡す。
-        Index(
-            "uq_artifact_metadata_current",
-            "episode_id",
-            "artifact_type",
-            unique=True,
-            sqlite_where=text("superseded_at IS NULL"),
-            postgresql_where=text("superseded_at IS NULL"),
-        ),
+        # 一意性の索引（content / version / current）は scene キーを含む式索引なので
+        # クラス定義の後で張る（ADR-0018）。
         Index("ix_artifact_metadata_episode_id", "episode_id"),
     )
 
@@ -149,6 +138,8 @@ class ArtifactMetadataRow(Base):
     #: NULL なら現行世代。非NULLなら後続世代に降ろされた。
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: シーン単位の Artifact（ADR-0018）。NULL は Episode 単位（script / storyboard 等）。
+    scene_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     produced_by_job_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
     )
@@ -211,6 +202,44 @@ class ProviderReservationRow(Base):
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reconciled_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: シーン単位の呼び出し（ADR-0018）。未照合予約の検査をシーンごとに独立させる。
+    scene_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: 非同期ジョブ型 provider のジョブ参照（不透明。ADR-0017）。submit 直後に1度だけ書く。
+    provider_job_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 予約時点の見積もり（USD、ADR-0013 Alternatives (e) を ADR-0017 で解決）。確定額ではない。
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+
+
+#: scene キー。NULL を '' に畳んで一意性の比較に使う（ADR-0018）。
+_SCENE_KEY = func.coalesce(ArtifactMetadataRow.scene_id, "")
+
+# INV-17: 同じ内容の再記録が重複行を作らない。ADR-0012: content-addressed な同一性（INV-11）。
+Index(
+    "uq_artifact_metadata_content",
+    ArtifactMetadataRow.episode_id,
+    ArtifactMetadataRow.artifact_type,
+    _SCENE_KEY,
+    ArtifactMetadataRow.sha256,
+    unique=True,
+)
+Index(
+    "uq_artifact_metadata_version",
+    ArtifactMetadataRow.episode_id,
+    ArtifactMetadataRow.artifact_type,
+    _SCENE_KEY,
+    ArtifactMetadataRow.version,
+    unique=True,
+)
+# ADR-0012 / ADR-0018: 現行世代（superseded_at IS NULL）は scene キーごとに常に1本。
+Index(
+    "uq_artifact_metadata_current",
+    ArtifactMetadataRow.episode_id,
+    ArtifactMetadataRow.artifact_type,
+    _SCENE_KEY,
+    unique=True,
+    sqlite_where=text("superseded_at IS NULL"),
+    postgresql_where=text("superseded_at IS NULL"),
+)
 
 
 __all__ = [
