@@ -11,6 +11,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from apps.api.dependencies import get_session_factory, get_workflow_starter
 from apps.api.schemas import (
@@ -76,7 +77,14 @@ async def start_storyboard(
     if episode is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
 
-    workflow_id = await starter.start_storyboard_workflow(episode_id=episode.id)
+    try:
+        workflow_id = await starter.start_storyboard_workflow(episode_id=episode.id)
+    except WorkflowAlreadyStartedError as exc:
+        # 同じ Episode の storyboard workflow が実行中。二重起動しない（ADR-0015）。
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"storyboard workflow already running for episode {episode.id}",
+        ) from exc
     return StartStoryboardResponse(
         episode_id=episode.id, status=episode.status, workflow_id=workflow_id
     )
