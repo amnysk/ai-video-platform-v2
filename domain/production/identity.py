@@ -9,6 +9,8 @@ provider・モデル・パラメータは ``generator_id`` と ``generation_prof
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.script.identity import idempotency_key
 
@@ -69,6 +71,8 @@ def voice_input_hash(
     schema_version: str,
     script_sha256: str,
     script_scene_id: str,
+    storyboard_sha256: str,
+    storyboard_scene_ids: Iterable[str],
     narration_sha256: str,
     voice_id: str,
     language: str,
@@ -76,7 +80,11 @@ def voice_input_hash(
     generator_id: str,
     generation_profile_id: str,
 ) -> str:
-    """ナレーション音声の入力指紋。速度は float を避けて permille の int。"""
+    """ナレーション音声の入力指紋。速度は float を避けて permille の int。
+
+    音声 Artifact は ``source_storyboard`` と ``storyboard_scene_ids`` を記録するので、
+    storyboard の再計画で古い音声を再利用しないよう両方を含める（参照集合は整列して正規化）。
+    """
     return _digest(
         {
             "episode_id": episode_id,
@@ -84,6 +92,8 @@ def voice_input_hash(
             "schema_version": schema_version,
             "script_sha256": script_sha256,
             "script_scene_id": script_scene_id,
+            "storyboard_sha256": storyboard_sha256,
+            "storyboard_scene_ids": sorted(storyboard_scene_ids),
             "narration_sha256": narration_sha256,
             "voice_id": voice_id,
             "language": language,

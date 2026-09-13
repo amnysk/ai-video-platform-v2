@@ -99,7 +99,10 @@ INV-15 の対象は**課金を伴う外部呼び出し**である。ローカル
 ### 6. ドメイン規則（`domain/production/`）
 
 - `identity.py`: `image_input_hash` / `voice_input_hash` / `video_input_hash`。
-  ラウンド・試行・job・時刻・run id・seed を含めない。冪等キーは `domain.script.identity.idempotency_key`
+  ラウンド・試行・job・時刻・run id・seed を含めない。
+  `voice_input_hash` は台本側（`script_sha256` / `script_scene_id` / `narration_sha256`）に加えて
+  `storyboard_sha256` と整列した `storyboard_scene_ids` を含む。音声 Artifact は `source_storyboard` と
+  参照シーンを記録するので、storyboard の再計画で古い音声を再利用しない（ローカル非課金なので再生成の費用は無い）。冪等キーは `domain.script.identity.idempotency_key`
 - `planning.py`: storyboard シーンごとに画像+動画、台本シーンごとに音声（参照する storyboard シーン付き）
 - `media.py`: 検査規則と 9:16 正規化計画。画像は正規化後 1080x1920 / png|jpeg|webp / 0 < bytes < 25MB、
   音声 200ms..60s / ≥16kHz / 1..2ch、動画は尺 ±max(300ms, 5%) / 9:16 ±1% / 高さ ≥1280 / 20..60fps / フレーム > 0
@@ -146,7 +149,9 @@ Artifact 再利用の方が確実。却下。
   Phase 5 で Render が production に続けて走るなら3つの駐機点の畳み込みを再評価する
 - `estimated_cost_usd` は見積もりで、請求額との照合機構は無い（予算上限の強制も未実装）
 - await を cancel しても provider 側のジョブは走り続け、課金されうる
-- 入力 storyboard / 台本が更新されると全シーンの `input_hash` が変わり、全素材が再生成対象になる（課金）
+- **Cost risk**: 画像・動画の `input_hash` は storyboard 全体の sha256 を含むので、storyboard の1シーンを
+  直しただけでも全シーンの有料素材（画像・動画）が再生成対象になる（課金）。シーン単位の指紋への縮小は
+  負債として受け入れる（音声も storyboard sha を含むが非課金）
 - `assets_ready` からの再実行が失敗したときの状態と現行 Artifact の食い違いは ADR-0015 と同じ負債
 - provider job 参照の保持期間は provider 依存で、長時間の `blocked` 後に回収できない場合がある
   （その予約は人手照合で `spent` にする）
