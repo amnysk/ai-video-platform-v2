@@ -284,6 +284,11 @@ class ArtifactMetadataRepository:
         now = _now()
         if existing is not None:
             if existing.superseded_at is None:
+                if input_hash is not None and existing.input_hash != input_hash:
+                    # 同じ内容が別の入力から得られた（例: 生成器の仕様だけ変わった）。
+                    # 次回の skip 判定が最新の入力で当たるよう、入力の記録を更新する。
+                    existing.input_hash = input_hash
+                    await self._session.flush()
                 return _to_artifact(existing)
             # A→B→A: 同じ内容が過去世代に居る。降ろされた行を「現行」として返すと
             # find_current_by_type と食い違うので、現行を降ろして過去行を復帰させる。

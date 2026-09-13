@@ -131,3 +131,39 @@ async def test_recording_the_same_artifact_twice_is_idempotent(session) -> None:
 
     assert first.id == second.id
     assert len(await artifacts.list_for_episode(episode.id)) == 1
+
+
+async def test_recording_the_current_content_with_a_new_input_hash_updates_it(session) -> None:
+    """同じ sha256 の現行行に別の input_hash が明示されたら、その行の input_hash を更新する。"""
+    episodes = EpisodeRepository(session)
+    artifacts = ArtifactMetadataRepository(session)
+    episode = await episodes.create(topic="t")
+    await session.commit()
+
+    digest = "c" * 64
+    kwargs = {
+        "episode_id": episode.id,
+        "artifact_type": ArtifactType.DUMMY,
+        "schema_version": "1.0",
+        "bucket": "artifacts",
+        "object_key": f"artifacts/{episode.id}/dummy/{digest}.json",
+        "sha256": digest,
+    }
+    first = await artifacts.record(**kwargs, input_hash="h1")
+    await session.commit()
+    second = await artifacts.record(**kwargs, input_hash="h2")
+    await session.commit()
+    omitted = await artifacts.record(**kwargs)
+    await session.commit()
+
+    assert first.id == second.id == omitted.id
+
+    async def _current(input_hash: str):
+        return await artifacts.find_current(
+            episode_id=episode.id, artifact_type=ArtifactType.DUMMY, input_hash=input_hash
+        )
+
+    found = await _current("h2")
+    assert found is not None and found.id == first.id, "input_hash を省略した再記録は値を変えない"
+    assert await _current("h1") is None
+    assert len(await artifacts.list_for_episode(episode.id)) == 1
