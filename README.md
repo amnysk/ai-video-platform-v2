@@ -10,7 +10,8 @@ AIでYouTube動画を自動生成・投稿するプラットフォームの**第
 
 **Phase 1: 最小の縦切り。** 1つのEpisodeが Temporal / PostgreSQL / MinIO を
 使って安全に状態遷移するところまで通っている。
-**動画生成・YouTube投稿・Storyboard・Production は未実装**（Phase 2以降）。
+台本（Phase 2）と Storyboard（Phase 3、`POST /episodes/{id}/storyboard`）は worker として実装済み。
+**画像・動画・音声生成・レンダー・YouTube投稿は未実装**（Phase 4以降）。
 
 実装を始める前に [AGENTS.md](./AGENTS.md) を読むこと。
 

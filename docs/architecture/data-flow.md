@@ -27,6 +27,25 @@
 
 各Activityの前後で、domainの遷移規則を通してEpisode/Job状態がPostgreSQLへ書かれる。
 
+## 1b. storyboard 工程（Phase 3 実装済み / ADR-0015）
+
+```text
+[UI] ──POST /episodes/{id}/storyboard──> [FastAPI]
+        │ Episode の存在確認（404）→ start_workflow(StoryboardWorkflow, id=episode-{id}-storyboard)
+        └──> 202（状態の前提は判定しない。workflow の admit が判定する）
+
+[Temporal] StoryboardWorkflow（task queue "storyboard"、host process の worker）
+    ├─ storyboard_admit_episode   script_ready|storyboard_ready → in_progress（他は何もせず終了）
+    ├─ storyboard_create_job      非終端の plan_storyboard job を再利用、無ければ作成
+    ├─ storyboard_generate × ラウンド（maximum_attempts=1、retry は workflow のラウンド）
+    │     現行 script を読む（sha256 + 契約検証）→ input_hash
+    │     → 同じ input_hash の現行 storyboard があれば job=skipped で返す（生成器を呼ばない）
+    │     → 予約 commit → dispatch commit → 生成 → 生出力 put → spent commit
+    │     → 解釈 → 時間軸正規化 → 採番 → 契約 → 台本カバレッジ
+    │     → MinIO put → 読み戻し sha256 照合 → artifact_metadata 記録 → job succeeded
+    └─ storyboard_mark_ready（in_progress → storyboard_ready）| storyboard_record_failure
+```
+
 ## 2. Artifactの読み書き
 
 ```text

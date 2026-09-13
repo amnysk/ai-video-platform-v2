@@ -88,3 +88,32 @@ def test_domain_has_no_io_dependencies() -> None:
             if root in banned:
                 violations.append(f"{path.relative_to(REPO)}: imports {module} (INV-6)")
     assert not violations, "\n".join(violations)
+
+
+def _imports_under(path: pathlib.Path, prefix: str) -> list[str]:
+    return [
+        module
+        for _root, module in _imported_roots(path)
+        if module == prefix or module.startswith(prefix + ".")
+    ]
+
+
+def test_storyboard_and_planning_workers_do_not_import_each_other() -> None:
+    """INV-3 を storyboard 導入の組み合わせで名指しで固定する（一般規則の上乗せ）。"""
+    violations: list[str] = []
+    for own, other in (("storyboard", "planning"), ("planning", "storyboard")):
+        for path in _python_files(f"workers/{own}"):
+            for module in _imports_under(path, f"workers.{other}"):
+                violations.append(f"{path.relative_to(REPO)}: imports {module} (INV-3)")
+    assert _python_files("workers/storyboard"), "workers/storyboard が見つからない"
+    assert not violations, "\n".join(violations)
+
+
+def test_apps_do_not_import_the_openmontage_adapter_or_subprocess() -> None:
+    """API は起動するだけ。外部仕様の読み込みも子プロセスも worker 側（INV-16 / ADR-0016）。"""
+    violations: list[str] = []
+    for path in _python_files("apps"):
+        for prefix in ("infrastructure.providers.openmontage_storyboard", "subprocess"):
+            for module in _imports_under(path, prefix):
+                violations.append(f"{path.relative_to(REPO)}: imports {module}")
+    assert not violations, "\n".join(violations)

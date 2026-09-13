@@ -123,3 +123,33 @@ def test_only_sanctioned_modules_import_the_codex_cli_adapter() -> None:
             if not sanctioned:
                 violations.append(f"{rel}: imports {CODEX_ADAPTER_MODULE} (INV-18)")
     assert not violations, "\n".join(violations)
+
+
+STORYBOARD_ADAPTER_MODULE = "infrastructure.providers.openmontage_storyboard"
+
+#: storyboard adapter（外部仕様 + 実CLI）を import してよいファイル。**完全一致**で数える。
+STORYBOARD_ADAPTER_IMPORTERS = frozenset(
+    {
+        "workers/storyboard/run_worker.py",
+        "tests/unit/test_openmontage_storyboard_adapter.py",
+        "tests/live/test_openmontage_storyboard_live.py",
+    }
+)
+
+
+def test_only_sanctioned_modules_import_the_openmontage_storyboard_adapter() -> None:
+    """有料/実CLI呼び出しの入口を数えられる場所に限る（INV-18 / ADR-0016）。
+
+    関数内の import も ``ast.walk`` で拾う（run_worker は main() 内で import する）。
+    """
+    violations: list[str] = []
+    for directory in SEARCHED_DIRS:
+        for path in sorted((REPO / directory).rglob("*.py")):
+            rel = path.relative_to(REPO).as_posix()
+            if rel == f"{STORYBOARD_ADAPTER_MODULE.replace('.', '/')}.py":
+                continue
+            if _imports_module(path, STORYBOARD_ADAPTER_MODULE) and (
+                rel not in STORYBOARD_ADAPTER_IMPORTERS
+            ):
+                violations.append(f"{rel}: imports {STORYBOARD_ADAPTER_MODULE} (INV-18)")
+    assert not violations, "\n".join(violations)

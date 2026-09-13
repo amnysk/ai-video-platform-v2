@@ -19,6 +19,7 @@ from apps.api.schemas import (
     CreateEpisodeResponse,
     EpisodeView,
     JobView,
+    StartStoryboardResponse,
 )
 from apps.api.workflow_starter import WorkflowStarter
 from infrastructure.db.repositories import (
@@ -53,6 +54,32 @@ async def create_episode(
         await session.commit()
 
     return CreateEpisodeResponse(id=episode.id, status=episode.status, workflow_id=workflow_id)
+
+
+@router.post(
+    "/{episode_id}/storyboard",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=StartStoryboardResponse,
+)
+async def start_storyboard(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+) -> StartStoryboardResponse:
+    """storyboard 工程を起動するだけ（INV-16）。
+
+    状態の前提（``script_ready`` / ``storyboard_ready``）は workflow の admit Activity が
+    判定する。ここで判定すると、判定と起動の間に状態が変わる窓を API が抱えるため。
+    """
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+
+    workflow_id = await starter.start_storyboard_workflow(episode_id=episode.id)
+    return StartStoryboardResponse(
+        episode_id=episode.id, status=episode.status, workflow_id=workflow_id
+    )
 
 
 @router.get("/{episode_id}", response_model=EpisodeView)
