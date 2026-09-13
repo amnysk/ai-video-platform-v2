@@ -114,6 +114,12 @@ workflow id（`episode-<id>-storyboard`）は完了後に再利用されるた�
 - `generation_spec_id` を `input_hash` に入れたので、固定する OpenMontage commit を上げると
   全 Episode の storyboard が再生成対象になる（意図した挙動だが課金を伴う）
 - `storyboard_ready` の出口 `STAGE_ADMITTED` は Phase 4 まで呼び出し元が無い（ADR-0011 と同じ期間の空白）
+- **`storyboard_ready` からの再実行が失敗すると、Episode は `needs_work` / `blocked` へ落ちる。**
+  直前の有効な storyboard Artifact は `artifact_metadata` 上で現行のまま残っているのに、状態は
+  「storyboard が無い」側を指す。状態と現行 Artifact の食い違いは引き受けた負債で、
+  失敗時に元の駐機点へ戻す遷移は足していない
+- **再開 API は無い。** `blocked` / `needs_work` からの `resumed`（人間の判断）を呼ぶ経路は Phase 3 に存在せず、
+  POST `/episodes/{id}/storyboard` は admit で拒否される（何も書かずに終わる）。回復は DB 上の手作業になる
 - 台本の「シーン数 3..8」と storyboard の「1..24」は独立に決めた値で、両者の整合を保証する機械は
   カバレッジ検査（全台本シーンが1回以上現れる）だけ
 

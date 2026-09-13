@@ -22,6 +22,19 @@ docker compose --profile core up -d --wait
 | `STORYBOARD_TIMEOUT_SECONDS` | 900 | 生成1回の上限 |
 | `CODEX_BINARY` / `CODEX_MODEL` | 台本 worker と同じ | |
 
+### OpenMontage checkout の所有者と `safe.directory`
+
+仕様は `git -C $OPENMONTAGE_REPO_PATH show <commit>:<path>` で読む。checkout の所有者が worker を
+動かすユーザーと違うと、git は `fatal: detected dubious ownership in repository` で拒否し、
+worker は `GenerationSpecUnavailableError`（needs_input）で止まる。
+
+- 望ましいのは **worker と同じユーザーが所有する checkout** を使うこと
+- 共有 checkout を使うなら、worker ユーザーの global 設定で**そのパスだけ**を許可する:
+  `git config --global --add safe.directory /path/to/OpenMontage`（`*` で全許可しない）
+- adapter は `GIT_CONFIG_NOSYSTEM=1` で起動するので、system 設定（`/etc/gitconfig`）の
+  `safe.directory` は効かない。global（`~/.gitconfig`）に書くこと
+- checkout へは書き込まない（読み取り専用。ADR-0016）
+
 ## 実行・確認
 
 ```bash
@@ -37,6 +50,7 @@ EPISODE_ID=<episode_id> ./scripts/smoke-storyboard.sh                 # 課金�
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
+| POST が 409 | 同じ Episode の storyboard workflow が実行中（Temporal が同じ workflow id を拒否） | 実行の終了を待つ |
 | POST は 202 だが何も起きない | Episode が `script_ready` / `storyboard_ready` に居ない（admit が拒否） | Episode の状態を確認。`blocked` からの再開は人間の判断 |
 | Episode `blocked`、job `terminal_failed`、`StoryboardInputMissingError` | 現行の台本 Artifact が無い | 台本工程を再実行 |
 | `StoryboardInputInvalidError` | 保存済み台本の sha256 不一致・契約違反 | MinIO / artifact_metadata を調査 |
