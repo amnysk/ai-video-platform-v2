@@ -13,7 +13,10 @@ Artifactは v2 の**再開の単位**である。工程ごとの再開フラグ�
 
 - **本体**: MinIO（INV-9）。キーは content-addressed
   （`artifacts/{episode_id}/{artifact_type}/{sha256}.json`）。
-  キーの形は `domain/artifact/keys.py` の `artifact_object_key()` が唯一の定義
+  キーの形は `domain/artifact/keys.py` の `artifact_object_key()` が唯一の定義。
+  シーン単位の Artifact は `artifacts/{episode_id}/{artifact_type}/{scene_id}/{sha256}.json`（ADR-0018）
+- **メディア本体**（画像・音声・動画のバイナリ）: `media/{episode_id}/{artifact_type}/{scene_id}/{sha256}.{ext}`
+  （`media_object_key()`、ADR-0017）。Artifact JSON の `media` 記述子から参照する
 - **参照とメタ**: PostgreSQL
 
 DBにバイナリを入れない。書き順は必ず MinIO → DB。
@@ -34,6 +37,12 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 - `version` — 同じ `(episode_id, artifact_type)` 内で単調増加
 - `superseded_at` — NULL なら現行世代。partial unique index により
   「現行は常に1本」を DB が保証する
+
+**Phase 4 で実装済み**（ADR-0018）:
+
+- `scene_id` — シーン単位の Artifact（`scene_image` / `scene_voice` / `scene_video`）。
+  `version` / `superseded_at` / 同一内容の判定はすべて `(episode_id, artifact_type, scene_id)` の中で閉じる。
+  NULL は Episode 単位（script / storyboard / production_manifest）
 
 **まだ無いもの**:
 
@@ -63,7 +72,10 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 | `episode_plan` | planning | 企画（トピック、切り口、想定尺） |
 | `script` | planning（Phase 2 実装済み） | 台本（title / hook / scenes / metadata） |
 | `storyboard` | storyboard（Phase 3 実装済み、ADR-0015） | シーン分割と各シーンの映像指示・尺（旧予定名 `scene_plan`）。ナレーションは持たず `script_scene_id` で台本を参照 |
-| `asset_manifest` | generation | 生成素材の一覧と参照 |
+| `scene_image` | production image（Phase 4、ADR-0017） | storyboard シーンの静止画（1080x1920）。メディア本体への記述子 |
+| `scene_voice` | production voice（Phase 4、ADR-0017） | 台本シーンのナレーション音声。ナレーション文は持たず台本を参照 |
+| `scene_video` | production video（Phase 4、ADR-0017） | storyboard シーンの動画（元画像を参照、音声なし、fps は `fps_millis`） |
+| `production_manifest` | production（Phase 4、ADR-0017。旧予定名 `asset_manifest`） | 全シーンの画像・動画・音声の参照一覧 |
 | `edit_decisions` | render | 編集判断（字幕、オーバーレイ、BGM） |
 | `final_video` | render | 完成動画 |
 | `review_report` | render | 品質ゲートの判定結果 |

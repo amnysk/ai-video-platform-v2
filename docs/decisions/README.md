@@ -40,3 +40,5 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0014](./0014-llm-output-defects-are-retryable.md) | LLM出力の形式不正は retryable | Accepted |
 | [0015](./0015-storyboard-stage.md) | Storyboard 工程と Episode `storyboard_ready` | Accepted |
 | [0016](./0016-openmontage-guided-storyboard-generation.md) | Storyboard 生成は固定した OpenMontage 仕様で誘導した Codex | Accepted |
+| [0017](./0017-production-stage.md) | Production 工程（画像・音声・動画）と Episode `assets_ready` | Accepted |
+| [0018](./0018-scene-scoped-artifacts.md) | シーン単位の Artifact・job・予約 | Accepted |

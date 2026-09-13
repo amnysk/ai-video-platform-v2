@@ -48,6 +48,24 @@
 台本工程を人間が再実行すれば回復する（回復経路がある）ため。検査:
 `tests/unit/test_failure_class_registry.py::test_storyboard_exceptions_classify_by_their_base`。
 
+### Production 工程（ADR-0017）
+
+| 例外 | クラス | 事象 |
+|---|---|---|
+| `ProviderSubmitAmbiguousError` | `needs_input` | 有料ジョブの submit が戻らず provider job 参照を記録できなかった（呼んだか不明） |
+| `UnreconciledReservationError` | `needs_input` | `dispatched_at` ありで provider job 参照も evidence も無い予約が残っている |
+| `ProviderRejectedError` | `needs_input` | provider が依頼を拒否（コンテンツポリシー等）。人間がプロンプト・素材を直す |
+| `ProviderJobFailedError` | `retryable` | provider 側ジョブの失敗。次ラウンド（新しい予約）で再生成 |
+| `ProviderPollDeadlineError` | `retryable` | 完了待ちの期限切れ。参照が台帳にあるので再 await（再送しない） |
+| `MediaValidationError` | `retryable` | 生成メディアが形式・解像度・尺の規則を満たさない |
+| `ProductionInputMissingError` | `needs_input` | 現行の storyboard / 台本 / シーン画像が無い |
+| `ProductionInputInvalidError` | `needs_input` | 入力 Artifact が読めない・sha256 不一致・相互に食い違う |
+
+有料の submit Activity は `maximum_attempts=1`、await Activity は provider job 参照に対して冪等なので
+retry してよい（最大5回）。ローカル非課金の音声合成は台帳に載せず Temporal の retry（最大3回）に委ねる
+（INV-15 の限定例外、ADR-0017）。検査:
+`tests/unit/test_failure_class_registry.py::test_production_exceptions_classify_by_their_base`。
+
 ## 2. Episodeをterminal failedにしてよい条件
 
 次の全てを満たすときだけ `failed`：

@@ -20,6 +20,8 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 | `script_ready` | `in_progress` | 次工程を開始（`STAGE_ADMITTED`、Phase 3 の入口） | workflow |
 | `in_progress` | `storyboard_ready` | storyboard が生成・検証された（`STORYBOARD_READY`、ADR-0015） | storyboard worker |
 | `storyboard_ready` | `in_progress` | 次工程を開始（`STAGE_ADMITTED`、Phase 4 の入口） | workflow |
+| `in_progress` | `assets_ready` | シーン素材（画像・音声・動画）とマニフェストが揃った（`ASSETS_READY`、ADR-0017） | production workflow |
+| `assets_ready` | `in_progress` | production の再実行 / 次工程を開始（`STAGE_ADMITTED`、Phase 5 の入口） | workflow |
 | `needs_work` | `in_progress` | 自動再試行が枠内 | workflow |
 | `needs_work` | `blocked` | 再生成の枠を使い切った | workflow |
 | `blocked` | `in_progress` | 人間が再開をsignal | API (人間) |
@@ -50,7 +52,8 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 - `approved` → 投稿（自動）
 - `uploaded` → 成熟後に実績回収（自動、timer）
 - `script_ready` → 次工程の開始（自動。Phase 3 の `StoryboardWorkflow` が `STAGE_ADMITTED` を呼ぶ）
-- `storyboard_ready` → 次工程の開始（自動。Phase 4 で実装。**それまでは駐機点**、ADR-0015）
+- `storyboard_ready` → 次工程の開始（自動。Phase 4 の `ProductionWorkflow` が `STAGE_ADMITTED` を呼ぶ、ADR-0017）
+- `assets_ready` → 次工程の開始（自動。Phase 5 Render で実装。**それまでは駐機点**、ADR-0017）
 
 `completed` は骨組みworkflow専用の終端であり、本番パイプラインの正常系は
 `ready_for_review` を通る（ADR-0006）。
