@@ -10,6 +10,7 @@ Activity は「入力から出力Artifactを作って結果を返す」だけ。
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -57,6 +58,8 @@ from infrastructure.db.repositories import (
     ProviderReservationRepository,
 )
 from infrastructure.storage.artifact_store import ArtifactStore
+
+logger = logging.getLogger(__name__)
 
 #: 生出力の置き場所。Artifact ではない（スキーマ検証を通らないため / ADR-0013）。
 PROVIDER_RAW_PREFIX = "provider-raw"
@@ -126,6 +129,20 @@ class RecordFailureRequest:
 @dataclass
 class FailureOutcome:
     episode_status: str
+
+
+@dataclass
+class _PaidOutput:
+    """1回の起動で得た有料出力の所在。``release`` してよいかの判定にだけ使う。"""
+
+    #: generate が戻った（有料出力が手元にある）
+    received: bool = False
+    #: 生出力を ArtifactStore に保存し終えた
+    stored: bool = False
+
+    @property
+    def safe_to_release(self) -> bool:
+        return not self.received or self.stored
 
 
 @dataclass(frozen=True)
@@ -282,7 +299,31 @@ class StoryboardActivities:
             await JobRepository(session).start(request.job_id)
             await session.commit()
 
-        return await self._generate_round(request=request, loaded=loaded, input_hash=input_hash)
+        call = StoryboardRequest(
+            episode_id=request.episode_id,
+            job_id=request.job_id,
+            script=loaded.script,
+            timeout_seconds=self._timeout_seconds,
+        )
+        paid = _PaidOutput()
+        try:
+            # 局所的に失敗しうる準備は**予約より前**。ここで落ちても台帳に何も残らない（ADR-0013）。
+            await self._generator.prepare(call)
+            return await self._generate_round(
+                request=request, loaded=loaded, input_hash=input_hash, call=call, paid=paid
+            )
+        finally:
+            if paid.safe_to_release:
+                await self._generator.release(call)
+            else:
+                # 生出力の保存に失敗した。作業領域が有料出力の唯一の写しなので消さない。
+                logger.warning(
+                    "keeping storyboard work directory: raw output was not stored "
+                    "episode=%s job=%s round=%s",
+                    request.episode_id,
+                    request.job_id,
+                    request.round,
+                )
 
     async def _load_script(self, episode_id: str) -> _LoadedScript:
         """現行の台本 Artifact を読み、sha256 と契約で検証する。"""
@@ -310,7 +351,13 @@ class StoryboardActivities:
         return _LoadedScript(meta=meta, script=script)
 
     async def _generate_round(
-        self, *, request: GenerateStoryboardRequest, loaded: _LoadedScript, input_hash: str
+        self,
+        *,
+        request: GenerateStoryboardRequest,
+        loaded: _LoadedScript,
+        input_hash: str,
+        call: StoryboardRequest,
+        paid: _PaidOutput,
     ) -> StoryboardResult:
         provider = ProviderCall.CODEX_STORYBOARD
         key = idempotency_key(provider=provider.value, input_hash=input_hash, round=request.round)
@@ -345,7 +392,7 @@ class StoryboardActivities:
 
         raw_key = f"{raw_key_prefix}/{reservation.id}.txt"
         raw_text, model = await self._raw_output(
-            request=request, loaded=loaded, reservation=reservation, raw_key=raw_key
+            request=request, call=call, paid=paid, reservation=reservation, raw_key=raw_key
         )
 
         # (6) ここで初めて解釈・検証する。失敗は retryable（ADR-0014）
@@ -390,7 +437,8 @@ class StoryboardActivities:
         self,
         *,
         request: GenerateStoryboardRequest,
-        loaded: _LoadedScript,
+        call: StoryboardRequest,
+        paid: _PaidOutput,
         reservation: ProviderReservation,
         raw_key: str,
     ) -> tuple[str, str]:
@@ -426,14 +474,7 @@ class StoryboardActivities:
             await session.commit()
 
         try:
-            raw = await self._generator.generate(
-                StoryboardRequest(
-                    episode_id=request.episode_id,
-                    job_id=request.job_id,
-                    script=loaded.script,
-                    timeout_seconds=self._timeout_seconds,
-                )
-            )
+            raw = await self._generator.generate(call)
         except Exception as exc:
             # 戻ってきた上での失敗。課金されたかは不明なので保守的に spent（ADR-0013）。
             async with self._session_factory() as session:
@@ -447,8 +488,10 @@ class StoryboardActivities:
                 await session.commit()
             raise
 
+        paid.received = True
         # (5) 生出力を保存し、**解釈より前に** spent を確定する（ADR-0013）
         await self._store.put_text(raw_key, raw.text)
+        paid.stored = True
         async with self._session_factory() as session:
             await ProviderReservationRepository(session).mark_spent(
                 reservation.id, raw_output_key=raw_key, reconciled_by="evidence"
@@ -460,6 +503,8 @@ class StoryboardActivities:
         self, raw_text: str, *, loaded: _LoadedScript, episode_id: str, model: str
     ) -> dict[str, object]:
         """生出力 → 下書き → 時間軸正規化 → 採番 → 契約 → 台本カバレッジ。修復はしない。
+
+        時間軸の正規化はドメイン規則なので**ここだけ**が適用する（生成器の実装に委ねない）。
 
         システムが決める値（episode_id / type / schema_version / source_script /
         total_duration_ms / metadata / scene_id / order）はここで注入する。生成器に決めさせない。

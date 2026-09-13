@@ -38,9 +38,19 @@ Phase 3 の storyboard（ADR-0015）を作る方法として OpenMontage
 6. 生成中の中間ファイル（変換した入力、仕様のコピー、生出力）は `AI_VIDEO_WORK_ROOT` 配下の
    job 単位の一時ディレクトリに置く（`infrastructure/workdir.py`、[work-directories](../operations/work-directories.md)）。
    **source of truth ではない**。正式な成果物は ArtifactStore → MinIO と PostgreSQL だけ
-7. 生成器ポート（`domain/storyboard/ports.py::StoryboardGenerator`）は `generate`（有料呼び出しのみ）と
-   `interpret`（純粋なパース・検証・変換）の2段に分ける。生出力を先に保存してから解釈し、
-   解釈だけを再実行できるようにするため（ADR-0013 の順序）
+7. 生成器ポート（`domain/storyboard/ports.py::StoryboardGenerator`）は4段に分ける:
+   `prepare`（入力変換・schema 検証・作業領域の作成・監査用入力の書き出し。外部呼び出しをしない）、
+   `generate`（プロンプト生成と有料呼び出し、生出力の作業コピー）、`interpret`（純粋なパース・検証・変換）、
+   `release`（作業領域の削除。例外を投げずログに残す）。生出力を先に保存してから解釈し、
+   解釈だけを再実行できるようにするため（ADR-0013 の順序）。
+   **`prepare` は予約より前に呼ぶ。** 局所的に失敗しうる処理（作業領域・入力不備）を予約・dispatch の
+   commit 後に置くと、呼んでいないのに「dispatch 済み・evidence 無し」の予約が残り人手照合を招くため
+8. 時間軸の正規化（`domain/storyboard/normalize.py::normalize_timeline`）は**activity だけ**が適用する。
+   ドメイン規則なので生成器の実装ごとに再実装・適用させない（`interpret` は正規化前の下書きを返す）
+9. activity は `release` を次のときだけ呼ぶ: (a) 生成器が有料出力を返していない（準備失敗・呼び出し失敗・
+   保存済み生出力からの再開・予約照合での中断を含む）、または (b) 生出力を ArtifactStore に保存し終えた後。
+   生成器が戻った後で生出力の保存に失敗したときは**作業領域を残し**、パスを警告ログに出す
+   （そこが有料出力の唯一の写しのため）
 
 ### 参照した Codex 実装（`codex/storage-workdir`、未コミット）からの採否
 
@@ -90,7 +100,8 @@ platform の状態機械（`ready_for_review` / `approved`）が持つ責務で�
 - OpenMontage のスキーマ（秒 float、scene type 語彙）から platform 契約（int ms、`StoryboardVisualKind`）
   への変換表をアダプタが持つ。upstream の語彙変更は commit を上げたときに初めて顕在化する
 - ホスト上の共有 checkout と `git` 実行ファイルに依存する（コンテナからは動かない）
-- 作業領域は成功・失敗にかかわらず削除する。失敗時のデバッグ材料は MinIO の生出力だけになる
+- 作業領域は原則として job の終わりに削除する（Decision 9）。失敗時のデバッグ材料は MinIO の生出力だけになる。
+  例外は生出力の保存失敗で、そのとき残った作業領域の回収は運用者の手作業（GC は未実装）
 
 ## 陳腐化条件
 

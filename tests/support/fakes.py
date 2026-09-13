@@ -81,8 +81,12 @@ class FakeStoryGenerator:
         on_call: Callable[[GenerationRequest], None] | None = None,
         provider_id: str = "codex",
         model: str = "fake-model",
+        prepare_error: BaseException | None = None,
     ) -> None:
         self.output = output
+        self.prepare_error = prepare_error
+        self.prepare_calls = 0
+        self.release_calls = 0
         self.fail_times = fail_times
         self.error = error
         self.on_call = on_call
@@ -140,6 +144,8 @@ class FakeStoryboardGenerator:
     """``StoryboardGenerator`` のフェイク。最初の ``fail_times`` 回だけ ``generate`` が失敗する。
 
     ``calls`` は ``generate``（有料呼び出しに相当）の回数、``interpret_calls`` は解釈の回数。
+    ``prepare_calls`` / ``release_calls`` は局所資源の確保・解放の回数。
+    ``prepare_error`` を渡すと ``prepare`` がそれを送出する（予約より前の局所的な失敗）。
     """
 
     def __init__(
@@ -153,8 +159,12 @@ class FakeStoryboardGenerator:
         generation_spec_id: str = "fake-spec@1",
         provider_id: str = "fake",
         model: str = "fake-model",
+        prepare_error: BaseException | None = None,
     ) -> None:
         self.output = output
+        self.prepare_error = prepare_error
+        self.prepare_calls = 0
+        self.release_calls = 0
         self.fail_times = fail_times
         self.error = error
         self._interpret = interpret or interpret_fake_storyboard
@@ -173,6 +183,16 @@ class FakeStoryboardGenerator:
     @property
     def generation_spec_id(self) -> str:
         return self._generation_spec_id
+
+    async def prepare(self, request: StoryboardRequest) -> None:
+        del request
+        self.prepare_calls += 1
+        if self.prepare_error is not None:
+            raise self.prepare_error
+
+    async def release(self, request: StoryboardRequest) -> None:
+        del request
+        self.release_calls += 1
 
     async def generate(self, request: StoryboardRequest) -> StoryboardRawResult:
         self.calls += 1

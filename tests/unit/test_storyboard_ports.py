@@ -49,5 +49,12 @@ def test_storyboard_ports_module_imports_nothing_from_outer_layers() -> None:
 
 
 def test_generator_protocol_has_the_two_step_split() -> None:
-    for member in ("generator_id", "generation_spec_id", "generate", "interpret"):
+    for member in (
+        "generator_id",
+        "generation_spec_id",
+        "prepare",
+        "generate",
+        "interpret",
+        "release",
+    ):
         assert hasattr(StoryboardGenerator, member)

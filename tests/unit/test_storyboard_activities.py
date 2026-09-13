@@ -5,14 +5,18 @@ Temporal を介さず直接呼ぶ。SQLite + InMemoryArtifactStore + FakeStorybo
 
 from __future__ import annotations
 
+import logging
+import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from contracts.artifacts import StoryboardArtifact, parse_artifact
 from contracts.states import (
     ArtifactType,
     EpisodeStatus,
+    FailureClass,
     JobStatus,
     ProviderCall,
     ReservationStatus,
@@ -26,9 +30,12 @@ from domain.errors import (
     StoryboardOutputUnparseableError,
     StoryboardSchemaViolationError,
     UnreconciledReservationError,
+    WorkspaceUnavailableError,
+    classify_failure,
 )
 from domain.storyboard.identity import idempotency_key, storyboard_input_hash
 from domain.storyboard.ports import StoryboardRawResult, StoryboardRequest
+from infrastructure.db.models import ProviderReservationRow
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -490,3 +497,137 @@ async def test_storyboard_readback_mismatch_is_not_recorded(session_factory) -> 
         )
     assert board is None
     assert await job_status(session_factory, job_id) is JobStatus.TERMINAL_FAILED
+
+
+# ------------------------------------------------------------------ prepare / release
+
+
+async def _all_reservations(session_factory, episode_id: str) -> list[Any]:
+    async with session_factory() as session:
+        rows = await session.scalars(
+            select(ProviderReservationRow).where(
+                ProviderReservationRow.episode_id == uuid_of(episode_id)
+            )
+        )
+        return list(rows)
+
+
+def uuid_of(value: str) -> uuid.UUID:
+    return uuid.UUID(value)
+
+
+async def test_workspace_failure_in_prepare_creates_no_reservation(
+    session_factory, artifact_store
+) -> None:
+    episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
+    generator = FakeStoryboardGenerator(
+        output=good_storyboard(), prepare_error=WorkspaceUnavailableError("disk gone")
+    )
+    activities = make_activities(session_factory, artifact_store, generator)
+    job_id = await admitted_job(activities, episode_id)
+
+    with pytest.raises(WorkspaceUnavailableError):
+        await activities.generate_storyboard(
+            GenerateStoryboardRequest(episode_id=episode_id, job_id=job_id, round=1)
+        )
+
+    assert generator.calls == 0
+    assert await _all_reservations(session_factory, episode_id) == []
+    assert await job_status(session_factory, job_id) is JobStatus.RETRYABLE_FAILED
+    assert generator.release_calls == 1, "外部呼び出し前なので解放してよい"
+
+
+async def test_invalid_input_in_prepare_is_needs_input_without_reservation(
+    session_factory, artifact_store
+) -> None:
+    episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
+    generator = FakeStoryboardGenerator(
+        output=good_storyboard(), prepare_error=StoryboardInputInvalidError("bad script")
+    )
+    activities = make_activities(session_factory, artifact_store, generator)
+    job_id = await admitted_job(activities, episode_id)
+
+    with pytest.raises(StoryboardInputInvalidError) as excinfo:
+        await activities.generate_storyboard(
+            GenerateStoryboardRequest(episode_id=episode_id, job_id=job_id, round=1)
+        )
+
+    assert classify_failure(excinfo.value) is FailureClass.NEEDS_INPUT
+    assert generator.calls == 0
+    assert await _all_reservations(session_factory, episode_id) == []
+    assert await job_status(session_factory, job_id) is JobStatus.TERMINAL_FAILED
+
+
+class _FailingRawStore(InMemoryArtifactStore):
+    async def put_text(self, key: str, text: str) -> Any:
+        raise OSError("minio down")
+
+
+async def test_raw_store_failure_after_generate_keeps_the_work_directory(
+    session_factory, caplog
+) -> None:
+    store = _FailingRawStore()
+    episode_id = await create_episode_at_script_ready(session_factory, store)
+    generator = FakeStoryboardGenerator(output=good_storyboard())
+    activities = make_activities(session_factory, store, generator)
+    job_id = await admitted_job(activities, episode_id)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(OSError):
+        await activities.generate_storyboard(
+            GenerateStoryboardRequest(episode_id=episode_id, job_id=job_id, round=1)
+        )
+
+    assert generator.calls == 1
+    assert generator.release_calls == 0, "作業領域が有料出力の唯一の写し"
+    assert any("keeping storyboard work directory" in r.getMessage() for r in caplog.records)
+
+
+async def test_success_releases_exactly_once(session_factory, artifact_store) -> None:
+    episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
+    generator = FakeStoryboardGenerator(output=good_storyboard())
+    activities = make_activities(session_factory, artifact_store, generator)
+    job_id = await admitted_job(activities, episode_id)
+
+    await activities.generate_storyboard(
+        GenerateStoryboardRequest(episode_id=episode_id, job_id=job_id, round=1)
+    )
+
+    assert (generator.prepare_calls, generator.calls, generator.release_calls) == (1, 1, 1)
+
+
+async def test_prepare_runs_before_the_reservation(session_factory, artifact_store) -> None:
+    episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
+    seen: list[int] = []
+
+    class _Probe(FakeStoryboardGenerator):
+        async def prepare(self, request: StoryboardRequest) -> None:
+            seen.append(len(await _all_reservations(session_factory, request.episode_id)))
+            await super().prepare(request)
+
+    generator = _Probe(output=good_storyboard())
+    activities = make_activities(session_factory, artifact_store, generator)
+    job_id = await admitted_job(activities, episode_id)
+    await activities.generate_storyboard(
+        GenerateStoryboardRequest(episode_id=episode_id, job_id=job_id, round=1)
+    )
+    assert seen == [0]
+
+
+async def test_skip_path_neither_prepares_nor_generates(session_factory, artifact_store) -> None:
+    episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
+    first = FakeStoryboardGenerator(output=good_storyboard())
+    activities = make_activities(session_factory, artifact_store, first)
+    job_id = await admitted_job(activities, episode_id)
+    await activities.generate_storyboard(
+        GenerateStoryboardRequest(episode_id=episode_id, job_id=job_id, round=1)
+    )
+
+    second = FakeStoryboardGenerator(output=good_storyboard())
+    again = make_activities(session_factory, artifact_store, second)
+    next_job = await again.create_job(CreateJobRequest(episode_id=episode_id, max_attempts=3))
+    result = await again.generate_storyboard(
+        GenerateStoryboardRequest(episode_id=episode_id, job_id=next_job, round=1)
+    )
+
+    assert result.reused is True
+    assert (second.prepare_calls, second.calls, second.release_calls) == (0, 0, 0)

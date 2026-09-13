@@ -30,7 +30,7 @@ from domain.errors import (
     WorkspaceUnavailableError,
 )
 from domain.storyboard.coverage import check_storyboard_covers_script
-from domain.storyboard.normalize import assign_scene_identity
+from domain.storyboard.normalize import assign_scene_identity, normalize_timeline
 from domain.storyboard.ports import StoryboardGenerator, StoryboardRequest
 from infrastructure.providers.openmontage_storyboard import (
     SCENE_DIRECTOR_PATH,
@@ -348,50 +348,60 @@ def test_script_conversion_shape() -> None:
     ] == [("s1", "始まり", 0, 5), ("s2", "展開", 5, 10.5), ("s3", "結末", 10.5, 15)]
 
 
-async def test_conversion_failing_the_script_schema_is_input_invalid(tmp_path) -> None:
+async def test_conversion_failing_the_script_schema_is_input_invalid_in_prepare(tmp_path) -> None:
     strict = json.loads(json.dumps(SCRIPT_SCHEMA))
     del strict["properties"]["metadata"]
     llm = FakeStoryGenerator(output=_plan())
     with pytest.raises(StoryboardInputInvalidError):
-        await _generator(tmp_path, llm, spec=_spec(script_schema=strict)).generate(_request())
+        await _generator(tmp_path, llm, spec=_spec(script_schema=strict)).prepare(_request())
+    assert llm.calls == 0
+    assert not (tmp_path / "work").exists(), "入力不備では作業領域を作らない"
+
+
+# --- prepare / generate / release -----------------------------------------
+
+
+async def test_prepare_writes_audit_inputs_without_calling_the_llm(tmp_path) -> None:
+    workdir = WorkDirectory(tmp_path / "work")
+    llm = FakeStoryGenerator(output=_plan())
+    await _generator(tmp_path, llm, workdir=workdir).prepare(_request())
+
+    job = workdir.create(EPISODE_ID, JOB_ID)
+    assert llm.calls == 0
+    assert json.loads((job.input / "script.openmontage.json").read_text("utf-8")) == (
+        to_openmontage_script(_script())
+    )
+    assert (job.openmontage / "scene-director.md").read_text("utf-8") == DIRECTOR_MD
+    assert json.loads((job.openmontage / "scene_plan.schema.json").read_text("utf-8")) == (
+        SCENE_PLAN_SCHEMA
+    )
+
+
+class _BrokenCreate(WorkDirectory):
+    def create(self, episode_id: str, job_id: str):
+        raise WorkspaceUnavailableError("disk gone")
+
+
+async def test_prepare_workspace_failure_is_raised_before_any_llm_call(tmp_path) -> None:
+    llm = FakeStoryGenerator(output=_plan())
+    with pytest.raises(WorkspaceUnavailableError):
+        await _generator(tmp_path, llm, workdir=_BrokenCreate(tmp_path / "work")).prepare(
+            _request()
+        )
     assert llm.calls == 0
 
 
-# --- generate -------------------------------------------------------------
-
-
-async def test_generate_writes_audit_files_prompts_and_cleans_up(tmp_path, monkeypatch) -> None:
-    seen: dict[str, Any] = {}
+async def test_generate_prompts_writes_raw_copy_and_does_not_clean_up(tmp_path) -> None:
     workdir = WorkDirectory(tmp_path / "work")
+    llm = FakeStoryGenerator(output="RAW TEXT", model="m-1")
+    generator = _generator(tmp_path, llm, workdir=workdir)
+    await generator.prepare(_request())
 
-    def _on_call(request) -> None:
-        job = workdir.create(EPISODE_ID, JOB_ID)
-        seen["script"] = json.loads((job.input / "script.openmontage.json").read_text("utf-8"))
-        seen["md"] = (job.openmontage / "scene-director.md").read_text("utf-8")
-        seen["schema"] = json.loads((job.openmontage / "scene_plan.schema.json").read_text("utf-8"))
-        seen["base"] = job.base
-
-    llm = FakeStoryGenerator(output="RAW TEXT", on_call=_on_call, model="m-1")
-    raw_path: dict[str, pathlib.Path] = {}
-    original_write = pathlib.Path.write_text
-
-    def _spy(self, data, *args, **kwargs):
-        if self.name == "scene_plan.raw.txt":
-            raw_path["path"] = self
-            raw_path["data"] = data
-        return original_write(self, data, *args, **kwargs)
-
-    monkeypatch.setattr(pathlib.Path, "write_text", _spy)
-    result = await _generator(tmp_path, llm, workdir=workdir).generate(_request())
+    result = await generator.generate(_request())
 
     assert (result.text, result.provider_id, result.model) == ("RAW TEXT", "codex", "m-1")
-    assert seen["script"] == to_openmontage_script(_script())
-    assert seen["md"] == DIRECTOR_MD
-    assert seen["schema"] == SCENE_PLAN_SCHEMA
-    assert raw_path["data"] == "RAW TEXT"
-    assert raw_path["path"].parent.name == "output"
-    assert not seen["base"].exists(), "作業領域は成功時にも消す"
-
+    job = workdir.create(EPISODE_ID, JOB_ID)
+    assert (job.output / "scene_plan.raw.txt").read_text("utf-8") == "RAW TEXT"
     request = llm.requests[0]
     assert request.output_schema is None
     assert request.timeout_seconds == 77
@@ -401,14 +411,30 @@ async def test_generate_writes_audit_files_prompts_and_cleans_up(tmp_path, monke
     assert "始まり" in request.prompt
     assert "{{" not in request.prompt.replace(DIRECTOR_MD, "")
 
+    await generator.release(_request())
+    assert not job.base.exists(), "release が作業領域を消す"
 
-async def test_provider_errors_propagate_and_workdir_is_cleaned(tmp_path) -> None:
+
+async def test_raw_copy_failure_does_not_lose_the_paid_result(tmp_path, caplog) -> None:
+    generator = _generator(tmp_path, workdir=_BrokenCreate(tmp_path / "work"))
+    with caplog.at_level(logging.WARNING):
+        result = await generator.generate(_request())
+    assert result.text == _plan()
+    assert any("raw output copy" in r.getMessage() for r in caplog.records)
+
+
+async def test_provider_errors_propagate_and_generate_leaves_cleanup_to_release(tmp_path) -> None:
     workdir = WorkDirectory(tmp_path / "work")
     llm = FakeStoryGenerator(fail_times=1, error=ProviderTimeoutError("slow"))
+    generator = _generator(tmp_path, llm, workdir=workdir)
+    await generator.prepare(_request())
+    job_dir = tmp_path / "work" / "episodes" / EPISODE_ID / JOB_ID
     with pytest.raises(ProviderTimeoutError):
-        await _generator(tmp_path, llm, workdir=workdir).generate(_request())
+        await generator.generate(_request())
     assert llm.calls == 1
-    assert not (tmp_path / "work" / "episodes" / EPISODE_ID / JOB_ID).exists()
+    assert job_dir.exists()
+    await generator.release(_request())
+    assert not job_dir.exists()
 
 
 class _BrokenCleanup(WorkDirectory):
@@ -416,26 +442,17 @@ class _BrokenCleanup(WorkDirectory):
         raise WorkspaceUnavailableError("cannot remove")
 
 
-async def test_cleanup_failure_does_not_mask_the_result(tmp_path, caplog) -> None:
-    workdir = _BrokenCleanup(tmp_path / "work")
+async def test_release_never_raises_and_logs(tmp_path, caplog) -> None:
+    generator = _generator(tmp_path, workdir=_BrokenCleanup(tmp_path / "work"))
     with caplog.at_level(logging.WARNING):
-        result = await _generator(tmp_path, workdir=workdir).generate(_request())
-    assert result.text == _plan()
+        await generator.release(_request())
     assert any("clean up" in r.getMessage() for r in caplog.records)
-
-
-async def test_cleanup_failure_does_not_mask_the_provider_error(tmp_path, caplog) -> None:
-    workdir = _BrokenCleanup(tmp_path / "work")
-    llm = FakeStoryGenerator(fail_times=1, error=ProviderTimeoutError("slow"))
-    with caplog.at_level(logging.WARNING), pytest.raises(ProviderTimeoutError):
-        await _generator(tmp_path, llm, workdir=workdir).generate(_request())
-    assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
 # --- interpret ------------------------------------------------------------
 
 
-def test_interpret_maps_fields_and_normalizes(tmp_path) -> None:
+def test_interpret_maps_fields(tmp_path) -> None:
     drafts = _generator(tmp_path).interpret(_plan(), _script())
     assert [(d.script_scene_id, d.start_ms, d.duration_ms) for d in drafts] == [
         ("s1", 0, 5000),
@@ -539,16 +556,28 @@ def test_strings_at_the_limit_are_accepted(tmp_path) -> None:
     assert len(drafts[0].visual_description) == 600
 
 
+def test_interpret_does_not_normalize_the_timeline(tmp_path) -> None:
+    """正規化はドメイン規則で activity が一度だけ適用する（ポートの契約）。"""
+    plan = _plan(_scene("s1", 0.2, 5.3), _scene("s2", 5, 10.4), _scene("s3", 10.6, 15.7))
+    drafts = _generator(tmp_path).interpret(plan, _script())
+    assert [d.start_ms for d in drafts] == [200, 5000, 10600]
+
+
 def test_gap_beyond_snap_tolerance_is_a_violation(tmp_path) -> None:
+    drafts = _generator(tmp_path).interpret(
+        _plan(_scene("s1", 0, 5), _scene("s2", 6, 10.5), _scene("s3", 10.5, 15)), _script()
+    )
     with pytest.raises(StoryboardSchemaViolationError):
-        _generator(tmp_path).interpret(
-            _plan(_scene("s1", 0, 5), _scene("s2", 6, 10.5), _scene("s3", 10.5, 15)), _script()
-        )
+        normalize_timeline(drafts, _script().total_duration_ms)
 
 
 def test_small_drift_is_snapped(tmp_path) -> None:
-    drafts = _generator(tmp_path).interpret(
-        _plan(_scene("s1", 0.2, 5.3), _scene("s2", 5, 10.4), _scene("s3", 10.6, 15.7)), _script()
+    drafts = normalize_timeline(
+        _generator(tmp_path).interpret(
+            _plan(_scene("s1", 0.2, 5.3), _scene("s2", 5, 10.4), _scene("s3", 10.6, 15.7)),
+            _script(),
+        ),
+        _script().total_duration_ms,
     )
     assert drafts[0].start_ms == 0
     assert drafts[1].start_ms == 5300
@@ -654,6 +683,8 @@ def test_interpret_against_the_pinned_scene_plan_schema(tmp_path, pinned_spec) -
 
 async def test_generate_with_the_pinned_spec(tmp_path, pinned_spec) -> None:
     llm = FakeStoryGenerator(output=_plan())
-    result = await _generator(tmp_path, llm, spec=pinned_spec).generate(_request())
+    generator = _generator(tmp_path, llm, spec=pinned_spec)
+    await generator.prepare(_request())
+    result = await generator.generate(_request())
     assert result.text == _plan()
     assert "Scene Director" in llm.requests[0].prompt

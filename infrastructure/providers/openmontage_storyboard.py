@@ -32,9 +32,9 @@ from domain.errors import (
     StoryboardInputInvalidError,
     StoryboardOutputUnparseableError,
     StoryboardSchemaViolationError,
+    WorkspaceUnavailableError,
 )
 from domain.script.ports import GenerationRequest, StoryGenerator
-from domain.storyboard.normalize import normalize_timeline
 from domain.storyboard.ports import StoryboardRawResult, StoryboardRequest, StoryboardSceneDraft
 from infrastructure.providers.process import ProcessRunner, ProcessTimeout
 from infrastructure.workdir import WorkDirectory
@@ -224,7 +224,75 @@ class OpenMontageGuidedStoryboardGenerator:
     def generation_spec_id(self) -> str:
         return self._spec.generation_spec_id
 
+    async def prepare(self, request: StoryboardRequest) -> None:
+        """台本を変換・検証し、作業領域を作って監査用の入力を書く。LLM は呼ばない。"""
+        converted = self._convert(request)
+        job = self._workdir.create(request.episode_id, request.job_id)
+        try:
+            (job.input / "script.openmontage.json").write_text(_dump(converted), encoding="utf-8")
+            (job.openmontage / "scene-director.md").write_text(
+                self._spec.scene_director_md, encoding="utf-8"
+            )
+            (job.openmontage / "scene_plan.schema.json").write_text(
+                _dump(self._spec.scene_plan_schema), encoding="utf-8"
+            )
+        except OSError as exc:
+            raise WorkspaceUnavailableError(
+                f"cannot write storyboard inputs to {job.base}: {exc}"
+            ) from exc
+
     async def generate(self, request: StoryboardRequest) -> StoryboardRawResult:
+        """プロンプトを組んで LLM を1回呼び、生出力を作業領域にも書く。後片付けはしない。"""
+        converted = self._convert(request)
+        script_json = _dump(converted)
+        schema_json = _dump(self._spec.scene_plan_schema)
+        prompt = render_storyboard_prompt(
+            spec_markdown=self._spec.scene_director_md,
+            output_schema_json=schema_json,
+            script_json=script_json,
+            total_duration_seconds=str(converted["total_duration_seconds"]),
+            language=request.script.language,
+        )
+        result = await self._llm.generate(
+            GenerationRequest(
+                episode_id=request.episode_id,
+                prompt=prompt,
+                output_schema=None,
+                timeout_seconds=request.timeout_seconds,
+            )
+        )
+        try:
+            # 冪等な再作成。呼び出し側は生出力を MinIO に保存するまで作業領域を消さない。
+            job = self._workdir.create(request.episode_id, request.job_id)
+            (job.output / "scene_plan.raw.txt").write_text(result.text, encoding="utf-8")
+        except (OSError, WorkspaceUnavailableError):
+            # 作業コピーは source of truth ではない。有料の結果を捨てないために握りつぶす。
+            logger.warning(
+                "failed to write storyboard raw output copy episode=%s job=%s",
+                request.episode_id,
+                request.job_id,
+                exc_info=True,
+            )
+        return StoryboardRawResult(
+            text=result.text,
+            provider_id=result.provider_id,
+            model=result.model,
+            raw_log=result.raw_log,
+        )
+
+    async def release(self, request: StoryboardRequest) -> None:
+        """作業領域を消す。失敗しても例外を投げない（ログに残す）。"""
+        try:
+            self._workdir.cleanup(request.episode_id, request.job_id)
+        except Exception:
+            logger.warning(
+                "failed to clean up storyboard work directory episode=%s job=%s",
+                request.episode_id,
+                request.job_id,
+                exc_info=True,
+            )
+
+    def _convert(self, request: StoryboardRequest) -> dict[str, Any]:
         converted = to_openmontage_script(request.script)
         errors = _schema_errors(self._spec.script_schema, converted)
         if errors:
@@ -232,47 +300,7 @@ class OpenMontageGuidedStoryboardGenerator:
                 "converted script violates pinned script schema: "
                 + "; ".join(errors[:_MAX_REPORTED_ERRORS])
             )
-        job = self._workdir.create(request.episode_id, request.job_id)
-        try:
-            script_json = _dump(converted)
-            schema_json = _dump(self._spec.scene_plan_schema)
-            (job.input / "script.openmontage.json").write_text(script_json, encoding="utf-8")
-            (job.openmontage / "scene-director.md").write_text(
-                self._spec.scene_director_md, encoding="utf-8"
-            )
-            (job.openmontage / "scene_plan.schema.json").write_text(schema_json, encoding="utf-8")
-            prompt = render_storyboard_prompt(
-                spec_markdown=self._spec.scene_director_md,
-                output_schema_json=schema_json,
-                script_json=script_json,
-                total_duration_seconds=str(converted["total_duration_seconds"]),
-                language=request.script.language,
-            )
-            result = await self._llm.generate(
-                GenerationRequest(
-                    episode_id=request.episode_id,
-                    prompt=prompt,
-                    output_schema=None,
-                    timeout_seconds=request.timeout_seconds,
-                )
-            )
-            (job.output / "scene_plan.raw.txt").write_text(result.text, encoding="utf-8")
-            return StoryboardRawResult(
-                text=result.text,
-                provider_id=result.provider_id,
-                model=result.model,
-                raw_log=result.raw_log,
-            )
-        finally:
-            try:
-                self._workdir.cleanup(request.episode_id, request.job_id)
-            except Exception:
-                logger.warning(
-                    "failed to clean up storyboard work directory episode=%s job=%s",
-                    request.episode_id,
-                    request.job_id,
-                    exc_info=True,
-                )
+        return converted
 
     def interpret(self, raw_text: str, script: ScriptArtifact) -> tuple[StoryboardSceneDraft, ...]:
         try:
@@ -290,8 +318,10 @@ class OpenMontageGuidedStoryboardGenerator:
         if not isinstance(scenes, list) or not scenes:
             raise StoryboardSchemaViolationError("scene plan has no scenes")
         section_ids = {scene.id for scene in script.scenes}
-        drafts = [self._to_draft(index, scene, section_ids) for index, scene in enumerate(scenes)]
-        return normalize_timeline(drafts, script.total_duration_ms)
+        # 時間軸の正規化はドメイン規則で、呼び出し側（activity）が一度だけ適用する。
+        return tuple(
+            self._to_draft(index, scene, section_ids) for index, scene in enumerate(scenes)
+        )
 
     @staticmethod
     def _to_draft(index: int, scene: dict[str, Any], section_ids: set[str]) -> StoryboardSceneDraft:

@@ -15,7 +15,7 @@ from contracts.artifacts import (
     parse_storyboard_artifact,
 )
 from domain.storyboard.coverage import check_storyboard_covers_script
-from domain.storyboard.normalize import assign_scene_identity
+from domain.storyboard.normalize import assign_scene_identity, normalize_timeline
 from domain.storyboard.ports import StoryboardRequest
 from infrastructure.config import Settings
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
@@ -85,16 +85,19 @@ async def test_openmontage_guided_storyboard_end_to_end(tmp_path: Path) -> None:
     )
     episode_id, job_id = str(uuid.uuid4()), str(uuid.uuid4())
     script = _script(episode_id)
-    raw = await generator.generate(
-        StoryboardRequest(
-            episode_id=episode_id,
-            job_id=job_id,
-            script=script,
-            timeout_seconds=settings.storyboard_timeout_seconds,
-        )
+    request = StoryboardRequest(
+        episode_id=episode_id,
+        job_id=job_id,
+        script=script,
+        timeout_seconds=settings.storyboard_timeout_seconds,
     )
+    await generator.prepare(request)
+    try:
+        raw = await generator.generate(request)
+    finally:
+        await generator.release(request)
     assert raw.text.strip()
-    drafts = generator.interpret(raw.text, script)
+    drafts = normalize_timeline(generator.interpret(raw.text, script), script.total_duration_ms)
     payload = build_storyboard_artifact(
         episode_id=episode_id,
         source_script={

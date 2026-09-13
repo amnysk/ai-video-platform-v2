@@ -58,4 +58,17 @@ PostgreSQL に記録する。オブジェクトキーだけを見て現行版を
 パスを `resolve()` しない。構成要素のどれかが symlink なら削除せず拒否する
 （root 内の別 job への symlink を辿って他人の作業領域を消さないため）。
 
+### storyboard 工程でのライフサイクル（ADR-0016 Decision 7〜9）
+
+1. `prepare`（予約より前）: 作業領域を作り、変換した台本と仕様のコピーを `input/` `openmontage/` に書く。
+   失敗しても予約台帳には何も残らない
+2. `generate`: 生出力の作業コピーを `output/scene_plan.raw.txt` に書く（写しの失敗は警告だけ）
+3. 生出力を MinIO（`provider-raw/`）に保存
+4. `release`: 作業領域を削除。削除の失敗は警告ログだけで job を失敗にしない
+
+`release` は「生成器が有料出力を返していない」か「生出力を MinIO に保存し終えた」ときだけ呼ぶ。
+**生成器が戻った後で MinIO への保存に失敗した場合は作業領域を残す**（警告ログ
+`keeping storyboard work directory` に episode / job / round が出る）。そのときは
+`output/scene_plan.raw.txt` が有料出力の唯一の写しなので、照合（ADR-0013）が済むまで消さないこと。
+
 保持期間・GC デーモン・容量管理は別の作業。
