@@ -47,11 +47,13 @@ from tests.support.storyboard import (
     good_storyboard,
 )
 from workers.storyboard.activities import (
+    AdmitRequest,
     CreateJobRequest,
-    EpisodeRef,
     GenerateStoryboardRequest,
     StoryboardActivities,
 )
+
+WORKFLOW_ID = "episode-test-storyboard"
 
 
 def make_activities(session_factory, store, generator) -> StoryboardActivities:
@@ -68,7 +70,9 @@ def make_activities(session_factory, store, generator) -> StoryboardActivities:
 
 
 async def admitted_job(activities: StoryboardActivities, episode_id: str) -> str:
-    admit = await activities.admit_episode(EpisodeRef(episode_id=episode_id))
+    admit = await activities.admit_episode(
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID)
+    )
     assert admit.admitted
     return await activities.create_job(CreateJobRequest(episode_id=episode_id, max_attempts=3))
 
@@ -107,11 +111,44 @@ async def test_admit_moves_script_ready_to_in_progress_and_is_idempotent(
     episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
     activities = make_activities(session_factory, artifact_store, FakeStoryboardGenerator())
 
-    first = await activities.admit_episode(EpisodeRef(episode_id=episode_id))
-    again = await activities.admit_episode(EpisodeRef(episode_id=episode_id))
+    first = await activities.admit_episode(
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID)
+    )
+    again = await activities.admit_episode(
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID)
+    )
 
     assert first.admitted and first.status == EpisodeStatus.IN_PROGRESS.value
     assert again.admitted and again.status == EpisodeStatus.IN_PROGRESS.value
+
+
+async def test_admit_refuses_an_episode_in_progress_under_another_workflow(
+    session_factory, artifact_store
+) -> None:
+    """台本工程が走っている in_progress の Episode に storyboard が割り込まない。
+
+    割り込むと台本が未完成のまま needs_input で落ち、台本工程の Episode を blocked にする。
+    """
+    async with session_factory() as session:
+        episodes = EpisodeRepository(session)
+        episode = await episodes.create(topic="x")
+        await episodes.apply_event(episode.id, EpisodeEvent.WORKFLOW_STARTED)
+        await episodes.set_workflow_id(episode.id, f"episode-{episode.id}")
+        await session.commit()
+    generator = FakeStoryboardGenerator()
+    activities = make_activities(session_factory, artifact_store, generator)
+
+    result = await activities.admit_episode(
+        AdmitRequest(episode_id=episode.id, workflow_id=f"episode-{episode.id}-storyboard")
+    )
+
+    assert result.admitted is False
+    assert result.status == EpisodeStatus.IN_PROGRESS.value
+    async with session_factory() as session:
+        assert await JobRepository(session).list_for_episode(episode.id) == []
+        still = await EpisodeRepository(session).get(episode.id)
+    assert still is not None and still.status is EpisodeStatus.IN_PROGRESS
+    assert generator.calls == 0
 
 
 @pytest.mark.parametrize("to_blocked", [False, True])
@@ -127,7 +164,9 @@ async def test_admit_refuses_episodes_outside_the_parking_points(
         await session.commit()
     activities = make_activities(session_factory, artifact_store, FakeStoryboardGenerator())
 
-    result = await activities.admit_episode(EpisodeRef(episode_id=episode.id))
+    result = await activities.admit_episode(
+        AdmitRequest(episode_id=episode.id, workflow_id=WORKFLOW_ID)
+    )
 
     assert result.admitted is False
     expected = EpisodeStatus.BLOCKED if to_blocked else EpisodeStatus.PLANNED

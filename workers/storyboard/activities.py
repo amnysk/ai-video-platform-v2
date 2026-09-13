@@ -76,6 +76,13 @@ class EpisodeRef:
 
 
 @dataclass
+class AdmitRequest:
+    episode_id: str
+    #: 入場を主張する workflow。``in_progress`` の再入場は同じ workflow にだけ許す。
+    workflow_id: str
+
+
+@dataclass
 class AdmitResult:
     #: False なら workflow は何もせず終わる（状態も Job も作らない）。
     admitted: bool
@@ -168,14 +175,21 @@ class StoryboardActivities:
     # ------------------------------------------------------------------ 状態
 
     @activity.defn(name="storyboard_admit_episode")
-    async def admit_episode(self, request: EpisodeRef) -> AdmitResult:
+    async def admit_episode(self, request: AdmitRequest) -> AdmitResult:
         """駐機点から工程へ入れる。
 
-        - ``script_ready`` / ``storyboard_ready`` → ``stage_admitted`` で ``in_progress``
-        - ``in_progress`` → 何もしない（Activity 再実行で二重遷移しない / INV-17）
+        - ``script_ready`` / ``storyboard_ready`` → ``stage_admitted`` で ``in_progress``。
+          同じトランザクションで ``episodes.workflow_id`` に入場した workflow を記録する
+        - ``in_progress`` → **記録された workflow_id が自分と一致する場合だけ**何もせず通す
+          （Activity 再実行で二重遷移しない / INV-17）。他の workflow（例: 実行中の台本工程）
+          が ``in_progress`` にしている Episode へは入らない。入ると台本未完成のまま
+          needs_input で失敗し、他工程の Episode を ``blocked`` へ落としてしまう
         - それ以外（blocked / needs_work / planned / 終端 / 不在）→ 入れない。
           失敗として記録もしない: 工程に入っていないので job も Episode 事象も無い。
           ``blocked`` からの再開は ``resumed``（人間の判断）であり、この API の責務ではない。
+
+        workflow_id は相関用の列（INV-8）だが、ここでは PostgreSQL 上の入場記録として読む。
+        権威は依然 PostgreSQL であり Temporal の実行状態ではない。
         """
         async with self._session_factory() as session:
             episodes = EpisodeRepository(session)
@@ -183,10 +197,14 @@ class StoryboardActivities:
             if episode is None:
                 return AdmitResult(admitted=False, status="")
             if episode.status is EpisodeStatus.IN_PROGRESS:
-                return AdmitResult(admitted=True, status=episode.status.value)
+                owner = await episodes.get_workflow_id(request.episode_id)
+                return AdmitResult(
+                    admitted=owner == request.workflow_id, status=episode.status.value
+                )
             if episode.status not in ADMISSIBLE_STATUSES:
                 return AdmitResult(admitted=False, status=episode.status.value)
             updated = await episodes.apply_event(request.episode_id, EpisodeEvent.STAGE_ADMITTED)
+            await episodes.set_workflow_id(request.episode_id, request.workflow_id)
             await session.commit()
             return AdmitResult(admitted=True, status=updated.status.value)
 

@@ -30,6 +30,7 @@ from tests.support.storyboard import (
     record_script,
 )
 from workers.storyboard.activities import (
+    AdmitRequest,
     CreateJobRequest,
     EpisodeRef,
     GenerateStoryboardRequest,
@@ -42,6 +43,8 @@ pytestmark = pytest.mark.skipif(
     not DATABASE_URL or "postgresql" not in DATABASE_URL or not os.environ.get("MINIO_ENDPOINT"),
     reason="DATABASE_URL (PostgreSQL) and MINIO_ENDPOINT must be set (docker compose core)",
 )
+
+WORKFLOW_ID = "episode-test-storyboard"
 
 
 @pytest_asyncio.fixture
@@ -84,7 +87,9 @@ async def _run(session_factory, store, episode_id: str, generator) -> None:
         prompt_template_id=PROMPT_ID,
         prompt_template_version=PROMPT_VERSION,
     )
-    admit = await activities.admit_episode(EpisodeRef(episode_id=episode_id))
+    admit = await activities.admit_episode(
+        AdmitRequest(episode_id=episode_id, workflow_id=WORKFLOW_ID)
+    )
     assert admit.admitted
     job_id = await activities.create_job(CreateJobRequest(episode_id=episode_id, max_attempts=3))
     await activities.generate_storyboard(

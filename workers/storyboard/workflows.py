@@ -23,6 +23,7 @@ with workflow.unsafe.imports_passed_through():
         failure_class_from_type_name,
     )
     from workers.storyboard.activities import (
+        AdmitRequest,
         CreateJobRequest,
         EpisodeRef,
         GenerateStoryboardRequest,
@@ -76,7 +77,7 @@ class StoryboardWorkflow:
 
         admit = await workflow.execute_activity_method(
             StoryboardActivities.admit_episode,
-            episode_ref,
+            AdmitRequest(episode_id=request.episode_id, workflow_id=workflow.info().workflow_id),
             start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
             retry_policy=STATE_RETRY_POLICY,
         )

@@ -18,9 +18,14 @@ from contracts.states import STORYBOARD_WORKFLOW
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
+from infrastructure.providers.openmontage_storyboard import (
+    OpenMontageGuidedStoryboardGenerator,
+    load_openmontage_spec,
+)
 from infrastructure.providers.process import SubprocessRunner
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.workdir import WorkDirectory
+from prompts import STORYBOARD_PROMPT_TEMPLATE_ID, STORYBOARD_PROMPT_TEMPLATE_VERSION
 from workers.storyboard.activities import DEFAULT_MODEL_LABEL, StoryboardActivities
 from workers.storyboard.workflows import StoryboardWorkflow
 
@@ -39,18 +44,6 @@ async def main() -> None:
             "OPENMONTAGE_REPO_PATH is not set: storyboard worker needs the OpenMontage "
             "checkout (read-only) to load the pinned generation spec"
         )
-
-    # TODO(phase3-merge): agent D の adapter / prompts 定数が同じブランチに入ったら
-    # pyright: ignore を外し、import をモジュール先頭へ移す。
-    from infrastructure.providers.openmontage_storyboard import (  # pyright: ignore[reportMissingImports]
-        OpenMontageGuidedStoryboardGenerator,
-        load_openmontage_spec,
-    )
-
-    from prompts import (
-        STORYBOARD_PROMPT_TEMPLATE_ID,  # pyright: ignore[reportAttributeAccessIssue]
-        STORYBOARD_PROMPT_TEMPLATE_VERSION,  # pyright: ignore[reportAttributeAccessIssue]
-    )
 
     client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
     store = MinioArtifactStore.from_settings(settings)

@@ -127,6 +127,11 @@ class EpisodeRepository:
         await self._session.flush()
         return _to_episode(row)
 
+    async def get_workflow_id(self, episode_id: uuid.UUID | str) -> str | None:
+        """相関用に記録した workflow id（無ければ ``None``）。"""
+        row = await self._row(episode_id)
+        return row.workflow_id if row is not None else None
+
     async def set_workflow_id(self, episode_id: uuid.UUID | str, workflow_id: str) -> None:
         """Temporal参照は相関のためだけに持つ。状態の権威ではない（INV-8）。"""
         row = await self._row(episode_id)
