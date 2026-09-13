@@ -100,3 +100,31 @@ async def test_duplicate_artifact_digest_is_idempotent_on_postgres(pg_session_fa
 
         assert first.id == second.id
         assert len(await artifacts.list_for_episode(episode.id)) == 1
+
+
+async def test_artifact_generation_a_b_a_on_postgres(pg_session_factory) -> None:
+    """A→B→A の復帰が partial unique index（現行は1本）と衝突しないこと。"""
+    async with pg_session_factory() as session:
+        episode = await EpisodeRepository(session).create(topic="t")
+        artifacts = ArtifactMetadataRepository(session)
+
+        def kwargs(sha: str, input_hash: str) -> dict:
+            return dict(
+                episode_id=episode.id,
+                artifact_type=ArtifactType.STORYBOARD,
+                schema_version="1.0",
+                bucket="artifacts",
+                object_key=f"artifacts/{episode.id}/storyboard/{sha}.json",
+                sha256=sha,
+                input_hash=input_hash,
+            )
+
+        first = await artifacts.record(**kwargs("a" * 64, "h1"))
+        await session.commit()
+        await artifacts.record(**kwargs("b" * 64, "h2"))
+        await session.commit()
+        again = await artifacts.record(**kwargs("a" * 64, "h1"))
+        await session.commit()
+
+        current = await artifacts.find_current_by_type(episode.id, ArtifactType.STORYBOARD)
+        assert current is not None and current.id == first.id == again.id

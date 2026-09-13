@@ -276,7 +276,17 @@ class ArtifactMetadataRepository:
             ArtifactMetadataRow.sha256 == sha256,
         )
         existing = (await self._session.scalars(stmt)).first()
+        now = _now()
         if existing is not None:
+            if existing.superseded_at is None:
+                return _to_artifact(existing)
+            # A→B→A: 同じ内容が過去世代に居る。降ろされた行を「現行」として返すと
+            # find_current_by_type と食い違うので、現行を降ろして過去行を復帰させる。
+            await self._supersede_current(episode_uuid, artifact_type, now)
+            existing.superseded_at = None
+            if input_hash is not None:
+                existing.input_hash = input_hash
+            await self._session.flush()
             return _to_artifact(existing)
 
         max_version = await self._session.scalar(
@@ -285,15 +295,7 @@ class ArtifactMetadataRepository:
                 ArtifactMetadataRow.artifact_type == artifact_type.value,
             )
         )
-        now = _now()
-        current_stmt = select(ArtifactMetadataRow).where(
-            ArtifactMetadataRow.episode_id == episode_uuid,
-            ArtifactMetadataRow.artifact_type == artifact_type.value,
-            ArtifactMetadataRow.superseded_at.is_(None),
-        )
-        for current in (await self._session.scalars(current_stmt)).all():
-            current.superseded_at = now
-        await self._session.flush()
+        await self._supersede_current(episode_uuid, artifact_type, now)
 
         row = ArtifactMetadataRow(
             id=uuid.uuid4(),
@@ -313,6 +315,31 @@ class ArtifactMetadataRepository:
         self._session.add(row)
         await self._session.flush()
         return _to_artifact(row)
+
+    async def _supersede_current(
+        self, episode_uuid: uuid.UUID, artifact_type: ArtifactType, now: datetime
+    ) -> None:
+        """現行世代を降ろす唯一の場所。partial unique index より先に flush する。"""
+        current_stmt = select(ArtifactMetadataRow).where(
+            ArtifactMetadataRow.episode_id == episode_uuid,
+            ArtifactMetadataRow.artifact_type == artifact_type.value,
+            ArtifactMetadataRow.superseded_at.is_(None),
+        )
+        for current in (await self._session.scalars(current_stmt)).all():
+            current.superseded_at = now
+        await self._session.flush()
+
+    async def find_current_by_type(
+        self, episode_id: uuid.UUID | str, artifact_type: ArtifactType
+    ) -> ArtifactMetadata | None:
+        """``(episode_id, artifact_type)`` の現行世代を引く（入力の特定に使う。ADR-0015）。"""
+        stmt = select(ArtifactMetadataRow).where(
+            ArtifactMetadataRow.episode_id == _as_uuid(episode_id),
+            ArtifactMetadataRow.artifact_type == artifact_type.value,
+            ArtifactMetadataRow.superseded_at.is_(None),
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_artifact(row) if row else None
 
     async def find_current(
         self,

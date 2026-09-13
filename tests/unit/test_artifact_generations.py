@@ -141,3 +141,39 @@ async def test_input_hash_defaults_to_sha256_for_deterministic_callers(session) 
     await session.commit()
     assert meta is not None
     assert await artifacts.find_current(episode_id, ArtifactType.DUMMY, "a" * 64) is not None
+
+
+async def test_find_current_by_type_returns_the_current_generation(session) -> None:
+    episode_id = await _episode(session)
+    artifacts = ArtifactMetadataRepository(session)
+    assert await artifacts.find_current_by_type(episode_id, ArtifactType.SCRIPT) is None
+
+    await artifacts.record(**_kwargs(episode_id, sha="a" * 64, input_hash="h1"))
+    second = await artifacts.record(**_kwargs(episode_id, sha="b" * 64, input_hash="h2"))
+    await session.commit()
+
+    found = await artifacts.find_current_by_type(episode_id, ArtifactType.SCRIPT)
+    assert found is not None and found.id == second.id
+    assert await artifacts.find_current_by_type(episode_id, ArtifactType.STORYBOARD) is None
+
+
+async def test_recording_a_superseded_content_again_reinstates_it(session) -> None:
+    """A→B→A: 過去世代と同じ内容を再記録したら、それが現行に戻る（降ろされた行を返さない）。"""
+    episode_id = await _episode(session)
+    artifacts = ArtifactMetadataRepository(session)
+    first = await artifacts.record(**_kwargs(episode_id, sha="a" * 64, input_hash="h1"))
+    await session.commit()
+    second = await artifacts.record(**_kwargs(episode_id, sha="b" * 64, input_hash="h2"))
+    await session.commit()
+
+    again = await artifacts.record(**_kwargs(episode_id, sha="a" * 64, input_hash="h3"))
+    await session.commit()
+
+    assert again.id == first.id
+    current = await artifacts.find_current_by_type(episode_id, ArtifactType.SCRIPT)
+    assert current is not None and current.id == first.id
+    assert await artifacts.find_current(episode_id, ArtifactType.SCRIPT, "h3") is not None
+    rows = {r.id: r for r in await _rows(session, episode_id)}
+    assert len(rows) == 2
+    assert rows[uuid.UUID(first.id)].superseded_at is None
+    assert rows[uuid.UUID(second.id)].superseded_at is not None
