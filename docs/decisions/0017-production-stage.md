@@ -148,6 +148,9 @@ Artifact 再利用の方が確実。却下。
 - await を cancel しても provider 側のジョブは走り続け、課金されうる
 - 入力 storyboard / 台本が更新されると全シーンの `input_hash` が変わり、全素材が再生成対象になる（課金）
 - `assets_ready` からの再実行が失敗したときの状態と現行 Artifact の食い違いは ADR-0015 と同じ負債
+- **storyboard の再実行は `assets_ready` から入れない**（storyboard の入場は `script_ready` /
+  `storyboard_ready` のまま）。素材を揃えた後に storyboard を作り直すには、Phase 4 では手段が無い。
+  入場規則の拡張は、再実行で現行シーン素材が旧 storyboard を指したまま残る扱いと合わせて決める
 - provider job 参照の保持期間は provider 依存で、長時間の `blocked` 後に回収できない場合がある
   （その予約は人手照合で `spent` にする）
 
