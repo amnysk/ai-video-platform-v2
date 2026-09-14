@@ -120,6 +120,7 @@ workflow id（`episode-<id>-storyboard`）は完了後に再利用されるた�
   失敗時に元の駐機点へ戻す遷移は足していない
 - **再開 API は無い。** `blocked` / `needs_work` からの `resumed`（人間の判断）を呼ぶ経路は Phase 3 に存在せず、
   POST `/episodes/{id}/storyboard` は admit で拒否される（何も書かずに終わる）。回復は DB 上の手作業になる
+  （production 工程では ADR-0017 §8 で POST を再開の操作として解消した。storyboard は未解消）
 - 台本の「シーン数 3..8」と storyboard の「1..24」は独立に決めた値で、両者の整合を保証する機械は
   カバレッジ検査（全台本シーンが1回以上現れる）だけ
 

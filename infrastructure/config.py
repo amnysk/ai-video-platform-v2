@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     production_fal_read_timeout_seconds: int = 30
     production_poll_interval_seconds: int = 10
     production_voice_timeout_seconds: int = 300
+    #: ProductionWorkflow の1実行あたりの submit 試行予算（台帳のラウンド番号ではない）
+    production_image_max_rounds: int = 3
+    production_video_max_rounds: int = 2
+    #: 状態不明の await 失敗に対し、同じ予約で await を追加実行する回数
+    production_await_reexecutions: int = 3
 
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"

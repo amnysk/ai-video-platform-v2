@@ -47,6 +47,7 @@ from contracts.production_activities import (
 )
 from contracts.states import (
     JOB_TERMINAL_STATUSES,
+    PRODUCTION_ADMISSIBLE_STATUSES,
     ArtifactType,
     EpisodeStatus,
     FailureClass,
@@ -72,21 +73,27 @@ from infrastructure.db.repositories import (
     JobRepository,
 )
 from infrastructure.storage.artifact_store import ArtifactStore
+from workers.production.run_inspector import WorkflowRunInspector
 
 logger = logging.getLogger(__name__)
 
-#: production 工程へ入ってよい Episode 状態（駐機点。ADR-0017）。
-ADMISSIBLE_STATUSES = frozenset({EpisodeStatus.STORYBOARD_READY, EpisodeStatus.ASSETS_READY})
+#: production 工程へ入ってよい Episode 状態と、入場で適用する事象（ADR-0017）。
+ADMISSIBLE_STATUSES = PRODUCTION_ADMISSIBLE_STATUSES
+ADMIT_EVENTS: dict[EpisodeStatus, EpisodeEvent] = {
+    EpisodeStatus.STORYBOARD_READY: EpisodeEvent.STAGE_ADMITTED,
+    EpisodeStatus.ASSETS_READY: EpisodeEvent.STAGE_ADMITTED,
+    #: 人間の POST が再試行 / 再開の操作（ADR-0015 の「再開 API が無い」負債を production で解消）
+    EpisodeStatus.NEEDS_WORK: EpisodeEvent.RETRY_ADMITTED,
+    EpisodeStatus.BLOCKED: EpisodeEvent.RESUMED,
+}
+#: 再開は **production 自身が止めた** Episode だけ（入場トークンの workflow id で判定）。
+#: 他工程（storyboard 等）で止まった Episode を production から再開すると上流を飛ばす。
+RESUMABLE_STATUSES = frozenset({EpisodeStatus.NEEDS_WORK, EpisodeStatus.BLOCKED})
 
-#: この工程が作る job の種類。record_failure が「開いたままの job」を探す範囲。
-PRODUCTION_JOB_TYPES = frozenset(
-    {
-        JobType.PRODUCE_SCENE_IMAGE,
-        JobType.PRODUCE_SCENE_VOICE,
-        JobType.PRODUCE_SCENE_VIDEO,
-        JobType.ASSEMBLE_PRODUCTION,
-    }
-)
+#: record_failure が閉じる job の種類。**workflow 自身が作る job だけ。**
+#: PRODUCE_SCENE_* はメディア worker の所有物で、兄弟 cancel 中も worker が書いている。
+#: ここで触ると競合する。非終端のまま残り、次の実行の ``find_open`` が再利用する。
+WORKFLOW_OWNED_JOB_TYPES = frozenset({JobType.ASSEMBLE_PRODUCTION})
 
 _RETRYABLE = frozenset({FailureClass.TRANSIENT, FailureClass.RETRYABLE})
 
@@ -94,6 +101,16 @@ _RETRYABLE = frozenset({FailureClass.TRANSIENT, FailureClass.RETRYABLE})
 def admission_token(workflow_id: str, run_id: str) -> str:
     """入場トークン（ADR-0015 と同形）。workflow id は再利用されるので run id まで含める。"""
     return f"{workflow_id}:{run_id}"
+
+
+def parse_admission_token(token: str | None) -> tuple[str, str] | None:
+    """``workflow_id:run_id`` を分ける。形が違えば（他工程の相関 id 等）``None``。"""
+    if not token or ":" not in token:
+        return None
+    workflow_id, run_id = token.rsplit(":", 1)
+    if not workflow_id or not run_id:
+        return None
+    return workflow_id, run_id
 
 
 @dataclass(frozen=True)
@@ -111,10 +128,13 @@ class ProductionActivities:
         session_factory: async_sessionmaker[AsyncSession],
         store: ArtifactStore,
         bucket: str,
+        run_inspector: WorkflowRunInspector | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
         self._bucket = bucket
+        #: 無ければ ``in_progress`` の引き継ぎをしない（安全側）
+        self._run_inspector = run_inspector
 
     def all_activities(self) -> Sequence[Callable[..., object]]:
         """``production`` queue の worker へ登録する Activity。メディア系は含めない。"""
@@ -130,10 +150,14 @@ class ProductionActivities:
 
     @activity.defn(name=PRODUCTION_ADMIT)
     async def admit(self, request: ProductionAdmitRequest) -> ProductionAdmitResult:
-        """``storyboard_ready`` / ``assets_ready`` → ``in_progress`` + 入場トークン。
+        """入場: ``ADMIT_EVENTS`` の状態 → ``in_progress`` + 入場トークン。
 
-        ``in_progress`` はトークンが完全一致する場合だけ通す（Activity 再実行）。
-        それ以外は入れず、何も書かない。
+        - ``in_progress``: トークンが完全一致すれば通す（Activity 再実行）。同じ workflow id の
+          **閉じた** run のトークンなら引き継ぐ（run が record_failure 前に死んだ /
+          cancel された）。走っている run・他工程のトークンは引き継がない
+        - ``needs_work`` / ``blocked``: 記録されたトークンが同じ workflow id
+          （production 自身の失敗）のときだけ再開する
+        - それ以外は入れず、何も書かない
         """
         token = admission_token(request.workflow_id, request.run_id)
         async with self._session_factory() as session:
@@ -141,15 +165,36 @@ class ProductionActivities:
             episode = await episodes.get(request.episode_id)
             if episode is None:
                 return ProductionAdmitResult(admitted=False, status="")
+            owner = await episodes.get_workflow_id(request.episode_id)
             if episode.status is EpisodeStatus.IN_PROGRESS:
-                owner = await episodes.get_workflow_id(request.episode_id)
-                return ProductionAdmitResult(admitted=owner == token, status=episode.status.value)
-            if episode.status not in ADMISSIBLE_STATUSES:
+                if owner == token:
+                    return ProductionAdmitResult(admitted=True, status=episode.status.value)
+                if not await self._stale_production_run(owner, request.workflow_id):
+                    return ProductionAdmitResult(admitted=False, status=episode.status.value)
+                logger.warning(
+                    "production admit takes over episode=%s from closed run %s", episode.id, owner
+                )
+                await episodes.set_workflow_id(request.episode_id, token)
+                await session.commit()
+                return ProductionAdmitResult(admitted=True, status=episode.status.value)
+            event = ADMIT_EVENTS.get(episode.status)
+            if event is None:
                 return ProductionAdmitResult(admitted=False, status=episode.status.value)
-            updated = await episodes.apply_event(request.episode_id, EpisodeEvent.STAGE_ADMITTED)
+            if episode.status in RESUMABLE_STATUSES:
+                parsed = parse_admission_token(owner)
+                if parsed is None or parsed[0] != request.workflow_id:
+                    return ProductionAdmitResult(admitted=False, status=episode.status.value)
+            updated = await episodes.apply_event(request.episode_id, event)
             await episodes.set_workflow_id(request.episode_id, token)
             await session.commit()
             return ProductionAdmitResult(admitted=True, status=updated.status.value)
+
+    async def _stale_production_run(self, owner: str | None, workflow_id: str) -> bool:
+        """記録されたトークンが同じ workflow id の閉じた run か。問い合わせ失敗は例外（retry）。"""
+        parsed = parse_admission_token(owner)
+        if parsed is None or parsed[0] != workflow_id or self._run_inspector is None:
+            return False
+        return await self._run_inspector.is_closed(parsed[0], parsed[1])
 
     # ------------------------------------------------------------------ 計画
 
@@ -266,8 +311,14 @@ class ProductionActivities:
         scene_ids = {s.scene_id for s in storyboard.scenes}
         script_ids = {s.id for s in script.scenes}
 
+        image_media: dict[str, str] = {}
         images = await self._collect(
-            request.episode_id, ArtifactType.SCENE_IMAGE, scene_ids, storyboard_loaded, None
+            request.episode_id,
+            ArtifactType.SCENE_IMAGE,
+            scene_ids,
+            storyboard_loaded,
+            None,
+            image_media=image_media,
         )
         voices = await self._collect(
             request.episode_id,
@@ -283,6 +334,7 @@ class ProductionActivities:
             storyboard_loaded,
             None,
             images=images,
+            image_media=image_media,
         )
 
         manifest = build_manifest(
@@ -357,8 +409,13 @@ class ProductionActivities:
         script: _Loaded | None,
         *,
         images: dict[str, ArtifactRef] | None = None,
+        image_media: dict[str, str] | None = None,
     ) -> dict[str, ArtifactRef]:
         """期待するシーンの現行 Artifact を読み、入力の固定（storyboard / 台本 / 画像）を照合する。
+
+        画像を集めるときは ``image_media`` にシーン → メディア本体の sha256 を書き込む。
+        動画の元画像はメディア本体の sha256 で照合する（動画の ``input_hash`` が覆うのは
+        画像のメディア sha。画像 Artifact が同じメディアで記録し直されても動画は有効）。
 
         期待しないシーンの行（前の storyboard の残り）は無視する。欠けは ``build_manifest`` が
         missing にする。
@@ -376,19 +433,25 @@ class ProductionActivities:
                 if artifact_type is ArtifactType.SCENE_IMAGE:
                     image = parse_scene_image_artifact(loaded.payload)
                     scene_key, source_sb = image.scene_id, image.source_storyboard
+                    if image_media is not None:
+                        image_media[image.scene_id] = image.media.sha256
                 elif artifact_type is ArtifactType.SCENE_VIDEO:
                     video = parse_scene_video_artifact(loaded.payload)
                     scene_key, source_sb = video.scene_id, video.source_storyboard
                     current_image = (images or {}).get(video.scene_id)
-                    if current_image is not None and (
-                        video.source_image.artifact_id != current_image.artifact_id
-                        or video.source_image.sha256 != current_image.sha256
-                    ):
-                        raise ProductionInputInvalidError(
-                            f"video {meta.id} for {video.scene_id} was made from image "
-                            f"{video.source_image.artifact_id}, not the current image "
-                            f"{current_image.artifact_id}"
+                    current_media = (image_media or {}).get(video.scene_id)
+                    if current_image is not None and current_media is not None:
+                        source_media = await self._source_image_media_sha(
+                            video.source_image.artifact_id,
+                            video.source_image.sha256,
+                            current_image,
+                            current_media,
                         )
+                        if source_media != current_media:
+                            raise ProductionInputInvalidError(
+                                f"video {meta.id} for {video.scene_id} was made from image media "
+                                f"{source_media}, not the current image media {current_media}"
+                            )
                 else:
                     voice = parse_scene_voice_artifact(loaded.payload)
                     scene_key, source_sb = voice.script_scene_id, voice.source_storyboard
@@ -418,6 +481,23 @@ class ProductionActivities:
                 )
             refs[scene_key] = _ref(meta)
         return refs
+
+    async def _source_image_media_sha(
+        self, artifact_id: str, sha256: str, current: ArtifactRef, current_media: str
+    ) -> str:
+        """動画が参照する画像 Artifact のメディア sha256。参照先が読めなければ invalid。"""
+        if artifact_id == current.artifact_id and sha256 == current.sha256:
+            return current_media
+        async with self._session_factory() as session:
+            meta = await ArtifactMetadataRepository(session).get(artifact_id)
+        if meta is None or meta.artifact_type is not ArtifactType.SCENE_IMAGE:
+            raise ProductionInputInvalidError(f"video source image {artifact_id} not found")
+        if meta.sha256 != sha256:
+            raise ProductionInputInvalidError(
+                f"video source image {artifact_id} sha256 {meta.sha256} != referenced {sha256}"
+            )
+        loaded = await self._load(meta, "source scene_image")
+        return parse_scene_image_artifact(loaded.payload).media.sha256
 
     @staticmethod
     async def _finish_job(session: AsyncSession, job_id: str, *, skipped: bool) -> None:
@@ -472,11 +552,11 @@ class ProductionActivities:
     async def record_failure(
         self, request: ProductionRecordFailureRequest
     ) -> ProductionFailureOutcome:
-        """失敗クラス → Episode 事象。開いたままの production job を閉じるか再開可能にする。
+        """失敗クラス → Episode 事象。workflow が所有する job を閉じるか再開可能にする。
 
-        job の扱い:
+        job の扱い（``WORKFLOW_OWNED_JOB_TYPES`` だけ。PRODUCE_SCENE_* には触れない）:
         - ``job_id`` が指定されていればその job に失敗クラスの事象を適用する
-        - それ以外の非終端 production job（兄弟の cancel で中断したもの等）:
+        - それ以外の非終端 job（cancel で中断したマニフェスト組み立て等）:
           ``permanent`` なら終端へ。そうでなければ ``queued`` / ``running`` を
           ``retryable_failed`` にし、次の実行で ``start`` できるようにする
           （``running`` のまま残すと ``start`` の辺が無く再開できない）
@@ -517,7 +597,7 @@ class ProductionActivities:
         jobs = JobRepository(session)
         summary = request.error_summary
         for job in await jobs.list_for_episode(request.episode_id):
-            if job.type not in PRODUCTION_JOB_TYPES or job.status in JOB_TERMINAL_STATUSES:
+            if job.type not in WORKFLOW_OWNED_JOB_TYPES or job.status in JOB_TERMINAL_STATUSES:
                 continue
             if job.id == request.job_id or failure_class is FailureClass.PERMANENT:
                 if job.status is JobStatus.RETRYABLE_FAILED:
@@ -580,8 +660,11 @@ def _result(meta: ArtifactMetadata, *, reused: bool) -> SceneArtifactResult:
 
 __all__ = [
     "ADMISSIBLE_STATUSES",
-    "PRODUCTION_JOB_TYPES",
+    "ADMIT_EVENTS",
+    "RESUMABLE_STATUSES",
+    "WORKFLOW_OWNED_JOB_TYPES",
     "ProductionActivities",
     "admission_token",
+    "parse_admission_token",
     "manifest_input_hash",
 ]

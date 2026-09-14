@@ -129,6 +129,18 @@ STORYBOARD_WORKFLOW: tuple[str, str] = ("StoryboardWorkflow", "storyboard")
 #: storyboard と同じ理由で Pipeline に載せない。
 PRODUCTION_WORKFLOW: tuple[str, str] = ("ProductionWorkflow", "production")
 
+#: production 工程へ入ってよい Episode 状態（ADR-0017）。駐機点に加え、production 自身の
+#: 失敗で止まった ``needs_work`` / ``blocked`` からの再実行（人間の POST が再開の操作）。
+#: 判定の権威は workflow の admit Activity。API はこれで早めに 409 を返すだけ。
+PRODUCTION_ADMISSIBLE_STATUSES: frozenset[EpisodeStatus] = frozenset(
+    {
+        EpisodeStatus.STORYBOARD_READY,
+        EpisodeStatus.ASSETS_READY,
+        EpisodeStatus.NEEDS_WORK,
+        EpisodeStatus.BLOCKED,
+    }
+)
+
 #: メディア種別ごとの task queue（ADR-0017）。並行数は worker 側の設定で queue ごとに決める。
 PRODUCTION_IMAGE_TASK_QUEUE = "production-image"
 PRODUCTION_VOICE_TASK_QUEUE = "production-voice"

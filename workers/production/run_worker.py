@@ -17,6 +17,7 @@ from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.storage.minio_store import MinioArtifactStore
 from workers.production.activities import ProductionActivities
+from workers.production.run_inspector import TemporalWorkflowRunInspector
 from workers.production.workflows import ProductionWorkflow
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ async def main() -> None:
         session_factory=session_factory_from_settings(settings),
         store=store,
         bucket=settings.minio_bucket,
+        run_inspector=TemporalWorkflowRunInspector(client),
     )
     logger.info("production workflow worker listening on task queue %s", PRODUCTION_TASK_QUEUE)
     async with Worker(

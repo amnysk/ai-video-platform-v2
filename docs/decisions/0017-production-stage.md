@@ -117,11 +117,55 @@ submit の失敗の扱い（`infrastructure/production/paid_job.py`）:
     `AWAIT_ROUND_FINAL_ERRORS`）
   **cancel されたら poll をやめて終わる。provider 側のジョブは cancel しない**（課金は既に発生しうる。
   結果を後で回収できる余地を残す）
+- **workflow 側の await 失敗の扱い**（`workers/production/workflows.py` の `_rounds`）:
+  - provider 側の状態が**分からない**失敗（`ProviderPollDeadlineError` / `ProviderTimeoutError` /
+    `ProviderInvocationError` / transient 全般 / Activity の start_to_close・heartbeat timeout）は
+    **同じ `reservation_id` で await を追加実行**する（既定3回、`production_await_reexecutions`）。
+    使い切ったら失敗として記録し、新しい submit はしない（まだ走っているジョブとの二重課金を避ける）
+  - 新しい submit（次の試行）へ進むのは、ジョブが**確定的に終わった** `ProviderJobFailedError` /
+    `MediaValidationError` のときだけ
+  - workflow の `round` は**1実行あたりの試行予算の番号**（既定 image 3 / video 2、
+    `production_image_max_rounds` / `production_video_max_rounds`）で、台帳ラウンドではない
+- **状態系 Activity**（admit / plan / assemble / mark_ready / record_failure）は Episode を
+  `in_progress` から出す唯一の経路なので、回数無制限・backoff 上限1分・`schedule_to_close=1時間`。
+  retry しないのは needs_input / permanent の型だけ
+- **cancel の待ち方**: submit / await とも `WAIT_CANCELLATION_COMPLETED`。record_failure の前に
+  進行中の Activity が終わる（書き込みが競合しない）。submit は短く、await は heartbeat で cancel を受け、
+  固まった worker でも heartbeat timeout（90秒）で確定する。本物の Temporal サーバでは hang しない
+  （time-skipping サーバの問題は ADR 外。テストは compose の Temporal を使う）
 - ADR-0015 の heartbeat / cancel の負債は **await Activity に限って実装する**。submit と
   他工程の Activity は短時間で終わるので対象外のまま
 - 並行数は task queue ごとに設定（既定 image 2 / voice 1 / video 1、`infrastructure/config.py`）
 - seed は provider へ送らない。再現性は `input_hash` による Artifact の再利用で、
   バリエーションはラウンドで得る
+
+### 8. 入場・再開・引き継ぎ・cancel（ADR-0015 の「再開 API が無い」負債を production で解消）
+
+`POST /episodes/{id}/production` が再試行 / 再開の操作である。admit が権威、API は明らかに入れない
+状態（下表以外かつ `in_progress` 以外）を 409 で先に返すだけ。
+
+| Episode 状態 | admit | 事象 |
+|---|---|---|
+| `storyboard_ready` / `assets_ready` | 入る | `STAGE_ADMITTED` |
+| `needs_work` | 記録トークンが**同じ production workflow id** なら入る | `RETRY_ADMITTED` |
+| `blocked` | 同上 | `RESUMED`（人間の POST が再開） |
+| `in_progress` | トークン完全一致（Activity 再実行）/ 同じ workflow id の**閉じた** run なら引き継ぐ | なし（トークンを書き換え） |
+| `failed` / `cancelled` / 他工程で止まった状態 / その他 | 入らない | — |
+
+- 引き継ぎの判定は port `WorkflowRunInspector`（`workers/production/run_inspector.py`）。Temporal の
+  describe で RUNNING 以外は閉じている、NotFound も閉じている、それ以外の RPC 失敗は `TransientError`
+  （retry）。**走っている run は決して引き継がない**
+- 再開は production 自身が止めた Episode だけ。他工程（storyboard 等）で止まった Episode を production から
+  再開すると上流を飛ばすため
+- 再実行で済んだシーンは再課金しない: 現行 Artifact の再利用（INV-17）と台帳の実効ラウンド（§3）
+- **workflow の cancel**（運用者の操作）: 進行中の枝の cancel 完了を待ち、cancel されない形で
+  record_failure（`needs_input` → `blocked`、要約に `cancelled`）を記録してから cancel を再送出する。
+  terminal `cancelled` にしないのは、Episode の中止（`CANCELLED` 事象）は別の人間の判断であり、
+  workflow を止めただけでは作品を諦めたことにならないため。再開は POST
+- record_failure が閉じる job は workflow 自身が作る `ASSEMBLE_PRODUCTION` だけ。`PRODUCE_SCENE_*` は
+  メディア worker の所有物で、cancel 中も worker が書くので触らない（非終端のまま次の実行の `find_open` が再利用）
+- マニフェストは動画の元画像を**メディア本体の sha256**で照合する（動画の `input_hash` が覆うのは
+  画像メディア sha。同じメディアで画像 Artifact が記録し直されても動画は有効）
 
 ### 5. INV-15 の限定例外: ローカル非課金の生成器
 
@@ -196,6 +240,10 @@ Artifact 再利用の方が確実。却下。
   直しただけでも全シーンの有料素材（画像・動画）が再生成対象になる（課金）。シーン単位の指紋への縮小は
   負債として受け入れる（音声も storyboard sha を含むが非課金）
 - `assets_ready` からの再実行が失敗したときの状態と現行 Artifact の食い違いは ADR-0015 と同じ負債
+- `needs_work` からの再入場は人間の POST だけで、自動の再試行（`needs_work → in_progress` の自動辺）は無い。
+  POST を繰り返すたびに1実行分の試行予算を使いうる（Episode 単位の課金上限は未実装のまま）
+- 状態系 Activity が1時間 retry しても通らなければ workflow は失敗し Episode は `in_progress` に残る。
+  出口は次の POST による閉じた run の引き継ぎ（stalled 検知は failure-policy §6 のまま通報のみ）
 - **storyboard の再実行は `assets_ready` から入れない**（storyboard の入場は `script_ready` /
   `storyboard_ready` のまま）。素材を揃えた後に storyboard を作り直すには、Phase 4 では手段が無い。
   入場規則の拡張は、再実行で現行シーン素材が旧 storyboard を指したまま残る扱いと合わせて決める

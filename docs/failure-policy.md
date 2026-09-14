@@ -56,7 +56,7 @@
 | `UnreconciledReservationError` | `needs_input` | `dispatched_at` ありで provider job 参照も evidence も無い予約が残っている |
 | `ProviderRejectedError` | `needs_input` | provider が依頼を拒否（コンテンツポリシー等）。人間がプロンプト・素材を直す |
 | `ProviderJobFailedError` | `retryable` | provider 側ジョブの失敗。次ラウンド（新しい予約）で再生成 |
-| `ProviderPollDeadlineError` | `retryable` | 完了待ちの期限切れ。参照が台帳にあるので再 await（再送しない） |
+| `ProviderPollDeadlineError` | `retryable` | 完了待ちの期限切れ。ジョブの状態は不明なので**同じ予約で再 await**（再送しない。上限を使い切ったら記録して止まる） |
 | `MediaValidationError` | `retryable` | 生成メディアが形式・解像度・尺の規則を満たさない |
 | `ProductionInputMissingError` | `needs_input` | 現行の storyboard / 台本 / シーン画像が無い |
 | `ProductionInputInvalidError` | `needs_input` | 入力 Artifact が読めない・sha256 不一致・相互に食い違う |
@@ -66,6 +66,16 @@
 retry してよい（最大5回）。ただし await で**ラウンドが確定済み**の失敗（`ProviderJobFailedError` /
 `MediaValidationError`）は Activity の retry を止める（`non_retryable=True`）。型名は変えないので workflow は
 `retryable` と分類して新しいラウンドへ進む（ADR-0017 §4）。
+
+workflow 側で await が失敗したとき（ADR-0017 §4）:
+
+| await の失敗 | workflow の動作 |
+|---|---|
+| `ProviderJobFailedError` / `MediaValidationError`（ジョブが確定的に終わった） | 試行予算内なら新しい submit（台帳が実効ラウンドを決める） |
+| `ProviderPollDeadlineError` / `ProviderTimeoutError` / `ProviderInvocationError` / transient / Activity timeout（状態不明） | **同じ予約で** await を追加実行（既定3回）。使い切ったら記録して止まる。新しい submit はしない |
+| それ以外 | 失敗クラスのまま記録 |
+
+workflow の cancel は `needs_input`（`blocked`）として記録する。POST で再開できる（ADR-0017 §8）。
 
 Activity 境界の写像（画像・音声・動画共通、`infrastructure/production/activity_errors.py`）:
 

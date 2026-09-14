@@ -17,6 +17,11 @@ from contracts.states import (
 )
 from infrastructure.config import Settings
 
+#: Settings に値が無いときの既定（workflow の入力 dataclass の既定と揃える / ADR-0017）
+DEFAULT_IMAGE_MAX_ROUNDS = 3
+DEFAULT_VIDEO_MAX_ROUNDS = 2
+DEFAULT_AWAIT_REEXECUTIONS = 3
+
 
 class WorkflowStarter(Protocol):
     async def start_episode_workflow(
@@ -89,6 +94,15 @@ class TemporalWorkflowStarter:
                 "image_concurrency": self._settings.image_concurrency,
                 "video_concurrency": self._settings.video_concurrency,
                 "voice_concurrency": self._settings.voice_concurrency,
+                "image_max_rounds": getattr(
+                    self._settings, "production_image_max_rounds", DEFAULT_IMAGE_MAX_ROUNDS
+                ),
+                "video_max_rounds": getattr(
+                    self._settings, "production_video_max_rounds", DEFAULT_VIDEO_MAX_ROUNDS
+                ),
+                "await_reexecutions": getattr(
+                    self._settings, "production_await_reexecutions", DEFAULT_AWAIT_REEXECUTIONS
+                ),
             },
             id=workflow_id,
             task_queue=task_queue,
