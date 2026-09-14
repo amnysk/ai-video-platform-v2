@@ -214,3 +214,48 @@ def test_normalizer_produces_validated_1080x1920_png_deterministically() -> None
 def test_normalizer_rejects_landscape() -> None:
     with pytest.raises(MediaValidationError):
         normalize_image_9x16(make_png(1920, 1080))
+
+
+def _jpeg_with_orientation(width: int, height: int, orientation: int) -> bytes:
+    import io
+
+    from PIL import Image
+
+    image = Image.new("RGB", (width, height), (10, 120, 200))
+    exif = Image.Exif()
+    exif[0x0112] = orientation
+    out = io.BytesIO()
+    image.save(out, format="JPEG", exif=exif.tobytes())
+    return out.getvalue()
+
+
+def test_exif_orientation_is_applied_before_planning() -> None:
+    """横長で保存され EXIF で 90 度回転する写真は、見かけ上の縦長として正規化できる。"""
+    source = _jpeg_with_orientation(1920, 1080, 6)
+    info = PillowAvMediaProbe().probe_image(source)
+    assert (info.width, info.height) == (1080, 1920)
+    normalized = normalize_image_9x16(source)
+    assert (normalized.width, normalized.height) == (1080, 1920)
+
+
+def test_decompression_bomb_is_a_media_validation_error(monkeypatch) -> None:
+    from PIL import Image
+
+    source = make_png(1080, 1920)
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)  # 2倍超で DecompressionBombError
+    with pytest.raises(MediaValidationError):
+        PillowAvMediaProbe().probe_image(source)
+    with pytest.raises(MediaValidationError):
+        normalize_image_9x16(source)
+
+
+def test_truncated_png_is_a_media_validation_error() -> None:
+    source = make_png(1080, 1920, (1, 2, 3))
+    with pytest.raises(MediaValidationError):
+        normalize_image_9x16(source[: len(source) // 2])
+
+
+def test_normalization_plan_has_no_unused_helpers() -> None:
+    from domain.production.media import NormalizationPlan
+
+    assert not hasattr(NormalizationPlan, "is_identity_crop")

@@ -86,10 +86,6 @@ class NormalizationPlan:
     target_width: int
     target_height: int
 
-    @property
-    def is_identity_crop(self) -> bool:
-        return self.crop_box[0] == 0 and self.crop_box[1] == 0
-
 
 @dataclass(frozen=True, slots=True)
 class NormalizationRejected:

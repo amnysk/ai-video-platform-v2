@@ -13,12 +13,23 @@ from typing import Any
 import av
 import av.logging
 from av.error import FFmpegError
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from domain.errors import MediaValidationError
 from domain.production.media import AudioInfo, ImageInfo, VideoInfo
 
 _PIL_FORMATS = {"PNG": "png", "JPEG": "jpeg", "WEBP": "webp"}
+
+#: Pillow がデコード中に投げうる例外。解凍爆弾（``DecompressionBombError``）は OSError ではない。
+PIL_DECODE_ERRORS: tuple[type[BaseException], ...] = (
+    UnidentifiedImageError,
+    Image.DecompressionBombError,
+    OSError,
+    ValueError,
+    SyntaxError,
+    EOFError,
+    TypeError,
+)
 
 
 class PillowAvMediaProbe:
@@ -27,8 +38,9 @@ class PillowAvMediaProbe:
             with Image.open(io.BytesIO(data)) as image:
                 fmt = image.format or ""
                 image.load()  # 実際にデコードする（ヘッダだけで通さない）
-                width, height = image.size
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
+                # EXIF の向きを反映した見かけの寸法で判定する（正規化と同じ基準）
+                width, height = (ImageOps.exif_transpose(image) or image).size
+        except PIL_DECODE_ERRORS as exc:
             raise MediaValidationError(f"image is not decodable: {exc}") from exc
         return ImageInfo(format=_PIL_FORMATS.get(fmt, fmt.lower()), width=width, height=height)
 
@@ -126,4 +138,4 @@ def _count_errors(logs: Any) -> int:
     return sum(1 for entry in (logs or []) if isinstance(entry, tuple) and entry[0] <= threshold)
 
 
-__all__ = ["PillowAvMediaProbe"]
+__all__ = ["PIL_DECODE_ERRORS", "PillowAvMediaProbe"]
