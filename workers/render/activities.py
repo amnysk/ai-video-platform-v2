@@ -218,8 +218,13 @@ class RenderActivities:
         self._disk_usage = disk_usage
         self._heartbeat = heartbeat
 
-    def all_activities(self) -> Sequence[Callable[..., object]]:
-        return [self.admit, self.render_final_video, self.mark_ready, self.record_failure]
+    def state_activities(self) -> Sequence[Callable[..., object]]:
+        """``RENDER_TASK_QUEUE``（workflow と同じ queue、通常の並行枠）へ登録する。"""
+        return [self.admit, self.mark_ready, self.record_failure]
+
+    def media_activities(self) -> Sequence[Callable[..., object]]:
+        """``RENDER_MEDIA_TASK_QUEUE``（並行数 = render_concurrency）へ登録する。"""
+        return [self.render_final_video]
 
     # ------------------------------------------------------------------ 入場
 
@@ -406,7 +411,7 @@ class RenderActivities:
         media_key = episode_media_object_key(
             episode_id, ArtifactType.FINAL_VIDEO.value, media_sha, "mp4"
         )
-        put = await self._store.put_bytes(media_key, path, FINAL_VIDEO_MIME_TYPE)
+        put = await self._store.put_file(media_key, path, FINAL_VIDEO_MIME_TYPE)
         media_readback = await readback_sha256(self._store, put.key)
         self._heartbeat("media_stored")
         if put.sha256 != media_sha or media_readback != media_sha:
@@ -638,16 +643,15 @@ class RenderActivities:
         return video_paths, voice_paths
 
     async def _fetch_verified(self, key: str, sha256: str, path: Path, label: str) -> None:
+        """本体を流して作業領域へ書き、書いた内容の sha256 を記述子と照合する。"""
         try:
-            data = await self._store.get_bytes(key)
+            actual = await self._store.download_to(key, path)
         except KeyError as exc:
             raise RenderInputMissingError(f"media for {label} is missing at {key}") from exc
-        actual = sha256_hex(data)
         if actual != sha256:
             raise RenderInputIntegrityError(
                 f"media for {label} sha256 mismatch at {key}: stored={actual} expected={sha256}"
             )
-        await asyncio.to_thread(path.write_bytes, data)
         self._heartbeat("downloaded", label)
 
     # ------------------------------------------------------------------ 前提検査

@@ -128,18 +128,31 @@ def _error(type_name: str, *, non_retryable: bool = False) -> ApplicationError:
 
 async def _run(env: WorkflowEnvironment, mocks: Mocks, *, cancel: bool = False, **kw: Any):
     queue = f"render-test-{uuid.uuid4().hex[:10]}"
-    async with Worker(
-        env.client,
-        task_queue=queue,
-        workflows=[RenderWorkflow],
-        activities=mocks.activities(),
-        # cancel を heartbeat の応答ですぐ受け取る
-        max_heartbeat_throttle_interval=timedelta(milliseconds=50),
-        default_heartbeat_throttle_interval=timedelta(milliseconds=50),
+    media_queue = f"render-media-test-{uuid.uuid4().hex[:10]}"
+    state_names = {RENDER_ADMIT, RENDER_MARK_READY, RENDER_RECORD_FAILURE}
+    acts = mocks.activities()
+    async with (
+        Worker(
+            env.client,
+            task_queue=queue,
+            workflows=[RenderWorkflow],
+            activities=[a for a in acts if a.__temporal_activity_definition.name in state_names],
+        ),
+        Worker(
+            env.client,
+            task_queue=media_queue,
+            activities=[
+                a for a in acts if a.__temporal_activity_definition.name == RENDER_FINAL_VIDEO
+            ],
+            # cancel を heartbeat の応答ですぐ受け取る
+            max_heartbeat_throttle_interval=timedelta(milliseconds=50),
+            default_heartbeat_throttle_interval=timedelta(milliseconds=50),
+            max_concurrent_activities=1,
+        ),
     ):
         handle = await env.client.start_workflow(
             RenderWorkflow.run,
-            RenderWorkflowInput(episode_id="ep-1", **kw),
+            RenderWorkflowInput(episode_id="ep-1", render_task_queue=media_queue, **kw),
             id=f"episode-ep-1-render-{uuid.uuid4().hex[:8]}",
             task_queue=queue,
         )

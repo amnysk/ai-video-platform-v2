@@ -154,8 +154,11 @@ PRODUCTION_VIDEO_TASK_QUEUE = "production-video"
 
 #: render 工程の (workflow名, task queue)（ADR-0019）。storyboard と同じ理由で Pipeline に載せない。
 RENDER_WORKFLOW: tuple[str, str] = ("RenderWorkflow", "render")
-#: render の task queue。workflow・状態系 Activity・重い描画 Activity が共有する（ADR-0019 §10）。
+#: render の task queue。workflow と状態系 Activity（ADR-0019 §8）。
 RENDER_TASK_QUEUE: str = RENDER_WORKFLOW[1]
+#: 重い描画 Activity（``render_final_video``）だけの task queue。描画の並行数を絞っても
+#: workflow と状態系 Activity（``RENDER_TASK_QUEUE``）は待たされない（ADR-0019 §8）。
+RENDER_MEDIA_TASK_QUEUE = "render-media"
 
 #: render 工程へ入ってよい Episode 状態（ADR-0019）。駐機点 ``assets_ready``、再描画の
 #: ``render_ready``、render 自身の失敗で止まった ``needs_work`` / ``blocked``

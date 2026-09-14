@@ -1,6 +1,7 @@
 """Render worker のエントリポイント（ADR-0019）。
 
-task queue ``render`` に RenderWorkflow・状態系 Activity・描画 Activity を登録する。
+1プロセスで2つの Worker を動かす: ``render``（RenderWorkflow・状態系 Activity）と
+``render-media``（描画 Activity。並行数 = render_concurrency）。
 固定版 ffmpeg の sha256 を**起動時に検証**し、合わなければ Temporal に繋ぐ前に止まる。
 """
 
@@ -12,7 +13,7 @@ import logging
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from contracts.states import RENDER_TASK_QUEUE
+from contracts.states import RENDER_MEDIA_TASK_QUEUE, RENDER_TASK_QUEUE
 from domain.errors import RenderEngineUnavailableError
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
@@ -53,14 +54,26 @@ def build_engine(settings: Settings) -> FfmpegRenderEngine:
     return engine
 
 
-def build_worker(client: Client, settings: Settings, activities: RenderActivities) -> Worker:
-    return Worker(
+def build_workers(
+    client: Client, settings: Settings, activities: RenderActivities
+) -> tuple[Worker, Worker]:
+    """workflow + 状態系（通常の並行枠）と、描画だけ（並行数 = render_concurrency）の2つ。
+
+    同じ枠を共有すると、長い描画の間に他 Episode の admit / record_failure が待たされる。
+    """
+    state = Worker(
         client,
         task_queue=RENDER_TASK_QUEUE,
         workflows=[RenderWorkflow],
-        activities=activities.all_activities(),
+        activities=activities.state_activities(),
+    )
+    media = Worker(
+        client,
+        task_queue=RENDER_MEDIA_TASK_QUEUE,
+        activities=activities.media_activities(),
         max_concurrent_activities=max(1, settings.render_concurrency),
     )
+    return state, media
 
 
 async def main() -> None:
@@ -83,8 +96,14 @@ async def main() -> None:
         min_free_bytes=settings.render_min_free_bytes,
         run_inspector=TemporalWorkflowRunInspector(client),
     )
-    logger.info("render worker listening on task queue %s", RENDER_TASK_QUEUE)
-    async with build_worker(client, settings, activities):
+    state, media = build_workers(client, settings, activities)
+    logger.info(
+        "render worker listening on task queues %s (workflow/state) and %s (render x%s)",
+        RENDER_TASK_QUEUE,
+        RENDER_MEDIA_TASK_QUEUE,
+        max(1, settings.render_concurrency),
+    )
+    async with state, media:
         await asyncio.Event().wait()
 
 

@@ -4,7 +4,7 @@
 
 構造::
 
-    admit → render_final_video（単一の重い Activity。retry 上限つき）→ mark_ready
+    admit → render_final_video（queue render-media の重い Activity。retry 上限つき）→ mark_ready
       描画が失敗 → 失敗クラスで record_failure（retryable を使い切ったら blocked）
       workflow の cancel → 描画 Activity の cancel 完了を待ち、cancel されない形で
                            record_failure → cancel を再送出
@@ -45,7 +45,12 @@ with workflow.unsafe.imports_passed_through():
         RenderMarkReadyResult,
         RenderRecordFailureRequest,
     )
-    from contracts.states import RENDER_WORKFLOW, RETRYABLE_FAILURE_CLASSES, FailureClass
+    from contracts.states import (
+        RENDER_MEDIA_TASK_QUEUE,
+        RENDER_WORKFLOW,
+        RETRYABLE_FAILURE_CLASSES,
+        FailureClass,
+    )
     from domain.errors import NON_RETRYABLE_ERROR_TYPE_NAMES, failure_class_from_type_name
 
 WORKFLOW_NAME, TASK_QUEUE = RENDER_WORKFLOW
@@ -82,6 +87,8 @@ class RenderWorkflowInput:
     render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
     #: エンジンの timeout と揃える（API が worker と同じ設定から渡す）
     render_timeout_seconds: int = DEFAULT_RENDER_TIMEOUT_SECONDS
+    #: 描画 Activity の task queue。テストが共有サーバ上で本物の worker と取り合わないよう差し替える
+    render_task_queue: str = RENDER_MEDIA_TASK_QUEUE
 
 
 @dataclass
@@ -184,6 +191,7 @@ class RenderWorkflow:
                     render_profile_id=request.render_profile_id,
                 ),
                 result_type=RenderFinalVideoResult,
+                task_queue=request.render_task_queue,
                 start_to_close_timeout=render_start_to_close(request.render_timeout_seconds),
                 heartbeat_timeout=timedelta(seconds=DEFAULT_RENDER_HEARTBEAT_TIMEOUT_SECONDS),
                 retry_policy=RENDER_RETRY_POLICY,

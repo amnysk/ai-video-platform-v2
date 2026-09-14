@@ -32,7 +32,8 @@ export RENDER_FFMPEG_SHA256=810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f
 ./scripts/run-render-worker.sh        # 別ターミナル
 ```
 
-1プロセスが task queue `render` で RenderWorkflow・状態系 Activity・描画 Activity を提供する。
+1プロセスが2つの Worker を持つ: task queue `render`（RenderWorkflow・状態系 Activity、通常の並行枠）と
+`render-media`（描画 Activity だけ、並行数 `RENDER_CONCURRENCY`）。長い描画中も他 Episode の入場・失敗記録は待たされない。
 
 環境変数（未設定なら script / `infrastructure/config.py` が既定値を入れる。既定値の宣言元は
 `contracts/render.py` の `DEFAULT_RENDER_*`）:
@@ -43,7 +44,7 @@ export RENDER_FFMPEG_SHA256=810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f
 | `RENDER_FFMPEG_SHA256` | （必須） | 不一致なら起動しない |
 | `RENDER_FFMPEG_THREADS` | 4 | |
 | `RENDER_FONT_PATH` / `RENDER_FONT_SHA256` | Noto Sans CJK Regular | 描画ごとに sha256 を照合。不一致は `RenderEngineUnavailableError`。sha256 は input_hash に入る |
-| `RENDER_CONCURRENCY` | 1 | worker の `max_concurrent_activities`（状態系 Activity も同じ枠を使う） |
+| `RENDER_CONCURRENCY` | 1 | `render-media` Worker の `max_concurrent_activities`（同時描画数） |
 | `RENDER_TIMEOUT_SECONDS` | 1800 | エンジンの時間切れ。Activity の start_to_close はこれ + 10分（API が workflow 入力で渡す） |
 | `RENDER_MIN_FREE_BYTES` | 10 GiB | 事前検査: 空き ≥ これ + 入力量 × 4 |
 | `AI_VIDEO_WORK_ROOT` | `/mnt/minio-hdd/ai-video-work` | 作業領域（`work-directories.md`）。`episodes/<ep>/<job>/` を作り、**成功・失敗・cancel のいずれでも**片付ける（入力は MinIO から再取得でき、出力は再描画できる） |
@@ -84,7 +85,5 @@ smoke の確認点:
 
 ## 既知の制約
 
-- 同時描画は1本（`RENDER_CONCURRENCY=1`）。状態系 Activity も同じ枠を使うので、長い描画中は
-  **他 Episode の admit が待たされる**（状態系の schedule_to_close は1時間）。長尺を連続で流すなら
-  `RENDER_CONCURRENCY` を上げるか、描画 Activity の queue 分離を検討する
-- 完成動画本体の読み戻し検証は `ArtifactStore.get_bytes` で全体をメモリに載せる（上限 8 GiB）
+- 同時描画は既定1本（`RENDER_CONCURRENCY`）。長尺を連続で流すとキューが詰まる（状態系は別 queue なので止まらない）
+- 素材・完成動画の取り出し・保存・読み戻しは 8MiB ずつ流す。作業領域には入力と出力の実体が要る（事前検査 = 入力量 × 4 + 最低空き）

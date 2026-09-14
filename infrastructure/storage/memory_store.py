@@ -59,6 +59,17 @@ class InMemoryArtifactStore:
     async def get_bytes(self, key: str) -> bytes:
         return self._objects[key]
 
+    async def sha256_of(self, key: str) -> str:
+        return sha256_hex(self._objects[key])
+
+    async def download_to(self, key: str, path: Path) -> str:
+        body = self._objects[key]
+        path.write_bytes(body)
+        return sha256_hex(body)
+
+    async def put_file(self, key: str, path: Path, content_type: str) -> PutResult:
+        return await self.put_bytes(key, path, content_type)
+
     async def stat(self, key: str) -> ObjectStat:
         body = self._objects[key]
         return ObjectStat(

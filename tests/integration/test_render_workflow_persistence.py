@@ -100,16 +100,28 @@ class Stack:
         )
 
     async def run(self, episode_id: str, profile: str = "shorts_vertical"):
-        async with Worker(
-            self.client,
-            task_queue=self.queue,
-            workflows=[RenderWorkflow],
-            activities=self.activities.all_activities(),
+        async with (
+            Worker(
+                self.client,
+                task_queue=self.queue,
+                workflows=[RenderWorkflow],
+                activities=self.activities.state_activities(),
+            ),
+            Worker(
+                self.client,
+                task_queue=f"{self.queue}-media",
+                activities=self.activities.media_activities(),
+                max_concurrent_activities=1,
+            ),
         ):
             return await asyncio.wait_for(
                 self.client.execute_workflow(
                     RenderWorkflow.run,
-                    RenderWorkflowInput(episode_id=episode_id, render_profile_id=profile),
+                    RenderWorkflowInput(
+                        episode_id=episode_id,
+                        render_profile_id=profile,
+                        render_task_queue=f"{self.queue}-media",
+                    ),
                     id=f"episode-{episode_id}-render",
                     task_queue=self.queue,
                 ),
