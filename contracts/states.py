@@ -25,6 +25,8 @@ class EpisodeStatus(StrEnum):
     STORYBOARD_READY = "storyboard_ready"
     #: 画像・音声・動画が揃った駐機点（ADR-0017）。Phase 5 Render の入口。
     ASSETS_READY = "assets_ready"
+    #: 完成動画が技術検査を通って保存された駐機点（ADR-0019）。Phase 6 Upload の入口。
+    RENDER_READY = "render_ready"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -89,6 +91,8 @@ class JobType(StrEnum):
     PRODUCE_SCENE_VOICE = "produce_scene_voice"
     PRODUCE_SCENE_VIDEO = "produce_scene_video"
     ASSEMBLE_PRODUCTION = "assemble_production"
+    #: ADR-0019: Render（Episode 単位。scene_id は NULL）
+    RENDER_FINAL_VIDEO = "render_final_video"
 
 
 class ArtifactType(StrEnum):
@@ -102,6 +106,8 @@ class ArtifactType(StrEnum):
     SCENE_VOICE = "scene_voice"
     SCENE_VIDEO = "scene_video"
     PRODUCTION_MANIFEST = "production_manifest"
+    #: ADR-0019: 完成動画（Episode 単位。scene_id は NULL）
+    FINAL_VIDEO = "final_video"
 
 
 class Pipeline(StrEnum):
@@ -145,6 +151,24 @@ PRODUCTION_ADMISSIBLE_STATUSES: frozenset[EpisodeStatus] = frozenset(
 PRODUCTION_IMAGE_TASK_QUEUE = "production-image"
 PRODUCTION_VOICE_TASK_QUEUE = "production-voice"
 PRODUCTION_VIDEO_TASK_QUEUE = "production-video"
+
+#: render 工程の (workflow名, task queue)（ADR-0019）。storyboard と同じ理由で Pipeline に載せない。
+RENDER_WORKFLOW: tuple[str, str] = ("RenderWorkflow", "render")
+#: render の task queue。workflow・状態系 Activity・重い描画 Activity が共有する（ADR-0019 §10）。
+RENDER_TASK_QUEUE: str = RENDER_WORKFLOW[1]
+
+#: render 工程へ入ってよい Episode 状態（ADR-0019）。駐機点 ``assets_ready``、再描画の
+#: ``render_ready``、render 自身の失敗で止まった ``needs_work`` / ``blocked``
+#: （production と同じ規則）。
+#: 判定の権威は workflow の admit Activity。API はこれで早めに 409 を返すだけ。
+RENDER_ADMISSIBLE_STATUSES: frozenset[EpisodeStatus] = frozenset(
+    {
+        EpisodeStatus.ASSETS_READY,
+        EpisodeStatus.RENDER_READY,
+        EpisodeStatus.NEEDS_WORK,
+        EpisodeStatus.BLOCKED,
+    }
+)
 
 
 class ProviderCall(StrEnum):

@@ -137,6 +137,76 @@ class VoiceLanguageUnsupportedError(NeedsInputError):
     """
 
 
+class RenderInputMissingError(NeedsInputError):
+    """render の入力（現行のマニフェスト / 台本 / storyboard / シーン素材）が無い（ADR-0019）。
+
+    PostgreSQL の参照か MinIO の本体のどちらかが欠けている。
+
+    production を人間が再実行すれば回復するので needs_input。
+    """
+
+
+class RenderInputStaleError(NeedsInputError):
+    """マニフェストが指す Artifact が現行でない（上流が作り直された）。
+
+    production の再実行で回復する。
+    """
+
+
+class RenderInputIntegrityError(PermanentError):
+    """入力 Artifact の sha256 不一致・契約違反（ADR-0019 §11）。
+
+    保存済みの内容は同じ入力で何度読んでも同じく壊れている（決定的）ので permanent。
+    """
+
+
+class RenderSourceMediaError(NeedsInputError):
+    """シーン素材のメディアが読めない・未対応の形式・尺の食い違い。素材の作り直し（人間）で回復する。"""
+
+
+class DurationReconciliationError(NeedsInputError):
+    """シーン動画の実尺が storyboard の尺に合わせられない（凍結の許容を超えて短い。ADR-0019 §4）。
+
+    速度変更・ループ・黙った品質低下はしない。素材か storyboard を人間が直す。
+    """
+
+
+class VoiceTimelineOverflowError(NeedsInputError):
+    """ナレーション音声が次の音声と重なる、または総尺を許容以上にはみ出す（ADR-0019 §4）。"""
+
+
+class RenderEngineFailedError(RetryableError):
+    """描画エンジンが非zero終了・シグナルで落ちた。上限付きで再実行する（ADR-0019 §11）。"""
+
+
+class RenderEngineTimeoutError(RenderEngineFailedError):
+    """描画エンジンが時間内に終わらなかった。プロセスは停止済み。"""
+
+
+class RenderEngineUnavailableError(NeedsInputError):
+    """描画エンジンのバイナリが無い・固定した sha256 と一致しない・フォントが無い。
+
+    同じ設定で再実行しても同じ結果になるが、運用者が導入・設定し直せば回復するので
+    ``permanent`` にしない（ADR-0019 §11 / ``ProviderUnavailableError`` と同じ判断）。
+    """
+
+
+class RenderWorkspaceFullError(RetryableError):
+    """作業領域の空きが足りない（事前検査 / ENOSPC）。自動削除はせず、空きが戻れば再実行で通る。"""
+
+
+class FinalVideoValidationError(PermanentError):
+    """完成動画が技術検査に落ちた（解像度・codec・音声欠落・尺など決定的な不一致。ADR-0019 §8）。"""
+
+
+class FinalVideoCorruptError(RetryableError):
+    """完成動画がデコードできない・読み戻しの sha256 が一致しない。再描画で解決しうる。"""
+
+
+class UnknownRenderProfileError(PermanentError):
+    """登録されていない render profile id（ADR-0019）。API でも先に弾く。"""
+
+
 class InvalidTransitionError(DomainError):
     """表に無い状態遷移を永続化しようとした。"""
 

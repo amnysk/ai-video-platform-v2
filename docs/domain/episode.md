@@ -28,6 +28,8 @@ Phase 1 の生成は `uuid.uuid4()`（`infrastructure/db/repositories.py`）。
 | `completed` | 骨組みworkflowが正常終了した（ADR-0006） | ✔ |
 | `script_ready` | 台本が生成・検証され、次工程を待つ（ADR-0011） | |
 | `storyboard_ready` | storyboard が生成・検証され、次工程を待つ（ADR-0015） | |
+| `assets_ready` | シーン素材とマニフェストが揃い、次工程を待つ（ADR-0017） | |
+| `render_ready` | 完成動画が技術検査に合格して保存され、次工程を待つ（ADR-0019） | |
 | `failed` | permanent失敗。回復経路なし | ✔ |
 | `cancelled` | 所有者が明示的に中止した | ✔ |
 

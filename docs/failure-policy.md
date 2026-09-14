@@ -91,6 +91,28 @@ Activity 境界の写像（画像・音声・動画共通、`infrastructure/prod
 （INV-15 の限定例外、ADR-0017）。検査:
 `tests/unit/test_failure_class_registry.py::test_production_exceptions_classify_by_their_base`。
 
+### Render 工程（ADR-0019）
+
+| 例外 | クラス | 事象 |
+|---|---|---|
+| `RenderInputMissingError` | `needs_input` | 現行の production_manifest / 参照 Artifact が PG か MinIO に無い |
+| `RenderInputStaleError` | `needs_input` | マニフェストが指す Artifact が現行でない |
+| `RenderInputIntegrityError` | `permanent` | 入力 Artifact の sha256 不一致・契約違反 |
+| `RenderSourceMediaError` | `needs_input` | 素材メディアが読めない・未対応形式・尺の食い違い |
+| `DurationReconciliationError` | `needs_input` | シーン動画の尺を storyboard の尺へ合わせられない（凍結の上限超過） |
+| `VoiceTimelineOverflowError` | `needs_input` | ナレーション音声が次の音声と重なる / 総尺を許容以上に超える |
+| `RenderEngineFailedError` | `retryable` | 描画エンジンの非zero終了・シグナル終了 |
+| `RenderEngineTimeoutError` | `retryable` | 描画エンジンの時間切れ（`RenderEngineFailedError` の下位型） |
+| `RenderWorkspaceFullError` | `retryable` | 作業領域の空き不足（事前検査 / ENOSPC）。自動削除しない |
+| `RenderEngineUnavailableError` | `needs_input` | バイナリ・フォントが無い / 固定 sha256 と不一致（運用者が導入し直せば回復） |
+| `FinalVideoValidationError` | `permanent` | 完成動画の決定的な技術検査不合格（解像度・codec・音声欠落など） |
+| `FinalVideoCorruptError` | `retryable` | 完成動画がデコードできない / 読み戻し sha256 不一致 |
+| `UnknownRenderProfileError` | `permanent` | 未登録の render profile id（API でも先に弾く） |
+
+描画 Activity は retry 最大3回（retryable の型だけ）。使い切ったら `blocked`（`RETRY_BUDGET_EXHAUSTED`）で terminal にしない。
+cancel は失敗ではない（子プロセスを止め、作業領域を片付けて再送出）。MinIO / DB の通信失敗は `transient`。
+検査: `tests/unit/test_render_vocabulary.py::test_render_exceptions_classify_by_their_base`。
+
 ## 2. Episodeをterminal failedにしてよい条件
 
 次の全てを満たすときだけ `failed`：

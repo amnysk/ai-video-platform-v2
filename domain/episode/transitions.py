@@ -25,6 +25,7 @@ class EpisodeEvent(StrEnum):
     SCRIPT_READY = "script_ready"
     STORYBOARD_READY = "storyboard_ready"
     ASSETS_READY = "assets_ready"
+    RENDER_READY = "render_ready"
     STAGE_ADMITTED = "stage_admitted"
     RETRY_ADMITTED = "retry_admitted"
     RETRY_BUDGET_EXHAUSTED = "retry_budget_exhausted"
@@ -64,6 +65,10 @@ _TABLE: dict[tuple[EpisodeStatus, EpisodeEvent], EpisodeStatus] = {
     (EpisodeStatus.IN_PROGRESS, EpisodeEvent.ASSETS_READY): EpisodeStatus.ASSETS_READY,
     # ADR-0017: 駐機点の出口。production の再実行または Phase 5 Render が呼ぶ。
     (EpisodeStatus.ASSETS_READY, EpisodeEvent.STAGE_ADMITTED): EpisodeStatus.IN_PROGRESS,
+    # ADR-0019: 完成動画が技術検査を通って保存された。Phase 5 の workflow の終端であり駐機点。
+    (EpisodeStatus.IN_PROGRESS, EpisodeEvent.RENDER_READY): EpisodeStatus.RENDER_READY,
+    # ADR-0019: 駐機点の出口。再描画（別 profile 等）または Phase 6 Upload が呼ぶ。
+    (EpisodeStatus.RENDER_READY, EpisodeEvent.STAGE_ADMITTED): EpisodeStatus.IN_PROGRESS,
     (EpisodeStatus.NEEDS_WORK, EpisodeEvent.RETRY_ADMITTED): EpisodeStatus.IN_PROGRESS,
     (EpisodeStatus.NEEDS_WORK, EpisodeEvent.RETRY_BUDGET_EXHAUSTED): EpisodeStatus.BLOCKED,
     (EpisodeStatus.BLOCKED, EpisodeEvent.RESUMED): EpisodeStatus.IN_PROGRESS,
