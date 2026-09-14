@@ -273,3 +273,38 @@ async def test_provider_job_ref_is_write_once_across_concurrent_sessions(
     async with f() as session:
         loaded = await ProviderReservationRepository(session).get(row.id)
     assert loaded is not None and loaded.provider_job_ref == "req-B"
+
+
+async def test_mark_dispatched_wins_once_across_sessions(pg_session_factory) -> None:
+    """2つの submit が同じ予約を同時に dispatch しようとしても、片方だけが進める（ADR-0017）。"""
+    from domain.errors import UnreconciledReservationError
+
+    f = pg_session_factory
+    episode_id = await _episode(f)
+    async with f() as session:
+        row = await ProviderReservationRepository(session).reserve(
+            episode_id=episode_id,
+            provider=ProviderCall.FAL_VIDEO,
+            idempotency_key="d" * 64,
+            input_hash="h" * 64,
+            round=1,
+            scene_id="sb1",
+        )
+        await session.commit()
+
+    async with f() as first, f() as second:
+        # 両方が「未 dispatch」を読んだ後で書く（読み取りと書き込みの競合の窓）
+        seen_first = await ProviderReservationRepository(first).get(row.id)
+        seen_second = await ProviderReservationRepository(second).get(row.id)
+        assert seen_first is not None and seen_first.dispatched_at is None
+        assert seen_second is not None and seen_second.dispatched_at is None
+
+        await ProviderReservationRepository(first).mark_dispatched(row.id)
+        await first.commit()
+        with pytest.raises(UnreconciledReservationError):
+            await ProviderReservationRepository(second).mark_dispatched(row.id)
+        await second.rollback()
+
+    async with f() as session:
+        loaded = await ProviderReservationRepository(session).get(row.id)
+    assert loaded is not None and loaded.dispatched_at is not None

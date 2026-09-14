@@ -24,7 +24,7 @@ from contracts.states import (
 from domain.artifact.entities import ArtifactMetadata
 from domain.episode.entities import Episode
 from domain.episode.transitions import EpisodeEvent, Rejected, transition_episode
-from domain.errors import InvalidTransitionError
+from domain.errors import InvalidTransitionError, UnreconciledReservationError
 from domain.job.entities import Job
 from domain.job.transitions import JobEvent, transition_job
 from domain.provider.reservations import ReservationEvent, transition_reservation
@@ -599,11 +599,32 @@ class ProviderReservationRepository:
 
         状態は ``reserved`` のまま。``dispatched_at`` が「呼んだ可能性」の境界であり、
         NULL なら起動前 crash（呼んでいない証拠）と判定できる。
+
+        検査と書き込みを1文の条件付き UPDATE にする（``reserved`` かつ未 dispatch の行だけ）。
+        並行する2つの submit が同じ予約を読んでも、dispatch できるのは片方だけ。
+        更新0行は「既に呼んだかもしれない行」なので ``UnreconciledReservationError``（人手照合）。
         """
-        row = await self._row(reservation_id)
-        row.dispatched_at = _now()
-        await self._session.flush()
-        return _to_reservation(row)
+        table = ProviderReservationRow
+        await self._row(reservation_id)  # 行が無ければ InvalidTransitionError
+        result = await self._session.execute(
+            update(table)
+            .where(
+                table.id == _as_uuid(reservation_id),
+                table.status == ReservationStatus.RESERVED.value,
+                table.dispatched_at.is_(None),
+            )
+            .values(dispatched_at=_now())
+            .execution_options(synchronize_session=False)
+        )
+        if getattr(result, "rowcount", 0) != 1:
+            raise UnreconciledReservationError(
+                f"reservation {reservation_id} is already dispatched or closed; "
+                "refusing to dispatch it again"
+            )
+        fresh = await self._session.get(table, _as_uuid(reservation_id), populate_existing=True)
+        if fresh is None:
+            raise InvalidTransitionError(f"reservation not found: {reservation_id}")
+        return _to_reservation(fresh)
 
     async def record_provider_job_ref(
         self, reservation_id: uuid.UUID | str, provider_job_ref: str

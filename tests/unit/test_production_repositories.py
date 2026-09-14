@@ -226,3 +226,26 @@ async def test_scene_scope_is_enforced_by_the_schema(session) -> None:
         await _reserve(
             session, episode_id, key="k9", scene_id=None, provider=ProviderCall.FAL_VIDEO
         )
+
+
+async def test_mark_dispatched_is_a_one_shot_conditional_update(session) -> None:
+    from domain.errors import UnreconciledReservationError
+
+    episode_id = await _episode(session)
+    repo, row = await _reserve(session, episode_id, key="k", scene_id="sb1")
+    first = await repo.mark_dispatched(row.id)
+    await session.commit()
+    assert first.dispatched_at is not None
+    # 2度目（並行する submit・再実行）は「呼んだかもしれない」行を上書きしない
+    with pytest.raises(UnreconciledReservationError):
+        await repo.mark_dispatched(row.id)
+    await session.rollback()
+    loaded = await repo.get(row.id)
+    assert loaded is not None and loaded.dispatched_at == first.dispatched_at
+
+    _, spent = await _reserve(session, episode_id, key="k2", scene_id="sb2")
+    await repo.mark_dispatched(spent.id)
+    await repo.mark_spent(spent.id, raw_output_key=None, reconciled_by="conservative")
+    await session.commit()
+    with pytest.raises(UnreconciledReservationError):
+        await repo.mark_dispatched(spent.id)
