@@ -9,6 +9,8 @@ from __future__ import annotations
 import ast
 import pathlib
 
+import pytest
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
 # 各レイヤがimportしてよいトップレベルパッケージ（docs/architecture/overview.md の表）
@@ -164,14 +166,68 @@ def test_media_libraries_are_confined_to_infrastructure_media() -> None:
     assert not violations, "\n".join(violations)
 
 
-def test_domain_does_not_name_media_providers_or_tools() -> None:
-    """domain は provider / 実装ツールの名前を知らない（ADR-0017）。"""
+#: domain が知ってはならない provider / 実装ツールの名前（小文字の語）。
+PROVIDER_TOKENS: frozenset[str] = frozenset(
+    {"fal", "seedream", "seedance", "piper", "ffmpeg", "kling", "veo", "pillow", "pyav"}
+)
+
+
+def provider_name_tokens(text: str) -> set[str]:
+    """識別子・文字列・コメントを語に割り、provider 名と一致する語を返す。
+
+    - 英数字以外（``_`` ``-`` ``.`` 空白など）で区切る: ``fal_image`` → ``fal`` / ``image``
+    - camelCase / PascalCase の境界で区切る: ``FalImageGenerator`` → ``fal`` / ``image`` / ...
+    - 大小文字を無視し、**語全体**で照合する: ``false`` / ``falsy`` / ``vegetable`` / ``veon`` は
+      一致しない（部分文字列で探すと ``false`` が ``fal`` に誤一致する）
+    """
     import re
 
-    pattern = re.compile(r"\b(fal|seedream|piper|ffmpeg|kling|pillow|pyav)\b", re.IGNORECASE)
+    found: set[str] = set()
+    for chunk in re.split(r"[^0-9A-Za-z]+", text):
+        if not chunk:
+            continue
+        # ABCWord → ABC / Word、fooBar → foo / Bar、fal2 → fal / 2
+        words = re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+", chunk)
+        for word in words:
+            lowered = word.lower()
+            if lowered in PROVIDER_TOKENS:
+                found.add(lowered)
+    return found
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("fal_image", {"fal"}),
+        ("FalImageGenerator", {"fal"}),
+        ("FAL_VIDEO", {"fal"}),
+        ("fal-client", {"fal"}),
+        ("FalQueueClient", {"fal"}),
+        ("SeedreamV4", {"seedream"}),
+        ("seedance-1-pro", {"seedance"}),
+        ("PiperVoice", {"piper"}),
+        ("run ffmpeg -i", {"ffmpeg"}),
+        ("KLING", {"kling"}),
+        ("google_veo3", {"veo"}),
+        ("value = False", set()),
+        ("falsy fallback", set()),
+        ("vegetable veon", set()),
+        ("pipers skipper", set()),
+        ("default_value", set()),
+    ],
+)
+def test_provider_name_matcher(text: str, expected: set[str]) -> None:
+    assert provider_name_tokens(text) == expected
+
+
+def test_domain_does_not_name_media_providers_or_tools() -> None:
+    """domain は provider / 実装ツールの名前を知らない（ADR-0017）。"""
     violations: list[str] = []
     for path in _python_files("domain"):
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if pattern.search(line):
-                violations.append(f"{path.relative_to(REPO)}:{lineno}: {line.strip()}")
+            names = provider_name_tokens(line)
+            if names:
+                violations.append(
+                    f"{path.relative_to(REPO)}:{lineno}: {sorted(names)}: {line.strip()}"
+                )
     assert not violations, "\n".join(violations)

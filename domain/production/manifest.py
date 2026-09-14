@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from contracts.artifacts import (
     ProductionManifest,
@@ -74,9 +74,28 @@ def build_manifest(
 
 
 def check_manifest_coverage(
-    manifest: ProductionManifest, storyboard: StoryboardArtifact, script: ScriptArtifact
+    manifest: ProductionManifest,
+    storyboard: StoryboardArtifact,
+    script: ScriptArtifact,
+    *,
+    storyboard_sha256: str,
+    script_sha256: str,
 ) -> None:
-    """保存済みマニフェストが storyboard / 台本を過不足なく覆うこと。"""
+    """保存済みマニフェストが**この** storyboard / 台本を過不足なく覆うこと。
+
+    シーン ID の並びだけでは、同じ構成で中身の違う storyboard（再計画）を見分けられないので、
+    入力 Artifact の sha256 もマニフェストの固定値と照合する。
+    """
+    if manifest.source_storyboard.sha256 != storyboard_sha256:
+        raise ProductionInputInvalidError(
+            f"manifest source_storyboard sha256 {manifest.source_storyboard.sha256} "
+            f"!= current storyboard {storyboard_sha256}"
+        )
+    if manifest.source_script.sha256 != script_sha256:
+        raise ProductionInputInvalidError(
+            f"manifest source_script sha256 {manifest.source_script.sha256} "
+            f"!= current script {script_sha256}"
+        )
     scene_ids = [s.scene_id for s in storyboard.scenes]
     if [s.scene_id for s in manifest.scenes] != scene_ids:
         raise ProductionInputInvalidError(
@@ -87,3 +106,43 @@ def check_manifest_coverage(
         raise ProductionInputInvalidError(
             f"manifest voices {[v.script_scene_id for v in manifest.voices]} != script {script_ids}"
         )
+
+
+class _SourceRef(Protocol):
+    @property
+    def sha256(self) -> str: ...
+
+
+class _StoryboardMember(Protocol):
+    @property
+    def source_storyboard(self) -> _SourceRef: ...
+
+
+def check_member_sources(
+    members: Iterable[_StoryboardMember],
+    *,
+    storyboard_sha256: str,
+    script_sha256: str | None = None,
+) -> None:
+    """組み立て時に、マニフェストへ載せる素材が全て同じ storyboard（と台本）から作られたこと。
+
+    ``build_manifest`` は参照（id / sha256）しか受け取らないので、素材 Artifact 本体を読んだ
+    呼び出し側がこれを通す。``source_script`` を持つ素材（音声）は ``script_sha256`` とも照合する。
+    """
+    for member in members:
+        found = member.source_storyboard.sha256
+        if found != storyboard_sha256:
+            raise ProductionInputInvalidError(
+                f"{type(member).__name__} was produced from storyboard {found}, "
+                f"expected {storyboard_sha256}"
+            )
+        source_script = getattr(member, "source_script", None)
+        if (
+            script_sha256 is not None
+            and source_script is not None
+            and source_script.sha256 != script_sha256
+        ):
+            raise ProductionInputInvalidError(
+                f"{type(member).__name__} was produced from script "
+                f"{source_script.sha256}, expected {script_sha256}"
+            )

@@ -268,3 +268,89 @@ def test_production_vocabulary_and_scene_keys_on_postgres(probe_url) -> None:
         )
     engine.dispose()
     command.upgrade(config, "head")  # 再 upgrade が通る
+
+
+def test_scene_scope_checks_on_postgres(probe_url) -> None:
+    """0004: シーン単位の型は scene_id 必須、Episode 単位の型は scene_id NULL（ADR-0018）。"""
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    config = _config(probe_url)
+    command.upgrade(config, "head")
+    engine = create_engine(probe_url)
+    episode_id = uuid.uuid4()
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'in_progress', 't')"),
+            {"id": episode_id},
+        )
+
+    artifact = text(
+        "INSERT INTO artifact_metadata (id, episode_id, artifact_type, schema_version, "
+        "bucket, object_key, sha256, input_hash, version, scene_id) VALUES "
+        "(:id, :ep, :type, '1.0', 'b', 'k', :sha, :sha, 1, :scene)"
+    )
+    job = text(
+        "INSERT INTO jobs (id, episode_id, type, status, attempts, max_attempts, scene_id) "
+        "VALUES (:id, :ep, :type, 'queued', 0, 1, :scene)"
+    )
+    reservation = text(
+        "INSERT INTO provider_reservations (id, episode_id, provider, idempotency_key, "
+        "input_hash, round, status, scene_id) VALUES (:id, :ep, :type, :key, :key, 1, "
+        "'reserved', :scene)"
+    )
+
+    def _params(type_: str, scene: str | None) -> dict:
+        return {
+            "id": uuid.uuid4(),
+            "ep": episode_id,
+            "type": type_,
+            "scene": scene,
+            "sha": uuid.uuid4().hex + uuid.uuid4().hex,
+            "key": uuid.uuid4().hex + uuid.uuid4().hex,
+        }
+
+    rejected = [
+        (artifact, "scene_image", None),
+        (artifact, "scene_video", None),
+        (artifact, "scene_voice", None),
+        (artifact, "script", "sb1"),
+        (artifact, "storyboard", "sb1"),
+        (artifact, "production_manifest", "sb1"),
+        (job, "produce_scene_image", None),
+        (job, "produce_scene_voice", None),
+        (job, "produce_scene_video", None),
+        (job, "write_script", "sb1"),
+        (job, "assemble_production", "sb1"),
+        (reservation, "fal_image", None),
+        (reservation, "fal_video", None),
+    ]
+    for statement, type_, scene in rejected:
+        with pytest.raises(IntegrityError), engine.begin() as conn:
+            conn.execute(statement, _params(type_, scene))
+
+    accepted = [
+        (artifact, "scene_image", "sb1"),
+        (artifact, "scene_voice", "s1"),
+        (artifact, "production_manifest", None),
+        (job, "produce_scene_video", "sb1"),
+        (job, "assemble_production", None),
+        (reservation, "fal_video", "sb1"),
+        (reservation, "codex_script", None),
+    ]
+    with engine.begin() as conn:
+        for statement, type_, scene in accepted:
+            conn.execute(statement, _params(type_, scene))
+        conn.execute(text("DELETE FROM episodes"))
+    engine.dispose()
+
+    command.downgrade(config, "0003")
+    engine = create_engine(probe_url)
+    names = {
+        c["name"]
+        for table in ("artifact_metadata", "jobs", "provider_reservations")
+        for c in inspect(engine).get_check_constraints(table)
+    }
+    assert not {n for n in names if n and "scene_scope" in n}
+    engine.dispose()

@@ -78,10 +78,38 @@ def make_wav(duration_ms: int = 1000, sample_rate: int = 22_050, channels: int =
     return out.getvalue()
 
 
-def make_mp4(duration_ms: int = 1000, width: int = 720, height: int = 1280, fps: int = 24) -> bytes:
-    """H.264 / yuv420p の mp4。numpy を使わず Y/U/V plane へ直接書く。"""
+def make_mp4(
+    duration_ms: int = 1000,
+    width: int = 720,
+    height: int = 1280,
+    fps: int = 24,
+    *,
+    faststart: bool = False,
+) -> bytes:
+    """H.264 / yuv420p の mp4。numpy を使わず Y/U/V plane へ直接書く。
+
+    ``faststart`` は moov を先頭に置く（末尾を切っても尺のヘッダが残る壊れ方を作れる）。
+    moov の移動は seek 可能なファイルが要るので一時ファイルに書く。
+    """
+    if faststart:
+        import os
+        import tempfile
+
+        fd, path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        try:
+            _write_mp4(path, duration_ms, width, height, fps, {"movflags": "faststart"})
+            with open(path, "rb") as handle:
+                return handle.read()
+        finally:
+            os.remove(path)
     out = io.BytesIO()
-    with av.open(out, mode="w", format="mp4") as container:
+    _write_mp4(out, duration_ms, width, height, fps, {})
+    return out.getvalue()
+
+
+def _write_mp4(target: Any, duration_ms: int, width: int, height: int, fps: int, options) -> None:
+    with av.open(target, mode="w", format="mp4", options=options) as container:
         stream = container.add_stream("libx264", rate=fps)
         stream.width = width
         stream.height = height
@@ -97,7 +125,6 @@ def make_mp4(duration_ms: int = 1000, width: int = 720, height: int = 1280, fps:
                 container.mux(packet)
         for packet in stream.encode(None):
             container.mux(packet)
-    return out.getvalue()
 
 
 @dataclass

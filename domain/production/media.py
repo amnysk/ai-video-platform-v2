@@ -60,6 +60,11 @@ class VideoInfo:
     fps_millis: int
     frames_decoded: int
     has_audio: bool
+    #: 実際にデコードできたフレームから求めた尺（最後のフレームの pts + 1フレーム）。
+    #: 容器ヘッダの ``duration_ms`` と食い違えば、途中で切れた・壊れたファイルである。
+    decoded_duration_ms: int
+    #: デコード中に報告されたエラーの数（例外にならず読み飛ばされたものを含む）。
+    decode_errors: int = 0
 
 
 @runtime_checkable
@@ -80,10 +85,6 @@ class NormalizationPlan:
     crop_box: tuple[int, int, int, int]
     target_width: int
     target_height: int
-
-    @property
-    def is_identity_crop(self) -> bool:
-        return self.crop_box[0] == 0 and self.crop_box[1] == 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +164,14 @@ def video_duration_tolerance_ms(requested_ms: int) -> int:
 def validate_video(info: VideoInfo, size_bytes: int, *, requested_duration_ms: int) -> None:
     if info.frames_decoded <= 0:
         raise MediaValidationError("video has no decodable frames")
+    if info.decode_errors > 0:
+        raise MediaValidationError(f"video decode reported {info.decode_errors} error(s)")
+    decoded_tolerance = video_duration_tolerance_ms(info.duration_ms)
+    if abs(info.decoded_duration_ms - info.duration_ms) > decoded_tolerance:
+        raise MediaValidationError(
+            f"decoded video duration {info.decoded_duration_ms} ms differs from container "
+            f"duration {info.duration_ms} ms by more than {decoded_tolerance} ms"
+        )
     tolerance = video_duration_tolerance_ms(requested_duration_ms)
     if abs(info.duration_ms - requested_duration_ms) > tolerance:
         raise MediaValidationError(
