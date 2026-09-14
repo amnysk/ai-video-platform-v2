@@ -34,7 +34,7 @@
 | `storyboard` | 現行の `script` | `storyboard`（ADR-0015） | LLM（Codex CLI + OpenMontage 仕様、**有料**・予約台帳） |
 | `production`（旧 `generation`） | 現行の `storyboard`, `script` | `scene_image` / `scene_voice` / `scene_video`, `production_manifest`（ADR-0017） | **有料** provider（画像・動画）/ ローカル TTS |
 | `render` | 現行の `production_manifest`（と、それが指す `script` / `storyboard` / シーン素材） | `final_video`（ADR-0019） | なし（ローカル計算。CPU・ディスクを占有） |
-| `upload` | `final_video`, `video_metadata` | `upload_receipt` | **YouTube投稿** |
+| `upload` | 現行の `final_video`（と、メタデータを導出する `script`） | `upload_receipt`（ADR-0020） | **YouTube private 投稿**（予約台帳 `youtube_upload`、1ラウンドのみ） |
 | `analytics` | `upload_receipt` | `performance_report` | YouTube Analytics |
 
 - **持つ**: 「入力Artifactを読む → 処理する → 出力Artifactを書く → 結果を返す」

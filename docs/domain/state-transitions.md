@@ -24,6 +24,7 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 | `assets_ready` | `in_progress` | production の再実行 / 次工程を開始（`STAGE_ADMITTED`、Phase 5 の入口） | workflow |
 | `in_progress` | `render_ready` | 完成動画が技術検査に合格し保存された（`RENDER_READY`、ADR-0019） | render workflow |
 | `render_ready` | `in_progress` | 再描画（別 profile 等）/ 次工程を開始（`STAGE_ADMITTED`、Phase 6 の入口） | workflow |
+| `in_progress` | `uploaded` | 完成動画を private 投稿し受領 Artifact を保存した（`UPLOAD_SUCCEEDED`、ADR-0020） | upload workflow |
 | `needs_work` | `in_progress` | 自動再試行が枠内 / 人間が工程を再実行（production / render の POST、ADR-0017 §8 / ADR-0019） | workflow |
 | `needs_work` | `blocked` | 再生成の枠を使い切った | workflow |
 | `blocked` | `in_progress` | 人間が再開をsignal（production / render は POST が再開、ADR-0017 §8 / ADR-0019） | API (人間) |
@@ -56,7 +57,7 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 - `script_ready` → 次工程の開始（自動。Phase 3 の `StoryboardWorkflow` が `STAGE_ADMITTED` を呼ぶ）
 - `storyboard_ready` → 次工程の開始（自動。Phase 4 の `ProductionWorkflow` が `STAGE_ADMITTED` を呼ぶ、ADR-0017）
 - `assets_ready` → 次工程の開始（Phase 5 の `RenderWorkflow` が `STAGE_ADMITTED` を呼ぶ、ADR-0019）
-- `render_ready` → 次工程の開始（自動。Phase 6 Upload で実装。**それまでは駐機点**。再描画の POST も出口、ADR-0019）
+- `render_ready` → 次工程の開始（Phase 6 Upload の POST、ADR-0020。再描画の POST も出口、ADR-0019）
 
 `completed` は骨組みworkflow専用の終端であり、本番パイプラインの正常系は
 `ready_for_review` を通る（ADR-0006）。

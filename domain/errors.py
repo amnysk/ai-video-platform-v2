@@ -213,6 +213,49 @@ class UnknownRenderProfileError(NeedsInputError):
     """
 
 
+class UploadInputMissingError(NeedsInputError):
+    """upload の入力（現行の final_video / 台本）の参照か本体が無い（ADR-0020 §11）。
+
+    render の再実行で回復する。
+    """
+
+
+class UploadIntegrityError(PermanentError):
+    """final_video の sha256 がメタデータ・契約と一致しない（ADR-0020 §11）。
+
+    保存済みの内容は何度読んでも同じく壊れている（決定的）ので permanent。YouTube は呼ばない。
+    """
+
+
+class UploadsPausedError(NeedsInputError):
+    """``UPLOADS_PAUSED`` が有効。session を開始する前に止める（failure-policy §7）。"""
+
+
+class UploadAuthError(NeedsInputError):
+    """OAuth の refresh が ``invalid_grant`` / 権限不足 / チャンネル未開設（ADR-0020 §11）。
+
+    人間が同意をやり直せば回復する。401 の期限切れは adapter が 1 度だけ refresh してから判断する。
+    """
+
+
+class UploadQuotaExceededError(RetryableError):
+    """``quotaExceeded`` / ``uploadLimitExceeded`` / ``rateLimitExceeded``。
+
+    長い backoff で再実行する。
+    """
+
+
+class UploadRejectedError(NeedsInputError):
+    """YouTube がメタデータ・動画を拒否した（``invalidTitle`` / ``forbidden`` 等）。人間が直す。"""
+
+
+class UploadOutcomeUnknownError(NeedsInputError):
+    """bytes を送った後に結果が読めず、マーカー照合でも見つからない（ADR-0020 §4）。
+
+    新しい session を開かない（二重投稿の防止）。人手照合と運用者の予約放棄を待つ。
+    """
+
+
 class InvalidTransitionError(DomainError):
     """表に無い状態遷移を永続化しようとした。"""
 

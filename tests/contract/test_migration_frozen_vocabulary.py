@@ -106,8 +106,6 @@ def test_0004_upgrade_adds_exactly_the_phase4_values() -> None:
     Phase 5（0005）で enum が増えたので、今の enum ではなく 0005 の downgrade が凍結した
     Phase 4 の値と比べる（仕様変更: ADR-0019。0004 の意味は変わっていない）。
     """
-    from contracts.states import ProviderCall
-
     migration = _load_0004()
     assert set(DAD86F5_EPISODE_STATUSES) - set(migration.PHASE3_EPISODE_STATUSES) == {
         "assets_ready"
@@ -124,7 +122,8 @@ def test_0004_upgrade_adds_exactly_the_phase4_values() -> None:
         "scene_video",
         "production_manifest",
     }
-    assert {p.value for p in ProviderCall} - set(migration.PHASE3_PROVIDER_CALLS) == {
+    # Phase 6（0006）で provider が増えたので、0006 が凍結した Phase 5 の値と比べる（ADR-0020）
+    assert set(A51BC13_PROVIDER_CALLS) - set(migration.PHASE3_PROVIDER_CALLS) == {
         "fal_image",
         "fal_video",
     }
@@ -195,14 +194,15 @@ def test_0005_downgrade_checks_cover_every_upgraded_check() -> None:
 
 
 def test_0005_upgrade_adds_exactly_the_phase5_values() -> None:
-    from contracts.states import ArtifactType, EpisodeStatus, JobType
+    """Phase 6（0006）で job / artifact が増えたので、0006 が凍結した Phase 5 の値と比べる。"""
+    from contracts.states import EpisodeStatus
 
     migration = _load_0005()
     assert {s.value for s in EpisodeStatus} - set(migration.PHASE4_EPISODE_STATUSES) == {
         "render_ready"
     }
-    assert {t.value for t in JobType} - set(migration.PHASE4_JOB_TYPES) == {"render_final_video"}
-    assert {t.value for t in ArtifactType} - set(migration.PHASE4_ARTIFACT_TYPES) == {"final_video"}
+    assert set(A51BC13_JOB_TYPES) - set(migration.PHASE4_JOB_TYPES) == {"render_final_video"}
+    assert set(A51BC13_ARTIFACT_TYPES) - set(migration.PHASE4_ARTIFACT_TYPES) == {"final_video"}
 
 
 def test_final_video_is_episode_scoped() -> None:
@@ -212,3 +212,58 @@ def test_final_video_is_episode_scoped() -> None:
 
     assert ArtifactType.FINAL_VIDEO not in models.SCENE_ARTIFACT_TYPES
     assert JobType.RENDER_FINAL_VIDEO not in models.SCENE_JOB_TYPES
+
+
+MIGRATION_0006 = REPO / "infrastructure/db/migrations/versions/0006_upload_stage.py"
+
+#: a51bc13:contracts/states.py の JobType / ArtifactType / ProviderCall（定義順）
+A51BC13_JOB_TYPES = [*DAD86F5_JOB_TYPES, "render_final_video"]
+A51BC13_ARTIFACT_TYPES = [*DAD86F5_ARTIFACT_TYPES, "final_video"]
+A51BC13_PROVIDER_CALLS = ["codex_script", "codex_storyboard", "fal_image", "fal_video"]
+
+
+def _load_0006() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("migration_0006", MIGRATION_0006)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_0006_downgrade_vocabulary_is_frozen_at_a51bc13() -> None:
+    migration = _load_0006()
+    assert list(migration.PHASE5_JOB_TYPES) == A51BC13_JOB_TYPES
+    assert list(migration.PHASE5_ARTIFACT_TYPES) == A51BC13_ARTIFACT_TYPES
+    assert list(migration.PHASE5_PROVIDER_CALLS) == A51BC13_PROVIDER_CALLS
+
+
+def test_0006_downgrade_checks_cover_every_upgraded_check() -> None:
+    migration = _load_0006()
+    upgraded = {(t, n, c) for t, n, c, _ in migration._CHECKS}
+    downgraded = {(t, n, c) for t, n, c, _ in migration._PHASE5_CHECKS}
+    assert upgraded == downgraded
+
+
+def test_0006_upgrade_adds_exactly_the_phase6_values() -> None:
+    """Episode 状態は増えない（既存の uploaded を使う。ADR-0020）。"""
+    from contracts.states import ArtifactType, EpisodeStatus, JobType, ProviderCall
+
+    migration = _load_0006()
+    assert {s.value for s in EpisodeStatus} == set(DAD86F5_EPISODE_STATUSES) | {"render_ready"}
+    assert {t.value for t in JobType} - set(migration.PHASE5_JOB_TYPES) == {"upload_final_video"}
+    assert {t.value for t in ArtifactType} - set(migration.PHASE5_ARTIFACT_TYPES) == {
+        "upload_receipt"
+    }
+    assert {p.value for p in ProviderCall} - set(migration.PHASE5_PROVIDER_CALLS) == {
+        "youtube_upload"
+    }
+
+
+def test_upload_vocabulary_is_episode_scoped() -> None:
+    """upload の語彙はシーン単位ではない（scene_id は NULL）。"""
+    from contracts.states import ArtifactType, JobType, ProviderCall
+    from infrastructure.db import models
+
+    assert ArtifactType.UPLOAD_RECEIPT not in models.SCENE_ARTIFACT_TYPES
+    assert JobType.UPLOAD_FINAL_VIDEO not in models.SCENE_JOB_TYPES
+    assert ProviderCall.YOUTUBE_UPLOAD not in models.SCENE_PROVIDER_CALLS

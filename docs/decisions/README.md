@@ -43,3 +43,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0017](./0017-production-stage.md) | Production 工程（画像・音声・動画）と Episode `assets_ready` | Accepted |
 | [0018](./0018-scene-scoped-artifacts.md) | シーン単位の Artifact・job・予約 | Accepted |
 | [0019](./0019-render-stage.md) | Render 工程（完成動画）と Episode `render_ready` | Accepted |
+| [0020](./0020-upload-stage.md) | Upload 工程（YouTube private 投稿）と Episode `uploaded` | Accepted |

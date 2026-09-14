@@ -227,12 +227,12 @@ def test_production_vocabulary_and_scene_keys_on_postgres(probe_url) -> None:
     engine.dispose()
 
     # Phase 4 の行が残っていれば downgrade は失敗し、スキーマは head のまま
-    # （downgrade は1トランザクション。0005 を足したので head は 0005。ADR-0019）
+    # （downgrade は1トランザクション。head は 0006。ADR-0020）
     with pytest.raises(IntegrityError):
         command.downgrade(config, "0003")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0005"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0006"
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 
@@ -355,3 +355,68 @@ def test_scene_scope_checks_on_postgres(probe_url) -> None:
     }
     assert not {n for n in names if n and "scene_scope" in n}
     engine.dispose()
+
+
+def test_upload_vocabulary_and_result_ref_on_postgres(probe_url) -> None:
+    """0006: upload の語彙と provider_result_ref（ADR-0020）。行が残れば downgrade は失敗する。"""
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    config = _config(probe_url)
+    command.upgrade(config, "head")
+    engine = create_engine(probe_url)
+    episode_id = uuid.uuid4()
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'uploaded', 't')"),
+            {"id": episode_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO jobs (id, episode_id, type, status, attempts, max_attempts) "
+                "VALUES (:id, :ep, 'upload_final_video', 'succeeded', 1, 3)"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO artifact_metadata (id, episode_id, artifact_type, schema_version, "
+                "bucket, object_key, sha256, input_hash, version) VALUES "
+                "(:id, :ep, 'upload_receipt', '1.0', 'b', 'k', :sha, :sha, 1)"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id, "sha": "a" * 64},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO provider_reservations (id, episode_id, provider, idempotency_key, "
+                "input_hash, round, status, provider_result_ref) VALUES "
+                "(:id, :ep, 'youtube_upload', :key, :key, 1, 'spent', 'abcdefghijk')"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id, "key": "b" * 64},
+        )
+    with pytest.raises(IntegrityError), engine.begin() as conn:  # 同じ upload key は1行だけ
+        conn.execute(
+            text(
+                "INSERT INTO provider_reservations (id, episode_id, provider, idempotency_key, "
+                "input_hash, round, status) VALUES "
+                "(:id, :ep, 'youtube_upload', :key, :key, 2, 'reserved')"
+            ),
+            {"id": uuid.uuid4(), "ep": episode_id, "key": "b" * 64},
+        )
+    engine.dispose()
+
+    with pytest.raises(IntegrityError):
+        command.downgrade(config, "0005")
+    engine = create_engine(probe_url)
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0006"
+        conn.execute(text("DELETE FROM episodes"))
+    engine.dispose()
+
+    command.downgrade(config, "0005")
+    engine = create_engine(probe_url)
+    columns = {c["name"] for c in inspect(engine).get_columns("provider_reservations")}
+    assert "provider_result_ref" not in columns
+    engine.dispose()
+    command.upgrade(config, "head")

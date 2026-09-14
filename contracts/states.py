@@ -93,6 +93,8 @@ class JobType(StrEnum):
     ASSEMBLE_PRODUCTION = "assemble_production"
     #: ADR-0019: Render（Episode 単位。scene_id は NULL）
     RENDER_FINAL_VIDEO = "render_final_video"
+    #: ADR-0020: Upload（Episode 単位。scene_id は NULL）
+    UPLOAD_FINAL_VIDEO = "upload_final_video"
 
 
 class ArtifactType(StrEnum):
@@ -108,6 +110,8 @@ class ArtifactType(StrEnum):
     PRODUCTION_MANIFEST = "production_manifest"
     #: ADR-0019: 完成動画（Episode 単位。scene_id は NULL）
     FINAL_VIDEO = "final_video"
+    #: ADR-0020: 投稿受領（Episode 単位。YouTube video id と送ったメタデータの snapshot）
+    UPLOAD_RECEIPT = "upload_receipt"
 
 
 class Pipeline(StrEnum):
@@ -173,6 +177,24 @@ RENDER_ADMISSIBLE_STATUSES: frozenset[EpisodeStatus] = frozenset(
     }
 )
 
+#: upload 工程の (workflow名, task queue)（ADR-0020）。storyboard と同じ理由で Pipeline に載せない。
+UPLOAD_WORKFLOW: tuple[str, str] = ("UploadWorkflow", "upload")
+#: upload の task queue。workflow と状態系 Activity。
+UPLOAD_TASK_QUEUE: str = UPLOAD_WORKFLOW[1]
+#: 投稿 Activity（``upload_final_video``）だけの task queue。並行数 1 で quota と帯域を守る。
+UPLOAD_MEDIA_TASK_QUEUE = "upload-media"
+
+#: upload 工程へ入ってよい Episode 状態（ADR-0020）。駐機点 ``render_ready`` と、upload 自身の
+#: 失敗で止まった ``needs_work`` / ``blocked``（入場トークンが upload workflow のときだけ。
+#: 判定の権威は admit Activity）。``uploaded`` は含めない（再投稿しない。INV-19）。
+UPLOAD_ADMISSIBLE_STATUSES: frozenset[EpisodeStatus] = frozenset(
+    {
+        EpisodeStatus.RENDER_READY,
+        EpisodeStatus.NEEDS_WORK,
+        EpisodeStatus.BLOCKED,
+    }
+)
+
 
 class ProviderCall(StrEnum):
     """予約台帳が扱う外部呼び出しの種類（ADR-0013）。
@@ -186,6 +208,9 @@ class ProviderCall(StrEnum):
     #: 有料の非同期ジョブ型 provider（ADR-0017）。ローカルの非課金 TTS は台帳に載せない。
     FAL_IMAGE = "fal_image"
     FAL_VIDEO = "fal_video"
+    #: YouTube resumable upload（ADR-0020）。課金は無いが「1 回しか起こしてはならない外部副作用」
+    #: なので台帳で重複を防ぐ。Episode 単位（scene_id は NULL）。
+    YOUTUBE_UPLOAD = "youtube_upload"
 
 
 class ReservationStatus(StrEnum):

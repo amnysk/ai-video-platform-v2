@@ -69,6 +69,9 @@ _TABLE: dict[tuple[EpisodeStatus, EpisodeEvent], EpisodeStatus] = {
     (EpisodeStatus.IN_PROGRESS, EpisodeEvent.RENDER_READY): EpisodeStatus.RENDER_READY,
     # ADR-0019: 駐機点の出口。再描画（別 profile 等）または Phase 6 Upload が呼ぶ。
     (EpisodeStatus.RENDER_READY, EpisodeEvent.STAGE_ADMITTED): EpisodeStatus.IN_PROGRESS,
+    # ADR-0020: private 投稿が成功し受領 Artifact が保存された。Phase 6 の workflow の終端。
+    # render_ready から STAGE_ADMITTED で入った upload workflow が呼ぶ。
+    (EpisodeStatus.IN_PROGRESS, EpisodeEvent.UPLOAD_SUCCEEDED): EpisodeStatus.UPLOADED,
     (EpisodeStatus.NEEDS_WORK, EpisodeEvent.RETRY_ADMITTED): EpisodeStatus.IN_PROGRESS,
     (EpisodeStatus.NEEDS_WORK, EpisodeEvent.RETRY_BUDGET_EXHAUSTED): EpisodeStatus.BLOCKED,
     (EpisodeStatus.BLOCKED, EpisodeEvent.RESUMED): EpisodeStatus.IN_PROGRESS,

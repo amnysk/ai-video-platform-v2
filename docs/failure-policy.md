@@ -113,6 +113,22 @@ Activity 境界の写像（画像・音声・動画共通、`infrastructure/prod
 workflow の cancel は production と同じく `needs_input`（`blocked`）として記録する（子プロセスを止め、作業領域を片付けてから。terminal にせず POST で再開できる）。MinIO / DB の通信失敗（S3 の 5xx・流量制限を含む）は `transient`。
 検査: `tests/unit/test_render_vocabulary.py::test_render_exceptions_classify_by_their_base`。
 
+### Upload 工程（ADR-0020）
+
+| 例外 | クラス | 事象 |
+|---|---|---|
+| `UploadInputMissingError` | `needs_input` | 現行の final_video / 台本の参照か本体が無い |
+| `UploadIntegrityError` | `permanent` | final_video の sha256 がメタデータ・契約と不一致（YouTube を呼ばない） |
+| `UploadsPausedError` | `needs_input` | `UPLOADS_PAUSED` が有効（session 開始前に止める） |
+| `UploadAuthError` | `needs_input` | OAuth の `invalid_grant` / 権限不足 / チャンネル未開設（401 は1度 refresh してから） |
+| `UploadQuotaExceededError` | `retryable` | quotaExceeded / uploadLimitExceeded / rateLimitExceeded（長い backoff） |
+| `UploadRejectedError` | `needs_input` | YouTube がメタデータ・動画を拒否（invalidTitle 等） |
+| `UploadOutcomeUnknownError` | `needs_input` | bytes 送信後に結果が読めず、マーカー照合でも見つからない。**新しい session を開かない** |
+
+投稿 Activity は retry 最大3回（retryable の型だけ）。使い切ったら `blocked`。自動で開く予約ラウンドは1つだけで、
+同じ upload key で投稿し直すのは運用者の `OPERATOR_ABANDONED` の後だけ（ADR-0020 §8）。cancel は送信を止め、
+session を残して `blocked`。検査（契約）: `tests/contract/test_upload_contracts.py`。
+
 ## 2. Episodeをterminal failedにしてよい条件
 
 次の全てを満たすときだけ `failed`：
@@ -159,6 +175,7 @@ workflow の cancel は production と同じく `needs_input`（`blocked`）と�
 ## 7. 全体停止スイッチ
 
 - `PAUSED`: 新規workflowの起動を止める（実行中は完走させる）
-- `UPLOADS_PAUSED`: 投稿Activityだけを止める。スコープが違うので別スイッチ
+- `UPLOADS_PAUSED`: 投稿Activityだけを止める。スコープが違うので別スイッチ。session を開始する前に読み、
+  有効なら `UploadsPausedError`（`needs_input`）で YouTube を呼ばずに止める（ADR-0020）
 
 両方を独立に読む。片方でもう片方を代用しない。

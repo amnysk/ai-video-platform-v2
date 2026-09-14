@@ -243,6 +243,8 @@ class ProviderReservationRow(Base):
     scene_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     #: 非同期ジョブ型 provider のジョブ参照（不透明。ADR-0017）。submit 直後に1度だけ書く。
     provider_job_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 外部呼び出しの結果参照（不透明。YouTube video id、ADR-0020）。受領 Artifact より先に書く。
+    provider_result_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: 予約時点の見積もり（USD、ADR-0013 Alternatives (e) を ADR-0017 で解決）。確定額ではない。
     estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
 
