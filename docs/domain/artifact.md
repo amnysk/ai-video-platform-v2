@@ -82,8 +82,8 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 
 旧予定の `edit_decisions` は採らない。描画計画（`contracts/render.py::RenderPlan`）は固定入力からの純粋関数なので
 保存せず、正準 JSON の sha256 を `final_video.render_plan_sha256` に残す（ADR-0019）。
-| `video_metadata` | upload | タイトル・説明・タグ |
-| `upload_receipt` | upload | YouTube video_id と投稿時刻 |
+旧予定の `video_metadata` は作らない。台本から決定的に導出し、送った値を `upload_receipt` に残す（ADR-0020）。
+| `upload_receipt` | upload（Phase 6、ADR-0020） | 入力 final_video の固定・投稿先チャンネル・YouTube video_id・private・送ったメタデータのスナップショット・upload key・bytes・照合方法。時刻と secret / session URI は持たない。Episode 単位 |
 | `performance_report` | analytics | 実績メトリクス |
 
 ## 再開判定（Phase 2 以降）

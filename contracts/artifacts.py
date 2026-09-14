@@ -25,6 +25,7 @@ from contracts.artifact_refs import (
 )
 from contracts.render import RENDER_ARTIFACT_SCHEMA_VERSION, FinalVideoArtifact
 from contracts.states import ArtifactType
+from contracts.upload import UploadReceiptArtifact
 
 DUMMY_ARTIFACT_SCHEMA_VERSION = "1.0"
 DUMMY_ARTIFACT_MESSAGE = "workflow completed"
@@ -614,6 +615,7 @@ ARTIFACT_MODELS: dict[ArtifactType, type[BaseModel]] = {
     ArtifactType.SCENE_VIDEO: SceneVideoArtifact,
     ArtifactType.PRODUCTION_MANIFEST: ProductionManifest,
     ArtifactType.FINAL_VIDEO: FinalVideoArtifact,
+    ArtifactType.UPLOAD_RECEIPT: UploadReceiptArtifact,
 }
 
 
@@ -702,6 +704,7 @@ AnyArtifact = (
     | SceneVideoArtifact
     | ProductionManifest
     | FinalVideoArtifact
+    | UploadReceiptArtifact
 )
 
 

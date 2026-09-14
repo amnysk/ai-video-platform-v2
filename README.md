@@ -102,7 +102,7 @@ tests/         unit / integration / contract / architecture
 3. `input_hash` による工程skip（failure-policy §4 の「途中再開」）
 4. OpenTelemetry の実配線と Prometheus メトリクス
 5. Next.js UI（一覧・詳細・再実行）
-6. 旧repoからの移植: `youtube_uploader/` → upload worker、fal adapter → generation worker
+6. 旧repoからの移植: `youtube_uploader/` → upload worker（Phase 6、private 投稿のみ・予約台帳で二重投稿防止。ADR-0020）、fal adapter → generation worker
 
 ## 旧repoについて
 

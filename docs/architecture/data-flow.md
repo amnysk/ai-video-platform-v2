@@ -117,13 +117,15 @@ from_stage より前の工程は課金なしで素通りする。
 ```text
 upload Activity
    │
-   ├─ 冪等キー = (episode_id, final_video.version)
-   ├─ DBに upload_attempt を INSERT（キーにUNIQUE制約）
-   │     └─ 既存行があり status=succeeded → その receipt を返して終了
-   │     └─ 既存行があり status=in_flight → YouTube側を照会して照合
-   │                                        （**再送しない**）
-   ├─ YouTube resumable upload 実行
-   └─ upload_attempt を succeeded + video_id で更新
+   ├─ final_video を検証（PG メタデータ → MinIO JSON sha256 → 契約 → メディアの sha256）
+   ├─ upload key = sha256(stage, episode_id, final_video sha256, チャンネル)   （ADR-0020 §3）
+   ├─ provider_reservations に予約（UNIQUE(idempotency_key)、youtube_upload、1ラウンドのみ）
+   │     └─ SPENT + video id あり → YouTube を呼ばず receipt を返して終了
+   ├─ session 開始 → session URI を予約に保存 → dispatched_at を commit
+   ├─ チャンク送信（失敗は status query から再開）
+   │     └─ session 失効 / 結果不明 → マーカー照合。無ければ blocked（**新しい session を開かない**）
+   ├─ video id を予約に保存（SPENT）
+   └─ upload_receipt を保存 → Episode uploaded
 ```
 
 INV-14 / INV-15。プロセスが外部呼び出しの最中に死んでも、

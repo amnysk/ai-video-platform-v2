@@ -96,11 +96,12 @@ Episode間に暗黙の直列依存を作らない。あるEpisodeの停止は
 
 ### INV-14 Upload処理はidempotentである
 **Phase 2 発効**（ADR-0010。upload工程が存在する時点から有効）。
-同じ `(episode_id, artifact_version)` に対するuploadは、何度実行しても
-最大1件のYouTube動画しか生成しない。冪等キーを永続化してから外部呼び出しを行う。
-**機械検査**: 未検査（対象コードが未実装）。Phase 1 の Artifact 冪等性は
-`tests/unit/test_artifact_store.py` / `tests/unit/test_repositories.py` で検査済み。
-**upload worker を実装するコミットで、この検査を同時に入れること。**
+同じ upload key（`episode_id` × `final_video` の sha256 × 投稿先。ADR-0020 §3。版・attempt を含めない）に
+対するuploadは、何度実行しても最大1件のYouTube動画しか生成しない。冪等キーを予約台帳に永続化してから
+外部呼び出しを行い、結果が読めないときは新しい session を開かない。
+**機械検査**: 一部。upload key の決定性は
+`tests/contract/test_upload_contracts.py::test_upload_key_excludes_attempt_and_time_and_depends_on_inputs`。
+二重投稿が起きないことの検査（fake uploader の動画数）は upload worker を実装するコミットで同時に入れる（未検査）。
 
 ### INV-15 課金を伴う外部呼び出しは予約を先に永続化する
 provider呼び出しの前に予約レコードをcommitする。プロセスがクラッシュしても
@@ -132,8 +133,13 @@ Temporalは同じActivityを複数回実行しうる。全Activityは再実行�
 ### INV-19 YouTube投稿は private のみ
 public/unlisted への自動切替、既存投稿の変更・削除・再投稿をしない。
 公開は所有者の手動判断。
-**機械検査**: 未検査
+**機械検査**: 契約で private 以外を表現できないこと
+`tests/contract/test_upload_contracts.py::test_privacy_status_cannot_be_anything_but_private`。
+adapter が送る値の検査は upload adapter を実装するコミットで入れる（未検査）。
 
 ### INV-20 secretを出力しない
 APIキー・OAuthトークンをログ・Artifact・トレース属性・コミットに出さない。
-**機械検査**: 未検査
+YouTube の resumable session URI も同じ扱い（DB の予約行にだけ置く。ADR-0020 §4）。
+**機械検査**: 受領 Artifact と Activity 結果に secret / session の欄が無いこと
+`tests/contract/test_upload_contracts.py::test_receipt_and_activity_result_have_no_secret_like_fields`。
+ログ・例外要約の redact の検査は upload adapter を実装するコミットで入れる（未検査）。

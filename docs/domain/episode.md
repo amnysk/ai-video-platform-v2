@@ -23,7 +23,7 @@ Phase 1 の生成は `uuid.uuid4()`（`infrastructure/db/repositories.py`）。
 | `blocked` | 人間の判断待ち（予算・権利・分類不能な失敗） | |
 | `ready_for_review` | 成果物が揃い、人間の確認を待つ | |
 | `approved` | 投稿してよいと判定された | |
-| `uploaded` | private投稿済み | |
+| `uploaded` | private投稿済み。upload workflow が `render_ready` から入り受領 Artifact を保存した（ADR-0020）。再投稿しない | |
 | `analyzed` | 実績を回収し、学習へ反映済み | ✔ |
 | `completed` | 骨組みworkflowが正常終了した（ADR-0006） | ✔ |
 | `script_ready` | 台本が生成・検証され、次工程を待つ（ADR-0011） | |
