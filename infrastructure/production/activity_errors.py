@@ -7,7 +7,8 @@ worker 間 import を避けるため infrastructure に置く（INV-3）。
 
    - DB の接続断・操作エラー（SQLAlchemy ``OperationalError`` / ``InterfaceError`` /
      ``connection_invalidated`` な ``DBAPIError``、psycopg の同名例外）
-   - オブジェクトストア（MinIO / urllib3）の通信失敗・5xx
+   - オブジェクトストア（MinIO / urllib3）の通信失敗・5xx（``S3Error`` は 5xx 応答と
+     ``S3_TRANSIENT_CODES`` だけ。``NoSuchKey`` などの 4xx はそのまま返す）
    - 作業領域などの ``OSError``
 
    それ以外はそのまま返す（一意制約違反などは一時障害ではない）。
@@ -29,6 +30,7 @@ from __future__ import annotations
 from typing import NoReturn
 
 import psycopg
+from minio.error import S3Error
 from minio.error import ServerError as MinioServerError
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from temporalio.exceptions import ApplicationError
@@ -41,6 +43,11 @@ from domain.errors import (
     ProviderJobFailedError,
     TransientError,
     classify_failure,
+)
+
+#: S3 のエラーコードのうち、サーバ側の一時障害を示すもの（HTTP 5xx / 流量制限）。
+S3_TRANSIENT_CODES: frozenset[str] = frozenset(
+    {"InternalError", "ServiceUnavailable", "SlowDown", "RequestTimeout", "ServiceFailure"}
 )
 
 _NON_RETRYABLE_CLASSES = frozenset({FailureClass.NEEDS_INPUT, FailureClass.PERMANENT})
@@ -58,6 +65,14 @@ def _summary(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {str(exc)[:300]}"
 
 
+def _s3_is_transient(exc: S3Error) -> bool:
+    """5xx 応答か一時障害のコード。NoSuchKey 等（4xx）は一時障害ではない（呼び出し側が扱う）。"""
+    if exc.code in S3_TRANSIENT_CODES:
+        return True
+    status = getattr(getattr(exc, "response", None), "status", None)
+    return isinstance(status, int) and status >= 500
+
+
 def translate_error(exc: BaseException) -> BaseException:
     """インフラの一時障害を ``TransientError`` に写す。該当しなければ ``exc`` をそのまま返す。"""
     if isinstance(exc, DomainError):
@@ -68,6 +83,8 @@ def translate_error(exc: BaseException) -> BaseException:
         return TransientError(f"database unavailable: {_summary(exc)}")
     if isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError)):
         return TransientError(f"database unavailable: {_summary(exc)}")
+    if isinstance(exc, S3Error) and _s3_is_transient(exc):
+        return TransientError(f"object store unavailable: {_summary(exc)}")
     if isinstance(exc, (Urllib3HTTPError, MinioServerError)):
         return TransientError(f"object store unavailable: {_summary(exc)}")
     if isinstance(exc, OSError):

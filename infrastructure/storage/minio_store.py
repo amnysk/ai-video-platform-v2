@@ -118,7 +118,14 @@ class MinioArtifactStore:
         return digest.hexdigest()
 
     async def put_file(self, key: str, path: Path, content_type: str) -> PutResult:
-        """ファイルを流して保存する。既存キーは流して sha256 を比べる（INV-11 / INV-17）。"""
+        """ファイルを流して保存する。既存キーは流して sha256 を比べる（INV-11 / INV-17）。
+
+        「存在確認 → fput_object」の間に別の書き手が同じキーへ書く競合は残る。受け入れる理由:
+        呼び出し元のキーは内容アドレス（``episode_media_object_key`` / ``media_object_key`` は
+        本体の sha256 をキーに含む）なので、同じキーへ競合して書く者は必ず同じバイト列を書く。
+        後勝ちでも保存物は同じで、直後の読み戻し sha256 がそれを確かめる。
+        内容アドレスでないキーには使わないこと。
+        """
         path = Path(path)
         digest = await asyncio.to_thread(_file_sha256, path)
         size = path.stat().st_size
