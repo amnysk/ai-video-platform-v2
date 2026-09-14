@@ -180,3 +180,17 @@ def test_missing_and_extra_voices() -> None:
         build_timeline(
             sample_storyboard("ep"), sample_script("ep"), _videos(), voices, TimelinePolicy()
         )
+
+
+def test_last_voice_overflow_beyond_max_freeze_is_allowed_when_trim_covers_it() -> None:
+    # 動画 12000ms を 8000ms に trim 中。音声が 3000ms はみ出しても trim を戻せば freeze 不要
+    layout = build_timeline(
+        sample_storyboard("ep"),
+        sample_script("ep"),
+        _videos(sb4=12000),
+        _voices(s3=11000),
+        TimelinePolicy(max_freeze_ms=2000),
+    )
+    last = layout.scenes[-1]
+    assert (last.reconciliation.mode, last.reconciliation.trim_ms) == ("trim", 1000)
+    assert layout.total_duration_ms == 28000

@@ -192,11 +192,6 @@ def place_voices(
     out_scenes = scenes
     if last_end > total:
         overflow = last_end - total
-        if overflow > policy.max_freeze_ms:
-            raise VoiceTimelineOverflowError(
-                f"last voice ends at {last_end} ms, {overflow} ms after the storyboard total "
-                f"{total} ms (> max_freeze_ms {policy.max_freeze_ms})"
-            )
         out_scenes = (*scenes[:-1], _extend_last_scene(scenes[-1], overflow, policy))
         total = last_end
     return TimelineLayout(scenes=out_scenes, voices=tuple(placements), total_duration_ms=total)

@@ -78,7 +78,8 @@ Phase 4（ADR-0017）は Episode を `assets_ready` に駐機させる: storyboa
 ### 5. 同一性と冪等性
 
 `render_input_hash = sha256(canonical_json({stage: "render", manifest / script / storyboard の sha256,
-profile 全体, policy, template_version, engine identity, font_sha256}))`。試行・job・run・時刻・パスは含めない。
+profile 全体, policy, template_version, engine identity, font_sha256,
+audio_mix（混合規則: サンプルレート・ch・利得・正規化なし・版。`domain/render/audio.py`）}))`。試行・job・run・時刻・パスは含めない。
 同じ input_hash の現行 `final_video` があれば描画せず job を `skipped` にする（INV-17）。違えば新しい version、
 旧版は `superseded_at`（ADR-0012）。
 
