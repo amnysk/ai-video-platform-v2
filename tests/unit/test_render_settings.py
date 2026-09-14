@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import contracts.render as render
 from infrastructure.config import Settings
 
 
@@ -17,10 +18,12 @@ def _settings(**kw) -> Settings:
 def test_render_defaults() -> None:
     s = _settings()
     assert s.render_ffmpeg_path is None and s.render_ffmpeg_sha256 is None
-    assert s.render_concurrency == 1
-    assert s.render_timeout_seconds == 1800
-    assert s.render_min_free_bytes == 10 * 1024**3
-    assert s.render_ffmpeg_threads == 4
+    #: .env や環境変数に左右されないよう、宣言上の既定値を契約の定数と突き合わせる
+    defaults = {name: f.default for name, f in Settings.model_fields.items()}
+    assert defaults["render_concurrency"] == render.DEFAULT_RENDER_CONCURRENCY
+    assert defaults["render_timeout_seconds"] == render.DEFAULT_RENDER_TIMEOUT_SECONDS
+    assert defaults["render_min_free_bytes"] == render.DEFAULT_RENDER_MIN_FREE_BYTES
+    assert defaults["render_ffmpeg_threads"] == render.DEFAULT_RENDER_FFMPEG_THREADS
 
 
 def test_default_font_sha_matches_the_default_font() -> None:
