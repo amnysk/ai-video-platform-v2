@@ -49,3 +49,20 @@ def media_object_key(
         f"{_segment(artifact_type, 'artifact_type')}/{_segment(scene_id, 'scene_id')}/"
         f"{sha256}.{extension}"
     )
+
+
+def episode_media_object_key(
+    episode_id: str, artifact_type: str, sha256: str, extension: str
+) -> str:
+    """Episode 単位のメディア本体のキー: ``media/{episode}/{type}/{sha256}.{ext}``（ADR-0019）。
+
+    完成動画のようにシーンを持たない Artifact 用。シーン単位のキーとは階層の深さで区別される。
+    """
+    if not _SHA_RE.match(sha256):
+        raise ValueError(f"sha256 must be 64 lowercase hex: {sha256!r}")
+    if not _EXT_RE.match(extension):
+        raise ValueError(f"invalid extension: {extension!r}")
+    return (
+        f"{MEDIA_KEY_PREFIX}/{_segment(episode_id, 'episode_id')}/"
+        f"{_segment(artifact_type, 'artifact_type')}/{sha256}.{extension}"
+    )
