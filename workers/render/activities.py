@@ -13,8 +13,8 @@ import errno
 import logging
 import os
 import shutil
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +28,7 @@ from contracts.artifacts import (
     ScriptArtifact,
     StoryboardArtifact,
     build_final_video_artifact,
+    parse_final_video,
     parse_production_manifest,
     parse_scene_video_artifact,
     parse_scene_voice_artifact,
@@ -35,7 +36,6 @@ from contracts.artifacts import (
     parse_storyboard_artifact,
 )
 from contracts.render import (
-    FINAL_VIDEO_MAX_BYTES,
     FINAL_VIDEO_MIME_TYPE,
     RENDER_ARTIFACT_SCHEMA_VERSION,
     RenderPlan,
@@ -45,6 +45,7 @@ from contracts.render import (
 from contracts.render_activities import (
     RENDER_ADMIT,
     RENDER_FINAL_VIDEO,
+    RENDER_HEARTBEAT_INTERVAL_SECONDS,
     RENDER_MARK_READY,
     RENDER_RECORD_FAILURE,
     RenderAdmitRequest,
@@ -79,16 +80,24 @@ from domain.errors import (
     RenderInputIntegrityError,
     RenderInputMissingError,
     RenderInputStaleError,
+    RenderSourceMediaError,
     RenderWorkspaceFullError,
     UnknownRenderProfileError,
     classify_failure,
 )
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
 from domain.production.manifest import ArtifactRef
+from domain.production.media import MediaProbe
 from domain.render.identity import render_input_hash, render_plan_sha256
 from domain.render.plan import Pinned, build_render_plan
 from domain.render.ports import FinalVideoProbe, RenderEngine, RenderRequest
-from domain.render.qa import measured_from_info, run_technical_qa
+from domain.render.qa import (
+    CHECK_MEDIA_READBACK,
+    evaluate_technical_qa,
+    measured_from_info,
+    raise_for_failed_checks,
+    run_technical_qa,
+)
 from domain.render.subtitles import subtitle_display_texts
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
@@ -97,7 +106,7 @@ from infrastructure.db.repositories import (
 )
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
 from infrastructure.render.binary import file_sha256
-from infrastructure.storage.artifact_store import ArtifactStore, readback_sha256
+from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.workdir import JobWorkDir, WorkDirectory
 from workers.render.run_inspector import WorkflowRunInspector
 
@@ -169,6 +178,13 @@ class _Inputs:
     storyboard: Pinned[StoryboardArtifact]
     videos: dict[str, Pinned[SceneVideoArtifact]]
     voices: dict[str, Pinned[SceneVoiceArtifact]]
+    #: 取り出した素材ごとの sha256 照合結果（技術検査の source_readback に実値で渡す）
+    source_checks: list[bool] = field(default_factory=list)
+
+    @property
+    def sources_verified(self) -> bool:
+        expected = len(self.videos) + len(self.voices)
+        return len(self.source_checks) == expected and all(self.source_checks)
 
     @property
     def input_bytes(self) -> int:
@@ -184,6 +200,9 @@ def _pin(meta: ArtifactMetadata) -> ArtifactRef:
 class RenderActivities:
     """外部依存をすべて注入する（INV-18）。"""
 
+    #: 長い I/O の間に heartbeat を送る間隔（テストが短くする）
+    heartbeat_interval_seconds: float = RENDER_HEARTBEAT_INTERVAL_SECONDS
+
     def __init__(
         self,
         *,
@@ -193,10 +212,12 @@ class RenderActivities:
         workdir: WorkDirectory,
         engine: RenderEngine,
         probe: FinalVideoProbe,
+        source_probe: MediaProbe,
         font_path: str | Path,
         font_sha256: str,
         render_timeout_seconds: int,
         min_free_bytes: int,
+        render_threads: int | None = None,
         policy: TimelinePolicy | None = None,
         run_inspector: WorkflowRunInspector | None = None,
         disk_usage: DiskUsage = shutil.disk_usage,
@@ -208,6 +229,10 @@ class RenderActivities:
         self._workdir = workdir
         self._engine = engine
         self._probe = probe
+        #: 素材（シーン動画・音声）をデコードして描画前に確かめる
+        self._source_probe = source_probe
+        #: input_hash に入るエンジンのスレッド数
+        self._render_threads = render_threads
         self._font_path = Path(font_path)
         self._font_sha256 = font_sha256.strip().lower()
         self._timeout_seconds = render_timeout_seconds
@@ -248,7 +273,11 @@ class RenderActivities:
                 if owner == token:
                     await self._ensure_job(session, request.episode_id)
                     await session.commit()
-                    return RenderAdmitResult(admitted=True, status=episode.status.value)
+                    return RenderAdmitResult(
+                        render_timeout_seconds=self._timeout_seconds,
+                        admitted=True,
+                        status=episode.status.value,
+                    )
                 if not await self._stale_render_run(owner, request.workflow_id):
                     return RenderAdmitResult(admitted=False, status=episode.status.value)
                 logger.warning(
@@ -257,7 +286,11 @@ class RenderActivities:
                 await episodes.set_workflow_id(request.episode_id, token)
                 await self._ensure_job(session, request.episode_id)
                 await session.commit()
-                return RenderAdmitResult(admitted=True, status=episode.status.value)
+                return RenderAdmitResult(
+                    render_timeout_seconds=self._timeout_seconds,
+                    admitted=True,
+                    status=episode.status.value,
+                )
             event = ADMIT_EVENTS.get(episode.status)
             if event is None:
                 return RenderAdmitResult(admitted=False, status=episode.status.value)
@@ -269,7 +302,11 @@ class RenderActivities:
             await episodes.set_workflow_id(request.episode_id, token)
             await self._ensure_job(session, request.episode_id)
             await session.commit()
-            return RenderAdmitResult(admitted=True, status=updated.status.value)
+            return RenderAdmitResult(
+                render_timeout_seconds=self._timeout_seconds,
+                admitted=True,
+                status=updated.status.value,
+            )
 
     @staticmethod
     async def _ensure_job(session: AsyncSession, episode_id: str) -> str:
@@ -295,6 +332,8 @@ class RenderActivities:
         同じ input_hash の現行 ``final_video`` があれば描画せず job を ``skipped``（INV-17）。
         失敗は job に記録してから ``ApplicationError(type=<型名>)`` で送出する。
         cancel（``asyncio.CancelledError``）はエンジンへ伝わり、作業領域を片付けてから再送出する。
+        失敗時の作業領域は調査のため残す（``docs/operations/render-worker.md``）。
+        details には job id を載せる（retry を使い切ったとき record_failure が job を閉じる）。
         """
         async with self._session_factory() as session:
             jobs = JobRepository(session)
@@ -308,7 +347,7 @@ class RenderActivities:
         except Exception as exc:
             mapped = _map_os_error(exc)
             await self._mark_job_failed(job_id, translate_error(mapped))
-            raise_activity_error(mapped)
+            raise_activity_error(mapped, details=(job_id,))
 
     async def _render(
         self, request: RenderFinalVideoRequest, job_id: str
@@ -323,7 +362,7 @@ class RenderActivities:
 
         inputs = await self._load_inputs(episode_id)
         self._heartbeat("inputs_resolved")
-        self._verify_font()
+        await self._beating("font", asyncio.to_thread(self._verify_font))
         engine = self._engine.identity()
         plan = build_render_plan(
             manifest=inputs.manifest,
@@ -343,24 +382,33 @@ class RenderActivities:
             policy=self._policy,
             engine=engine,
             font_sha256=self._font_sha256,
+            engine_threads=self._render_threads,
         )
 
         async with self._session_factory() as session:
             existing = await ArtifactMetadataRepository(session).find_current(
                 episode_id=episode_id, artifact_type=ArtifactType.FINAL_VIDEO, input_hash=input_hash
             )
-            if existing is not None:
-                await self._finish_job(session, job_id, skipped=True)
-                await session.commit()
+        if existing is not None:
+            if await self._reusable(existing):
+                async with self._session_factory() as session:
+                    await self._finish_job(session, job_id, skipped=True)
+                    await session.commit()
                 logger.info(
                     "render skipped episode=%s: current final_video %s has the same input",
                     episode_id,
                     existing.id,
                 )
                 return _result(existing, skipped=True, job_id=job_id)
+            logger.warning(
+                "current final_video %s failed readback verification; re-rendering episode=%s",
+                existing.id,
+                episode_id,
+            )
 
         self._preflight_disk(inputs.input_bytes)
-        work = self._workdir.create(episode_id, job_id)
+        attempt = _attempt()
+        work = self._workdir.create(episode_id, job_id, attempt=attempt)
         try:
             video_paths, voice_paths = await self._download_media(inputs, work)
             self._heartbeat("media_downloaded")
@@ -380,12 +428,56 @@ class RenderActivities:
                 heartbeat=lambda: self._heartbeat("rendering"),
             )
             self._heartbeat("rendered")
-            return await self._store_final(request, job_id, inputs, plan, input_hash, rendered.path)
-        finally:
-            try:
-                self._workdir.cleanup(episode_id, job_id)
-            except DomainError:
-                logger.warning("render work directory cleanup failed job=%s", job_id, exc_info=True)
+            result = await self._store_final(
+                request, job_id, inputs, plan, input_hash, rendered.path
+            )
+        except asyncio.CancelledError:
+            self._cleanup(episode_id, job_id, attempt)
+            raise
+        except Exception:
+            # 描画・検査の失敗は作業領域（入力・ログ・出力）を調査のため残す。削除は運用者
+            logger.warning(
+                "render failed; keeping work directory %s (episode=%s job=%s attempt=%s)",
+                work.base,
+                episode_id,
+                job_id,
+                attempt,
+            )
+            raise
+        self._cleanup(episode_id, job_id, attempt)
+        return result
+
+    def _cleanup(self, episode_id: str, job_id: str, attempt: int) -> None:
+        try:
+            self._workdir.cleanup(episode_id, job_id, attempt=attempt)
+        except DomainError:
+            logger.warning("render work directory cleanup failed job=%s", job_id, exc_info=True)
+
+    async def _beating[T](self, label: str, work: Awaitable[T]) -> T:
+        """長い処理を待つ間、``heartbeat_interval_seconds`` ごとに heartbeat を送る。"""
+        task = asyncio.ensure_future(work)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=self.heartbeat_interval_seconds)
+                if done:
+                    return task.result()
+                self._heartbeat(label)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+
+    async def _reusable(self, existing: ArtifactMetadata) -> bool:
+        """再利用してよいか: 現行 final_video の JSON と本体を読み戻して sha256 を照合する。"""
+        try:
+            loaded = await self._load_json(existing, "final_video")
+            final = parse_final_video(loaded.payload)
+            media_sha = await self._beating(
+                "verify_existing", self._store.sha256_of(final.media.object_key)
+            )
+        except (DomainError, KeyError, ValueError):
+            logger.warning("final_video %s is not readable", existing.id, exc_info=True)
+            return False
+        return media_sha == final.media.sha256
 
     async def _store_final(
         self,
@@ -398,51 +490,62 @@ class RenderActivities:
     ) -> RenderFinalVideoResult:
         episode_id = request.episode_id
         try:
-            info = await asyncio.to_thread(self._probe.probe_final_video, str(path))
+            info = await self._beating(
+                "probe", asyncio.to_thread(self._probe.probe_final_video, str(path))
+            )
         except MediaValidationError as exc:
             raise FinalVideoCorruptError(f"final video is not decodable: {exc}") from exc
-        self._heartbeat("probed")
         size = path.stat().st_size
-        if size <= 0 or size > FINAL_VIDEO_MAX_BYTES:
-            raise FinalVideoValidationError(
-                f"final video is {size} bytes (allowed 1..{FINAL_VIDEO_MAX_BYTES})"
-            )
-        media_sha = await asyncio.to_thread(file_sha256, path)
+        media_sha = await self._beating("sha256", asyncio.to_thread(file_sha256, path))
+        # 保存の前に検査する（読み戻し以外の全項目）。不合格の本体は MinIO に置かない
+        pre_upload = evaluate_technical_qa(
+            plan,
+            plan.profile,
+            info,
+            media_bytes=size,
+            readback_sha_ok=False,  # まだ保存していない。この項目は保存後に実値で評価する
+            sources_verified=inputs.sources_verified,
+            manifest=inputs.manifest,
+        )
+        raise_for_failed_checks([c for c in pre_upload if c.check != CHECK_MEDIA_READBACK])
+
         media_key = episode_media_object_key(
             episode_id, ArtifactType.FINAL_VIDEO.value, media_sha, "mp4"
         )
-        put = await self._store.put_file(media_key, path, FINAL_VIDEO_MIME_TYPE)
-        media_readback = await readback_sha256(self._store, put.key)
-        self._heartbeat("media_stored")
-        if put.sha256 != media_sha or media_readback != media_sha:
+        put = await self._beating(
+            "upload", self._store.put_file(media_key, path, FINAL_VIDEO_MIME_TYPE)
+        )
+        media_readback = await self._beating("readback", self._store.sha256_of(put.key))
+        readback_ok = put.sha256 == media_sha and media_readback == media_sha
+        if not readback_ok:
             raise FinalVideoCorruptError(
                 f"final video readback sha256 mismatch at {put.key}: expected={media_sha} "
                 f"put={put.sha256} readback={media_readback}"
             )
-        # 合格したときだけ保存する（不合格は FinalVideoValidationError / FinalVideoCorruptError）
+        # 記録する報告は実際の読み戻し・入力照合の結果で評価し直す
         report = run_technical_qa(
             plan,
             plan.profile,
             info,
             media_bytes=size,
-            readback_sha_ok=True,
-            sources_verified=True,
+            readback_sha_ok=readback_ok,
+            sources_verified=inputs.sources_verified,
             manifest=inputs.manifest,
         )
 
-        def _src(artifact_id: str, sha256: str) -> dict[str, str]:
-            return {"artifact_id": artifact_id, "sha256": sha256, "schema_version": "1.0"}
+        def _src(ref: ArtifactRef) -> dict[str, str]:
+            return {
+                "artifact_id": ref.artifact_id,
+                "sha256": ref.sha256,
+                "schema_version": ref.schema_version,
+            }
 
         try:
             payload = build_final_video_artifact(
                 episode_id=episode_id,
-                source_production_manifest=_src(
-                    inputs.manifest_meta.id, inputs.manifest_meta.sha256
-                ),
-                source_script=_src(inputs.script.ref.artifact_id, inputs.script.ref.sha256),
-                source_storyboard=_src(
-                    inputs.storyboard.ref.artifact_id, inputs.storyboard.ref.sha256
-                ),
+                source_production_manifest=_src(_pin(inputs.manifest_meta)),
+                source_script=_src(inputs.script.ref),
+                source_storyboard=_src(inputs.storyboard.ref),
                 render_profile=plan.profile,
                 render_policy=plan.policy,
                 render_plan_sha256=render_plan_sha256(plan),
@@ -627,32 +730,57 @@ class RenderActivities:
     async def _download_media(
         self, inputs: _Inputs, work: JobWorkDir
     ) -> tuple[dict[str, Path], dict[str, Path]]:
-        """素材本体を作業領域の input/ へ置く。読み戻した sha256 を記述子と照合する。"""
+        """素材本体を作業領域の input/ へ流して置き、sha256 を照合し、デコードして確かめる。"""
         video_paths: dict[str, Path] = {}
         for scene_id, pinned in inputs.videos.items():
             media = pinned.artifact.media
             path = work.input / f"video-{scene_id}.mp4"
-            await self._fetch_verified(media.object_key, media.sha256, path, scene_id)
+            await self._fetch_verified(inputs, media.object_key, media.sha256, path, scene_id)
+            await self._beating(
+                "probe_source", asyncio.to_thread(self._probe_source, "video", path, scene_id)
+            )
             video_paths[scene_id] = path
         voice_paths: dict[str, Path] = {}
         for script_scene_id, pinned in inputs.voices.items():
             media = pinned.artifact.media
             path = work.input / f"voice-{script_scene_id}.wav"
-            await self._fetch_verified(media.object_key, media.sha256, path, script_scene_id)
+            await self._fetch_verified(
+                inputs, media.object_key, media.sha256, path, script_scene_id
+            )
+            await self._beating(
+                "probe_source",
+                asyncio.to_thread(self._probe_source, "audio", path, script_scene_id),
+            )
             voice_paths[script_scene_id] = path
         return video_paths, voice_paths
 
-    async def _fetch_verified(self, key: str, sha256: str, path: Path, label: str) -> None:
+    async def _fetch_verified(
+        self, inputs: _Inputs, key: str, sha256: str, path: Path, label: str
+    ) -> None:
         """本体を流して作業領域へ書き、書いた内容の sha256 を記述子と照合する。"""
         try:
-            actual = await self._store.download_to(key, path)
+            actual = await self._beating("download", self._store.download_to(key, path))
         except KeyError as exc:
             raise RenderInputMissingError(f"media for {label} is missing at {key}") from exc
+        inputs.source_checks.append(actual == sha256)
         if actual != sha256:
             raise RenderInputIntegrityError(
                 f"media for {label} sha256 mismatch at {key}: stored={actual} expected={sha256}"
             )
         self._heartbeat("downloaded", label)
+
+    def _probe_source(self, kind: str, path: Path, label: str) -> None:
+        """素材をデコードする（25MB 上限なのでメモリに載せてよい）。読めなければ needs_input。"""
+        data = path.read_bytes()
+        try:
+            if kind == "video":
+                self._source_probe.probe_video(data)
+            else:
+                self._source_probe.probe_audio(data)
+        except MediaValidationError as exc:
+            raise RenderSourceMediaError(
+                f"source {kind} for {label} is not decodable: {exc}"
+            ) from exc
 
     # ------------------------------------------------------------------ 前提検査
 
@@ -814,6 +942,14 @@ async def _owns(episodes: EpisodeRepository, episode_id: str, token: str, action
         token,
     )
     return False
+
+
+def _attempt() -> int:
+    """Temporal の試行番号（Activity の外では 1）。作業領域を試行ごとに分ける。"""
+    try:
+        return activity.info().attempt
+    except RuntimeError:
+        return 1
 
 
 def _map_os_error(exc: BaseException) -> BaseException:

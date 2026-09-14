@@ -29,7 +29,7 @@ from infrastructure.db.repositories import (
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.workdir import WorkDirectory
 from tests.support.fake_render_engine import FakeFinalVideoProbe, FakeRenderEngine
-from tests.support.render_activity import seed_render_inputs
+from tests.support.render_activity import PassingSourceProbe, seed_render_inputs
 from workers.render.activities import RenderActivities
 from workers.render.run_inspector import TemporalWorkflowRunInspector
 from workers.render.workflows import RenderWorkflow, RenderWorkflowInput
@@ -92,6 +92,7 @@ class Stack:
             workdir=WorkDirectory(tmp_path / "work", forbidden=()),
             engine=self.engine,
             probe=self.probe,
+            source_probe=PassingSourceProbe(),
             font_path=font,
             font_sha256=sha256_hex(b"integration font"),
             render_timeout_seconds=60,

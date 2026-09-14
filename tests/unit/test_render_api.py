@@ -46,12 +46,15 @@ async def api(session_factory):
         yield client, starter
 
 
-async def _episode(session_factory, events=TO_ASSETS_READY) -> str:
+async def _episode(session_factory, events=TO_ASSETS_READY, *, owner: str | None = "render") -> str:
     async with session_factory() as session:
         episodes = EpisodeRepository(session)
         episode = await episodes.create(topic="x")
         for event in events:
             await episodes.apply_event(episode.id, event)
+        if owner is not None:
+            workflow = f"episode-{episode.id}-{owner}"
+            await episodes.set_workflow_id(episode.id, f"{workflow}:run-1")
         await session.commit()
         return episode.id
 
@@ -148,7 +151,7 @@ async def test_duplicate_start_is_409(api, session_factory) -> None:
     assert response.status_code == 409 and "already running" in response.json()["detail"]
 
 
-def test_starter_passes_profile_and_engine_timeout() -> None:
+def test_starter_passes_only_episode_and_profile() -> None:
     from apps.api.workflow_starter import TemporalWorkflowStarter, render_workflow_id
     from infrastructure.config import Settings
 
@@ -160,14 +163,29 @@ def test_starter_passes_profile_and_engine_timeout() -> None:
             self.calls.append((name, arg, id, task_queue))
 
     client = _Client()
-    starter = TemporalWorkflowStarter(client, "q", Settings(render_timeout_seconds=900))  # type: ignore[arg-type]
+    starter = TemporalWorkflowStarter(client, "q", Settings())  # type: ignore[arg-type]
     asyncio.run(
         starter.start_render_workflow(episode_id="e", render_profile_id="long_form_horizontal")
     )
     ((name, arg, wid, queue),) = client.calls
     assert (name, wid, queue) == ("RenderWorkflow", render_workflow_id("e"), "render")
-    assert arg == {
-        "episode_id": "e",
-        "render_profile_id": "long_form_horizontal",
-        "render_timeout_seconds": 900,
-    }
+    # timeout は worker 側の設定（admit が返す）。API からは渡さない
+    assert arg == {"episode_id": "e", "render_profile_id": "long_form_horizontal"}
+
+
+@pytest.mark.parametrize(
+    "failure", [EpisodeEvent.RETRYABLE_FAILURE, EpisodeEvent.NEEDS_INPUT_FAILURE]
+)
+async def test_needs_work_or_blocked_by_another_stage_is_409(api, session_factory, failure) -> None:
+    client, starter = api
+    episode_id = await _episode(
+        session_factory,
+        [*TO_ASSETS_READY, EpisodeEvent.STAGE_ADMITTED, failure],
+        owner="production",
+    )
+
+    response = await client.post(f"/episodes/{episode_id}/render")
+
+    assert response.status_code == 409, response.text
+    assert "another stage" in response.json()["detail"]
+    assert starter.started == []

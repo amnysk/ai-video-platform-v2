@@ -176,9 +176,18 @@ class SupervisedProcessRunner:
 
     @staticmethod
     def _signal_group(pgid: int, sig: int) -> None:
-        # start_new_session=True なのでグループ ID は本体の pid。本体を回収した後でも
-        # グループに子孫が残っていれば届く。
+        """グループへ送る。**メンバーが残っているときだけ**（``killpg(pgid, 0)`` で確かめる）。
+
+        start_new_session=True なのでグループ ID は本体の pid。本体を回収した後でも子孫が残って
+        いれば届く。残っていなければ送らない（回収済みの pid が別プロセスのグループ ID に
+        再利用されていても、メンバーの居ない ID へは送らない）。
+
+        残る競合: 確認と送信の間にグループが空になり、同じ ID が再利用される窓は消せない。
+        pid の再利用には pid 空間の一巡が要るので実害は極小として受け入れる。
+        """
         with contextlib.suppress(ProcessLookupError, PermissionError):
+            if sig != 0:
+                os.killpg(pgid, 0)
             os.killpg(pgid, sig)
 
 

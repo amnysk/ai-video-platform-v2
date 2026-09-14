@@ -42,12 +42,12 @@ export RENDER_FFMPEG_SHA256=810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f
 |---|---|---|
 | `RENDER_FFMPEG_PATH` | `$HOME/.local/share/avp/ffmpeg/7.1.1/ffmpeg` | 絶対パス |
 | `RENDER_FFMPEG_SHA256` | （必須） | 不一致なら起動しない |
-| `RENDER_FFMPEG_THREADS` | 4 | |
+| `RENDER_FFMPEG_THREADS` | 4 | input_hash に入る（変えると同じ入力でも再描画） |
 | `RENDER_FONT_PATH` / `RENDER_FONT_SHA256` | Noto Sans CJK Regular | 描画ごとに sha256 を照合。不一致は `RenderEngineUnavailableError`。sha256 は input_hash に入る |
 | `RENDER_CONCURRENCY` | 1 | `render-media` Worker の `max_concurrent_activities`（同時描画数） |
-| `RENDER_TIMEOUT_SECONDS` | 1800 | エンジンの時間切れ。Activity の start_to_close はこれ + 10分（API が workflow 入力で渡す） |
+| `RENDER_TIMEOUT_SECONDS` | 1800 | エンジンの時間切れ。**worker 側の値**を admit が workflow へ返す（API は渡さない）。Activity の start_to_close = これ + 300秒 + 2秒 ×（profile の最長尺の秒数） |
 | `RENDER_MIN_FREE_BYTES` | 10 GiB | 事前検査: 空き ≥ これ + 入力量 × 4 |
-| `AI_VIDEO_WORK_ROOT` | `/mnt/minio-hdd/ai-video-work` | 作業領域（`work-directories.md`）。`episodes/<ep>/<job>/` を作り、**成功・失敗・cancel のいずれでも**片付ける（入力は MinIO から再取得でき、出力は再描画できる） |
+| `AI_VIDEO_WORK_ROOT` | `/mnt/minio-hdd/ai-video-work` | 作業領域（`work-directories.md`）。試行ごとに `episodes/<ep>/<job>/attempt-<n>/` を作る。成功と cancel では片付け、**失敗では調査のため残す**（下記） |
 
 ## 実行・確認
 
@@ -80,8 +80,17 @@ smoke の確認点:
 | `blocked`、`RenderEngineUnavailableError` | フォントが無い・sha256 不一致（ffmpeg は起動時に検査） | 導入・設定し直して POST（再開） |
 | `blocked`（`RETRY_BUDGET_EXHAUSTED`）、`RenderEngineFailedError` / `RenderEngineTimeoutError` / `FinalVideoCorruptError` / heartbeat timeout | 3回描画して失敗 | worker ログ・作業領域の空きを確認して POST（再開） |
 | `blocked`、`RenderWorkspaceFullError` | 空き容量不足（事前検査 / ENOSPC）。**自動削除しない** | `AI_VIDEO_WORK_ROOT` の空きを作って POST |
-| `failed`、`FinalVideoValidationError` | 解像度・codec・音声欠落など決定的な検査不合格 | エンジン・profile の不整合を調査 |
+| `blocked`、`FinalVideoValidationError` / `UnknownRenderProfileError` | 解像度・codec・音声欠落など決定的な検査不合格 | エンジン・profile の不整合を調査 |
 | workflow cancel 後 `blocked` | 描画の子プロセスを止め、作業領域を片付けてから needs_input で記録（production と同じ） | POST で再開 |
+
+## 失敗時の作業領域の片付け（運用者）
+
+描画・検査が失敗した試行の作業領域（`input/` 素材、`tmp/` エンジンのログ・字幕、`output/` 出力）は残す。
+worker は `render failed; keeping work directory <path> (episode=... job=... attempt=...)` を警告ログに出す。
+
+- 調査が済んだら、その試行のディレクトリだけを消す: `rm -rf "$AI_VIDEO_WORK_ROOT/episodes/<ep>/<job>/attempt-<n>"`
+- **worker が同じ job を実行中のときは消さない**（Temporal UI で workflow `episode-<ep>-render` が閉じていることを確認）
+- 自動削除はしない（`work-directories.md` の方針。空き不足は `RenderWorkspaceFullError` で止まる）
 
 ## 既知の制約
 

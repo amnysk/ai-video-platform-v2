@@ -105,9 +105,9 @@ Activity 境界の写像（画像・音声・動画共通、`infrastructure/prod
 | `RenderEngineTimeoutError` | `retryable` | 描画エンジンの時間切れ（`RenderEngineFailedError` の下位型） |
 | `RenderWorkspaceFullError` | `retryable` | 作業領域の空き不足（事前検査 / ENOSPC）。自動削除しない |
 | `RenderEngineUnavailableError` | `needs_input` | バイナリ・フォントが無い / 固定 sha256 と不一致（運用者が導入し直せば回復） |
-| `FinalVideoValidationError` | `permanent` | 完成動画の決定的な技術検査不合格（解像度・codec・音声欠落など） |
+| `FinalVideoValidationError` | `needs_input` | 完成動画の決定的な技術検査不合格（解像度・codec・音声欠落など） |
 | `FinalVideoCorruptError` | `retryable` | 完成動画がデコードできない / 読み戻し sha256 不一致 |
-| `UnknownRenderProfileError` | `permanent` | 未登録の render profile id（API でも先に弾く） |
+| `UnknownRenderProfileError` | `needs_input` | 未登録の render profile id（API でも先に弾く） |
 
 描画 Activity は retry 最大3回（retryable の型だけ）。使い切ったら `blocked`（`RETRY_BUDGET_EXHAUSTED`）で terminal にしない。
 cancel は失敗ではない（子プロセスを止め、作業領域を片付けて再送出）。MinIO / DB の通信失敗は `transient`。
