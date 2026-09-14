@@ -129,6 +129,14 @@ class ProductionInputInvalidError(NeedsInputError):
     """production の入力が読めない・sha256 不一致・相互に食い違う。"""
 
 
+class VoiceLanguageUnsupportedError(NeedsInputError):
+    """設定した音声モデルが台本の言語を話せない（ADR-0017 / Phase 4B）。
+
+    同じ入力で必ず同じ結果になるが、音声モデルの設定か台本の言語を人間が直せば回復するので
+    ``permanent`` にしない。
+    """
+
+
 class InvalidTransitionError(DomainError):
     """表に無い状態遷移を永続化しようとした。"""
 

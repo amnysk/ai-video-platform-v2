@@ -122,6 +122,7 @@ def test_storyboard_exceptions_classify_by_their_base(
         (errors.MediaValidationError("x"), FailureClass.RETRYABLE),
         (errors.ProductionInputMissingError("x"), FailureClass.NEEDS_INPUT),
         (errors.ProductionInputInvalidError("x"), FailureClass.NEEDS_INPUT),
+        (errors.VoiceLanguageUnsupportedError("x"), FailureClass.NEEDS_INPUT),
     ],
 )
 def test_production_exceptions_classify_by_their_base(
