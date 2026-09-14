@@ -179,3 +179,42 @@ def test_only_sanctioned_modules_import_the_openmontage_storyboard_adapter() -> 
             ):
                 violations.append(f"{rel}: imports {STORYBOARD_ADAPTER_MODULE} (INV-18)")
     assert not violations, "\n".join(violations)
+
+
+FAL_ADAPTER_PREFIX = "infrastructure.providers.fal_"
+
+#: 有料 fal adapter を import してよいファイル（ADR-0017）。**完全一致**で数える。
+FAL_ADAPTER_IMPORTERS = frozenset(
+    {
+        "workers/production_image/run_worker.py",
+        "tests/unit/test_fal_queue.py",
+        "tests/unit/test_fal_seedream_image.py",
+        "tests/live/test_fal_image_live.py",
+    }
+)
+
+
+def _imports_fal_adapter(path: pathlib.Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        names: list[str] = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        if any(n.startswith(FAL_ADAPTER_PREFIX) for n in names):
+            return True
+    return False
+
+
+def test_only_sanctioned_modules_import_fal_adapters() -> None:
+    """有料 provider の入口を数えられる場所に限る（INV-18 / ADR-0017）。"""
+    violations: list[str] = []
+    for directory in SEARCHED_DIRS:
+        for path in sorted((REPO / directory).rglob("*.py")):
+            rel = path.relative_to(REPO).as_posix()
+            if rel.startswith("infrastructure/providers/fal_"):
+                continue
+            if _imports_fal_adapter(path) and rel not in FAL_ADAPTER_IMPORTERS:
+                violations.append(f"{rel}: imports {FAL_ADAPTER_PREFIX}* (INV-18)")
+    assert not violations, "\n".join(violations)

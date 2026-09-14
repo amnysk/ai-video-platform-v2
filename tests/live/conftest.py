@@ -13,7 +13,11 @@ import pytest
 
 LIVE_ENV_VAR = "AVP_LIVE_CODEX"
 
-collect_ignore_glob = ["*"] if os.environ.get(LIVE_ENV_VAR) != "1" else []
+#: 有料画像 provider の live テスト（tests/live/test_fal_image_live.py）のスイッチ。
+LIVE_FAL_ENV_VAR = "AVP_LIVE_FAL"
+
+_ENABLED = os.environ.get(LIVE_ENV_VAR) == "1" or os.environ.get(LIVE_FAL_ENV_VAR) == "1"
+collect_ignore_glob = ["*"] if not _ENABLED else []
 
 
 def pytest_collection_modifyitems(items) -> None:

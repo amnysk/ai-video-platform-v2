@@ -22,6 +22,8 @@ dependencies = [
   # 生成メディアのデコード検査と 9:16 正規化（ADR-0017）。infrastructure/media だけが使う
   "pillow>=11.0",
   "av>=14.0",
+  # 有料メディア provider（fal queue）の HTTP クライアント（ADR-0017）。infrastructure/providers だけが使う
+  "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
