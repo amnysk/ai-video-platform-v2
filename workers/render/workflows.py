@@ -29,6 +29,7 @@ with workflow.unsafe.imports_passed_through():
         DEFAULT_RENDER_HEARTBEAT_TIMEOUT_SECONDS,
         DEFAULT_RENDER_PROFILE_ID,
         DEFAULT_RENDER_TIMEOUT_SECONDS,
+        RENDER_PROFILES,
     )
     from contracts.render_activities import (
         RENDER_ADMIT,
@@ -67,9 +68,13 @@ STATE_RETRY_POLICY = RetryPolicy(
     non_retryable_error_types=list(NON_RETRYABLE_ERROR_TYPE_NAMES),
 )
 
-#: 描画 Activity の start_to_close = エンジンの timeout + 入力の取得・保存・検査の余裕。
+#: 描画 Activity の start_to_close = エンジンの timeout + 描画以外の I/O の余裕（ADR-0019 §8）:
+#:   margin = RENDER_ACTIVITY_MARGIN_SECONDS
+#:          + RENDER_IO_SECONDS_PER_OUTPUT_SECOND × ceil(profile.limits.max_duration_ms / 1000)
+#: 描画以外の I/O（素材の取り出し・検査、完成動画の probe・sha256・保存・読み戻し）は尺に比例する。
 #: エンジン自身の timeout（``RenderEngineTimeoutError``）が先に効くようにする。
-RENDER_ACTIVITY_MARGIN_SECONDS = 10 * 60
+RENDER_ACTIVITY_MARGIN_SECONDS = 5 * 60
+RENDER_IO_SECONDS_PER_OUTPUT_SECOND = 2
 
 #: 描画は retryable の型だけ上限つきで retry する（ADR-0019 §8）。
 RENDER_RETRY_POLICY = RetryPolicy(
@@ -85,8 +90,6 @@ RENDER_RETRY_POLICY = RetryPolicy(
 class RenderWorkflowInput:
     episode_id: str
     render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
-    #: エンジンの timeout と揃える（API が worker と同じ設定から渡す）
-    render_timeout_seconds: int = DEFAULT_RENDER_TIMEOUT_SECONDS
     #: 描画 Activity の task queue。テストが共有サーバ上で本物の worker と取り合わないよう差し替える
     render_task_queue: str = RENDER_MEDIA_TASK_QUEUE
 
@@ -107,10 +110,25 @@ class _StageFailure:
     failure_class: FailureClass
     summary: str
     retry_exhausted: bool
+    job_id: str = ""
 
 
-def render_start_to_close(render_timeout_seconds: int) -> timedelta:
-    return timedelta(seconds=max(1, render_timeout_seconds) + RENDER_ACTIVITY_MARGIN_SECONDS)
+def render_start_to_close(render_timeout_seconds: int, render_profile_id: str) -> timedelta:
+    """式は ``RENDER_ACTIVITY_MARGIN_SECONDS`` の注記。未知の profile は最短の余裕。"""
+    profile = RENDER_PROFILES.get(render_profile_id)
+    output_seconds = -(-profile.limits.max_duration_ms // 1000) if profile is not None else 0
+    margin = RENDER_ACTIVITY_MARGIN_SECONDS + RENDER_IO_SECONDS_PER_OUTPUT_SECOND * output_seconds
+    return timedelta(seconds=max(1, render_timeout_seconds) + margin)
+
+
+def failed_job_id(err: ActivityError) -> str:
+    """描画 Activity が ApplicationError の details に載せた job id（無ければ空文字）。"""
+    cause = err.cause
+    if isinstance(cause, ApplicationError) and cause.details:
+        first = cause.details[0]
+        if isinstance(first, str):
+            return first
+    return ""
 
 
 def classify_render_failure(err: ActivityError) -> FailureClass:
@@ -150,8 +168,9 @@ class RenderWorkflow:
             return RenderWorkflowResult(
                 episode_id=request.episode_id, status=admit.status, admitted=False
             )
+        timeout = admit.render_timeout_seconds or DEFAULT_RENDER_TIMEOUT_SECONDS
         try:
-            return await self._admitted(request)
+            return await self._admitted(request, timeout)
         except asyncio.CancelledError:
             # 入場後の cancel。Episode を in_progress に置き去りにしない。
             # 人間が止めたので needs_input → blocked（POST で再開 / production と同じ）。
@@ -179,7 +198,9 @@ class RenderWorkflow:
                 if settle.done():
                     raise
 
-    async def _admitted(self, request: RenderWorkflowInput) -> RenderWorkflowResult:
+    async def _admitted(
+        self, request: RenderWorkflowInput, render_timeout_seconds: int
+    ) -> RenderWorkflowResult:
         info = workflow.info()
         try:
             rendered: RenderFinalVideoResult = await workflow.execute_activity(
@@ -192,7 +213,9 @@ class RenderWorkflow:
                 ),
                 result_type=RenderFinalVideoResult,
                 task_queue=request.render_task_queue,
-                start_to_close_timeout=render_start_to_close(request.render_timeout_seconds),
+                start_to_close_timeout=render_start_to_close(
+                    render_timeout_seconds, request.render_profile_id
+                ),
                 heartbeat_timeout=timedelta(seconds=DEFAULT_RENDER_HEARTBEAT_TIMEOUT_SECONDS),
                 retry_policy=RENDER_RETRY_POLICY,
                 # cancel は heartbeat で Activity に届き、エンジンの子プロセスを止めて作業領域を
@@ -206,7 +229,12 @@ class RenderWorkflow:
             cls = classify_render_failure(err)
             return await self._settle(
                 request,
-                _StageFailure(cls, _summary(err), retry_exhausted=cls in RETRYABLE_FAILURE_CLASSES),
+                _StageFailure(
+                    cls,
+                    _summary(err),
+                    retry_exhausted=cls in RETRYABLE_FAILURE_CLASSES,
+                    job_id=failed_job_id(err),
+                ),
             )
 
         ready: RenderMarkReadyResult = await workflow.execute_activity(
@@ -239,6 +267,7 @@ class RenderWorkflow:
                 failure_class=failure.failure_class.value,
                 error_summary=failure.summary,
                 retry_exhausted=failure.retry_exhausted,
+                job_id=failure.job_id,
             ),
             result_type=RenderFailureOutcome,
             start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
@@ -263,5 +292,7 @@ __all__ = [
     "RenderWorkflowInput",
     "RenderWorkflowResult",
     "classify_render_failure",
+    "failed_job_id",
+    "RENDER_IO_SECONDS_PER_OUTPUT_SECOND",
     "render_start_to_close",
 ]

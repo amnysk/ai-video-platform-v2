@@ -123,14 +123,10 @@ class TemporalWorkflowStarter:
         workflow_name, task_queue = RENDER_WORKFLOW
         workflow_id = render_workflow_id(episode_id)
         # 入力は RenderWorkflowInput と同じ形の dict（worker の型を import しない / INV-3）。
-        # エンジンの timeout は worker と同じ設定から渡す（start_to_close の算出に使う）。
+        # エンジンの timeout は渡さない（worker 側の設定を admit が返す）。
         await self._client.start_workflow(
             workflow_name,
-            {
-                "episode_id": episode_id,
-                "render_profile_id": render_profile_id,
-                "render_timeout_seconds": self._settings.render_timeout_seconds,
-            },
+            {"episode_id": episode_id, "render_profile_id": render_profile_id},
             id=workflow_id,
             task_queue=task_queue,
         )

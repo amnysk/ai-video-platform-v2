@@ -79,3 +79,12 @@ def test_audio_mix_is_fixed_gain_without_normalization() -> None:
     mix = audio_mix_spec(PROFILE)
     assert (mix.sample_rate_hz, mix.channels) == (48_000, 2)
     assert (mix.gain_permille, mix.normalize, mix.loudness_normalization) == (1000, False, False)
+
+
+def test_hash_is_sensitive_to_engine_threads() -> None:
+    assert render_input_hash(**BASE, engine_threads=4) != render_input_hash(
+        **BASE, engine_threads=8
+    )
+    assert render_input_hash(**BASE, engine_threads=4) == render_input_hash(
+        **BASE, engine_threads=4
+    )

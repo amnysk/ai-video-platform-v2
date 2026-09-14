@@ -214,7 +214,32 @@ async def seed_render_inputs(
     return seed
 
 
+class PassingSourceProbe:
+    """素材の probe の fake。``failing`` に入れた内容（バイト列）だけ読めないことにする。"""
+
+    def __init__(self) -> None:
+        self.failing: set[bytes] = set()
+        self.probed: list[str] = []
+
+    def _check(self, kind: str, data: bytes) -> None:
+        from domain.errors import MediaValidationError
+
+        self.probed.append(kind)
+        if data in self.failing:
+            raise MediaValidationError(f"cannot decode {kind}")
+
+    def probe_image(self, data: bytes) -> Any:  # pragma: no cover - render は画像を読まない
+        raise AssertionError("render must not probe images")
+
+    def probe_audio(self, data: bytes) -> Any:
+        self._check("audio", data)
+
+    def probe_video(self, data: bytes) -> Any:
+        self._check("video", data)
+
+
 __all__ = [
+    "PassingSourceProbe",
     "FAKE_IMAGE_SHA",
     "STORYBOARD_TOTAL_MS",
     "TO_ASSETS_READY",

@@ -34,6 +34,7 @@ from infrastructure.db.repositories import (
 from infrastructure.workdir import WorkDirectory
 from tests.support.fake_render_engine import FakeFinalVideoProbe, FakeRenderEngine
 from tests.support.render_activity import (
+    PassingSourceProbe,
     RenderSeed,
     record_manifest,
     record_scene_video,
@@ -61,6 +62,7 @@ class Harness:
         font.write_bytes(b"fake font")
         self.store = store
         self.probe = _Probe()
+        self.source_probe = PassingSourceProbe()
         self.started = asyncio.Event()
         self.engine = FakeRenderEngine(on_render=self._on_render)
         self.heartbeats: list[tuple[Any, ...]] = []
@@ -73,6 +75,8 @@ class Harness:
             "workdir": WorkDirectory(self.work_root, forbidden=()),
             "engine": self.engine,
             "probe": self.probe,
+            "source_probe": self.source_probe,
+            "render_threads": 4,
             "font_path": font,
             "font_sha256": sha256_hex(b"fake font"),
             "render_timeout_seconds": 60,
@@ -82,6 +86,7 @@ class Harness:
         }
         kwargs.update(overrides)
         self.activities = RenderActivities(**kwargs)
+        self.activities.heartbeat_interval_seconds = 0.01
 
     def _on_render(self, request) -> None:
         self.probe.plan = request.plan
@@ -127,8 +132,8 @@ async def _final_rows(session_factory, episode_id):
 
 
 def _job_dirs(h: Harness, episode_id: str) -> list[Path]:
-    base = h.work_root / "episodes" / episode_id
-    return list(base.iterdir()) if base.exists() else []
+    """試行ごとの作業領域（``<job>/attempt-<n>``）。"""
+    return sorted((h.work_root / "episodes" / episode_id).glob("*/attempt-*"))
 
 
 # --------------------------------------------------------------------------- admit
@@ -284,7 +289,7 @@ async def test_media_sha_mismatch_is_an_integrity_error(
     _assert_app_error(info.value, "RenderInputIntegrityError", non_retryable=True)
     (job,) = await _jobs(session_factory, seed.episode_id)
     assert job.status is JobStatus.TERMINAL_FAILED
-    assert harness.engine.requests == [] and _job_dirs(harness, seed.episode_id) == []
+    assert harness.engine.requests == [] and len(_job_dirs(harness, seed.episode_id)) == 1
     assert await _final_rows(session_factory, seed.episode_id) == []
 
 
@@ -324,7 +329,7 @@ async def test_missing_media_object_is_needs_input(
         await harness.activities.render_final_video(_req(seed))
 
     _assert_app_error(info.value, "RenderInputMissingError", non_retryable=True)
-    assert _job_dirs(harness, seed.episode_id) == []
+    assert len(_job_dirs(harness, seed.episode_id)) == 1  # 失敗時は調査のため残す
 
 
 async def test_manifest_pointing_at_a_superseded_scene_video_is_stale(
@@ -400,7 +405,7 @@ async def test_enospc_during_render_is_workspace_full(
         await harness.activities.render_final_video(_req(seed))
 
     _assert_app_error(info.value, "RenderWorkspaceFullError", non_retryable=False)
-    assert _job_dirs(harness, seed.episode_id) == []
+    assert len(_job_dirs(harness, seed.episode_id)) == 1
 
 
 async def test_engine_failure_is_retryable_and_the_retry_reuses_the_job(
@@ -447,6 +452,9 @@ async def test_failed_technical_qa_stores_no_final_video_metadata(
     assert await _final_rows(session_factory, seed.episode_id) == []
     (job,) = await _jobs(session_factory, seed.episode_id)
     assert job.status is JobStatus.TERMINAL_FAILED
+    # H2: 不合格の本体は保存しない
+    assert not [k for k in artifact_store._objects if "/final_video/" in k]
+    assert len(_job_dirs(harness, seed.episode_id)) == 1
 
 
 async def test_duration_mismatch_in_final_video_is_validation_error(
@@ -540,3 +548,139 @@ async def test_record_failure_with_a_foreign_token_writes_nothing(
 
     assert not outcome.owned
     assert await _status(session_factory, seed.episode_id) is EpisodeStatus.IN_PROGRESS
+
+
+async def test_failure_details_carry_the_job_id(harness, session_factory, artifact_store) -> None:
+    seed = await seed_render_inputs(session_factory, artifact_store)
+    harness.engine.failures.append(RenderEngineFailedError("exit 1"))
+
+    with pytest.raises(ApplicationError) as info:
+        await harness.activities.render_final_video(_req(seed))
+
+    (job,) = await _jobs(session_factory, seed.episode_id)
+    assert list(info.value.details) == [job.id]
+
+
+async def test_undecodable_source_media_is_needs_input_before_rendering(
+    harness, session_factory, artifact_store
+) -> None:
+    seed = await seed_render_inputs(session_factory, artifact_store)
+    video = await artifact_store.get_json(seed.videos["sb3"].object_key)
+    harness.source_probe.failing.add(artifact_store._objects[video["media"]["object_key"]])
+
+    with pytest.raises(ApplicationError) as info:
+        await harness.activities.render_final_video(_req(seed))
+
+    _assert_app_error(info.value, "RenderSourceMediaError", non_retryable=True)
+    assert harness.engine.requests == []
+
+
+async def test_all_sources_are_probed(harness, session_factory, artifact_store) -> None:
+    seed = await seed_render_inputs(session_factory, artifact_store)
+
+    await harness.activities.render_final_video(_req(seed))
+
+    assert sorted(harness.source_probe.probed) == ["audio"] * 3 + ["video"] * 4
+
+
+async def test_slow_post_render_steps_keep_heartbeating(
+    harness, session_factory, artifact_store
+) -> None:
+    import time
+
+    seed = await seed_render_inputs(session_factory, artifact_store)
+    original = harness.probe.probe_final_video
+
+    def slow_probe(path: str):
+        time.sleep(0.1)
+        return original(path)
+
+    harness.probe.probe_final_video = slow_probe  # type: ignore[method-assign]
+
+    await harness.activities.render_final_video(_req(seed))
+
+    assert ("probe",) in harness.heartbeats
+
+
+class _BadReadbackStore:
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def sha256_of(self, key: str) -> str:
+        if "/final_video/" in key and key.endswith(".mp4"):
+            return "0" * 64
+        return await self._inner.sha256_of(key)
+
+
+async def test_media_readback_mismatch_is_corrupt_and_records_nothing(
+    session_factory, artifact_store, tmp_path
+) -> None:
+    h = Harness(session_factory, _BadReadbackStore(artifact_store), tmp_path)
+    seed = await seed_render_inputs(session_factory, artifact_store)
+
+    with pytest.raises(ApplicationError) as info:
+        await h.activities.render_final_video(_req(seed))
+
+    _assert_app_error(info.value, "FinalVideoCorruptError", non_retryable=False)
+    assert await _final_rows(session_factory, seed.episode_id) == []
+
+
+async def test_recorded_qa_reflects_actual_readback_and_source_checks(
+    harness, session_factory, artifact_store
+) -> None:
+    seed = await seed_render_inputs(session_factory, artifact_store)
+    result = await harness.activities.render_final_video(_req(seed))
+
+    (row,) = await _final_rows(session_factory, seed.episode_id)
+    assert row.id == result.artifact_id
+    final = parse_final_video(await artifact_store.get_json(row.object_key))
+    checks = {c.check: c for c in final.technical_qa.checks}
+    assert checks["media_readback"].passed and checks["source_readback"].passed
+
+
+async def test_corrupt_current_final_video_is_re_rendered_not_reused(
+    harness, session_factory, artifact_store
+) -> None:
+    seed = await seed_render_inputs(session_factory, artifact_store)
+    first = await harness.activities.render_final_video(_req(seed))
+    final = parse_final_video(
+        await artifact_store.get_json(
+            (await _final_rows(session_factory, seed.episode_id))[0].object_key
+        )
+    )
+    artifact_store._objects[final.media.object_key] = b"bit rot"
+    harness.engine.payload = b"re-rendered"
+    await _admit(harness, seed, run="run-2")
+
+    second = await harness.activities.render_final_video(_req(seed, run="run-2"))
+
+    assert not second.skipped and second.version == 2 and second.artifact_id != first.artifact_id
+    assert len(harness.engine.requests) == 2
+
+
+async def test_attempts_get_their_own_work_directories(
+    harness, session_factory, artifact_store, monkeypatch
+) -> None:
+    import workers.render.activities as acts
+
+    seed = await seed_render_inputs(session_factory, artifact_store)
+    harness.engine.failures.append(RenderEngineFailedError("exit 1"))
+    monkeypatch.setattr(acts, "_attempt", lambda: 1)
+    with pytest.raises(ApplicationError):
+        await harness.activities.render_final_video(_req(seed))
+    monkeypatch.setattr(acts, "_attempt", lambda: 2)
+
+    await harness.activities.render_final_video(_req(seed))
+
+    assert [p.name for p in _job_dirs(harness, seed.episode_id)] == ["attempt-1"]
+
+
+async def test_admit_returns_the_worker_render_timeout(
+    harness, session_factory, artifact_store
+) -> None:
+    seed = await seed_render_inputs(session_factory, artifact_store)
+    result = await _admit(harness, seed)
+    assert result.render_timeout_seconds == 60

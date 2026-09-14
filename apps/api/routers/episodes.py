@@ -25,7 +25,7 @@ from apps.api.schemas import (
     StartRenderResponse,
     StartStoryboardResponse,
 )
-from apps.api.workflow_starter import WorkflowStarter
+from apps.api.workflow_starter import WorkflowStarter, render_workflow_id
 from contracts.render import DEFAULT_RENDER_PROFILE_ID, get_render_profile
 from contracts.states import (
     PRODUCTION_ADMISSIBLE_STATUSES,
@@ -184,6 +184,19 @@ async def start_render(
                 f"from {allowed}"
             ),
         )
+    if episode.status in {EpisodeStatus.NEEDS_WORK, EpisodeStatus.BLOCKED}:
+        # 再開は render 自身が止めた Episode だけ（入場トークンの workflow id / 権威は admit）
+        async with session_factory() as session:
+            owner = await EpisodeRepository(session).get_workflow_id(episode.id)
+        owner_workflow = (owner or "").rsplit(":", 1)[0]
+        if owner_workflow != render_workflow_id(episode.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"episode {episode.id} is {episode.status.value} but was stopped by another "
+                    f"stage ({owner_workflow or 'unknown'}); resume that stage instead"
+                ),
+            )
 
     try:
         workflow_id = await starter.start_render_workflow(

@@ -16,6 +16,7 @@ worker 間 import を避けるため infrastructure に置く（INV-3）。
    ``non_retryable`` は失敗クラスが needs_input / permanent のとき。workflow は型名で分類する。
    ``InvalidTransitionError`` / ``ArtifactConflictError`` は分類上 needs_input（食い違いの兆候）。
    未分類の例外はそのまま送出する（Temporal の retry と workflow の型名分類 / INV-12）。
+   ``details`` は ApplicationError の details へそのまま載せる（render は job id を載せる）。
 
    ``final_for_activity`` に挙げた型は、失敗クラスは変えずに **Activity の retry だけ止める**。
    await Activity で「このラウンドは消費済み」（``ProviderJobFailedError`` など）は、同じ
@@ -75,7 +76,10 @@ def translate_error(exc: BaseException) -> BaseException:
 
 
 def raise_activity_error(
-    exc: BaseException, *, final_for_activity: tuple[type[BaseException], ...] = ()
+    exc: BaseException,
+    *,
+    final_for_activity: tuple[type[BaseException], ...] = (),
+    details: tuple[object, ...] = (),
 ) -> NoReturn:
     """``except Exception as exc:`` の中から呼ぶ。必ず送出する。"""
     translated = translate_error(exc)
@@ -85,7 +89,7 @@ def raise_activity_error(
             translated, final_for_activity
         )
         raise ApplicationError(
-            f"{name}: {translated}", type=name, non_retryable=non_retryable
+            f"{name}: {translated}", *details, type=name, non_retryable=non_retryable
         ) from exc
     raise exc
 

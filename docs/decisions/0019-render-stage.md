@@ -78,7 +78,7 @@ Phase 4（ADR-0017）は Episode を `assets_ready` に駐機させる: storyboa
 ### 5. 同一性と冪等性
 
 `render_input_hash = sha256(canonical_json({stage: "render", manifest / script / storyboard の sha256,
-profile 全体, policy, template_version, engine identity, font_sha256,
+profile 全体, policy, template_version, engine identity, font_sha256, engine_threads（エンジンのスレッド数。x264 の出力を変えうる）,
 audio_mix（混合規則: サンプルレート・ch・利得・正規化なし・版。`domain/render/audio.py`）}))`。試行・job・run・時刻・パスは含めない。
 同じ input_hash の現行 `final_video` があれば描画せず job を `skipped` にする（INV-17）。違えば新しい version、
 旧版は `superseded_at`（ADR-0012）。
@@ -110,6 +110,15 @@ audio_mix（混合規則: サンプルレート・ch・利得・正規化なし�
 - 描画 Activity: start_to_close `DEFAULT_RENDER_TIMEOUT_SECONDS`（30分）、heartbeat timeout 60秒、
   heartbeat は10秒以内ごと、retry 最大3回（retryable の型だけ）、`WAIT_CANCELLATION_COMPLETED`。
   cancel では子プロセスグループへ終了要求 → 5秒 → 強制終了 → 作業領域を片付けて再送出
+- 描画 Activity の start_to_close = worker 設定のエンジン timeout（admit が返す。API からは渡さない）
+  + 300秒 + 2秒 × ceil(profile.limits.max_duration_ms / 1000)。描画以外の長い処理（取り出し・素材の probe・
+  完成動画の probe・sha256・保存・読み戻し）の間も10秒以内ごとに heartbeat を送る
+- 順序: 素材を取り出して sha256 照合・デコード確認（不可は `RenderSourceMediaError`）→ 描画 → probe →
+  **保存前に**技術検査（読み戻し以外）→ 合格した本体だけ保存 → 読み戻し不一致は `FinalVideoCorruptError` →
+  実際の読み戻し・入力照合の結果で検査報告を作って記録
+- 同じ input_hash の現行 final_video は、JSON と本体を読み戻して sha256 が一致するときだけ再利用する（不一致は再描画）
+- 作業領域は試行ごと（`<job>/attempt-<n>`）。成功・cancel で片付け、失敗は調査のため残す
+- 失敗の ApplicationError の details に job id を載せ、retry を使い切った record_failure がその job を閉じる
 - 完成動画本体の保存・読み戻し sha256・素材の取り出しはストアから**流して**行い、全体をメモリに載せない
   （`ArtifactStore.put_file` / `sha256_of` / `download_to`）
 - API: `POST /episodes/{id}/render`（任意で `render_profile_id`）
@@ -127,9 +136,9 @@ audio_mix（混合規則: サンプルレート・ch・利得・正規化なし�
 | `RenderEngineFailedError` / `RenderEngineTimeoutError` | `retryable` | 非zero終了・シグナル・時間切れ |
 | `RenderWorkspaceFullError` | `retryable` | 空き容量不足（事前検査 / ENOSPC）。自動削除しない |
 | `RenderEngineUnavailableError` | `needs_input` | バイナリ・フォントが無い / sha256 不一致（運用者が導入すれば回復） |
-| `FinalVideoValidationError` | `permanent` | 解像度・codec・音声欠落など決定的な技術検査の不合格 |
+| `FinalVideoValidationError` | `needs_input` | 解像度・codec・音声欠落など決定的な技術検査の不合格 |
 | `FinalVideoCorruptError` | `retryable` | デコード不能・読み戻し sha256 不一致 |
-| `UnknownRenderProfileError` | `permanent` | 未登録の profile id |
+| `UnknownRenderProfileError` | `needs_input` | 未登録の profile id |
 
 retryable を使い切ったら `blocked`（`RETRY_BUDGET_EXHAUSTED`）で、terminal にしない。cancel は失敗ではない。
 
@@ -171,9 +180,10 @@ needs_input で人間に返す。却下。
 **悪い側 / 引き受けた負債**
 - **ADR-0011 の駐機点がさらに増えた**（`script_ready` / `storyboard_ready` / `assets_ready` / `render_ready`）。
   パイプラインを1本の workflow に畳むときに再評価する
-- `permanent`（`RenderInputIntegrityError` / `FinalVideoValidationError` / `UnknownRenderProfileError`）は Episode を
-  terminal `failed` にする。入力の破損は production の再実行で直りうるので failure-policy §2 の条件3と緊張がある。
-  「保存済みの内容・設定は決定的に同じ失敗を返す」を根拠に permanent を採り、運用で頻発したら needs_input へ見直す
+- `permanent` は `RenderInputIntegrityError` だけで、Episode を terminal `failed` にする。入力の破損は production の
+  再実行で直りうるので failure-policy §2 の条件3と緊張がある（運用で頻発したら needs_input へ見直す）。
+  `FinalVideoValidationError` / `UnknownRenderProfileError` は運用者が engine・profile・id を直せば回復するので
+  独立レビューを受けて needs_input（`blocked`）へ変えた
 - `render_ready` からの再描画が失敗したとき、現行の `final_video` は旧 profile のまま残る（ADR-0015 と同じ負債）
 - production の入場規則（`PRODUCTION_ADMISSIBLE_STATUSES`）に `render_ready` を足していない。描画後に素材を
   作り直すには Phase 5 では手段が無い

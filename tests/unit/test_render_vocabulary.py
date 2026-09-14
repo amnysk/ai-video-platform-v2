@@ -84,9 +84,9 @@ def test_invalid_render_transitions_are_rejected(current, event) -> None:
         (errors.RenderEngineTimeoutError("x"), FailureClass.RETRYABLE),
         (errors.RenderWorkspaceFullError("x"), FailureClass.RETRYABLE),
         (errors.RenderEngineUnavailableError("x"), FailureClass.NEEDS_INPUT),
-        (errors.FinalVideoValidationError("x"), FailureClass.PERMANENT),
+        (errors.FinalVideoValidationError("x"), FailureClass.NEEDS_INPUT),
         (errors.FinalVideoCorruptError("x"), FailureClass.RETRYABLE),
-        (errors.UnknownRenderProfileError("x"), FailureClass.PERMANENT),
+        (errors.UnknownRenderProfileError("x"), FailureClass.NEEDS_INPUT),
     ],
 )
 def test_render_exceptions_classify_by_their_base(exc: Exception, expected: FailureClass) -> None:

@@ -90,6 +90,8 @@ async def main() -> None:
         workdir=WorkDirectory(settings.ai_video_work_root),
         engine=engine,
         probe=PillowAvMediaProbe(),
+        source_probe=PillowAvMediaProbe(),
+        render_threads=settings.render_ffmpeg_threads,
         font_path=settings.render_font_path,
         font_sha256=settings.render_font_sha256,
         render_timeout_seconds=settings.render_timeout_seconds,

@@ -55,6 +55,9 @@ class RenderAdmitResult:
     admitted: bool
     #: 判定時点の Episode 状態。Episode が無ければ空文字。
     status: str
+    #: worker 側の設定のエンジン timeout（秒）。workflow が描画 Activity の timeout に使う。
+    #: API からは渡さない（設定の食い違いで timeout がずれないように）。0 は既定値。
+    render_timeout_seconds: int = 0
 
 
 @dataclass

@@ -195,16 +195,22 @@ class RenderWorkspaceFullError(RetryableError):
     """作業領域の空きが足りない（事前検査 / ENOSPC）。自動削除はせず、空きが戻れば再実行で通る。"""
 
 
-class FinalVideoValidationError(PermanentError):
-    """完成動画が技術検査に落ちた（解像度・codec・音声欠落・尺など決定的な不一致。ADR-0019 §8）。"""
+class FinalVideoValidationError(NeedsInputError):
+    """完成動画が技術検査に落ちた（解像度・codec・音声欠落・尺など決定的な不一致。ADR-0019 §8）。
+
+    engine・profile の不整合は運用者が直せば回復するので needs_input（ADR-0019 §9 の見直し）。
+    """
 
 
 class FinalVideoCorruptError(RetryableError):
     """完成動画がデコードできない・読み戻しの sha256 が一致しない。再描画で解決しうる。"""
 
 
-class UnknownRenderProfileError(PermanentError):
-    """登録されていない render profile id（ADR-0019）。API でも先に弾く。"""
+class UnknownRenderProfileError(NeedsInputError):
+    """登録されていない render profile id（ADR-0019）。API でも先に弾く。
+
+    id を直して再開できるので Episode を terminal にしない（needs_input）。
+    """
 
 
 class InvalidTransitionError(DomainError):

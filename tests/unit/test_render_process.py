@@ -182,3 +182,33 @@ async def test_heartbeat_failure_stops_the_process(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
         await task
     assert await _gone(await _wait_pidfile(pidfile))
+
+
+def test_signal_group_skips_kill_when_the_group_is_empty(monkeypatch) -> None:
+    import os as _os
+    import signal as _signal
+
+    from infrastructure.render.process import SupervisedProcessRunner
+
+    sent: list[int] = []
+
+    def fake_killpg(pgid: int, sig: int) -> None:
+        sent.append(sig)
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(_os, "killpg", fake_killpg)
+    SupervisedProcessRunner._signal_group(12345, _signal.SIGKILL)
+    assert sent == [0]
+
+
+def test_signal_group_kills_when_members_remain(monkeypatch) -> None:
+    import os as _os
+    import signal as _signal
+
+    from infrastructure.render.process import SupervisedProcessRunner
+
+    sent: list[int] = []
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: sent.append(sig))
+    SupervisedProcessRunner._signal_group(12345, _signal.SIGKILL)
+    assert sent == [0, _signal.SIGKILL]

@@ -152,3 +152,46 @@ def test_create_refuses_escaping_symlink(tmp_path: Path) -> None:
     with pytest.raises(WorkspaceUnavailableError):
         _wd(root).create(EP, JOB)
     assert list(outside.iterdir()) == []
+
+
+def test_attempt_directories_are_isolated(tmp_path) -> None:
+    import uuid as _uuid
+
+    import pytest as _pytest
+
+    from domain.errors import WorkspaceUnavailableError
+    from infrastructure.workdir import WorkDirectory
+
+    wd = WorkDirectory(tmp_path / "root", forbidden=())
+    ep, job = str(_uuid.uuid4()), str(_uuid.uuid4())
+    one = wd.create(ep, job, attempt=1)
+    two = wd.create(ep, job, attempt=2)
+    (one.output / "x").write_bytes(b"1")
+    (two.output / "x").write_bytes(b"2")
+    assert one.base.name == "attempt-1" and one.base.parent == two.base.parent
+
+    assert wd.cleanup(ep, job, attempt=1) is True
+    assert not one.base.exists() and (two.output / "x").read_bytes() == b"2"
+    for bad in (0, -1, True):
+        with _pytest.raises(WorkspaceUnavailableError):
+            wd.create(ep, job, attempt=bad)
+
+
+def test_attempt_cleanup_refuses_symlinked_attempt(tmp_path) -> None:
+    import os
+    import uuid as _uuid
+
+    import pytest as _pytest
+
+    from domain.errors import WorkspaceUnavailableError
+    from infrastructure.workdir import WorkDirectory
+
+    wd = WorkDirectory(tmp_path / "root", forbidden=())
+    ep, job = str(_uuid.uuid4()), str(_uuid.uuid4())
+    base = wd.create(ep, job).base
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    os.symlink(victim, base / "attempt-1")
+    with _pytest.raises(WorkspaceUnavailableError):
+        wd.cleanup(ep, job, attempt=1)
+    assert victim.exists()
