@@ -8,7 +8,12 @@ import pytest
 
 from contracts.artifacts import parse_production_manifest
 from domain.errors import ProductionInputInvalidError, ProductionInputMissingError
-from domain.production.manifest import ArtifactRef, build_manifest, check_manifest_coverage
+from domain.production.manifest import (
+    ArtifactRef,
+    build_manifest,
+    check_manifest_coverage,
+    check_member_sources,
+)
 from domain.production.planning import plan_production
 from tests.support.production import sample_script, sample_storyboard
 
@@ -84,7 +89,9 @@ def test_manifest_covers_storyboard_and_script_in_order() -> None:
     manifest = parse_production_manifest(payload)
     assert [s.scene_id for s in manifest.scenes] == ["sb1", "sb2", "sb3", "sb4"]
     assert [v.script_scene_id for v in manifest.voices] == ["s1", "s2", "s3"]
-    check_manifest_coverage(manifest, storyboard, script)
+    check_manifest_coverage(
+        manifest, storyboard, script, storyboard_sha256="a" * 64, script_sha256="b" * 64
+    )
 
 
 @pytest.mark.parametrize("field", ["images", "videos", "voices"])
@@ -104,4 +111,46 @@ def test_coverage_check_rejects_a_manifest_for_another_storyboard() -> None:
     manifest = parse_production_manifest(payload)
     shorter = manifest.model_copy(update={"scenes": manifest.scenes[:3]})
     with pytest.raises(ProductionInputInvalidError):
-        check_manifest_coverage(shorter, storyboard, script)
+        check_manifest_coverage(
+            shorter, storyboard, script, storyboard_sha256="a" * 64, script_sha256="b" * 64
+        )
+
+
+@pytest.mark.parametrize(
+    ("storyboard_sha", "script_sha"), [("c" * 64, "b" * 64), ("a" * 64, "c" * 64)]
+)
+def test_coverage_check_rejects_a_manifest_for_replanned_inputs(
+    storyboard_sha: str, script_sha: str
+) -> None:
+    """シーン構成が同じでも、入力 Artifact の中身が違えば古いマニフェストを受け入れない。"""
+    payload, storyboard, script = _manifest()
+    manifest = parse_production_manifest(payload)
+    with pytest.raises(ProductionInputInvalidError, match="sha256"):
+        check_manifest_coverage(
+            manifest, storyboard, script, storyboard_sha256=storyboard_sha, script_sha256=script_sha
+        )
+
+
+class _Ref:
+    def __init__(self, sha256: str) -> None:
+        self.sha256 = sha256
+
+
+class _Member:
+    def __init__(self, storyboard_sha: str, script_sha: str | None = None) -> None:
+        self.source_storyboard = _Ref(storyboard_sha)
+        if script_sha is not None:
+            self.source_script = _Ref(script_sha)
+
+
+def test_member_sources_must_share_the_manifest_storyboard_and_script() -> None:
+    ok = [_Member("a" * 64), _Member("a" * 64, "b" * 64)]
+    check_member_sources(ok, storyboard_sha256="a" * 64, script_sha256="b" * 64)
+    with pytest.raises(ProductionInputInvalidError, match="storyboard"):
+        check_member_sources(
+            [*ok, _Member("c" * 64)], storyboard_sha256="a" * 64, script_sha256="b" * 64
+        )
+    with pytest.raises(ProductionInputInvalidError, match="script"):
+        check_member_sources(
+            [_Member("a" * 64, "c" * 64)], storyboard_sha256="a" * 64, script_sha256="b" * 64
+        )
