@@ -13,6 +13,12 @@ from contracts.production_activities import (
     DEFAULT_VIDEO_MAX_ROUNDS,
     DEFAULT_VOICE_CONCURRENCY,
 )
+from contracts.render import (
+    DEFAULT_RENDER_CONCURRENCY,
+    DEFAULT_RENDER_FFMPEG_THREADS,
+    DEFAULT_RENDER_MIN_FREE_BYTES,
+    DEFAULT_RENDER_TIMEOUT_SECONDS,
+)
 
 
 class Settings(BaseSettings):
@@ -92,12 +98,12 @@ class Settings(BaseSettings):
     #: 字幕フォント。sha256 は render の input_hash に入る。
     render_font_path: str = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
     render_font_sha256: str = "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
-    render_ffmpeg_threads: int = 4
+    render_ffmpeg_threads: int = DEFAULT_RENDER_FFMPEG_THREADS
     #: render task queue の並行 Activity 数
-    render_concurrency: int = 1
-    render_timeout_seconds: int = 1800
+    render_concurrency: int = DEFAULT_RENDER_CONCURRENCY
+    render_timeout_seconds: int = DEFAULT_RENDER_TIMEOUT_SECONDS
     #: 作業領域に最低限残す空き容量（バイト）。見込み使用量はこれに上乗せする。
-    render_min_free_bytes: int = 10 * 1024**3
+    render_min_free_bytes: int = DEFAULT_RENDER_MIN_FREE_BYTES
 
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"
