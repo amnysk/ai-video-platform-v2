@@ -222,11 +222,15 @@ class VideoProductionActivities:
 
         # spent は commit 済み。ここから検証（落ちても課金の事実は残る / ADR-0013）
         data = output.data
-        info = self._probe.probe_video(data)
-        if info.has_audio:
-            # 音声なしを要求した。混ざっていれば仕様違いの取得物（音声は voice が単一の真実）
-            raise MediaValidationError("video has an audio stream but audio was not requested")
-        validate_video(info, len(data), requested_duration_ms=inputs.requested_duration_ms)
+        try:
+            info = self._probe.probe_video(data)
+            if info.has_audio:
+                # 音声なしを要求した。混ざっていれば仕様違いの取得物（音声は voice が単一の真実）
+                raise MediaValidationError("video has an audio stream but audio was not requested")
+            validate_video(info, len(data), requested_duration_ms=inputs.requested_duration_ms)
+        except MediaValidationError as exc:
+            await self._record_rejected(request.reservation_id, exc)
+            raise
 
         media_sha = sha256_hex(data)
         media_key = media_object_key(
@@ -300,6 +304,15 @@ class VideoProductionActivities:
             await session.commit()
         await self._succeed_job(job_id)
         return _result(meta, reused=False)
+
+    async def _record_rejected(self, reservation_id: str, exc: BaseException) -> None:
+        """検証に落ちた evidence を台帳に記録する（次の submit が新ラウンドへ進む）。"""
+        try:
+            await self._runner.record_output_rejected(reservation_id, exc)
+        except Exception:  # 記録の失敗で検証の失敗を隠さない
+            logger.warning(
+                "could not record rejected output reservation=%s", reservation_id, exc_info=True
+            )
 
     # ------------------------------------------------------------------ 入力
 

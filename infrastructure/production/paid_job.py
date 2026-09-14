@@ -5,8 +5,19 @@
 
 書き込み順序（ADR-0017 §3）:
 
-submit: 再利用確認 → 未照合確認 → reserve **commit** → dispatched **commit** → submit →
-        provider job 参照 **commit**
+submit: 再利用確認 → 台帳からラウンドを決める → 未照合確認 → reserve **commit** →
+        dispatched **commit** → submit → provider job 参照 **commit**
+
+台帳のラウンド（ADR-0017 §3）: ``PaidJobSpec.round`` は workflow の run ごとの試行番号にすぎず、
+冪等キーには使わない。同じ入力の最新の予約から導く:
+
+- 無い → 1
+- ``reserved`` → その予約を再開
+  （参照あり: await / dispatch 済み参照なし: 人手照合 / 未 dispatch: そのまま進む）
+- Artifact が紐づいている、または evidence があり失敗の記録が無い → その予約を await で再開
+- それ以外（取得物なしで spent・検証に落ちた evidence・abandoned）→ 最新ラウンド + 1
+
+同じラウンドの並行 INSERT は ``idempotency_key`` の一意制約で片方が落ちるので、読み直して再開する。
 await:  参照を台帳から読む → poll（heartbeat）→ download → 生の取得物を ``provider-raw/`` へ →
         ``mark_spent(evidence)`` **commit** → 呼び出し側へ返す（検証はその後）
 
@@ -40,6 +51,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Protocol
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from contracts.states import ArtifactType, ProviderCall, ReservationStatus
@@ -71,6 +83,8 @@ PROVIDER_RAW_PREFIX = "provider-raw"
 _COST_QUANTUM = Decimal("0.0001")
 #: 長い単発の await（download / 保存 / commit）の間に送る heartbeat の間隔（秒）
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 20.0
+#: 同じラウンドの並行 INSERT に負けたときに読み直す回数
+_RESERVE_ATTEMPTS = 3
 #: submit がこれらを投げたら「受理されていない」と adapter が示している（fal_queue の分類）。
 #: ここに無い例外は受理されたか分からないものとして扱う（再送しない・消さない）。
 NOT_ACCEPTED_SUBMIT_ERRORS: tuple[type[Exception], ...] = (
@@ -104,14 +118,19 @@ class PaidJobSpec:
     provider: ProviderCall
     artifact_type: ArtifactType
     input_hash: str
+    #: workflow の run ごとの試行番号（ログ用）。**台帳のラウンドではない**（台帳から導く）
     round: int
     job_id: str | None = None
 
+    def key_for_round(self, ledger_round: int) -> str:
+        return idempotency_key(
+            provider=self.provider.value, input_hash=self.input_hash, round=ledger_round
+        )
+
     @property
     def idempotency_key(self) -> str:
-        return idempotency_key(
-            provider=self.provider.value, input_hash=self.input_hash, round=self.round
-        )
+        """台帳ラウンド1の冪等キー（テスト・照合用）。実際のキーは ``key_for_round``。"""
+        return self.key_for_round(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +147,8 @@ class Submitted:
     reservation_id: str
     #: 今回の呼び出しで submit したか（再開なら False）
     newly_submitted: bool
+    #: 台帳のラウンド
+    round: int
 
 
 SubmitOutcome = Reused | Submitted
@@ -188,52 +209,85 @@ class PaidJobRunner:
     async def submit(
         self, spec: PaidJobSpec, generator: AsyncJobGenerator, request: Any
     ) -> SubmitOutcome:
-        key = spec.idempotency_key
-        async with self._session_factory() as session:
-            existing = await ArtifactMetadataRepository(session).find_current(
-                episode_id=spec.episode_id,
-                artifact_type=spec.artifact_type,
-                input_hash=spec.input_hash,
-                scene_id=spec.scene_id,
-            )
-            if existing is not None:
-                return Reused(artifact=existing)
-
-            reservations = ProviderReservationRepository(session)
-            reservation = await reservations.find_by_key(key)
-            if reservation is not None:
-                resumed = _resume_submit(reservation)
-                if resumed is not None:
-                    return resumed
-            # ここに来るのは「行なし」か「reserved + 未 dispatch」（呼んでいない証拠）だけ
-            stale = [
-                row
-                for row in await reservations.find_unreconciled(
-                    episode_id=spec.episode_id, provider=spec.provider, scene_id=spec.scene_id
-                )
-                if row.idempotency_key != key
-            ]
-            if stale:
-                raise UnreconciledReservationError(
-                    f"unreconciled reservation {stale[0].id} blocks a new "
-                    f"{spec.provider.value} call for scene {spec.scene_id}"
-                )
-            # 非課金の準備（例: 元画像のアップロード）は予約の**前**。失敗しても台帳に何も残らない
-            prepare = getattr(generator, "prepare", None)
-            if prepare is not None:
-                request = await prepare(request)
-            if reservation is None:
-                reservation = await reservations.reserve(
+        reservation: ProviderReservation | None = None
+        prepared = False
+        for _ in range(_RESERVE_ATTEMPTS):
+            async with self._session_factory() as session:
+                existing = await ArtifactMetadataRepository(session).find_current(
                     episode_id=spec.episode_id,
-                    job_id=spec.job_id,
-                    provider=spec.provider,
-                    idempotency_key=key,
+                    artifact_type=spec.artifact_type,
                     input_hash=spec.input_hash,
-                    round=spec.round,
                     scene_id=spec.scene_id,
-                    estimated_cost_usd=estimated_cost(generator.estimate_cost_usd(request)),
                 )
-                await session.commit()
+                if existing is not None:
+                    return Reused(artifact=existing)
+
+                reservations = ProviderReservationRepository(session)
+                latest = await reservations.find_latest_for_input(
+                    spec.episode_id, spec.provider, spec.scene_id, spec.input_hash
+                )
+                plan = _plan_round(latest)
+                if isinstance(plan, Submitted):
+                    return plan
+                if isinstance(plan, ProviderReservation):
+                    candidate: ProviderReservation | None = plan
+                    ledger_round = plan.round
+                else:
+                    candidate = None
+                    ledger_round = plan
+                key = spec.key_for_round(ledger_round)
+                # ここに来るのは「新しいラウンド」か
+                # 「reserved + 未 dispatch」（呼んでいない証拠）だけ
+                stale = [
+                    row
+                    for row in await reservations.find_unreconciled(
+                        episode_id=spec.episode_id,
+                        provider=spec.provider,
+                        scene_id=spec.scene_id,
+                    )
+                    if row.idempotency_key != key
+                ]
+                if stale:
+                    raise UnreconciledReservationError(
+                        f"unreconciled reservation {stale[0].id} blocks a new "
+                        f"{spec.provider.value} call for scene {spec.scene_id}"
+                    )
+                # 非課金の準備（例: 元画像のアップロード）は予約の**前**。
+                # 失敗しても台帳に何も残らない
+                if not prepared:
+                    prepare = getattr(generator, "prepare", None)
+                    if prepare is not None:
+                        request = await prepare(request)
+                    prepared = True
+                if candidate is None:
+                    try:
+                        candidate = await reservations.reserve(
+                            episode_id=spec.episode_id,
+                            job_id=spec.job_id,
+                            provider=spec.provider,
+                            idempotency_key=key,
+                            input_hash=spec.input_hash,
+                            round=ledger_round,
+                            scene_id=spec.scene_id,
+                            estimated_cost_usd=estimated_cost(generator.estimate_cost_usd(request)),
+                        )
+                        await session.commit()
+                    except IntegrityError:
+                        # 並行する試行が同じラウンドを先に INSERT した。読み直して再開する
+                        await session.rollback()
+                        logger.info(
+                            "ledger round %s for scene %s was reserved concurrently; re-reading",
+                            ledger_round,
+                            spec.scene_id,
+                        )
+                        continue
+                reservation = candidate
+                break
+        if reservation is None:
+            raise UnreconciledReservationError(
+                f"could not settle a ledger round for scene {spec.scene_id} "
+                f"after {_RESERVE_ATTEMPTS} concurrent attempts"
+            )
 
         async with self._session_factory() as session:
             await ProviderReservationRepository(session).mark_dispatched(reservation.id)
@@ -272,7 +326,9 @@ class PaidJobRunner:
                 reservation.id, ref
             )
             await session.commit()
-        return Submitted(reservation_id=reservation.id, newly_submitted=True)
+        return Submitted(
+            reservation_id=reservation.id, newly_submitted=True, round=reservation.round
+        )
 
     # ------------------------------------------------------------------ await
 
@@ -362,6 +418,19 @@ class PaidJobRunner:
             await self._store.put_bytes(raw_key, data, "application/octet-stream")
             await self._mark_spent_with_evidence(reservation.id, raw_key)
             return await self._output_after_spent(reservation_id, data, raw_key)
+
+    async def record_output_rejected(self, reservation_id: str, exc: BaseException) -> None:
+        """spent 済みの取得物が検証に落ちた。状態は変えず失敗を記録する。
+
+        記録があると次の submit はこの予約を再開せず、新しいラウンドへ進む（ADR-0017 §3）。
+        """
+        async with self._session_factory() as session:
+            await ProviderReservationRepository(session).record_failure(
+                reservation_id,
+                failure_class=classify_failure(exc),
+                error_summary=f"{type(exc).__name__}: {exc}",
+            )
+            await session.commit()
 
     async def attach_artifact(self, session: AsyncSession, reservation_id: str, artifact_id: str):
         """呼び出し側の Artifact 記録と同じトランザクションで紐づける。"""
@@ -504,22 +573,35 @@ class PaidJobRunner:
             await session.commit()
 
 
-def _resume_submit(reservation: ProviderReservation) -> SubmitOutcome | None:
-    """ADR-0017 §3 の再開分岐。``None`` は「予約・dispatch・submit へ進んでよい」。"""
-    if reservation.status is ReservationStatus.SPENT:
-        # 取得物あり → await が検証から再開 / 取得物なし → await がラウンド消費済みを報告
-        return Submitted(reservation_id=reservation.id, newly_submitted=False)
-    if reservation.status is not ReservationStatus.RESERVED:
-        raise ProviderJobFailedError(
-            f"round already closed as {reservation.status.value} (reservation {reservation.id})"
-        )
-    if reservation.provider_job_ref is not None:
-        return Submitted(reservation_id=reservation.id, newly_submitted=False)
-    if reservation.dispatched_at is not None:
-        raise UnreconciledReservationError(
-            f"reservation {reservation.id} was dispatched without a provider job ref"
-        )
-    return None
+def _plan_round(latest: ProviderReservation | None) -> Submitted | ProviderReservation | int:
+    """同じ入力の最新の予約から次の動作を決める（ADR-0017 §3）。
+
+    - ``Submitted``: その予約を await で再開する（再 submit しない）
+    - ``ProviderReservation``: ``reserved`` + 未 dispatch。この予約のまま dispatch へ進む
+    - ``int``: 新しい台帳ラウンドの番号
+    """
+    if latest is None:
+        return 1
+    if latest.status is ReservationStatus.RESERVED:
+        if latest.provider_job_ref is not None:
+            return Submitted(reservation_id=latest.id, newly_submitted=False, round=latest.round)
+        if latest.dispatched_at is not None:
+            raise UnreconciledReservationError(
+                f"reservation {latest.id} was dispatched without a provider job ref"
+            )
+        return latest
+    if latest.outcome_artifact_id is not None:
+        # 紐づいた Artifact は await が返す
+        return Submitted(reservation_id=latest.id, newly_submitted=False, round=latest.round)
+    if (
+        latest.status is ReservationStatus.SPENT
+        and latest.raw_output_key is not None
+        and latest.failure_class is None
+    ):
+        # spent と Artifact 記録の間で落ちた: 保存済みの取得物から検証を再開する
+        return Submitted(reservation_id=latest.id, newly_submitted=False, round=latest.round)
+    # 取得物なしで spent（ジョブ失敗・受理されず）/ 検証に落ちた evidence / abandoned
+    return latest.round + 1
 
 
 __all__ = [

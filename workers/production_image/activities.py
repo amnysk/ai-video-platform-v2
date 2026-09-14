@@ -38,6 +38,7 @@ from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key, media_object_key
 from domain.errors import (
     ArtifactConflictError,
+    MediaValidationError,
     ProductionInputInvalidError,
     ProductionInputMissingError,
     TransientError,
@@ -206,9 +207,13 @@ class ImageProductionActivities:
             return _result(output.artifact, reused=True)
 
         # spent は commit 済み。ここから検証（落ちても課金の事実は残る / ADR-0013）
-        normalized = normalize_image_9x16(output.data)
-        info = self._probe.probe_image(normalized.data)
-        validate_image(info, len(normalized.data))
+        try:
+            normalized = normalize_image_9x16(output.data)
+            info = self._probe.probe_image(normalized.data)
+            validate_image(info, len(normalized.data))
+        except MediaValidationError as exc:
+            await self._record_rejected(request.reservation_id, exc)
+            raise
 
         media_sha = sha256_hex(normalized.data)
         media_key = media_object_key(
@@ -279,6 +284,15 @@ class ImageProductionActivities:
             await session.commit()
         await self._succeed_job(job_id)
         return _result(meta, reused=False)
+
+    async def _record_rejected(self, reservation_id: str, exc: BaseException) -> None:
+        """検証に落ちた evidence を台帳に記録する（次の submit が新ラウンドへ進む）。"""
+        try:
+            await self._runner.record_output_rejected(reservation_id, exc)
+        except Exception:  # 記録の失敗で検証の失敗を隠さない
+            logger.warning(
+                "could not record rejected output reservation=%s", reservation_id, exc_info=True
+            )
 
     # ------------------------------------------------------------------ 入力
 

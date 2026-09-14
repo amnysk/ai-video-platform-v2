@@ -176,6 +176,18 @@ async def test_invalid_media_fails_job_after_spending(
     assert row is not None and row.status is ReservationStatus.SPENT and row.raw_output_key
     jobs = await _jobs(session_factory, episode_id)
     assert jobs[0].status is JobStatus.RETRYABLE_FAILED
+    # 検証に落ちた evidence は台帳に記録され、次の run の round=1 でも新しい台帳ラウンドへ進む
+    from contracts.states import FailureClass
+
+    assert row.failure_class is FailureClass.RETRYABLE
+    gen.output_size = (1024, 1820)
+    again = await acts.submit(_submit(episode_id, sb_id, round=1))
+    assert again.reservation_id != s.reservation_id and gen.submit_calls == 2
+    async with session_factory() as session:
+        fresh = await ProviderReservationRepository(session).get(again.reservation_id)
+    assert fresh is not None and fresh.round == 2
+    result = await acts.await_image(_await(episode_id, sb_id, again.reservation_id))
+    assert result.reused is False
 
 
 async def test_missing_and_mismatched_inputs(session_factory, artifact_store, tmp_path) -> None:

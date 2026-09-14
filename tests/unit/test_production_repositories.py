@@ -249,3 +249,36 @@ async def test_mark_dispatched_is_a_one_shot_conditional_update(session) -> None
     await session.commit()
     with pytest.raises(UnreconciledReservationError):
         await repo.mark_dispatched(spent.id)
+
+
+async def test_find_latest_for_input_returns_the_highest_round_in_scope(session) -> None:
+    episode_id = await _episode(session)
+    repo = ProviderReservationRepository(session)
+
+    async def reserve(key, *, round, scene="sb1", input_hash="h" * 64):
+        return await repo.reserve(
+            episode_id=episode_id,
+            provider=ProviderCall.FAL_IMAGE,
+            idempotency_key=key,
+            input_hash=input_hash,
+            round=round,
+            scene_id=scene,
+        )
+
+    assert (
+        await repo.find_latest_for_input(episode_id, ProviderCall.FAL_IMAGE, "sb1", "h" * 64)
+        is None
+    )
+    await reserve("r1", round=1)
+    await reserve("r3", round=3)
+    await reserve("r2", round=2)
+    await reserve("other-scene", round=9, scene="sb2")
+    await reserve("other-input", round=9, input_hash="i" * 64)
+    await session.commit()
+
+    latest = await repo.find_latest_for_input(episode_id, ProviderCall.FAL_IMAGE, "sb1", "h" * 64)
+    assert latest is not None and latest.round == 3 and latest.idempotency_key == "r3"
+    assert (
+        await repo.find_latest_for_input(episode_id, ProviderCall.FAL_VIDEO, "sb1", "h" * 64)
+        is None
+    )

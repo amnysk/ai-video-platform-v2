@@ -63,15 +63,25 @@ provider job 参照を台帳へ write-once で commit してから待つ。Episo
 9. `mark_spent` → **commit**（検証より前）
 10. 検証（`domain/production/media.py`）→ 正規化 → メディア本体と Artifact を保存 → `attach_artifact`
 
-再開の分岐（`idempotency_key` で引いた予約）:
+**台帳のラウンドは台帳から導く。** workflow の run はそれぞれ round=1 から数えるので、Activity 要求の
+`round` を冪等キーに使うと、前の run が消費したラウンドが毎回「消費済み」として再生され、入力が変わらない
+シーンを二度と再生成できない。そこで `round` は run ごとの試行番号（ログ用）に留め、冪等キーは
+`(provider, input_hash, 台帳ラウンド)` とし、台帳ラウンドを同じ入力
+（Episode + provider + scene + `input_hash`）の**最新の予約**（`find_latest_for_input`）から決める:
 
-| 予約の状態 | 動作 |
+| 最新の予約 | 動作 |
 |---|---|
-| 行なし / `dispatched_at` NULL | 予約・dispatch・submit へ進む |
+| 無い | 台帳ラウンド 1 で予約・dispatch・submit へ進む |
+| `reserved` + `dispatched_at` NULL | その予約のまま dispatch・submit へ進む |
 | `reserved` + `dispatched_at` + provider job 参照あり | **await を再開**（再 submit しない） |
 | `reserved` + `dispatched_at` + 参照なし | `UnreconciledReservationError`（needs_input、人手照合） |
-| `spent` + 生の取得物あり | 検証から再開 |
-| `spent` + Artifact あり | 既存を返す |
+| Artifact が紐づいている | await が既存を返す |
+| `spent` + 生の取得物あり + 失敗の記録なし | 検証から再開（spent と Artifact 記録の間の crash） |
+| `spent` + 取得物なし / 検証に落ちた取得物（`record_output_rejected`）/ `abandoned` | **最新ラウンド + 1** で新しい予約 |
+
+同じ台帳ラウンドの並行 INSERT は `idempotency_key` の一意制約で片方が `IntegrityError` になり、読み直して
+上の表で再開する（二重 submit にならない）。検証に落ちた取得物は予約の `failure_class` に記録し
+（状態は `spent` のまま）、次の submit が新ラウンドへ進む根拠にする。
 
 submit が戻らず結果が分からない場合、adapter は `ProviderSubmitAmbiguousError`（needs_input）を投げ、
 予約は `reserved` + dispatched + 参照なしのまま残る。

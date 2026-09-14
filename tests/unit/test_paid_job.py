@@ -456,3 +456,89 @@ async def test_already_spent_with_different_evidence_still_refuses(runner, sessi
     gen.reservation_id = outcome.reservation_id
     with pytest.raises(InvalidTransitionError):
         await _await(runner, outcome.reservation_id, gen)
+
+
+# --------------------------------------------------------------------------- 台帳から導くラウンド
+
+
+async def _rounds(session_factory, spec) -> list[tuple[int, ReservationStatus]]:
+    from sqlalchemy import select
+
+    from infrastructure.db.models import ProviderReservationRow
+
+    async with session_factory() as session:
+        rows = (
+            await session.scalars(
+                select(ProviderReservationRow)
+                .where(ProviderReservationRow.input_hash == spec.input_hash)
+                .order_by(ProviderReservationRow.round)
+            )
+        ).all()
+    return [(row.round, ReservationStatus(row.status)) for row in rows]
+
+
+async def test_new_run_continues_after_rounds_consumed_by_a_previous_run(
+    runner, session_factory
+) -> None:
+    """workflow の各 run は round=1 から数える。台帳のラウンドは台帳から導く（ADR-0017 §3）。"""
+    spec = await _spec(session_factory)
+    failing = _NotAccepted()
+    # run 1: ラウンド 1, 2 を消費
+    for attempt in (1, 2):
+        with pytest.raises(ProviderJobFailedError):
+            await runner.submit(replace(spec, round=attempt), failing, REQUEST)
+    assert await _rounds(session_factory, spec) == [
+        (1, ReservationStatus.SPENT),
+        (2, ReservationStatus.SPENT),
+    ]
+
+    # run 2: 同じ入力を round=1 で頼む → 台帳ラウンド 3 を1回だけ submit
+    ok = FakeImageGenerator(pending_polls=0)
+    outcome = await runner.submit(replace(spec, round=1), ok, REQUEST)
+    assert isinstance(outcome, Submitted) and outcome.newly_submitted and outcome.round == 3
+    again = await runner.submit(replace(spec, round=1), ok, REQUEST)  # Activity 再実行
+    assert isinstance(again, Submitted) and not again.newly_submitted
+    assert again.reservation_id == outcome.reservation_id
+    assert ok.submit_calls == 1
+    assert [r for r, _ in await _rounds(session_factory, spec)] == [1, 2, 3]
+    output = await _await(runner, outcome.reservation_id, ok)
+    assert output.reservation.round == 3
+
+
+async def test_rejected_evidence_opens_the_next_round(runner, session_factory) -> None:
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(pending_polls=0)
+    first = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(first, Submitted)
+    await _await(runner, first.reservation_id, gen)
+    await runner.record_output_rejected(first.reservation_id, MediaValidationError("too small"))
+
+    row = await _reservation(session_factory, first.reservation_id)
+    assert row.status is ReservationStatus.SPENT and row.failure_class is FailureClass.RETRYABLE
+    second = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(second, Submitted) and second.newly_submitted and second.round == 2
+    assert gen.submit_calls == 2
+
+
+async def test_concurrent_insert_of_the_same_round_resumes_instead_of_resubmitting(
+    runner, session_factory, monkeypatch
+) -> None:
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(pending_polls=0)
+    first = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(first, Submitted)
+
+    original = ProviderReservationRepository.find_latest_for_input
+    calls = {"n": 0}
+
+    async def stale_once(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # 別の試行が INSERT する前の古い読み取り
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ProviderReservationRepository, "find_latest_for_input", stale_once)
+    again = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(again, Submitted) and not again.newly_submitted
+    assert again.reservation_id == first.reservation_id
+    assert gen.submit_calls == 1 and calls["n"] >= 2
