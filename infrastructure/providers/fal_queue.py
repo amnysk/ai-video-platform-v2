@@ -9,8 +9,10 @@ submit / status / result / download と、**結果の分類**だけを持つ。
   - 一時的（接続拒否・DNS・429・``X-Fal-Retryable``）→ ``ProviderJobFailedError``（retryable）
   - 拒否（入力不正・ポリシー）→ ``ProviderRejectedError``（needs_input）
   - 認証（401/403）→ ``ProviderUnavailableError``（needs_input）
-- **受理されたか分からない**（送信後のタイムアウト / 5xx / request_id 欠落）
+- **受理されたか分からない**（送信後のタイムアウト / 5xx / request_id 欠落 / 想定外の HTTP 例外）
   → ``ProviderSubmitAmbiguousError``。fal に冪等キーは無いので**再送しない**
+- **2xx + request_id は受理**。以後の異常（URL のホスト違い・型の崩れ）で「受理されなかった」に
+  しない。参照を返して台帳に記録させ、poll 時にホストを検査する（``UnreconciledReservationError``）
 - status / result / download の通信失敗は参照に対して冪等なので ``TransientError``
 
 secret（API キー）はログ・例外メッセージに出さない。
@@ -35,6 +37,7 @@ from domain.errors import (
     ProviderSubmitAmbiguousError,
     ProviderUnavailableError,
     TransientError,
+    UnreconciledReservationError,
 )
 from domain.production.ports import ProviderJobRef
 
@@ -104,19 +107,24 @@ class FalSubmission:
 
     @classmethod
     def from_ref(cls, ref: str) -> FalSubmission:
+        """台帳の参照を読む。読めない参照は人手照合（課金ジョブの所在が分からない）。"""
         try:
             data = json.loads(ref)
             if data.get("v") != REF_VERSION:
                 raise ValueError(f"unsupported ref version {data.get('v')!r}")
+            fields = {k: data[k] for k in ("endpoint", "request_id", "status_url", "response_url")}
+            if not all(isinstance(v, str) and v for v in fields.values()):
+                raise ValueError("ref fields must be non-empty strings")
+            cancel_url = data.get("cancel_url")
             return cls(
-                endpoint_id=str(data["endpoint"]),
-                request_id=str(data["request_id"]),
-                status_url=str(data["status_url"]),
-                response_url=str(data["response_url"]),
-                cancel_url=data.get("cancel_url"),
+                endpoint_id=fields["endpoint"],
+                request_id=fields["request_id"],
+                status_url=fields["status_url"],
+                response_url=fields["response_url"],
+                cancel_url=cancel_url if isinstance(cancel_url, str) else None,
             )
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
-            raise ProviderJobFailedError(f"unreadable fal job ref: {exc}") from exc
+            raise UnreconciledReservationError(f"unreadable fal job ref: {exc}") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +160,10 @@ def _json_or_none(response: httpx.Response) -> Any:
         return response.json()
     except ValueError:
         return None
+
+
+def _str_or[T](value: Any, default: T) -> str | T:
+    return value if isinstance(value, str) and value else default
 
 
 def _retryable_header(response: httpx.Response) -> bool | None:
@@ -201,8 +213,8 @@ class FalQueueClient:
             raise ProviderJobFailedError(
                 f"fal submit not accepted (connection failed): {type(exc).__name__}"
             ) from exc
-        except httpx.TransportError as exc:
-            # 送信後のタイムアウト・切断。受理されたか分からない。
+        except httpx.HTTPError as exc:
+            # 送信後のタイムアウト・切断・想定外の HTTP 例外。受理されたか分からない。
             raise ProviderSubmitAmbiguousError(
                 f"fal submit outcome unknown: {type(exc).__name__}"
             ) from exc
@@ -228,17 +240,26 @@ class FalQueueClient:
             raise ProviderSubmitAmbiguousError(
                 f"fal submit returned HTTP {status} without request_id"
             )
+        # ここから先は**受理済み**。何があっても参照を返し、台帳に記録させる。
+        # URL のホスト検査は poll 時（_check_queue_url → UnreconciledReservationError）。
         request_id = str(body["request_id"])
         base = f"{url}/requests/{request_id}"
         submission = FalSubmission(
             endpoint_id=endpoint_id,
             request_id=request_id,
-            status_url=str(body.get("status_url") or f"{base}/status"),
-            response_url=str(body.get("response_url") or base),
-            cancel_url=body.get("cancel_url"),
+            status_url=_str_or(body.get("status_url"), f"{base}/status"),
+            response_url=_str_or(body.get("response_url"), base),
+            cancel_url=_str_or(body.get("cancel_url"), None),
         )
-        self._check_queue_url(submission.status_url)
-        self._check_queue_url(submission.response_url)
+        if not (
+            submission.status_url.startswith(self._base_url + "/")
+            and submission.response_url.startswith(self._base_url + "/")
+        ):
+            logger.warning(
+                "fal submit accepted with off-host job urls; recording ref, poll will refuse "
+                "request_id=%s",
+                request_id,
+            )
         return submission
 
     # ------------------------------------------------------------------ status / result
@@ -344,7 +365,10 @@ class FalQueueClient:
     def _check_queue_url(self, url: str) -> None:
         """台帳の参照から URL を読むので、queue のホスト以外へ API キーを送らない。"""
         if not url.startswith(self._base_url + "/"):
-            raise ProviderJobFailedError("fal job url does not point at the configured queue host")
+            # 課金済みかもしれないジョブの参照が信用できない。再生成せず人手照合へ
+            raise UnreconciledReservationError(
+                "fal job url does not point at the configured queue host"
+            )
 
 
 __all__ = [

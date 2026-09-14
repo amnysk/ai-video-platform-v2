@@ -14,9 +14,11 @@ submit の失敗:
 
 - ``ProviderSubmitAmbiguousError`` / cancel: 予約は ``reserved`` + dispatched + 参照なしで残す
   （曖昧の証拠。人手照合まで同じシーンの新ラウンドを止める）
-- それ以外（受理されなかったことが分かっている）: ADR-0013 の「戻ってきた上での失敗」なので
-  ``spent`` + ``reconciled_by="conservative"``。台帳に「受理されなかった」辺は無く、
-  ``abandoned`` は人手専用なので、課金された前提で確定して次ラウンドを進める（安全側）
+- adapter が「受理されなかった」と分類した例外（``NOT_ACCEPTED_SUBMIT_ERRORS``: 接続前の失敗・
+  429・4xx）だけ: ADR-0013 の「戻ってきた上での失敗」なので ``spent`` + ``reconciled_by="conservative"``。
+  台帳に「受理されなかった」辺は無く、``abandoned`` は人手専用なので、課金された前提で確定して
+  次ラウンドを進める（安全側。見積もり額は過大計上になりうる / ADR-0017 負債）
+- それ以外の例外はすべて曖昧扱い（``ProviderSubmitAmbiguousError`` として送出し、予約は残す）
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from domain.errors import (
     ProviderPollDeadlineError,
     ProviderRejectedError,
     ProviderSubmitAmbiguousError,
+    ProviderUnavailableError,
     UnreconciledReservationError,
     classify_failure,
 )
@@ -58,6 +61,13 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_RAW_PREFIX = "provider-raw"
 _COST_QUANTUM = Decimal("0.0001")
+#: submit がこれらを投げたら「受理されていない」と adapter が示している（fal_queue の分類）。
+#: ここに無い例外は受理されたか分からないものとして扱う（再送しない・消さない）。
+NOT_ACCEPTED_SUBMIT_ERRORS: tuple[type[Exception], ...] = (
+    ProviderJobFailedError,
+    ProviderRejectedError,
+    ProviderUnavailableError,
+)
 
 
 class AsyncJobGenerator(Protocol):
@@ -219,18 +229,23 @@ class PaidJobRunner:
 
         try:
             ref = await generator.submit(request)
-        except ProviderSubmitAmbiguousError:
+        except NOT_ACCEPTED_SUBMIT_ERRORS as exc:
+            await self._spend_conservatively(reservation.id, exc)
+            raise
+        except Exception as exc:
             logger.warning(
                 "paid submit ambiguous; reservation left dispatched without ref "
-                "reservation=%s episode=%s scene=%s",
+                "reservation=%s episode=%s scene=%s error=%s",
                 reservation.id,
                 spec.episode_id,
                 spec.scene_id,
+                type(exc).__name__,
             )
-            raise
-        except Exception as exc:
-            await self._spend_conservatively(reservation.id, exc)
-            raise
+            if isinstance(exc, ProviderSubmitAmbiguousError):
+                raise
+            raise ProviderSubmitAmbiguousError(
+                f"paid submit outcome unknown: {type(exc).__name__}: {exc}"
+            ) from exc
 
         # 参照が消えると回収できないので、commit 前にログにも残す（secret ではない）
         logger.info(
@@ -436,6 +451,7 @@ def _resume_submit(reservation: ProviderReservation) -> SubmitOutcome | None:
 
 
 __all__ = [
+    "NOT_ACCEPTED_SUBMIT_ERRORS",
     "PROVIDER_RAW_PREFIX",
     "AsyncJobGenerator",
     "PaidJobRunner",

@@ -327,3 +327,24 @@ async def test_unknown_reservation(runner) -> None:
 
 def test_pending_status_type_is_shared() -> None:
     assert isinstance(JobPending(), JobPending)
+
+
+class _SubmitCrashesAfterSend(FakeImageGenerator):
+    """受理されなかったと示せない例外（例: adapter のバグ・想定外の例外）。"""
+
+    async def submit(self, request):
+        self.submit_calls += 1
+        raise RuntimeError("boom after the request may have been sent")
+
+
+async def test_unclassified_submit_failure_is_ambiguous_not_spent(runner, session_factory) -> None:
+    spec = await _spec(session_factory)
+    gen = _SubmitCrashesAfterSend()
+    with pytest.raises(ProviderSubmitAmbiguousError):
+        await runner.submit(spec, gen, REQUEST)
+    async with session_factory() as session:
+        row = await ProviderReservationRepository(session).find_by_key(spec.idempotency_key)
+    assert row is not None and row.status is ReservationStatus.RESERVED
+    assert row.dispatched_at is not None and row.provider_job_ref is None
+    with pytest.raises(UnreconciledReservationError):
+        await runner.submit(replace(spec, round=2), FakeImageGenerator(), REQUEST)
