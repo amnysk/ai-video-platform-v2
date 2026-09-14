@@ -99,9 +99,7 @@ def test_voice_hash_ignores_storyboard_scene_order() -> None:
     """storyboard の再計画で古い音声を再利用しない。ただし参照集合の並びは意味を持たない。"""
     swapped = {**VOICE, "storyboard_scene_ids": ("sb2", "sb1")}
     assert voice_input_hash(**swapped) == voice_input_hash(**VOICE)
-    assert voice_input_hash(**{**VOICE, "storyboard_sha256": "c" * 64}) != voice_input_hash(
-        **VOICE
-    )
+    assert voice_input_hash(**{**VOICE, "storyboard_sha256": "c" * 64}) != voice_input_hash(**VOICE)
 
 
 def test_image_hash_ignores_motion_fields() -> None:
