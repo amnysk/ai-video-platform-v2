@@ -81,5 +81,23 @@ class Settings(BaseSettings):
     #: 状態不明の await 失敗に対し、同じ予約で await を追加実行する回数
     production_await_reexecutions: int = DEFAULT_AWAIT_REEXECUTIONS
 
+    # --- render（Phase 5） ---
+    #: 固定版 static ffmpeg の絶対パスと sha256（scripts/install-render-ffmpeg.sh が表示する）。
+    #: 未設定・不一致なら render worker を組めない（起動前に検証する）。
+    render_ffmpeg_path: str | None = None
+    render_ffmpeg_sha256: str | None = None
+    #: ffprobe は任意（プラットフォームの検査は PyAV で行う）。
+    render_ffprobe_path: str | None = None
+    render_ffprobe_sha256: str | None = None
+    #: 字幕フォント。sha256 は render の input_hash に入る。
+    render_font_path: str = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    render_font_sha256: str = "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
+    render_ffmpeg_threads: int = 4
+    #: render task queue の並行 Activity 数
+    render_concurrency: int = 1
+    render_timeout_seconds: int = 1800
+    #: 作業領域に最低限残す空き容量（バイト）。見込み使用量はこれに上乗せする。
+    render_min_free_bytes: int = 10 * 1024**3
+
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"

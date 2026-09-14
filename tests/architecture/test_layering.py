@@ -127,6 +127,16 @@ def test_apps_do_not_import_the_openmontage_adapter_or_subprocess() -> None:
     assert not violations, "\n".join(violations)
 
 
+def test_render_adapter_is_confined_to_workers() -> None:
+    """ffmpeg の子プロセスを起動する render adapter は worker 側だけが使う（INV-16 / Phase 5）。"""
+    violations: list[str] = []
+    for layer in ("apps", "domain", "contracts"):
+        for path in _python_files(layer):
+            for module in _imports_under(path, "infrastructure.render"):
+                violations.append(f"{path.relative_to(REPO)}: imports {module}")
+    assert not violations, "\n".join(violations)
+
+
 PRODUCTION_WORKERS = ("production", "production_image", "production_voice", "production_video")
 
 
