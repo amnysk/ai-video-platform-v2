@@ -22,9 +22,9 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 | `storyboard_ready` | `in_progress` | 次工程を開始（`STAGE_ADMITTED`、Phase 4 の入口） | workflow |
 | `in_progress` | `assets_ready` | シーン素材（画像・音声・動画）とマニフェストが揃った（`ASSETS_READY`、ADR-0017） | production workflow |
 | `assets_ready` | `in_progress` | production の再実行 / 次工程を開始（`STAGE_ADMITTED`、Phase 5 の入口） | workflow |
-| `needs_work` | `in_progress` | 自動再試行が枠内 | workflow |
+| `needs_work` | `in_progress` | 自動再試行が枠内 / 人間が工程を再実行（production の POST、ADR-0017 §8） | workflow |
 | `needs_work` | `blocked` | 再生成の枠を使い切った | workflow |
-| `blocked` | `in_progress` | 人間が再開をsignal | API (人間) |
+| `blocked` | `in_progress` | 人間が再開をsignal（production は POST が再開、ADR-0017 §8） | API (人間) |
 | `blocked` | `cancelled` | 人間が中止 | API (人間) |
 | `ready_for_review` | `approved` | 承認 | API (人間 or 自動ゲート) |
 | `ready_for_review` | `needs_work` | 差し戻し | API (人間) |
