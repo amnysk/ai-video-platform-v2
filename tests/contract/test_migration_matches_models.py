@@ -72,3 +72,64 @@ def test_migration_creates_the_modelled_indexes(tmp_path: pathlib.Path) -> None:
         str(index.name) for table in Base.metadata.tables.values() for index in table.indexes
     }
     assert modelled <= migrated, sorted(modelled - migrated)
+
+
+def _normalize_sql(sql: str) -> str:
+    """方言差（空白・括弧・引用符・大小文字）を畳んで比較する。"""
+    import re
+
+    return re.sub(r"[\s()\"`]", "", sql).lower()
+
+
+def test_migration_check_constraints_match_the_models(tmp_path: pathlib.Path) -> None:
+    from sqlalchemy import CheckConstraint
+
+    engine = _upgraded_engine(tmp_path)
+    inspector = inspect(engine)
+    problems: list[str] = []
+    for name, table in Base.metadata.tables.items():
+        migrated = {
+            str(c["name"]): _normalize_sql(str(c["sqltext"]))
+            for c in inspector.get_check_constraints(name)
+        }
+        modelled = {
+            str(c.name): _normalize_sql(str(c.sqltext))
+            for c in table.constraints
+            if isinstance(c, CheckConstraint)
+        }
+        if migrated != modelled:
+            problems.append(f"{name}: migration={migrated} models={modelled}")
+    assert not problems, "\n".join(problems)
+
+
+def _modelled_index_sql(dialect_engine) -> dict[str, str]:
+    from sqlalchemy.schema import CreateIndex
+
+    return {
+        str(index.name): _normalize_sql(
+            str(CreateIndex(index).compile(dialect=dialect_engine.dialect))
+        )
+        for table in Base.metadata.tables.values()
+        for index in table.indexes
+    }
+
+
+def test_migration_index_definitions_match_the_models(tmp_path: pathlib.Path) -> None:
+    """索引は名前だけでなく定義（列・式・一意性・WHERE）まで照合する（ADR-0018 の式索引）。"""
+    import sqlite3
+
+    engine = _upgraded_engine(tmp_path)
+    with sqlite3.connect(str(engine.url.database)) as conn:
+        migrated = {
+            str(name): _normalize_sql(str(sql))
+            for name, sql in conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
+            )
+        }
+    modelled = _modelled_index_sql(engine)
+    problems = [
+        f"{name}: migration={migrated.get(name)} models={sql}"
+        for name, sql in modelled.items()
+        if migrated.get(name) != sql
+    ]
+    assert not problems, "\n".join(problems)

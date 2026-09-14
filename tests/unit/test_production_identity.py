@@ -36,6 +36,8 @@ VOICE: dict[str, Any] = {
     "schema_version": "1.0",
     "script_sha256": "b" * 64,
     "script_scene_id": "s1",
+    "storyboard_sha256": "a" * 64,
+    "storyboard_scene_ids": ("sb1", "sb2"),
     "narration_sha256": narration_sha256("縄文土器"),
     "voice_id": "voice-1",
     "language": "ja",
@@ -64,6 +66,8 @@ CASES = [(image_input_hash, IMAGE), (voice_input_hash, VOICE), (video_input_hash
 def _changed(value: Any) -> Any:
     if value is None:
         return "set"
+    if isinstance(value, tuple):
+        return (*value, "sb9")
     if isinstance(value, int):
         return value + 1
     return value + "x"
@@ -89,6 +93,13 @@ def test_hash_excludes_attempt_job_time_and_run(fn, base) -> None:
     for forbidden in ("round", "attempt", "job_id", "run_id", "workflow_id", "created_at", "seed"):
         assert forbidden not in params
     assert set(base) == params
+
+
+def test_voice_hash_ignores_storyboard_scene_order() -> None:
+    """storyboard の再計画で古い音声を再利用しない。ただし参照集合の並びは意味を持たない。"""
+    swapped = {**VOICE, "storyboard_scene_ids": ("sb2", "sb1")}
+    assert voice_input_hash(**swapped) == voice_input_hash(**VOICE)
+    assert voice_input_hash(**{**VOICE, "storyboard_sha256": "c" * 64}) != voice_input_hash(**VOICE)
 
 
 def test_image_hash_ignores_motion_fields() -> None:

@@ -123,3 +123,20 @@ def test_0004_upgrade_adds_exactly_the_phase4_values() -> None:
         "fal_image",
         "fal_video",
     }
+
+
+def test_0004_scene_scope_types_are_frozen() -> None:
+    """0004 の scene_scope CHECK は literal で凍結し、今の語彙のシーン単位の型と一致する。"""
+    from infrastructure.db import models
+
+    migration = _load_0004()
+    assert migration.SCENE_ARTIFACT_TYPES == ("scene_image", "scene_video", "scene_voice")
+    assert migration.SCENE_JOB_TYPES == (
+        "produce_scene_image",
+        "produce_scene_video",
+        "produce_scene_voice",
+    )
+    assert migration.SCENE_PROVIDER_CALLS == ("fal_image", "fal_video")
+    assert {t.value for t in models.SCENE_ARTIFACT_TYPES} == set(migration.SCENE_ARTIFACT_TYPES)
+    assert {t.value for t in models.SCENE_JOB_TYPES} == set(migration.SCENE_JOB_TYPES)
+    assert {p.value for p in models.SCENE_PROVIDER_CALLS} == set(migration.SCENE_PROVIDER_CALLS)

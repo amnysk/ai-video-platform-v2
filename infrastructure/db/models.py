@@ -49,6 +49,35 @@ def _check(column: str, enum_cls: type[Enum], name: str) -> CheckConstraint:
     return CheckConstraint(f"{column} IN ({allowed})", name=name)
 
 
+#: シーン単位の型（ADR-0018）。これらは scene_id 必須、他の型は scene_id NULL。
+SCENE_ARTIFACT_TYPES: tuple[ArtifactType, ...] = (
+    ArtifactType.SCENE_IMAGE,
+    ArtifactType.SCENE_VIDEO,
+    ArtifactType.SCENE_VOICE,
+)
+SCENE_JOB_TYPES: tuple[JobType, ...] = (
+    JobType.PRODUCE_SCENE_IMAGE,
+    JobType.PRODUCE_SCENE_VIDEO,
+    JobType.PRODUCE_SCENE_VOICE,
+)
+#: シーン単位でしか呼ばない provider（scene_id 必須。他は任意）。
+SCENE_PROVIDER_CALLS: tuple[ProviderCall, ...] = (ProviderCall.FAL_IMAGE, ProviderCall.FAL_VIDEO)
+
+
+def _in_list(values: tuple[Enum, ...]) -> str:
+    return ", ".join(f"'{v.value}'" for v in values)
+
+
+def _scene_scope_check(column: str, values: tuple[Enum, ...], name: str) -> CheckConstraint:
+    """シーン単位の型 ⇔ scene_id あり（ADR-0018）。"""
+    allowed = _in_list(values)
+    return CheckConstraint(
+        f"({column} IN ({allowed}) AND scene_id IS NOT NULL) "
+        f"OR ({column} NOT IN ({allowed}) AND scene_id IS NULL)",
+        name=name,
+    )
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -85,6 +114,7 @@ class JobRow(Base):
         _check("type", JobType, "ck_jobs_type"),
         CheckConstraint("attempts >= 0", name="ck_jobs_attempts_non_negative"),
         CheckConstraint("max_attempts >= 1", name="ck_jobs_max_attempts_positive"),
+        _scene_scope_check("type", SCENE_JOB_TYPES, "ck_jobs_scene_scope"),
         Index("ix_jobs_episode_id", "episode_id"),
     )
 
@@ -117,6 +147,9 @@ class ArtifactMetadataRow(Base):
     __tablename__ = "artifact_metadata"
     __table_args__ = (
         _check("artifact_type", ArtifactType, "ck_artifact_metadata_type"),
+        _scene_scope_check(
+            "artifact_type", SCENE_ARTIFACT_TYPES, "ck_artifact_metadata_scene_scope"
+        ),
         # 一意性の索引（content / version / current）は scene キーを含む式索引なので
         # クラス定義の後で張る（ADR-0018）。
         Index("ix_artifact_metadata_episode_id", "episode_id"),
@@ -165,6 +198,10 @@ class ProviderReservationRow(Base):
         _check("status", ReservationStatus, "ck_provider_reservations_status"),
         _check("failure_class", FailureClass, "ck_provider_reservations_failure_class"),
         CheckConstraint("round >= 1", name="ck_provider_reservations_round_positive"),
+        CheckConstraint(
+            f"provider NOT IN ({_in_list(SCENE_PROVIDER_CALLS)}) OR scene_id IS NOT NULL",
+            name="ck_provider_reservations_scene_scope",
+        ),
         # 二重呼び出しの防止をアプリのバグで破れないよう DB 制約にする。
         UniqueConstraint("idempotency_key", name="uq_provider_reservations_idempotency_key"),
         Index("ix_provider_reservations_episode_id", "episode_id"),

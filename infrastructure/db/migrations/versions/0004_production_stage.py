@@ -5,7 +5,9 @@
    （照合: ``tests/contract/test_migration_frozen_vocabulary.py``）
 2. ``scene_id``（jobs / artifact_metadata / provider_reservations）、
    ``provider_job_ref`` / ``estimated_cost_usd``（provider_reservations）を追加
-3. artifact_metadata の一意性（content / version / current）を scene キー
+3. シーン単位の型 ⇔ ``scene_id`` の CHECK（``*_scene_scope``。ADR-0018）。型の集合は
+   この revision の意味として literal で凍結する
+4. artifact_metadata の一意性（content / version / current）を scene キー
    ``coalesce(scene_id, '')`` 込みの索引へ張り替える
 
 downgrade は Phase 4 の値を持つ行が残っていると CHECK の作成で**失敗する**。
@@ -72,6 +74,40 @@ _PHASE3_CHECKS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ),
 )
 
+#: 0004 時点のシーン単位の型。**編集しない**（増えたら新しい revision で張り替える）。
+SCENE_ARTIFACT_TYPES: tuple[str, ...] = ("scene_image", "scene_video", "scene_voice")
+SCENE_JOB_TYPES: tuple[str, ...] = (
+    "produce_scene_image",
+    "produce_scene_video",
+    "produce_scene_voice",
+)
+SCENE_PROVIDER_CALLS: tuple[str, ...] = ("fal_image", "fal_video")
+
+#: (table, constraint, 条件)
+_SCENE_SCOPE_CHECKS: tuple[tuple[str, str, str], ...] = (
+    (
+        "artifact_metadata",
+        "ck_artifact_metadata_scene_scope",
+        f"(artifact_type IN ({', '.join(repr(v) for v in SCENE_ARTIFACT_TYPES)}) "
+        "AND scene_id IS NOT NULL) "
+        f"OR (artifact_type NOT IN ({', '.join(repr(v) for v in SCENE_ARTIFACT_TYPES)}) "
+        "AND scene_id IS NULL)",
+    ),
+    (
+        "jobs",
+        "ck_jobs_scene_scope",
+        f"(type IN ({', '.join(repr(v) for v in SCENE_JOB_TYPES)}) AND scene_id IS NOT NULL) "
+        f"OR (type NOT IN ({', '.join(repr(v) for v in SCENE_JOB_TYPES)}) AND scene_id IS NULL)",
+    ),
+    (
+        "provider_reservations",
+        "ck_provider_reservations_scene_scope",
+        f"provider NOT IN ({', '.join(repr(v) for v in SCENE_PROVIDER_CALLS)}) "
+        "OR scene_id IS NOT NULL",
+    ),
+)
+_SCENE_SCOPE = {table: (name, condition) for table, name, condition in _SCENE_SCOPE_CHECKS}
+
 _SCENE_KEY = "coalesce(scene_id, '')"
 _CURRENT_WHERE = "superseded_at IS NULL"
 
@@ -88,12 +124,19 @@ def _recheck(table: str, name: str, condition: str) -> None:
         batch.create_check_constraint(name, sa.text(condition))
 
 
+def _add_scene_scope(table: str) -> None:
+    name, condition = _SCENE_SCOPE[table]
+    with op.batch_alter_table(table, schema=None) as batch:
+        batch.create_check_constraint(name, sa.text(condition))
+
+
 def upgrade() -> None:
     for table, name, column, enum_cls in _CHECKS:
         _recheck(table, name, _in_check(column, tuple(m.value for m in enum_cls)))
 
     with op.batch_alter_table("jobs", schema=None) as batch:
         batch.add_column(sa.Column("scene_id", sa.String(length=16), nullable=True))
+    _add_scene_scope("jobs")
 
     with op.batch_alter_table("provider_reservations", schema=None) as batch:
         batch.add_column(sa.Column("scene_id", sa.String(length=16), nullable=True))
@@ -101,12 +144,15 @@ def upgrade() -> None:
         batch.add_column(
             sa.Column("estimated_cost_usd", sa.Numeric(precision=10, scale=4), nullable=True)
         )
+    _add_scene_scope("provider_reservations")
 
     op.drop_index("uq_artifact_metadata_current", table_name="artifact_metadata")
     with op.batch_alter_table("artifact_metadata", schema=None) as batch:
         batch.add_column(sa.Column("scene_id", sa.String(length=16), nullable=True))
         batch.drop_constraint("uq_artifact_metadata_content", type_="unique")
         batch.drop_constraint("uq_artifact_metadata_version", type_="unique")
+    # 式索引より先に張る（SQLite の batch はテーブル再作成で式索引を失う）
+    _add_scene_scope("artifact_metadata")
 
     op.create_index(
         "uq_artifact_metadata_content",
@@ -140,6 +186,10 @@ def downgrade() -> None:
     op.drop_index("uq_artifact_metadata_current", table_name="artifact_metadata")
     op.drop_index("uq_artifact_metadata_version", table_name="artifact_metadata")
     op.drop_index("uq_artifact_metadata_content", table_name="artifact_metadata")
+
+    for table, name, _condition in _SCENE_SCOPE_CHECKS:
+        with op.batch_alter_table(table, schema=None) as batch:
+            batch.drop_constraint(name, type_="check")
 
     for table, name, column, values in _PHASE3_CHECKS:
         _recheck(table, name, _in_check(column, values))

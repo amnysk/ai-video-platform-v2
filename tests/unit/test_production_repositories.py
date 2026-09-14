@@ -83,7 +83,7 @@ async def test_scene_rows_do_not_disturb_episode_level_artifacts(session) -> Non
     episode_id = await _episode(session)
     repo = ArtifactMetadataRepository(session)
     s1 = await _record(repo, episode_id, "a" * 64, type=ArtifactType.STORYBOARD)
-    await _record(repo, episode_id, "b" * 64, scene_id="sb1", type=ArtifactType.STORYBOARD)
+    await _record(repo, episode_id, "b" * 64, scene_id="sb1", type=ArtifactType.SCENE_IMAGE)
     await session.commit()
     current = await repo.find_current_by_type(episode_id, ArtifactType.STORYBOARD)
     assert current is not None and current.id == s1.id and current.scene_id is None
@@ -92,8 +92,8 @@ async def test_scene_rows_do_not_disturb_episode_level_artifacts(session) -> Non
     await session.commit()
     current = await repo.find_current_by_type(episode_id, ArtifactType.STORYBOARD)
     assert current is not None and current.id == s2.id
-    scene = await repo.find_current_by_type(episode_id, ArtifactType.STORYBOARD, "sb1")
-    assert scene is not None  # 別 scene キーの現行は降ろされない
+    scene = await repo.find_current_by_type(episode_id, ArtifactType.SCENE_IMAGE, "sb1")
+    assert scene is not None  # シーン単位の現行は降ろされない
 
 
 async def test_scene_versions_restart_per_scene(session) -> None:
@@ -128,11 +128,13 @@ async def test_open_jobs_are_found_per_scene(session) -> None:
     assert await jobs.find_open(episode_id, JobType.PRODUCE_SCENE_IMAGE, "sb1") is None
 
 
-async def _reserve(session, episode_id, *, key: str, scene_id: str | None, cost=None):
+async def _reserve(
+    session, episode_id, *, key: str, scene_id: str | None, cost=None, provider=None
+):
     repo = ProviderReservationRepository(session)
     row = await repo.reserve(
         episode_id=episode_id,
-        provider=ProviderCall.FAL_IMAGE,
+        provider=provider or ProviderCall.FAL_IMAGE,
         idempotency_key=key,
         input_hash="h" * 64,
         round=1,
@@ -146,15 +148,21 @@ async def _reserve(session, episode_id, *, key: str, scene_id: str | None, cost=
 async def test_unreconciled_reservations_are_scene_scoped(session) -> None:
     episode_id = await _episode(session)
     repo, _ = await _reserve(session, episode_id, key="k1", scene_id="sb1")
-    await _reserve(session, episode_id, key="k2", scene_id=None)
+    await _reserve(session, episode_id, key="k2", scene_id="sb3")
+    await _reserve(
+        session, episode_id, key="k3", scene_id=None, provider=ProviderCall.CODEX_STORYBOARD
+    )
     assert [
         r.idempotency_key
         for r in await repo.find_unreconciled(episode_id, ProviderCall.FAL_IMAGE, "sb1")
     ] == ["k1"]
     assert await repo.find_unreconciled(episode_id, ProviderCall.FAL_IMAGE, "sb2") == []
+    # scene を指定しない引きは Episode 単位の行だけを見る
+    assert await repo.find_unreconciled(episode_id, ProviderCall.FAL_IMAGE) == []
     assert [
-        r.idempotency_key for r in await repo.find_unreconciled(episode_id, ProviderCall.FAL_IMAGE)
-    ] == ["k2"]
+        r.idempotency_key
+        for r in await repo.find_unreconciled(episode_id, ProviderCall.CODEX_STORYBOARD)
+    ] == ["k3"]
 
 
 async def test_estimated_cost_is_persisted(session) -> None:
@@ -197,3 +205,24 @@ async def test_provider_job_ref_cannot_be_added_after_reconciliation(session) ->
         await repo.record_provider_job_ref(row.id, "job-1")
     loaded = await repo.get(row.id)
     assert loaded is not None and loaded.provider_job_ref is None
+
+
+async def test_scene_scope_is_enforced_by_the_schema(session) -> None:
+    """ADR-0018: シーン単位の型は scene_id 必須、Episode 単位の型は scene_id NULL。"""
+    from sqlalchemy.exc import IntegrityError
+
+    episode_id = await _episode(session)
+    repo = ArtifactMetadataRepository(session)
+    with pytest.raises(IntegrityError):
+        await _record(repo, episode_id, "1" * 64, scene_id=None)
+    await session.rollback()
+    with pytest.raises(IntegrityError):
+        await _record(repo, episode_id, "2" * 64, scene_id="sb1", type=ArtifactType.SCRIPT)
+    await session.rollback()
+    with pytest.raises(IntegrityError):
+        await JobRepository(session).create(episode_id=episode_id, type=JobType.PRODUCE_SCENE_VOICE)
+    await session.rollback()
+    with pytest.raises(IntegrityError):
+        await _reserve(
+            session, episode_id, key="k9", scene_id=None, provider=ProviderCall.FAL_VIDEO
+        )

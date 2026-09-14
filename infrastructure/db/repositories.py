@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from contracts.states import (
@@ -617,23 +617,40 @@ class ProviderReservationRepository:
         if not provider_job_ref:
             raise ValueError("provider_job_ref must be non-empty")
         row = await self._row(reservation_id)
-        if row.provider_job_ref is not None:
-            if row.provider_job_ref == provider_job_ref:
-                return _to_reservation(row)
+        if row.provider_job_ref == provider_job_ref:
+            return _to_reservation(row)
+        # 検査と書き込みを1文の条件付き UPDATE にする。読み取り後に別セッションが
+        # 参照を書いても、古い読み取りからは上書きできない（write-once を DB で守る）。
+        table = ProviderReservationRow
+        result = await self._session.execute(
+            update(table)
+            .where(
+                table.id == _as_uuid(reservation_id),
+                table.status == ReservationStatus.RESERVED.value,
+                table.dispatched_at.is_not(None),
+                (table.provider_job_ref.is_(None)) | (table.provider_job_ref == provider_job_ref),
+            )
+            .values(provider_job_ref=provider_job_ref)
+            .execution_options(synchronize_session=False)
+        )
+        fresh = await self._session.get(table, row.id, populate_existing=True)
+        if fresh is None:
+            raise InvalidTransitionError(f"reservation not found: {reservation_id}")
+        if getattr(result, "rowcount", 0) == 1:
+            return _to_reservation(fresh)
+        if fresh.provider_job_ref == provider_job_ref:
+            return _to_reservation(fresh)
+        if fresh.provider_job_ref is not None:
             raise InvalidTransitionError(
                 f"reservation {reservation_id} already has a different provider job ref"
             )
-        if ReservationStatus(row.status) is not ReservationStatus.RESERVED:
+        if ReservationStatus(fresh.status) is not ReservationStatus.RESERVED:
             raise InvalidTransitionError(
-                f"reservation {reservation_id} is {row.status}; job ref needs reserved"
+                f"reservation {reservation_id} is {fresh.status}; job ref needs reserved"
             )
-        if row.dispatched_at is None:
-            raise InvalidTransitionError(
-                f"reservation {reservation_id} is not dispatched; job ref needs dispatched_at"
-            )
-        row.provider_job_ref = provider_job_ref
-        await self._session.flush()
-        return _to_reservation(row)
+        raise InvalidTransitionError(
+            f"reservation {reservation_id} is not dispatched; job ref needs dispatched_at"
+        )
 
     async def get(self, reservation_id: uuid.UUID | str) -> ProviderReservation | None:
         row = await self._session.get(ProviderReservationRow, _as_uuid(reservation_id))

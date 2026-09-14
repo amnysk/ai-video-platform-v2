@@ -114,6 +114,7 @@ def _video(**overrides) -> VideoInfo:
         "height": 1280,
         "fps_millis": 24000,
         "frames_decoded": 120,
+        "decoded_duration_ms": 5000,
         "has_audio": False,
     }
     return VideoInfo(**{**base, **overrides})
@@ -138,6 +139,9 @@ def test_video_duration_tolerance_is_max_of_300ms_and_5_percent() -> None:
         ({"fps_millis": 19999}, False),
         ({"fps_millis": 60001}, False),
         ({"has_audio": True}, True),
+        ({"decoded_duration_ms": 4700}, True),  # 容器尺との差 300ms 以内
+        ({"decoded_duration_ms": 3000}, False),  # 容器は 5s と言うがデコードできたのは 3s
+        ({"decode_errors": 1}, False),
     ],
 )
 def test_video_rules(overrides: dict, ok: bool) -> None:
@@ -176,6 +180,22 @@ def test_probe_real_mp4() -> None:
     validate_video(info, len(data), requested_duration_ms=1000)
 
 
+def test_probe_reports_decoded_duration() -> None:
+    info = PillowAvMediaProbe().probe_video(make_mp4(2000, 720, 1280, 24, faststart=True))
+    assert abs(info.decoded_duration_ms - 2000) <= 50 and info.decode_errors == 0
+
+
+@pytest.mark.parametrize("fraction", [0.9, 0.6, 0.3])
+def test_truncated_mp4_is_rejected(fraction: float) -> None:
+    """moov が残ったまま mdat が欠けた mp4 は、容器の尺を信じず不合格にする。"""
+    data = make_mp4(2000, 720, 1280, 24, faststart=True)
+    cut = data[: int(len(data) * fraction)]
+    probe = PillowAvMediaProbe()
+    with pytest.raises(MediaValidationError):
+        info = probe.probe_video(cut)
+        validate_video(info, len(cut), requested_duration_ms=2000)
+
+
 @pytest.mark.parametrize("method", ["probe_image", "probe_audio", "probe_video"])
 def test_probe_rejects_garbage(method: str) -> None:
     with pytest.raises(MediaValidationError):
@@ -194,3 +214,48 @@ def test_normalizer_produces_validated_1080x1920_png_deterministically() -> None
 def test_normalizer_rejects_landscape() -> None:
     with pytest.raises(MediaValidationError):
         normalize_image_9x16(make_png(1920, 1080))
+
+
+def _jpeg_with_orientation(width: int, height: int, orientation: int) -> bytes:
+    import io
+
+    from PIL import Image
+
+    image = Image.new("RGB", (width, height), (10, 120, 200))
+    exif = Image.Exif()
+    exif[0x0112] = orientation
+    out = io.BytesIO()
+    image.save(out, format="JPEG", exif=exif.tobytes())
+    return out.getvalue()
+
+
+def test_exif_orientation_is_applied_before_planning() -> None:
+    """横長で保存され EXIF で 90 度回転する写真は、見かけ上の縦長として正規化できる。"""
+    source = _jpeg_with_orientation(1920, 1080, 6)
+    info = PillowAvMediaProbe().probe_image(source)
+    assert (info.width, info.height) == (1080, 1920)
+    normalized = normalize_image_9x16(source)
+    assert (normalized.width, normalized.height) == (1080, 1920)
+
+
+def test_decompression_bomb_is_a_media_validation_error(monkeypatch) -> None:
+    from PIL import Image
+
+    source = make_png(1080, 1920)
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)  # 2倍超で DecompressionBombError
+    with pytest.raises(MediaValidationError):
+        PillowAvMediaProbe().probe_image(source)
+    with pytest.raises(MediaValidationError):
+        normalize_image_9x16(source)
+
+
+def test_truncated_png_is_a_media_validation_error() -> None:
+    source = make_png(1080, 1920, (1, 2, 3))
+    with pytest.raises(MediaValidationError):
+        normalize_image_9x16(source[: len(source) // 2])
+
+
+def test_normalization_plan_has_no_unused_helpers() -> None:
+    from domain.production.media import NormalizationPlan
+
+    assert not hasattr(NormalizationPlan, "is_identity_crop")

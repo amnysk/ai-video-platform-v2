@@ -219,3 +219,57 @@ async def test_media_bytes_roundtrip_through_minio() -> None:
         await store.stat(f"media/{episode}/missing")
     with pytest.raises(KeyError):
         await store.get_bytes(f"media/{episode}/missing")
+
+
+async def test_provider_job_ref_is_write_once_across_concurrent_sessions(
+    pg_session_factory, monkeypatch
+) -> None:
+    """検査と書き込みの間に別セッションが参照を書いても上書きできない（ADR-0017）。
+
+    競合の窓を決定的に再現するため、先行セッションの読み取りを「参照なし」の古い
+    スナップショットに固定する。write-once は DB の条件付き UPDATE が守る。
+    """
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    from infrastructure.db.models import ProviderReservationRow
+
+    f = pg_session_factory
+    episode_id = await _episode(f)
+    async with f() as session:
+        reservations = ProviderReservationRepository(session)
+        row = await reservations.reserve(
+            episode_id=episode_id,
+            provider=ProviderCall.FAL_IMAGE,
+            idempotency_key="r" * 64,
+            input_hash="h" * 64,
+            round=1,
+            scene_id="sb1",
+        )
+        await reservations.mark_dispatched(row.id)
+        await session.commit()
+
+    async with f() as first, f() as second:
+        first_repo = ProviderReservationRepository(first)
+        original_row = first_repo._row
+
+        async def stale_row(reservation_id):
+            loaded = await original_row(reservation_id)
+            assert isinstance(loaded, ProviderReservationRow)
+            set_committed_value(loaded, "provider_job_ref", None)
+            return loaded
+
+        await ProviderReservationRepository(second).record_provider_job_ref(row.id, "req-B")
+        await second.commit()
+
+        monkeypatch.setattr(first_repo, "_row", stale_row)
+        with pytest.raises(InvalidTransitionError):
+            await first_repo.record_provider_job_ref(row.id, "req-A")
+        await first.rollback()
+        # 同じ参照の再記録は古い読み取りからでも no-op
+        again = await first_repo.record_provider_job_ref(row.id, "req-B")
+        assert again.provider_job_ref == "req-B"
+        await first.commit()
+
+    async with f() as session:
+        loaded = await ProviderReservationRepository(session).get(row.id)
+    assert loaded is not None and loaded.provider_job_ref == "req-B"
