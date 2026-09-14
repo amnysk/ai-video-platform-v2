@@ -80,6 +80,7 @@ def _to_artifact(row: ArtifactMetadataRow) -> ArtifactMetadata:
         sha256=row.sha256,
         created_at=row.created_at,
         scene_id=row.scene_id,
+        version=row.version,
     )
 
 

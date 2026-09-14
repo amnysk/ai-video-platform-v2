@@ -14,9 +14,11 @@ from contracts.production_activities import (
     DEFAULT_IMAGE_MAX_ROUNDS,
     DEFAULT_VIDEO_MAX_ROUNDS,
 )
+from contracts.render import DEFAULT_RENDER_PROFILE_ID
 from contracts.states import (
     PIPELINE_WORKFLOWS,
     PRODUCTION_WORKFLOW,
+    RENDER_WORKFLOW,
     STORYBOARD_WORKFLOW,
     Pipeline,
 )
@@ -34,6 +36,12 @@ class WorkflowStarter(Protocol):
 
     async def start_production_workflow(self, *, episode_id: str) -> str:
         """既存 Episode に対して ProductionWorkflow を起動する（ADR-0017）。"""
+        ...
+
+    async def start_render_workflow(
+        self, *, episode_id: str, render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
+    ) -> str:
+        """既存 Episode に対して RenderWorkflow を起動する（ADR-0019）。"""
         ...
 
 
@@ -108,6 +116,29 @@ class TemporalWorkflowStarter:
             task_queue=task_queue,
         )
         return workflow_id
+
+    async def start_render_workflow(
+        self, *, episode_id: str, render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
+    ) -> str:
+        workflow_name, task_queue = RENDER_WORKFLOW
+        workflow_id = render_workflow_id(episode_id)
+        # 入力は RenderWorkflowInput と同じ形の dict（worker の型を import しない / INV-3）。
+        # エンジンの timeout は worker と同じ設定から渡す（start_to_close の算出に使う）。
+        await self._client.start_workflow(
+            workflow_name,
+            {
+                "episode_id": episode_id,
+                "render_profile_id": render_profile_id,
+                "render_timeout_seconds": self._settings.render_timeout_seconds,
+            },
+            id=workflow_id,
+            task_queue=task_queue,
+        )
+        return workflow_id
+
+
+def render_workflow_id(episode_id: str) -> str:
+    return f"episode-{episode_id}-render"
 
 
 def production_workflow_id(episode_id: str) -> str:

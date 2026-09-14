@@ -37,6 +37,21 @@ class StartProductionResponse(BaseModel):
     workflow_id: str
 
 
+class StartRenderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: 省略時は ``DEFAULT_RENDER_PROFILE_ID``（ADR-0019）
+    render_profile_id: str | None = Field(default=None, max_length=64)
+
+
+class StartRenderResponse(BaseModel):
+    episode_id: str
+    #: 起動を受け付けた時点の状態。工程に入れたかは workflow の admit が決める。
+    status: EpisodeStatus
+    workflow_id: str
+    render_profile_id: str
+
+
 class JobView(BaseModel):
     id: str
     type: JobType

@@ -46,10 +46,6 @@ target-version = "py313"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
 
-[tool.ruff.lint.flake8-tidy-imports.banned-api]
-# 層の逆流はarchitecture testが本命だが、明白なものはlintでも止める
-"workers.render".msg = "workers must not import other workers (INV-3)"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
