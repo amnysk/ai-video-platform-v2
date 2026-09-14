@@ -17,7 +17,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
-from temporalio.exceptions import ApplicationError
 
 from contracts.artifacts import (
     PRODUCTION_ARTIFACT_SCHEMA_VERSION,
@@ -40,6 +39,7 @@ from domain.errors import (
     DomainError,
     ProductionInputInvalidError,
     ProductionInputMissingError,
+    TransientError,
     classify_failure,
 )
 from domain.job.transitions import job_event_for_failure
@@ -48,6 +48,7 @@ from domain.production.media import MediaProbe, validate_voice
 from domain.production.ports import VoiceGenerator
 from infrastructure.db.repositories import ArtifactMetadataRepository, JobRepository
 from infrastructure.media.destination import FileMediaDestination
+from infrastructure.production.activity_errors import raise_activity_error, translate_error
 from infrastructure.storage.artifact_store import ArtifactStore, readback_sha256
 from infrastructure.workdir import WorkDirectory
 
@@ -127,18 +128,14 @@ class VoiceActivities:
     async def generate_voice(self, request: VoiceGenerateRequest) -> SceneArtifactResult:
         """ドメイン例外は型名を ``type`` にした ``ApplicationError`` にする。
 
-        needs_input / permanent は ``non_retryable``。未分類の例外はそのまま投げ、
-        Temporal の retry と workflow の型名分類（INV-12）に委ねる。
+        needs_input / permanent は ``non_retryable``。DB・ストア・作業領域の一時障害は
+        ``TransientError``。未分類の例外はそのまま投げ、Temporal の retry と workflow の
+        型名分類（INV-12）に委ねる（``infrastructure.production.activity_errors``）。
         """
         try:
             return await self._generate(request)
-        except DomainError as exc:
-            failure_class = classify_failure(exc)
-            raise ApplicationError(
-                f"{type(exc).__name__}: {exc}",
-                type=type(exc).__name__,
-                non_retryable=failure_class in {FailureClass.NEEDS_INPUT, FailureClass.PERMANENT},
-            ) from exc
+        except Exception as exc:
+            raise_activity_error(exc)
 
     async def _generate(self, request: VoiceGenerateRequest) -> SceneArtifactResult:
         storyboard_loaded = await self._load_current(
@@ -194,6 +191,9 @@ class VoiceActivities:
             if existing is not None:
                 jobs = JobRepository(session)
                 job = await self._open_job(jobs, request.episode_id, scene.id)
+                if job.status is JobStatus.RETRYABLE_FAILED:
+                    # 表に retryable_failed → skipped の辺は無い。RETRY_ADMITTED で running へ戻す
+                    await jobs.start(job.id)
                 await jobs.mark_skipped(job.id)
                 await session.commit()
                 return _result(existing, reused=True)
@@ -344,6 +344,8 @@ class VoiceActivities:
         try:
             payload = await self._store.get_json(meta.object_key)
         except Exception as exc:
+            if isinstance(translate_error(exc), TransientError):
+                raise  # ストアの通信障害は入力の欠陥ではない（境界で TransientError）
             raise ProductionInputInvalidError(
                 f"{artifact_type.value} artifact {meta.object_key} is not readable: "
                 f"{type(exc).__name__}"
@@ -375,23 +377,29 @@ class VoiceActivities:
         作ってしまうので、job 上は ``retryable`` として残す。retry が尽きたときの最終分類は
         workflow が型名で行う（未知の型名 → needs_input / INV-12）。
         """
+        failure = translate_error(exc)
         failure_class = (
-            classify_failure(exc) if isinstance(exc, DomainError) else FailureClass.RETRYABLE
+            classify_failure(failure)
+            if isinstance(failure, DomainError)
+            else FailureClass.RETRYABLE
         )
-        async with self._session_factory() as session:
-            jobs = JobRepository(session)
-            job = await jobs.get(job_id)
-            if job is None or job.status in _JOB_DONE:
-                return
-            if job.status is JobStatus.RETRYABLE_FAILED:
-                return
-            await jobs.record_failure(
-                job_id,
-                event=job_event_for_failure(failure_class),
-                failure_class=failure_class,
-                error_summary=f"{type(exc).__name__}: {exc}",
-            )
-            await session.commit()
+        try:
+            async with self._session_factory() as session:
+                jobs = JobRepository(session)
+                job = await jobs.get(job_id)
+                if job is None or job.status in _JOB_DONE:
+                    return
+                if job.status is JobStatus.RETRYABLE_FAILED:
+                    return
+                await jobs.record_failure(
+                    job_id,
+                    event=job_event_for_failure(failure_class),
+                    failure_class=failure_class,
+                    error_summary=f"{type(failure).__name__}: {failure}",
+                )
+                await session.commit()
+        except Exception:  # 記録の失敗（DB 断など）で元の失敗を隠さない
+            logger.warning("could not record voice job failure job=%s", job_id, exc_info=True)
 
 
 def _parse[T: (StoryboardArtifact, ScriptArtifact)](model: type[T], loaded: _Loaded) -> T:

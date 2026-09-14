@@ -218,3 +218,34 @@ async def test_sha_mismatch_of_stored_script_is_needs_input(
             voice_request(episode, script, storyboard, "s1")
         )
     assert info.value.type == "ProductionInputInvalidError"
+
+
+async def test_reuse_skips_an_open_retryable_failed_job_via_the_transition_table(
+    session_factory, store, workdir
+) -> None:
+    """``retryable_failed`` から直接 ``skipped`` の辺は無い。RETRY_ADMITTED → running → skipped。"""
+    from domain.job.transitions import JobEvent
+
+    episode = await create_episode(session_factory)
+    script, storyboard = await record_inputs(session_factory, store, episode)
+    generator = FakeVoiceGenerator()
+    activities = make(session_factory, store, workdir, generator)
+    request = voice_request(episode, script, storyboard, "s1")
+    first = await activities.generate_voice(request)
+
+    async with session_factory() as session:
+        jobs = JobRepository(session)
+        job = await jobs.create(episode_id=episode, type=JobType.PRODUCE_SCENE_VOICE, scene_id="s1")
+        await jobs.start(job.id)
+        await jobs.record_failure(
+            job.id, event=JobEvent.RETRYABLE_FAILURE, failure_class=FailureClass.RETRYABLE
+        )
+        await session.commit()
+
+    again = await activities.generate_voice(request)
+
+    assert again.reused is True and again.artifact_id == first.artifact_id
+    assert generator.calls == 1
+    async with session_factory() as session:
+        stuck = await JobRepository(session).get(job.id)
+    assert stuck is not None and stuck.status is JobStatus.SKIPPED

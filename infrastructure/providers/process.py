@@ -49,6 +49,7 @@ class SubprocessRunner:
       ``os.killpg`` で**子孫ごと**止める。codex は MCP サーバ等の子を作るため、
       プロセス単体の kill では殺し残す
     - SIGTERM → 猶予 → SIGKILL のエスカレーション
+    - タイムアウトに限らず、**cancel を含むあらゆる例外**で同じ停止を行ってから伝える
     """
 
     def __init__(self, *, grace_seconds: float = DEFAULT_GRACE_SECONDS) -> None:
@@ -79,6 +80,11 @@ class SubprocessRunner:
         except TimeoutError as exc:
             await self._terminate_group(process)
             raise ProcessTimeout(f"process exceeded {timeout_seconds}s") from exc
+        except BaseException:
+            # cancel（CancelledError）・KeyboardInterrupt を含む。子孫を残さずに伝える。
+            # 再度 cancel されても停止処理は shield の内側で完走させる。
+            await asyncio.shield(self._terminate_group(process))
+            raise
         return ProcessResult(
             returncode=process.returncode if process.returncode is not None else -1,
             stdout=stdout.decode("utf-8", errors="replace"),

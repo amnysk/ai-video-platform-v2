@@ -63,7 +63,21 @@
 | `VoiceLanguageUnsupportedError` | `needs_input` | 設定した音声モデルが台本の言語を話せない（音声モデルか台本の言語を人間が直す） |
 
 有料の submit Activity は `maximum_attempts=1`、await Activity は provider job 参照に対して冪等なので
-retry してよい（最大5回）。ローカル非課金の音声合成は台帳に載せず Temporal の retry（最大3回）に委ねる
+retry してよい（最大5回）。ただし await で**ラウンドが確定済み**の失敗（`ProviderJobFailedError` /
+`MediaValidationError`）は Activity の retry を止める（`non_retryable=True`）。型名は変えないので workflow は
+`retryable` と分類して新しいラウンドへ進む（ADR-0017 §4）。
+
+Activity 境界の写像（画像・音声・動画共通、`infrastructure/production/activity_errors.py`）:
+
+| 例外 | Activity の扱い |
+|---|---|
+| ドメイン例外 | `ApplicationError(type=<型名>)`。`needs_input` / `permanent` は `non_retryable` |
+| DB の接続断・操作エラー / オブジェクトストアの通信失敗・5xx / 作業領域の `OSError` | `TransientError`（入力の読み取り中でも入力不正にしない） |
+| `InvalidTransitionError` / `ArtifactConflictError` | `needs_input`（台帳・Artifact の食い違い） |
+| `UnreconciledReservationError`（`dispatched_at` の二重書き込み、poll 時に参照が読めない・ホスト外） | `needs_input` |
+| 未分類 | そのまま（Temporal の retry と型名分類 / INV-12） |
+
+検査: `tests/unit/test_activity_errors.py`。ローカル非課金の音声合成は台帳に載せず Temporal の retry（最大3回）に委ねる
 （INV-15 の限定例外、ADR-0017）。検査:
 `tests/unit/test_failure_class_registry.py::test_production_exceptions_classify_by_their_base`。
 

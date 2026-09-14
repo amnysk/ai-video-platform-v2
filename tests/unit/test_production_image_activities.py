@@ -5,17 +5,13 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from temporalio.exceptions import ApplicationError
 
 from contracts.artifacts import parse_scene_image_artifact
 from contracts.production_activities import ImageAwaitRequest, ImageSubmitRequest
 from contracts.states import ArtifactType, JobStatus, JobType, ReservationStatus
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key
-from domain.errors import (
-    MediaValidationError,
-    ProductionInputInvalidError,
-    ProductionInputMissingError,
-)
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -173,24 +169,36 @@ async def test_invalid_media_fails_job_after_spending(
     gen = FakeImageGenerator(output_size=(1920, 1080))  # 横長: 正規化で拒否
     acts = make_activities(session_factory, artifact_store, gen, tmp_path)
     s = await acts.submit(_submit(episode_id, sb_id))
-    with pytest.raises(MediaValidationError):
+    with pytest.raises(ApplicationError, match="^MediaValidationError"):
         await acts.await_image(_await(episode_id, sb_id, s.reservation_id))
     async with session_factory() as session:
         row = await ProviderReservationRepository(session).get(s.reservation_id)
     assert row is not None and row.status is ReservationStatus.SPENT and row.raw_output_key
     jobs = await _jobs(session_factory, episode_id)
     assert jobs[0].status is JobStatus.RETRYABLE_FAILED
+    # 検証に落ちた evidence は台帳に記録され、次の run の round=1 でも新しい台帳ラウンドへ進む
+    from contracts.states import FailureClass
+
+    assert row.failure_class is FailureClass.RETRYABLE
+    gen.output_size = (1024, 1820)
+    again = await acts.submit(_submit(episode_id, sb_id, round=1))
+    assert again.reservation_id != s.reservation_id and gen.submit_calls == 2
+    async with session_factory() as session:
+        fresh = await ProviderReservationRepository(session).get(again.reservation_id)
+    assert fresh is not None and fresh.round == 2
+    result = await acts.await_image(_await(episode_id, sb_id, again.reservation_id))
+    assert result.reused is False
 
 
 async def test_missing_and_mismatched_inputs(session_factory, artifact_store, tmp_path) -> None:
     episode_id, sb_id = await seed_storyboard(session_factory, artifact_store)
     acts = make_activities(session_factory, artifact_store, FakeImageGenerator(), tmp_path)
-    with pytest.raises(ProductionInputMissingError):
+    with pytest.raises(ApplicationError, match="^ProductionInputMissingError"):
         await acts.submit(_submit(episode_id, str(uuid.uuid4())))
-    with pytest.raises(ProductionInputInvalidError):
+    with pytest.raises(ApplicationError, match="^ProductionInputInvalidError"):
         await acts.submit(_submit(episode_id, sb_id, scene="sb9"))
     s = await acts.submit(_submit(episode_id, sb_id, scene="sb1"))
-    with pytest.raises(ProductionInputInvalidError):
+    with pytest.raises(ApplicationError, match="^ProductionInputInvalidError"):
         await acts.await_image(_await(episode_id, sb_id, s.reservation_id, scene="sb2"))
 
 
@@ -203,7 +211,7 @@ async def test_storyboard_sha_mismatch_is_invalid(
     assert meta is not None
     artifact_store._objects[meta.object_key] = b'{"tampered": true}'  # type: ignore[attr-defined]
     acts = make_activities(session_factory, artifact_store, FakeImageGenerator(), tmp_path)
-    with pytest.raises(ProductionInputInvalidError):
+    with pytest.raises(ApplicationError, match="^ProductionInputInvalidError"):
         await acts.submit(_submit(episode_id, sb_id))
 
 
@@ -215,3 +223,40 @@ def test_activity_names_match_contracts(session_factory, artifact_store, tmp_pat
     acts = make_activities(session_factory, artifact_store, FakeImageGenerator(), tmp_path)
     names = {activity._Definition.must_from_callable(fn).name for fn in acts.all_activities()}  # type: ignore[attr-defined]
     assert names == {IMAGE_SUBMIT, IMAGE_AWAIT}
+
+
+async def test_round_consumed_await_is_final_for_the_activity(
+    session_factory, artifact_store, tmp_path
+) -> None:
+    from contracts.states import FailureClass
+    from domain.errors import failure_class_from_type_name
+    from domain.production.ports import JobFailed
+
+    episode_id, sb_id = await seed_storyboard(session_factory, artifact_store)
+    gen = FakeImageGenerator(pending_polls=0, fail_with=JobFailed("runner crashed"))
+    acts = make_activities(session_factory, artifact_store, gen, tmp_path)
+    submitted = await acts.submit(_submit(episode_id, sb_id))
+    for _ in range(2):  # Temporal が retry しても同じ（ラウンドは確定済み）
+        with pytest.raises(ApplicationError) as info:
+            await acts.await_image(_await(episode_id, sb_id, submitted.reservation_id))
+        assert info.value.type == "ProviderJobFailedError"
+        assert info.value.non_retryable is True
+        assert failure_class_from_type_name(info.value.type) is FailureClass.RETRYABLE
+    assert gen.submit_calls == 1
+
+
+async def test_store_outage_while_reading_inputs_is_transient(
+    session_factory, artifact_store, tmp_path
+) -> None:
+    from urllib3.exceptions import ProtocolError
+
+    episode_id, sb_id = await seed_storyboard(session_factory, artifact_store)
+
+    async def broken_get_json(key):
+        raise ProtocolError("Connection aborted.")
+
+    artifact_store.get_json = broken_get_json
+    acts = make_activities(session_factory, artifact_store, FakeImageGenerator(), tmp_path)
+    with pytest.raises(ApplicationError) as info:
+        await acts.submit(_submit(episode_id, sb_id))
+    assert info.value.type == "TransientError" and info.value.non_retryable is False

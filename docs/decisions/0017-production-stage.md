@@ -63,24 +63,58 @@ provider job 参照を台帳へ write-once で commit してから待つ。Episo
 9. `mark_spent` → **commit**（検証より前）
 10. 検証（`domain/production/media.py`）→ 正規化 → メディア本体と Artifact を保存 → `attach_artifact`
 
-再開の分岐（`idempotency_key` で引いた予約）:
+**台帳のラウンドは台帳から導く。** workflow の run はそれぞれ round=1 から数えるので、Activity 要求の
+`round` を冪等キーに使うと、前の run が消費したラウンドが毎回「消費済み」として再生され、入力が変わらない
+シーンを二度と再生成できない。そこで `round` は run ごとの試行番号（ログ用）に留め、冪等キーは
+`(provider, input_hash, 台帳ラウンド)` とし、台帳ラウンドを同じ入力
+（Episode + provider + scene + `input_hash`）の**最新の予約**（`find_latest_for_input`）から決める:
 
-| 予約の状態 | 動作 |
+| 最新の予約 | 動作 |
 |---|---|
-| 行なし / `dispatched_at` NULL | 予約・dispatch・submit へ進む |
+| 無い | 台帳ラウンド 1 で予約・dispatch・submit へ進む |
+| `reserved` + `dispatched_at` NULL | その予約のまま dispatch・submit へ進む |
 | `reserved` + `dispatched_at` + provider job 参照あり | **await を再開**（再 submit しない） |
 | `reserved` + `dispatched_at` + 参照なし | `UnreconciledReservationError`（needs_input、人手照合） |
-| `spent` + 生の取得物あり | 検証から再開 |
-| `spent` + Artifact あり | 既存を返す |
+| Artifact が紐づいている | await が既存を返す |
+| `spent` + 生の取得物あり + 失敗の記録なし | 検証から再開（spent と Artifact 記録の間の crash） |
+| `spent` + 取得物なし / 検証に落ちた取得物（`record_output_rejected`）/ `abandoned` | **最新ラウンド + 1** で新しい予約 |
+
+同じ台帳ラウンドの並行 INSERT は `idempotency_key` の一意制約で片方が `IntegrityError` になり、読み直して
+上の表で再開する（二重 submit にならない）。検証に落ちた取得物は予約の `failure_class` に記録し
+（状態は `spent` のまま）、次の submit が新ラウンドへ進む根拠にする。
 
 submit が戻らず結果が分からない場合、adapter は `ProviderSubmitAmbiguousError`（needs_input）を投げ、
 予約は `reserved` + dispatched + 参照なしのまま残る。
+
+submit の失敗の扱い（`infrastructure/production/paid_job.py`）:
+
+- **受理されなかったと示せる**失敗だけ（`NOT_ACCEPTED_SUBMIT_ERRORS` = adapter が接続前の失敗・429・4xx・
+  401/403 に付ける `ProviderJobFailedError` / `ProviderRejectedError` / `ProviderUnavailableError`）が
+  `spent` + `reconciled_by="conservative"` へ進む
+- それ以外の例外（想定外の例外を含む）は曖昧として `ProviderSubmitAmbiguousError` で送出し、予約を残す
+- **2xx + `request_id` は受理**。応答の URL が queue ホスト外・型が崩れていても参照を返して記録する。
+  ホストの検査は poll 時に行い、外れていれば `UnreconciledReservationError`（API キーを送らない）。
+  台帳の参照が読めない場合も同じ
+- `dispatched_at` は条件付き UPDATE（`status='reserved' AND dispatched_at IS NULL`）で1度だけ書く。
+  更新0行は `UnreconciledReservationError`（並行する submit が同じ予約を二重に dispatch しない）
 
 ### 4. 実行ポリシー
 
 - submit Activity: `maximum_attempts=1`（INV-15）。retry は workflow のラウンド（新しい予約）
 - await Activity: `start_to_close=40分`、`heartbeat_timeout=90秒`、retry 最大5回。
   provider job 参照に対して冪等なので retry が再課金にならない。
+  - poll の期限（`production_await_timeout_seconds`、既定35分）は start_to_close より**短く**取り、
+    Temporal に殺される前に `ProviderPollDeadlineError` を返す（単体テストで既定値 < 契約定数を検査）
+  - fal API の1回の読み取り待ちは `production_fal_read_timeout_seconds`（既定30秒）で heartbeat timeout より
+    十分短い。download・evidence 保存・`mark_spent` の commit の間は背景タスクが heartbeat を送る
+  - heartbeat 切れで並行した旧試行が**同じ evidence**で先に `spent` にしていたら冪等に受け入れ、
+    紐づいた Artifact があればそれを返す。別の evidence / conservative で閉じていたら食い違い（needs_input）
+  - **ラウンド確定済みの失敗は Activity の retry を止める**: await が送出する `ProviderJobFailedError`
+    （provider のジョブ失敗・取得物なしで spent・閉じた予約）と `MediaValidationError`（spent 済みの取得物の
+    規則違反）は、同じ Activity を retry しても台帳から同じ結果が返るだけなので
+    `ApplicationError(non_retryable=True)` にする。**型名は変えない**ので workflow は retryable と分類し、
+    新しいラウンド（新しい予約）へ進む（`infrastructure/production/activity_errors.py` の
+    `AWAIT_ROUND_FINAL_ERRORS`）
   **cancel されたら poll をやめて終わる。provider 側のジョブは cancel しない**（課金は既に発生しうる。
   結果を後で回収できる余地を残す）
 - ADR-0015 の heartbeat / cancel の負債は **await Activity に限って実装する**。submit と
@@ -115,6 +149,15 @@ INV-15 の対象は**課金を伴う外部呼び出し**である。ローカル
 `ProductionInputInvalidError` は needs_input、`ProviderJobFailedError` / `ProviderPollDeadlineError` /
 `MediaValidationError` は retryable（`docs/failure-policy.md`）。
 コンテンツポリシー拒否を permanent にしないのは、プロンプトを人間が直せば回復するため。
+
+Activity 境界（画像・音声・動画で共通、`infrastructure/production/activity_errors.py`）:
+
+- ドメイン例外は `ApplicationError(type=<型名>, non_retryable=<needs_input|permanent>)`。
+  `InvalidTransitionError` / `ArtifactConflictError` は食い違いの兆候なので needs_input のまま
+  （§4 の同じ evidence による `spent` だけは冪等に受け入れる）
+- DB の接続断・操作エラー、オブジェクトストアの通信失敗・5xx、作業領域の `OSError` は `TransientError`
+  （入力 Artifact の読み取りで起きても `ProductionInputInvalidError` にしない）
+- 未分類の例外はそのまま（Temporal の retry と workflow の型名分類 / INV-12）
 
 ## Alternatives
 
@@ -156,6 +199,10 @@ Artifact 再利用の方が確実。却下。
 - **storyboard の再実行は `assets_ready` から入れない**（storyboard の入場は `script_ready` /
   `storyboard_ready` のまま）。素材を揃えた後に storyboard を作り直すには、Phase 4 では手段が無い。
   入場規則の拡張は、再実行で現行シーン素材が旧 storyboard を指したまま残る扱いと合わせて決める
+- **費用の過大計上**: 受理されなかったと分かっている submit（接続前の失敗・429・4xx・401/403）も、台帳に
+  「呼んでいない」自動遷移が無い（`abandoned` は人手専用）ため `spent`（conservative）で確定し、
+  `estimated_cost_usd` がそのまま計上される。特に 401/403（鍵の失効）が続くと、ラウンドごとに見積もり額が
+  積み上がる。請求額との照合（上記）を入れるまで、台帳の合計は上限の目安であって実費ではない
 - provider job 参照の保持期間は provider 依存で、長時間の `blocked` 後に回収できない場合がある
   （その予約は人手照合で `spent` にする）
 
