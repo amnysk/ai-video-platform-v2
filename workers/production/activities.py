@@ -295,7 +295,13 @@ class ProductionActivities:
             videos=videos,
             voices=voices,
         )
-        check_manifest_coverage(parse_production_manifest(manifest), storyboard, script)
+        check_manifest_coverage(
+            parse_production_manifest(manifest),
+            storyboard,
+            script,
+            storyboard_sha256=sb_sha,
+            script_sha256=script_loaded.meta.sha256,
+        )
         input_hash = manifest_input_hash(
             storyboard_sha256=sb_sha,
             script_sha256=script_loaded.meta.sha256,
