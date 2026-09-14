@@ -7,10 +7,15 @@
     admit → plan →
       並行 { 音声: 台本シーンごとに VOICE_GENERATE（Temporal retry 最大3回）
              シーン: storyboard シーンごとに
-                     画像ラウンド [IMAGE_SUBMIT(1回) → 再利用でなければ IMAGE_AWAIT(retry 5回)]
-                     → 動画ラウンド [VIDEO_SUBMIT(1回) → VIDEO_AWAIT(retry 5回)] }
+                     画像ラウンド [IMAGE_SUBMIT(1回) → 再利用でなければ IMAGE_AWAIT(retry 5回)
+                                   → 状態不明の失敗なら同じ予約で再 await（上限つき）]
+                     → 動画ラウンド [VIDEO_SUBMIT(1回) → VIDEO_AWAIT(同上)] }
       どれかが終端的に失敗 → 兄弟を cancel → 支配的な失敗クラスで record_failure
       全部成功 → assemble_manifest → mark_ready
+      workflow の cancel → 進行中の枝を止め、cancel されない形で record_failure → cancel を再送出
+
+``round`` は**この実行の中の試行番号**（予算の数え方）で、台帳のラウンドではない。
+実行をまたいだ実効ラウンドは台帳が (provider, input_hash, scene) の最新予約から決める。
 
 メディア Activity は**名前**で呼ぶ（``contracts.production_activities``）。
 実装を import しない（INV-3）。
@@ -28,6 +33,7 @@ from typing import Any, TypeVar
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError, CancelledError
+from temporalio.exceptions import TimeoutError as TemporalTimeoutError
 from temporalio.workflow import ActivityCancellationType
 
 with workflow.unsafe.imports_passed_through():
@@ -75,9 +81,13 @@ with workflow.unsafe.imports_passed_through():
         FailureClass,
     )
     from domain.errors import (
+        FAILURE_CLASS_BY_TYPE_NAME,
         NON_RETRYABLE_ERROR_TYPE_NAMES,
         MediaValidationError,
+        ProviderInvocationError,
         ProviderJobFailedError,
+        ProviderPollDeadlineError,
+        ProviderTimeoutError,
         failure_class_from_type_name,
     )
 
@@ -91,10 +101,16 @@ SUBMIT_ACTIVITY_TIMEOUT = timedelta(minutes=5)
 #: ローカル TTS 1シーン分。
 VOICE_ACTIVITY_TIMEOUT = timedelta(minutes=10)
 
+#: 状態系 Activity（admit / plan / assemble / mark_ready / record_failure）は Episode を
+#: ``in_progress`` から出す唯一の経路なので、DB の一時障害で諦めない: 回数無制限・backoff 上限1分・
+#: schedule_to_close 1時間。retry しないのは人間の判断が要る / 決定論的な失敗の型だけ。
+STATE_SCHEDULE_TO_CLOSE = timedelta(hours=1)
 STATE_RETRY_POLICY = RetryPolicy(
-    initial_interval=timedelta(milliseconds=50),
-    maximum_interval=timedelta(seconds=1),
-    maximum_attempts=5,
+    initial_interval=timedelta(milliseconds=200),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=1),
+    maximum_attempts=0,
+    non_retryable_error_types=list(NON_RETRYABLE_ERROR_TYPE_NAMES),
 )
 
 #: 課金 submit は自動 retry しない（INV-15）。retry は workflow のラウンド。
@@ -115,6 +131,24 @@ AWAIT_RETRY_POLICY = RetryPolicy(
         MediaValidationError.__name__,
     ],
 )
+
+#: await が失敗しても provider 側ジョブの状態が**分からない**型。同じ予約で待ち直す
+#: （新しいラウンド = 新しい submit にすると、まだ走っているジョブと二重課金になりうる）。
+#: 加えて Temporal の timeout（start_to_close / heartbeat）と transient 全般。
+REAWAIT_ERROR_TYPE_NAMES: frozenset[str] = frozenset(
+    {
+        ProviderPollDeadlineError.__name__,
+        ProviderTimeoutError.__name__,
+        ProviderInvocationError.__name__,
+        *(n for n, c in FAILURE_CLASS_BY_TYPE_NAME.items() if c is FailureClass.TRANSIENT),
+    }
+)
+#: ジョブが**確定的に終わった**型。新しいラウンドへ進んでよいのはこれだけ。
+NEW_ROUND_ERROR_TYPE_NAMES: frozenset[str] = frozenset(
+    {ProviderJobFailedError.__name__, MediaValidationError.__name__}
+)
+#: 同じ予約に対する追加の await Activity 実行回数の既定（各実行の中で Temporal retry が別にある）。
+DEFAULT_AWAIT_REEXECUTIONS = 3
 
 #: ローカル非課金の音声合成（ADR-0017 §5 の限定例外）。
 VOICE_RETRY_POLICY = RetryPolicy(
@@ -145,8 +179,11 @@ class ProductionWorkflowInput:
     image_concurrency: int = 2
     video_concurrency: int = 1
     voice_concurrency: int = 1
+    #: この実行の中での submit 試行の予算（台帳のラウンド番号ではない）
     image_max_rounds: int = 3
     video_max_rounds: int = 2
+    #: 状態不明の await 失敗に対し、同じ予約で await を追加実行する回数
+    await_reexecutions: int = DEFAULT_AWAIT_REEXECUTIONS
     #: メディア Activity の task queue。既定は契約の定数。テストが共有サーバ上で
     #: 本物のメディア worker と取り合わないように差し替えられる。
     image_task_queue: str = PRODUCTION_IMAGE_TASK_QUEUE
@@ -182,6 +219,18 @@ def _failure_class(err: ActivityError) -> FailureClass:
     return failure_class_from_type_name(type_name)
 
 
+def _await_failure_is_unknown_state(err: ActivityError) -> bool:
+    cause = err.cause
+    if isinstance(cause, TemporalTimeoutError):
+        return True
+    return isinstance(cause, ApplicationError) and cause.type in REAWAIT_ERROR_TYPE_NAMES
+
+
+def _await_failure_ends_job(err: ActivityError) -> bool:
+    cause = err.cause
+    return isinstance(cause, ApplicationError) and cause.type in NEW_ROUND_ERROR_TYPE_NAMES
+
+
 def _reraise_if_cancelled(err: ActivityError) -> None:
     """兄弟の失敗で cancel された Activity は失敗として数えない。
 
@@ -213,13 +262,49 @@ class ProductionWorkflow:
             ),
             result_type=ProductionAdmitResult,
             start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
+            schedule_to_close_timeout=STATE_SCHEDULE_TO_CLOSE,
             retry_policy=STATE_RETRY_POLICY,
         )
         if not admit.admitted:
             return ProductionWorkflowResult(
                 episode_id=episode_id, status=admit.status, admitted=False
             )
+        try:
+            return await self._admitted(request)
+        except asyncio.CancelledError:
+            # 入場後の cancel。Episode を in_progress に置き去りにしない。
+            # 人間が止めたので needs_input → blocked（POST で再開 / ADR-0017 §8）。
+            reason = workflow.cancellation_reason()
+            await self._settle_uncancellable(
+                request,
+                _StageFailure(
+                    FailureClass.NEEDS_INPUT,
+                    f"production workflow cancelled{f': {reason}' if reason else ''}",
+                    retry_exhausted=False,
+                ),
+            )
+            raise
 
+    async def _settle_uncancellable(
+        self, request: ProductionWorkflowInput, failure: _StageFailure
+    ) -> None:
+        """cancel を受けた後の記録。重ねて cancel されても記録の完了を待ってから抜ける。
+
+        Python SDK の workflow cancel は主タスクへの ``Task.cancel()`` 1回で、捕まえた後の
+        Activity 呼び出しは cancel されない。``asyncio.shield`` は重ねての cancel への保険。
+        """
+        settle = asyncio.ensure_future(self._settle(request, failure))
+        while True:
+            try:
+                await asyncio.shield(settle)
+                return
+            except asyncio.CancelledError:
+                if settle.done():
+                    raise
+
+    async def _admitted(self, request: ProductionWorkflowInput) -> ProductionWorkflowResult:
+        info = workflow.info()
+        episode_id = request.episode_id
         try:
             plan: ProductionPlan = await workflow.execute_activity(
                 PRODUCTION_PLAN,
@@ -228,13 +313,11 @@ class ProductionWorkflow:
                 ),
                 result_type=ProductionPlan,
                 start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
-                retry_policy=RetryPolicy(
-                    initial_interval=timedelta(milliseconds=50),
-                    maximum_attempts=5,
-                    non_retryable_error_types=list(NON_RETRYABLE_ERROR_TYPE_NAMES),
-                ),
+                schedule_to_close_timeout=STATE_SCHEDULE_TO_CLOSE,
+                retry_policy=STATE_RETRY_POLICY,
             )
         except ActivityError as err:
+            _reraise_if_cancelled(err)
             return await self._settle(
                 request, _StageFailure(_failure_class(err), _summary(err), retry_exhausted=False)
             )
@@ -256,28 +339,31 @@ class ProductionWorkflow:
                 ),
                 result_type=SceneArtifactResult,
                 start_to_close_timeout=ASSEMBLE_ACTIVITY_TIMEOUT,
-                retry_policy=RetryPolicy(
-                    initial_interval=timedelta(milliseconds=50),
-                    maximum_attempts=5,
-                    non_retryable_error_types=list(NON_RETRYABLE_ERROR_TYPE_NAMES),
-                ),
+                schedule_to_close_timeout=STATE_SCHEDULE_TO_CLOSE,
+                retry_policy=STATE_RETRY_POLICY,
             )
         except ActivityError as err:
+            _reraise_if_cancelled(err)
             cls = _failure_class(err)
             return await self._settle(
                 request,
                 _StageFailure(cls, _summary(err), retry_exhausted=cls in RETRYABLE_FAILURE_CLASSES),
             )
 
-        ready: ProductionMarkReadyResult = await workflow.execute_activity(
-            PRODUCTION_MARK_READY,
-            ProductionMarkReadyRequest(
-                episode_id=episode_id, workflow_id=info.workflow_id, run_id=info.run_id
-            ),
-            result_type=ProductionMarkReadyResult,
-            start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
-            retry_policy=STATE_RETRY_POLICY,
-        )
+        try:
+            ready: ProductionMarkReadyResult = await workflow.execute_activity(
+                PRODUCTION_MARK_READY,
+                ProductionMarkReadyRequest(
+                    episode_id=episode_id, workflow_id=info.workflow_id, run_id=info.run_id
+                ),
+                result_type=ProductionMarkReadyResult,
+                start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
+                schedule_to_close_timeout=STATE_SCHEDULE_TO_CLOSE,
+                retry_policy=STATE_RETRY_POLICY,
+            )
+        except ActivityError as err:
+            _reraise_if_cancelled(err)
+            raise
         result.status = ready.status
         result.owned = ready.owned
         result.manifest = manifest
@@ -394,6 +480,7 @@ class ProductionWorkflow:
                 task_queue=request.image_task_queue,
                 start_to_close_timeout=SUBMIT_ACTIVITY_TIMEOUT,
                 retry_policy=SUBMIT_RETRY_POLICY,
+                cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
             )
 
         def image_await(reservation_id: str) -> Awaitable[SceneArtifactResult]:
@@ -410,7 +497,13 @@ class ProductionWorkflow:
                 request.image_task_queue,
             )
 
-        image = await _rounds(request.image_max_rounds, image_slots, image_submit, image_await)
+        image = await _rounds(
+            request.image_max_rounds,
+            request.await_reexecutions,
+            image_slots,
+            image_submit,
+            image_await,
+        )
         result.images[scene_id] = image
 
         def video_submit(round_number: int) -> Awaitable[SubmitResult]:
@@ -430,6 +523,7 @@ class ProductionWorkflow:
                 task_queue=request.video_task_queue,
                 start_to_close_timeout=SUBMIT_ACTIVITY_TIMEOUT,
                 retry_policy=SUBMIT_RETRY_POLICY,
+                cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
             )
 
         def video_await(reservation_id: str) -> Awaitable[SceneArtifactResult]:
@@ -449,7 +543,11 @@ class ProductionWorkflow:
             )
 
         result.videos[scene_id] = await _rounds(
-            request.video_max_rounds, video_slots, video_submit, video_await
+            request.video_max_rounds,
+            request.await_reexecutions,
+            video_slots,
+            video_submit,
+            video_await,
         )
 
     # ------------------------------------------------------------------ 失敗
@@ -470,6 +568,7 @@ class ProductionWorkflow:
             ),
             result_type=ProductionFailureOutcome,
             start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
+            schedule_to_close_timeout=STATE_SCHEDULE_TO_CLOSE,
             retry_policy=STATE_RETRY_POLICY,
         )
         return ProductionWorkflowResult(
@@ -489,46 +588,80 @@ def _execute_await(activity_name: str, arg: Any, task_queue: str) -> Awaitable[S
         start_to_close_timeout=timedelta(seconds=AWAIT_START_TO_CLOSE_SECONDS),
         heartbeat_timeout=timedelta(seconds=AWAIT_HEARTBEAT_TIMEOUT_SECONDS),
         retry_policy=AWAIT_RETRY_POLICY,
-        # cancel は heartbeat で Activity に届く（poll をやめる）。workflow は完了確認を待たない:
-        # 固まった worker の heartbeat timeout まで失敗の記録を遅らせないため。
-        cancellation_type=ActivityCancellationType.TRY_CANCEL,
+        # cancel は heartbeat で Activity に届く（poll をやめる）。Activity が cancel を確認して
+        # 終わるまで待つ: 待たずに record_failure すると、まだ走っている await が job / 予約を
+        # 書く。固まった worker でも heartbeat timeout（90秒）で確定する。
+        cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
     )
 
 
 async def _rounds(
     max_rounds: int,
+    await_reexecutions: int,
     slots: asyncio.Semaphore,
     submit: Callable[[int], Awaitable[SubmitResult]],
     wait: Callable[[str], Awaitable[SceneArtifactResult]],
 ) -> SceneArtifactResult:
-    """1メディア分のラウンドループ。
+    """1メディア分の試行ループ。
 
-    submit は1回、await は Temporal retry、新しいラウンドは retryable のときだけ。
+    - submit は1回（Temporal retry なし）。retryable な submit 失敗は次の試行
+    - await は Temporal retry。それでも失敗したら型で分ける:
+      - 状態不明（``REAWAIT_ERROR_TYPE_NAMES`` / timeout）: **同じ予約で** await を追加実行
+        （``await_reexecutions`` 回まで）。使い切ったら失敗として記録し、新しい submit はしない
+      - ジョブが確定的に終わった（``NEW_ROUND_ERROR_TYPE_NAMES``）: 次の試行（新しい submit）
+      - それ以外: 失敗として記録
 
+    試行番号は台帳のラウンドではない（台帳が実行をまたいで実効ラウンドを決める）。
     枠（semaphore）は submit から await の完了まで握る: provider に投げて未回収のジョブ数の上限。
     """
-    for round_number in range(1, max(1, max_rounds) + 1):
-        try:
-            async with slots:
-                submitted = await submit(round_number)
-                if submitted.artifact is not None:
-                    return submitted.artifact  # 同じ入力の現行 Artifact を再利用（INV-17）
-                return await wait(submitted.reservation_id)
-        except ActivityError as err:
-            _reraise_if_cancelled(err)
-            cls = _failure_class(err)
-            retryable = cls in RETRYABLE_FAILURE_CLASSES
-            if not retryable or round_number >= max_rounds:
-                raise _StageFailure(cls, _summary(err), retry_exhausted=retryable) from err
-            workflow.logger.info(
-                "production round %s failed with %s; starting next round", round_number, cls
-            )
+    budget = max(1, max_rounds)
+    for attempt in range(1, budget + 1):
+        async with slots:
+            try:
+                submitted = await submit(attempt)
+            except ActivityError as err:
+                _reraise_if_cancelled(err)
+                cls = _failure_class(err)
+                retryable = cls in RETRYABLE_FAILURE_CLASSES
+                if not retryable or attempt >= budget:
+                    raise _StageFailure(cls, _summary(err), retry_exhausted=retryable) from err
+                workflow.logger.info("production submit %s failed with %s; next", attempt, cls)
+                continue
+            if submitted.artifact is not None:
+                return submitted.artifact  # 同じ入力の現行 Artifact を再利用（INV-17）
+            reawaits = 0
+            while True:
+                try:
+                    return await wait(submitted.reservation_id)
+                except ActivityError as err:
+                    _reraise_if_cancelled(err)
+                    cls = _failure_class(err)
+                    retryable = cls in RETRYABLE_FAILURE_CLASSES
+                    if _await_failure_is_unknown_state(err) and reawaits < await_reexecutions:
+                        reawaits += 1
+                        workflow.logger.info(
+                            "production await %s state unknown; re-await %s/%s",
+                            submitted.reservation_id,
+                            reawaits,
+                            await_reexecutions,
+                        )
+                        continue
+                    if _await_failure_ends_job(err) and attempt < budget:
+                        workflow.logger.info(
+                            "production attempt %s job over with %s; next attempt", attempt, cls
+                        )
+                        break
+                    raise _StageFailure(cls, _summary(err), retry_exhausted=retryable) from err
     raise AssertionError("unreachable")  # pragma: no cover
 
 
 __all__ = [
     "AWAIT_RETRY_POLICY",
+    "DEFAULT_AWAIT_REEXECUTIONS",
     "FAILURE_PRECEDENCE",
+    "NEW_ROUND_ERROR_TYPE_NAMES",
+    "REAWAIT_ERROR_TYPE_NAMES",
+    "STATE_RETRY_POLICY",
     "SUBMIT_RETRY_POLICY",
     "TASK_QUEUE",
     "VOICE_RETRY_POLICY",

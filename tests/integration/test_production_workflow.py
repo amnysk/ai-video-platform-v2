@@ -17,15 +17,15 @@ import asyncio
 import itertools
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 import pytest_asyncio
 from temporalio import activity
-from temporalio.client import Client
-from temporalio.exceptions import ApplicationError
+from temporalio.client import Client, WorkflowFailureError, WorkflowHandle
+from temporalio.exceptions import ApplicationError, CancelledError
 from temporalio.worker import Worker
 
 from contracts.production_activities import (
@@ -67,6 +67,7 @@ from domain.errors import (
     ProviderPollDeadlineError,
     ProviderRejectedError,
 )
+from workers.production.run_inspector import TemporalWorkflowRunInspector
 from workers.production.workflows import (
     ProductionWorkflow,
     ProductionWorkflowInput,
@@ -258,7 +259,13 @@ async def env() -> Client:
     return await Client.connect(TEMPORAL_ADDRESS or "", namespace="default")
 
 
-async def _run(client: Client, mocks: Mocks, **overrides: Any):
+async def _run(
+    client: Client,
+    mocks: Mocks,
+    *,
+    after_start: Callable[[WorkflowHandle[Any, Any]], Awaitable[None]] | None = None,
+    **overrides: Any,
+):
     suffix = uuid.uuid4().hex[:10]
     queues = {
         "production": f"production-test-{suffix}",
@@ -292,6 +299,8 @@ async def _run(client: Client, mocks: Mocks, **overrides: Any):
             id=f"episode-ep-1-production-{suffix}-{next(_ids)}",
             task_queue=queues["production"],
         )
+        if after_start is not None:
+            await after_start(handle)
         try:
             return await asyncio.wait_for(handle.result(), timeout=RUN_TIMEOUT_SECONDS)
         except TimeoutError as exc:
@@ -384,6 +393,71 @@ async def test_await_retry_does_not_submit_again(env) -> None:
     assert [res for s, res in mocks.image_awaits if s == "sb1"] == ["r-sb1-1"] * 3
 
 
+async def test_unknown_await_state_reawaits_the_same_reservation_until_the_budget(env) -> None:
+    """Temporal retry を使い切った期限切れ（> AWAIT_MAX_ATTEMPTS）でも submit し直さない。
+
+    non_retryable で送ると Activity の retry が尽きた状態を即座に作れる。
+    """
+    mocks = Mocks(
+        image_await_errors={
+            "sb1": [_error(ProviderPollDeadlineError, non_retryable=True) for _ in range(10)]
+        }
+    )
+    result = await _run(env, mocks, await_reexecutions=3)
+
+    assert [r for s, r in mocks.image_submits if s == "sb1"] == [1], "新しい submit をしない"
+    assert [res for s, res in mocks.image_awaits if s == "sb1"] == ["r-sb1-1"] * 4
+    assert "assemble" not in mocks.calls
+    (failure,) = mocks.failures
+    assert failure.failure_class == FailureClass.RETRYABLE.value
+    assert failure.retry_exhausted is True
+    assert result.failure_class == FailureClass.RETRYABLE.value
+
+
+async def test_unknown_await_state_recovers_by_reawaiting(env) -> None:
+    mocks = Mocks(
+        image_await_errors={
+            "sb2": [_error(ProviderPollDeadlineError, non_retryable=True) for _ in range(2)]
+        }
+    )
+    result = await _run(env, mocks, await_reexecutions=3)
+
+    assert result.status == EpisodeStatus.ASSETS_READY.value
+    assert [r for s, r in mocks.image_submits if s == "sb2"] == [1]
+    assert [res for s, res in mocks.image_awaits if s == "sb2"] == ["r-sb2-1"] * 3
+    assert mocks.failures == []
+
+
+async def test_workflow_cancel_records_failure_and_stays_cancelled(env) -> None:
+    mocks = Mocks(hang_image_await={"sb1"})
+    inspector = TemporalWorkflowRunInspector(env)
+    seen: dict[str, Any] = {}
+
+    async def cancel_when_awaiting(handle: WorkflowHandle[Any, Any]) -> None:
+        for _ in range(400):
+            if any(s == "sb1" for s, _ in mocks.image_awaits):
+                break
+            await asyncio.sleep(0.05)
+        desc = await handle.describe()
+        seen["run_id"] = desc.run_id
+        seen["running_closed"] = await inspector.is_closed(handle.id, desc.run_id)
+        seen["id"] = handle.id
+        await handle.cancel()
+
+    with pytest.raises(WorkflowFailureError) as info:
+        await _run(env, mocks, after_start=cancel_when_awaiting, image_concurrency=4)
+
+    assert isinstance(info.value.cause, CancelledError)
+    assert seen["running_closed"] is False, "走っている run は閉じていない"
+    assert await inspector.is_closed(seen["id"], seen["run_id"]) is True
+    assert await inspector.is_closed(seen["id"], str(uuid.uuid4())) is True  # NotFound
+    assert "sb1" in mocks.cancelled_awaits
+    (failure,) = mocks.failures
+    assert failure.failure_class == FailureClass.NEEDS_INPUT.value
+    assert "cancelled" in failure.error_summary
+    assert "assemble" not in mocks.calls
+
+
 async def test_not_admitted_does_nothing(env) -> None:
     mocks = Mocks(admitted=False)
     result = await _run(env, mocks)
@@ -401,9 +475,10 @@ async def test_workflow_side_concurrency_is_bounded(env, image, video, voice) ->
     )
 
     assert result.status == EpisodeStatus.ASSETS_READY.value
-    assert 1 <= mocks.max_inflight["image"] <= image
-    assert 1 <= mocks.max_inflight["video"] <= video
-    assert 1 <= mocks.max_inflight["voice"] <= voice
+    # 上限を守り、かつ上限まで実際に並行した（4シーン・3音声・各 0.2 秒で枠が埋まる）
+    assert mocks.max_inflight["image"] == image
+    assert mocks.max_inflight["video"] == video
+    assert mocks.max_inflight["voice"] == voice
 
 
 async def test_terminal_failure_cancels_in_flight_awaits(env) -> None:

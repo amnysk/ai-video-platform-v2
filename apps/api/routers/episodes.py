@@ -24,6 +24,7 @@ from apps.api.schemas import (
     StartStoryboardResponse,
 )
 from apps.api.workflow_starter import WorkflowStarter
+from contracts.states import PRODUCTION_ADMISSIBLE_STATUSES, EpisodeStatus
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -103,12 +104,26 @@ async def start_production(
 ) -> StartProductionResponse:
     """production 工程を起動するだけ（INV-16 / ADR-0017）。
 
-    状態の前提（``storyboard_ready`` / ``assets_ready``）は workflow の admit Activity が判定する。
+    入場の権威は workflow の admit Activity。ここでは明らかに入れない状態を早めに 409 で返す
+    （``in_progress`` は閉じた run の引き継ぎがありうるので admit に任せる）。
+    ``needs_work`` / ``blocked`` への POST は再試行 / 再開の操作になる。
     """
     async with session_factory() as session:
         episode = await EpisodeRepository(session).get(episode_id)
     if episode is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    if (
+        episode.status not in PRODUCTION_ADMISSIBLE_STATUSES
+        and episode.status is not EpisodeStatus.IN_PROGRESS
+    ):
+        allowed = ", ".join(sorted(s.value for s in PRODUCTION_ADMISSIBLE_STATUSES))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"episode {episode.id} is {episode.status.value}; production can start only "
+                f"from {allowed}"
+            ),
+        )
 
     try:
         workflow_id = await starter.start_production_workflow(episode_id=episode.id)
