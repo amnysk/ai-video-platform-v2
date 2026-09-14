@@ -105,5 +105,18 @@ class Settings(BaseSettings):
     #: 作業領域に最低限残す空き容量（バイト）。見込み使用量はこれに上乗せする。
     render_min_free_bytes: int = DEFAULT_RENDER_MIN_FREE_BYTES
 
+    # --- upload（Phase 6） ---
+    #: OAuth installed app の client。secret は ``SecretStr``。
+    youtube_client_id: str | None = None
+    youtube_client_secret: SecretStr | None = None
+    #: refresh token のファイル（repo 外・0600）。``scripts/youtube-oauth.py`` が書く。
+    youtube_refresh_token_path: str | None = None
+    #: 投稿先 channel の識別子（冪等キーの destination に入る）
+    youtube_channel_id: str | None = None
+    #: ``UPLOADS_PAUSED=true`` なら session を開始する前に止める
+    uploads_paused: bool = False
+    #: resumable upload の chunk（256 KiB の倍数）
+    youtube_chunk_bytes: int = 8 * 1024 * 1024
+
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"

@@ -1,7 +1,8 @@
 """live テストの三重の隔離のうち 1 と 2（AGENTS.md §9 / INV-18）。
 
 1. provider 別スイッチが無ければ live モジュールを **import すらしない**
-   （Codex: ``AVP_LIVE_CODEX=1`` / Piper: ``AVP_LIVE_PIPER=1`` / fal: ``AVP_LIVE_FAL=1``）
+   （Codex: ``AVP_LIVE_CODEX=1`` / Piper: ``AVP_LIVE_PIPER=1`` / fal: ``AVP_LIVE_FAL=1`` /
+   YouTube: ``AVP_LIVE_YOUTUBE=1``。実アップロードはさらに ``CONFIRM_UPLOAD=1``）
 2. 収集されたテストには ``live`` マーカーを自動で付ける
 3. （``pyproject.toml``）``addopts = "-m 'not live'"`` で既定実行から除外する
 """
@@ -23,9 +24,17 @@ PIPER_LIVE_GLOB = "test_piper_*.py"
 LIVE_FAL_ENV_VAR = "AVP_LIVE_FAL"
 FAL_LIVE_GLOB = "test_fal_*.py"
 
+#: 実 YouTube（Phase 6）の live テストのスイッチ。投稿は private のみ
+LIVE_YOUTUBE_ENV_VAR = "AVP_LIVE_YOUTUBE"
+YOUTUBE_LIVE_GLOB = "test_youtube_*.py"
+
 #: provider 別の許可リスト。各 glob は対応するスイッチが "1" のときだけ収集する。
 #: どの glob にも当たらないモジュールは Codex 扱い（AVP_LIVE_CODEX）で、黙って有効にはならない。
-_SWITCHED_GLOBS = {PIPER_LIVE_GLOB: LIVE_PIPER_ENV_VAR, FAL_LIVE_GLOB: LIVE_FAL_ENV_VAR}
+_SWITCHED_GLOBS = {
+    PIPER_LIVE_GLOB: LIVE_PIPER_ENV_VAR,
+    FAL_LIVE_GLOB: LIVE_FAL_ENV_VAR,
+    YOUTUBE_LIVE_GLOB: LIVE_YOUTUBE_ENV_VAR,
+}
 
 collect_ignore_glob: list[str] = [
     glob for glob, env in _SWITCHED_GLOBS.items() if os.environ.get(env) != "1"

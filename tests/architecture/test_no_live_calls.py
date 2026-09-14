@@ -13,6 +13,9 @@ FORBIDDEN_TOKENS = {
     "queue.fal": "fal.ai queue",
     "googleapis.com/youtube": "YouTube API",
     "youtube.googleapis.com": "YouTube API",
+    "googleapis.com/upload/youtube": "YouTube upload API",
+    "oauth2.googleapis.com": "Google OAuth token endpoint",
+    "accounts.google.com/o/oauth2": "Google OAuth consent",
     "api.openai.com": "OpenAI",
     "api.anthropic.com": "Anthropic",
 }
@@ -24,9 +27,25 @@ SELF = pathlib.Path(__file__).resolve()
 FAL_TOKENS = frozenset({"fal.run", "fal.ai", "queue.fal"})
 
 
+#: YouTube / Google OAuth の endpoint を書けるのは YouTube adapter と同意スクリプトだけ（Phase 6）
+YOUTUBE_TOKENS = frozenset(
+    {
+        "googleapis.com/youtube",
+        "youtube.googleapis.com",
+        "googleapis.com/upload/youtube",
+        "oauth2.googleapis.com",
+        "accounts.google.com/o/oauth2",
+    }
+)
+
+
 def _sanctioned_for(token: str, rel: pathlib.PurePosixPath) -> bool:
     if token in FAL_TOKENS:
         return rel.match("infrastructure/providers/fal_*.py")
+    if token in YOUTUBE_TOKENS:
+        return (
+            rel.match("infrastructure/youtube/*.py") or rel.as_posix() == "scripts/youtube-oauth.py"
+        )
     return False
 
 
@@ -58,6 +77,55 @@ def test_fal_tokens_are_sanctioned_only_in_fal_adapters() -> None:
     assert not _sanctioned_for(
         "api.openai.com", pathlib.PurePosixPath("infrastructure/providers/fal_image.py")
     )
+
+
+def test_youtube_tokens_are_sanctioned_only_in_the_youtube_adapter() -> None:
+    assert _sanctioned_for(
+        "googleapis.com/youtube", pathlib.PurePosixPath("infrastructure/youtube/uploader.py")
+    )
+    assert _sanctioned_for(
+        "oauth2.googleapis.com", pathlib.PurePosixPath("scripts/youtube-oauth.py")
+    )
+    for rel in (
+        "infrastructure/providers/fal_queue.py",
+        "workers/upload/activities.py",
+        "domain/upload/ports.py",
+        "tests/unit/test_youtube_uploader.py",
+        "scripts/smoke.sh",
+    ):
+        assert not _sanctioned_for("googleapis.com/youtube", pathlib.PurePosixPath(rel)), rel
+
+
+def test_scripts_mention_youtube_endpoints_only_in_the_consent_script() -> None:
+    violations: list[str] = []
+    for path in sorted((REPO / "scripts").rglob("*")):
+        if not path.is_file():
+            continue
+        rel = pathlib.PurePosixPath(path.relative_to(REPO).as_posix())
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        for token in YOUTUBE_TOKENS:
+            if token in source and not _sanctioned_for(token, rel):
+                violations.append(f"{rel}: mentions {token} (INV-18)")
+    assert not violations, "\n".join(violations)
+
+
+YOUTUBE_ADAPTER_PREFIX = "infrastructure.youtube"
+
+
+def test_youtube_adapter_is_not_imported_by_apps_domain_or_contracts() -> None:
+    """API は投稿しない。YouTube adapter を組むのは upload worker だけ（INV-16 / Phase 6）。"""
+    violations: list[str] = []
+    for layer in ("apps", "domain", "contracts"):
+        for path in sorted((REPO / layer).rglob("*.py")):
+            if _imports_module(path, YOUTUBE_ADAPTER_PREFIX):
+                violations.append(f"{path.relative_to(REPO)}: imports {YOUTUBE_ADAPTER_PREFIX}")
+    assert not violations, "\n".join(violations)
+
+
+def test_domain_upload_port_has_no_http_or_oauth() -> None:
+    for path in sorted((REPO / "domain" / "upload").rglob("*.py")):
+        for module in ("httpx", "google", "googleapiclient", "requests", "infrastructure"):
+            assert not _imports_module(path, module), f"{path.relative_to(REPO)} imports {module}"
 
 
 # --- live テストの隔離（AGENTS.md §9） ------------------------------------
