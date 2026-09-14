@@ -76,11 +76,35 @@ provider job 参照を台帳へ write-once で commit してから待つ。Episo
 submit が戻らず結果が分からない場合、adapter は `ProviderSubmitAmbiguousError`（needs_input）を投げ、
 予約は `reserved` + dispatched + 参照なしのまま残る。
 
+submit の失敗の扱い（`infrastructure/production/paid_job.py`）:
+
+- **受理されなかったと示せる**失敗だけ（`NOT_ACCEPTED_SUBMIT_ERRORS` = adapter が接続前の失敗・429・4xx・
+  401/403 に付ける `ProviderJobFailedError` / `ProviderRejectedError` / `ProviderUnavailableError`）が
+  `spent` + `reconciled_by="conservative"` へ進む
+- それ以外の例外（想定外の例外を含む）は曖昧として `ProviderSubmitAmbiguousError` で送出し、予約を残す
+- **2xx + `request_id` は受理**。応答の URL が queue ホスト外・型が崩れていても参照を返して記録する。
+  ホストの検査は poll 時に行い、外れていれば `UnreconciledReservationError`（API キーを送らない）。
+  台帳の参照が読めない場合も同じ
+- `dispatched_at` は条件付き UPDATE（`status='reserved' AND dispatched_at IS NULL`）で1度だけ書く。
+  更新0行は `UnreconciledReservationError`（並行する submit が同じ予約を二重に dispatch しない）
+
 ### 4. 実行ポリシー
 
 - submit Activity: `maximum_attempts=1`（INV-15）。retry は workflow のラウンド（新しい予約）
 - await Activity: `start_to_close=40分`、`heartbeat_timeout=90秒`、retry 最大5回。
   provider job 参照に対して冪等なので retry が再課金にならない。
+  - poll の期限（`production_await_timeout_seconds`、既定35分）は start_to_close より**短く**取り、
+    Temporal に殺される前に `ProviderPollDeadlineError` を返す（単体テストで既定値 < 契約定数を検査）
+  - fal API の1回の読み取り待ちは `production_fal_read_timeout_seconds`（既定30秒）で heartbeat timeout より
+    十分短い。download・evidence 保存・`mark_spent` の commit の間は背景タスクが heartbeat を送る
+  - heartbeat 切れで並行した旧試行が**同じ evidence**で先に `spent` にしていたら冪等に受け入れ、
+    紐づいた Artifact があればそれを返す。別の evidence / conservative で閉じていたら食い違い（needs_input）
+  - **ラウンド確定済みの失敗は Activity の retry を止める**: await が送出する `ProviderJobFailedError`
+    （provider のジョブ失敗・取得物なしで spent・閉じた予約）と `MediaValidationError`（spent 済みの取得物の
+    規則違反）は、同じ Activity を retry しても台帳から同じ結果が返るだけなので
+    `ApplicationError(non_retryable=True)` にする。**型名は変えない**ので workflow は retryable と分類し、
+    新しいラウンド（新しい予約）へ進む（`infrastructure/production/activity_errors.py` の
+    `AWAIT_ROUND_FINAL_ERRORS`）
   **cancel されたら poll をやめて終わる。provider 側のジョブは cancel しない**（課金は既に発生しうる。
   結果を後で回収できる余地を残す）
 - ADR-0015 の heartbeat / cancel の負債は **await Activity に限って実装する**。submit と
@@ -115,6 +139,15 @@ INV-15 の対象は**課金を伴う外部呼び出し**である。ローカル
 `ProductionInputInvalidError` は needs_input、`ProviderJobFailedError` / `ProviderPollDeadlineError` /
 `MediaValidationError` は retryable（`docs/failure-policy.md`）。
 コンテンツポリシー拒否を permanent にしないのは、プロンプトを人間が直せば回復するため。
+
+Activity 境界（画像・音声・動画で共通、`infrastructure/production/activity_errors.py`）:
+
+- ドメイン例外は `ApplicationError(type=<型名>, non_retryable=<needs_input|permanent>)`。
+  `InvalidTransitionError` / `ArtifactConflictError` は食い違いの兆候なので needs_input のまま
+  （§4 の同じ evidence による `spent` だけは冪等に受け入れる）
+- DB の接続断・操作エラー、オブジェクトストアの通信失敗・5xx、作業領域の `OSError` は `TransientError`
+  （入力 Artifact の読み取りで起きても `ProductionInputInvalidError` にしない）
+- 未分類の例外はそのまま（Temporal の retry と workflow の型名分類 / INV-12）
 
 ## Alternatives
 
@@ -153,6 +186,10 @@ Artifact 再利用の方が確実。却下。
   直しただけでも全シーンの有料素材（画像・動画）が再生成対象になる（課金）。シーン単位の指紋への縮小は
   負債として受け入れる（音声も storyboard sha を含むが非課金）
 - `assets_ready` からの再実行が失敗したときの状態と現行 Artifact の食い違いは ADR-0015 と同じ負債
+- **費用の過大計上**: 受理されなかったと分かっている submit（接続前の失敗・429・4xx・401/403）も、台帳に
+  「呼んでいない」自動遷移が無い（`abandoned` は人手専用）ため `spent`（conservative）で確定し、
+  `estimated_cost_usd` がそのまま計上される。特に 401/403（鍵の失効）が続くと、ラウンドごとに見積もり額が
+  積み上がる。請求額との照合（上記）を入れるまで、台帳の合計は上限の目安であって実費ではない
 - provider job 参照の保持期間は provider 依存で、長時間の `blocked` 後に回収できない場合がある
   （その予約は人手照合で `spent` にする）
 
