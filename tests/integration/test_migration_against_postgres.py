@@ -352,5 +352,5 @@ def test_scene_scope_checks_on_postgres(probe_url) -> None:
         for table in ("artifact_metadata", "jobs", "provider_reservations")
         for c in inspect(engine).get_check_constraints(table)
     }
-    assert not {n for n in names if "scene_scope" in n}
+    assert not {n for n in names if n and "scene_scope" in n}
     engine.dispose()

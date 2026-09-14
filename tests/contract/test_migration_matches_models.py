@@ -100,3 +100,36 @@ def test_migration_check_constraints_match_the_models(tmp_path: pathlib.Path) ->
         if migrated != modelled:
             problems.append(f"{name}: migration={migrated} models={modelled}")
     assert not problems, "\n".join(problems)
+
+
+def _modelled_index_sql(dialect_engine) -> dict[str, str]:
+    from sqlalchemy.schema import CreateIndex
+
+    return {
+        str(index.name): _normalize_sql(
+            str(CreateIndex(index).compile(dialect=dialect_engine.dialect))
+        )
+        for table in Base.metadata.tables.values()
+        for index in table.indexes
+    }
+
+
+def test_migration_index_definitions_match_the_models(tmp_path: pathlib.Path) -> None:
+    """索引は名前だけでなく定義（列・式・一意性・WHERE）まで照合する（ADR-0018 の式索引）。"""
+    import sqlite3
+
+    engine = _upgraded_engine(tmp_path)
+    with sqlite3.connect(str(engine.url.database)) as conn:
+        migrated = {
+            str(name): _normalize_sql(str(sql))
+            for name, sql in conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
+            )
+        }
+    modelled = _modelled_index_sql(engine)
+    problems = [
+        f"{name}: migration={migrated.get(name)} models={sql}"
+        for name, sql in modelled.items()
+        if migrated.get(name) != sql
+    ]
+    assert not problems, "\n".join(problems)
