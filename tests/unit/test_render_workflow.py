@@ -1,6 +1,6 @@
 """RenderWorkflow の編成（ADR-0019）。time-skipping テストサーバ + 名前で登録した mock Activity。
 
-Activity の実装は import しない（INV-3）。順序・retry 上限・失敗クラスの写像・cancel だけを検査する。
+Activity の実装は import しない（INV-3）。順序・retry 上限・失敗クラス・cancel を検査する。
 """
 
 from __future__ import annotations
@@ -15,9 +15,14 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from temporalio import activity
-from temporalio.api.enums.v1 import RetryState, TimeoutType
 from temporalio.client import WorkflowFailureError
-from temporalio.exceptions import ActivityError, ApplicationError, CancelledError
+from temporalio.exceptions import (
+    ActivityError,
+    ApplicationError,
+    CancelledError,
+    RetryState,
+    TimeoutType,
+)
 from temporalio.exceptions import TimeoutError as TemporalTimeoutError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
@@ -235,10 +240,10 @@ def test_temporal_timeouts_count_as_retryable() -> None:
         identity="w",
         activity_type=RENDER_FINAL_VIDEO,
         activity_id="1",
-        retry_state=RetryState.RETRY_STATE_MAXIMUM_ATTEMPTS_REACHED,
+        retry_state=RetryState.MAXIMUM_ATTEMPTS_REACHED,
     )
     err.__cause__ = TemporalTimeoutError(
-        "heartbeat", type=TimeoutType.TIMEOUT_TYPE_HEARTBEAT, last_heartbeat_details=[]
+        "heartbeat", type=TimeoutType.HEARTBEAT, last_heartbeat_details=[]
     )
 
     assert classify_render_failure(err) is FailureClass.RETRYABLE

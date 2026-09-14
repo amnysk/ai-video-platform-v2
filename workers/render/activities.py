@@ -2,7 +2,7 @@
 
 - 入場（admit）/ 描画（render_final_video）/ 完了（mark_ready）/ 失敗（record_failure）
 - **次に何をするかは決めない**（INV-4）。順序は ``RenderWorkflow`` が持つ
-- 計画・同一性・技術検査・描画エンジンは注入された協力者（``workers.render.ports``）越しに使う
+- 計画・同一性・技術検査は domain/render の純粋関数、描画と実測は注入した port（INV-18）
 - 予約台帳には触れない（ローカル計算 / ADR-0019 §7）
 """
 
@@ -22,6 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
 
 from contracts.artifacts import (
+    ProductionManifest,
+    SceneVideoArtifact,
+    SceneVoiceArtifact,
+    ScriptArtifact,
+    StoryboardArtifact,
     build_final_video_artifact,
     parse_production_manifest,
     parse_scene_video_artifact,
@@ -33,6 +38,7 @@ from contracts.render import (
     FINAL_VIDEO_MAX_BYTES,
     FINAL_VIDEO_MIME_TYPE,
     RENDER_ARTIFACT_SCHEMA_VERSION,
+    RenderPlan,
     TimelinePolicy,
     get_render_profile,
 )
@@ -62,15 +68,13 @@ from contracts.states import (
 )
 from domain.artifact.entities import ArtifactMetadata
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
-from domain.artifact.keys import artifact_object_key
+from domain.artifact.keys import artifact_object_key, episode_media_object_key
 from domain.episode.transitions import EpisodeEvent
 from domain.errors import (
     DomainError,
     FinalVideoCorruptError,
     FinalVideoValidationError,
     MediaValidationError,
-    ProductionInputInvalidError,
-    ProductionInputMissingError,
     RenderEngineUnavailableError,
     RenderInputIntegrityError,
     RenderInputMissingError,
@@ -80,8 +84,12 @@ from domain.errors import (
     classify_failure,
 )
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
-from domain.production.manifest import check_manifest_coverage
-from domain.render.ports import FinalVideoProbe
+from domain.production.manifest import ArtifactRef
+from domain.render.identity import render_input_hash, render_plan_sha256
+from domain.render.plan import Pinned, build_render_plan
+from domain.render.ports import FinalVideoProbe, RenderEngine, RenderRequest
+from domain.render.qa import measured_from_info, run_technical_qa
+from domain.render.subtitles import subtitle_display_texts
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -91,7 +99,6 @@ from infrastructure.production.activity_errors import raise_activity_error, tran
 from infrastructure.render.binary import file_sha256
 from infrastructure.storage.artifact_store import ArtifactStore, readback_sha256
 from infrastructure.workdir import JobWorkDir, WorkDirectory
-from workers.render.ports import FinalVideoRenderer, RenderInputs, RenderJob, RenderPlanning
 from workers.render.run_inspector import WorkflowRunInspector
 
 logger = logging.getLogger(__name__)
@@ -152,6 +159,28 @@ class _Loaded:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _Inputs:
+    """PostgreSQL の現行メタデータと MinIO の本体を突き合わせ、契約で読んだ入力一式。"""
+
+    manifest: ProductionManifest
+    manifest_meta: ArtifactMetadata
+    script: Pinned[ScriptArtifact]
+    storyboard: Pinned[StoryboardArtifact]
+    videos: dict[str, Pinned[SceneVideoArtifact]]
+    voices: dict[str, Pinned[SceneVoiceArtifact]]
+
+    @property
+    def input_bytes(self) -> int:
+        return sum(v.artifact.media.bytes for v in self.videos.values()) + sum(
+            v.artifact.media.bytes for v in self.voices.values()
+        )
+
+
+def _pin(meta: ArtifactMetadata) -> ArtifactRef:
+    return ArtifactRef(artifact_id=meta.id, sha256=meta.sha256, schema_version=meta.schema_version)
+
+
 class RenderActivities:
     """外部依存をすべて注入する（INV-18）。"""
 
@@ -162,9 +191,8 @@ class RenderActivities:
         store: ArtifactStore,
         bucket: str,
         workdir: WorkDirectory,
-        engine: FinalVideoRenderer,
+        engine: RenderEngine,
         probe: FinalVideoProbe,
-        planning: RenderPlanning,
         font_path: str | Path,
         font_sha256: str,
         render_timeout_seconds: int,
@@ -180,7 +208,6 @@ class RenderActivities:
         self._workdir = workdir
         self._engine = engine
         self._probe = probe
-        self._planning = planning
         self._font_path = Path(font_path)
         self._font_sha256 = font_sha256.strip().lower()
         self._timeout_seconds = render_timeout_seconds
@@ -293,13 +320,20 @@ class RenderActivities:
         self._heartbeat("inputs_resolved")
         self._verify_font()
         engine = self._engine.identity()
-        plan = self._planning.build_plan(
-            inputs, profile=profile, policy=self._policy, engine=engine
+        plan = build_render_plan(
+            manifest=inputs.manifest,
+            script=inputs.script,
+            storyboard=inputs.storyboard,
+            voices=inputs.voices,
+            videos=inputs.videos,
+            profile=profile,
+            policy=self._policy,
+            engine=engine,
         )
-        input_hash = self._planning.input_hash(
-            manifest_sha256=inputs.manifest_sha256,
-            script_sha256=inputs.script_sha256,
-            storyboard_sha256=inputs.storyboard_sha256,
+        input_hash = render_input_hash(
+            manifest_sha256=inputs.manifest_meta.sha256,
+            script_sha256=inputs.script.ref.sha256,
+            storyboard_sha256=inputs.storyboard.ref.sha256,
             profile=profile,
             policy=self._policy,
             engine=engine,
@@ -320,32 +354,28 @@ class RenderActivities:
                 )
                 return _result(existing, skipped=True, job_id=job_id)
 
-        input_bytes = sum(v.media.bytes for v in inputs.videos.values()) + sum(
-            v.media.bytes for v in inputs.voices.values()
-        )
-        self._preflight_disk(input_bytes)
+        self._preflight_disk(inputs.input_bytes)
         work = self._workdir.create(episode_id, job_id)
         try:
             video_paths, voice_paths = await self._download_media(inputs, work)
             self._heartbeat("media_downloaded")
-            output_path = work.output / FINAL_VIDEO_FILENAME
             rendered = await self._engine.render(
-                RenderJob(
+                RenderRequest(
                     plan=plan,
                     scene_video_paths=video_paths,
                     voice_paths=voice_paths,
-                    subtitle_texts=list(self._planning.subtitle_texts(plan, inputs.script)),
+                    subtitle_texts=subtitle_display_texts(
+                        inputs.script.artifact, plan.subtitle_cues, profile.subtitles
+                    ),
                     font_path=self._font_path,
                     work_dir=work.tmp,
-                    output_path=output_path,
+                    output_path=work.output / FINAL_VIDEO_FILENAME,
                     timeout_seconds=self._timeout_seconds,
                 ),
-                lambda: self._heartbeat("rendering"),
+                heartbeat=lambda: self._heartbeat("rendering"),
             )
             self._heartbeat("rendered")
-            return await self._store_final(
-                request, job_id, inputs, plan, input_hash, Path(rendered)
-            )
+            return await self._store_final(request, job_id, inputs, plan, input_hash, rendered.path)
         finally:
             try:
                 self._workdir.cleanup(episode_id, job_id)
@@ -356,8 +386,8 @@ class RenderActivities:
         self,
         request: RenderFinalVideoRequest,
         job_id: str,
-        inputs: RenderInputs,
-        plan: Any,
+        inputs: _Inputs,
+        plan: RenderPlan,
         input_hash: str,
         path: Path,
     ) -> RenderFinalVideoResult:
@@ -373,7 +403,9 @@ class RenderActivities:
                 f"final video is {size} bytes (allowed 1..{FINAL_VIDEO_MAX_BYTES})"
             )
         media_sha = await asyncio.to_thread(file_sha256, path)
-        media_key = self._planning.final_media_key(episode_id, media_sha)
+        media_key = episode_media_object_key(
+            episode_id, ArtifactType.FINAL_VIDEO.value, media_sha, "mp4"
+        )
         put = await self._store.put_bytes(media_key, path, FINAL_VIDEO_MIME_TYPE)
         media_readback = await readback_sha256(self._store, put.key)
         self._heartbeat("media_stored")
@@ -383,8 +415,14 @@ class RenderActivities:
                 f"put={put.sha256} readback={media_readback}"
             )
         # 合格したときだけ保存する（不合格は FinalVideoValidationError / FinalVideoCorruptError）
-        report = self._planning.technical_qa(
-            plan=plan, info=info, media_sha256=media_sha, media_readback_sha256=media_readback
+        report = run_technical_qa(
+            plan,
+            plan.profile,
+            info,
+            media_bytes=size,
+            readback_sha_ok=True,
+            sources_verified=True,
+            manifest=inputs.manifest,
         )
 
         def _src(artifact_id: str, sha256: str) -> dict[str, str]:
@@ -394,13 +432,15 @@ class RenderActivities:
             payload = build_final_video_artifact(
                 episode_id=episode_id,
                 source_production_manifest=_src(
-                    inputs.manifest_artifact_id, inputs.manifest_sha256
+                    inputs.manifest_meta.id, inputs.manifest_meta.sha256
                 ),
-                source_script=_src(inputs.script_artifact_id, inputs.script_sha256),
-                source_storyboard=_src(inputs.storyboard_artifact_id, inputs.storyboard_sha256),
+                source_script=_src(inputs.script.ref.artifact_id, inputs.script.ref.sha256),
+                source_storyboard=_src(
+                    inputs.storyboard.ref.artifact_id, inputs.storyboard.ref.sha256
+                ),
                 render_profile=plan.profile,
                 render_policy=plan.policy,
-                render_plan_sha256=self._planning.plan_sha256(plan),
+                render_plan_sha256=render_plan_sha256(plan),
                 render_engine=plan.engine,
                 template_version=plan.policy.template_version,
                 media={
@@ -409,18 +449,7 @@ class RenderActivities:
                     "bytes": size,
                     "mime": FINAL_VIDEO_MIME_TYPE,
                 },
-                measured={
-                    "width": info.width,
-                    "height": info.height,
-                    "duration_ms": info.duration_ms,
-                    "fps_millis": info.fps_millis,
-                    "video_codec": info.video_codec,
-                    "pix_fmt": info.pix_fmt,
-                    "audio_present": info.audio_present,
-                    "audio_codec": info.audio_codec,
-                    "audio_sample_rate_hz": info.audio_sample_rate_hz,
-                    "audio_channels": info.audio_channels,
-                },
+                measured=measured_from_info(info),
                 total_duration_ms=plan.total_duration_ms,
                 timeline=plan.scenes,
                 voice_placements=plan.voices,
@@ -511,7 +540,12 @@ class RenderActivities:
             )
         return await self._load_json(meta, label)
 
-    async def _load_inputs(self, episode_id: str) -> RenderInputs:
+    async def _load_inputs(self, episode_id: str) -> _Inputs:
+        """現行マニフェストと、それが固定した入力を読む。
+
+        相互の整合（網羅・同じ storyboard / 台本由来）は ``build_render_plan`` が検査する。
+        ここは PG に在る・現行・本体の sha256 がメタデータと一致・契約で読める、まで。
+        """
         async with self._session_factory() as session:
             manifest_meta = await ArtifactMetadataRepository(session).find_current_by_type(
                 episode_id, ArtifactType.PRODUCTION_MANIFEST
@@ -533,108 +567,73 @@ class RenderActivities:
             episode_id, ArtifactType.SCRIPT, script_ref.artifact_id, script_ref.sha256, "script"
         )
         sb_loaded = await self._referenced(
-            episode_id, ArtifactType.STORYBOARD, sb_ref.artifact_id, sb_ref.sha256, "storyboard"
+            episode_id,
+            ArtifactType.STORYBOARD,
+            sb_ref.artifact_id,
+            sb_ref.sha256,
+            "storyboard",
         )
-        try:
-            script = parse_script_artifact(script_loaded.payload)
-            storyboard = parse_storyboard_artifact(sb_loaded.payload)
-        except ValueError as exc:
-            raise RenderInputIntegrityError(f"script / storyboard invalid: {exc}") from exc
-        try:
-            check_manifest_coverage(
-                manifest,
-                storyboard,
-                script,
-                storyboard_sha256=sb_loaded.meta.sha256,
-                script_sha256=script_loaded.meta.sha256,
-            )
-        except (ProductionInputInvalidError, ProductionInputMissingError) as exc:
-            raise RenderInputIntegrityError(f"manifest coverage: {exc}") from exc
+        script = _parse(parse_script_artifact, script_loaded, "script")
+        storyboard = _parse(parse_storyboard_artifact, sb_loaded, "storyboard")
 
-        videos = {}
+        videos: dict[str, Pinned[SceneVideoArtifact]] = {}
         for scene in manifest.scenes:
+            label = f"scene_video {scene.scene_id}"
             loaded = await self._referenced(
                 episode_id,
                 ArtifactType.SCENE_VIDEO,
                 scene.video.artifact_id,
                 scene.video.sha256,
-                f"scene_video {scene.scene_id}",
+                label,
                 scene.scene_id,
             )
-            try:
-                video = parse_scene_video_artifact(loaded.payload)
-            except ValueError as exc:
-                raise RenderInputIntegrityError(
-                    f"scene_video {scene.scene_id} invalid: {exc}"
-                ) from exc
-            if video.scene_id != scene.scene_id:
-                raise RenderInputIntegrityError(
-                    f"scene_video {loaded.meta.id} is for {video.scene_id}, not {scene.scene_id}"
-                )
+            video = _parse(parse_scene_video_artifact, loaded, label)
             if video.source_storyboard.sha256 != sb_loaded.meta.sha256:
-                raise RenderInputStaleError(
-                    f"scene_video {scene.scene_id} was made for another storyboard"
-                )
-            videos[scene.scene_id] = video
+                raise RenderInputStaleError(f"{label} was made for another storyboard")
+            videos[scene.scene_id] = Pinned(artifact=video, ref=_pin(loaded.meta))
             self._heartbeat("input", scene.scene_id)
 
-        voices = {}
+        voices: dict[str, Pinned[SceneVoiceArtifact]] = {}
         for ref in manifest.voices:
+            label = f"scene_voice {ref.script_scene_id}"
             loaded = await self._referenced(
                 episode_id,
                 ArtifactType.SCENE_VOICE,
                 ref.artifact_id,
                 ref.sha256,
-                f"scene_voice {ref.script_scene_id}",
+                label,
                 ref.script_scene_id,
             )
-            try:
-                voice = parse_scene_voice_artifact(loaded.payload)
-            except ValueError as exc:
-                raise RenderInputIntegrityError(
-                    f"scene_voice {ref.script_scene_id} invalid: {exc}"
-                ) from exc
-            if voice.script_scene_id != ref.script_scene_id:
-                raise RenderInputIntegrityError(
-                    f"scene_voice {loaded.meta.id} is for {voice.script_scene_id}"
-                )
+            voice = _parse(parse_scene_voice_artifact, loaded, label)
             if voice.source_script.sha256 != script_loaded.meta.sha256:
-                raise RenderInputStaleError(
-                    f"scene_voice {ref.script_scene_id} was made for another script"
-                )
-            voices[ref.script_scene_id] = voice
+                raise RenderInputStaleError(f"{label} was made for another script")
+            voices[ref.script_scene_id] = Pinned(artifact=voice, ref=_pin(loaded.meta))
             self._heartbeat("input", ref.script_scene_id)
 
-        return RenderInputs(
-            episode_id=episode_id,
+        return _Inputs(
             manifest=manifest,
-            manifest_artifact_id=manifest_meta.id,
-            manifest_sha256=manifest_meta.sha256,
-            script=script,
-            script_artifact_id=script_loaded.meta.id,
-            script_sha256=script_loaded.meta.sha256,
-            storyboard=storyboard,
-            storyboard_artifact_id=sb_loaded.meta.id,
-            storyboard_sha256=sb_loaded.meta.sha256,
+            manifest_meta=manifest_meta,
+            script=Pinned(artifact=script, ref=_pin(script_loaded.meta)),
+            storyboard=Pinned(artifact=storyboard, ref=_pin(sb_loaded.meta)),
             videos=videos,
             voices=voices,
         )
 
     async def _download_media(
-        self, inputs: RenderInputs, work: JobWorkDir
+        self, inputs: _Inputs, work: JobWorkDir
     ) -> tuple[dict[str, Path], dict[str, Path]]:
         """素材本体を作業領域の input/ へ置く。読み戻した sha256 を記述子と照合する。"""
         video_paths: dict[str, Path] = {}
-        for scene_id, video in inputs.videos.items():
+        for scene_id, pinned in inputs.videos.items():
+            media = pinned.artifact.media
             path = work.input / f"video-{scene_id}.mp4"
-            await self._fetch_verified(video.media.object_key, video.media.sha256, path, scene_id)
+            await self._fetch_verified(media.object_key, media.sha256, path, scene_id)
             video_paths[scene_id] = path
         voice_paths: dict[str, Path] = {}
-        for script_scene_id, voice in inputs.voices.items():
+        for script_scene_id, pinned in inputs.voices.items():
+            media = pinned.artifact.media
             path = work.input / f"voice-{script_scene_id}.wav"
-            await self._fetch_verified(
-                voice.media.object_key, voice.media.sha256, path, script_scene_id
-            )
+            await self._fetch_verified(media.object_key, media.sha256, path, script_scene_id)
             voice_paths[script_scene_id] = path
         return video_paths, voice_paths
 
@@ -820,6 +819,15 @@ def _map_os_error(exc: BaseException) -> BaseException:
         mapped.__cause__ = exc
         return mapped
     return exc
+
+
+def _parse[T](parser: Callable[[dict[str, Any]], T], loaded: _Loaded, label: str) -> T:
+    try:
+        return parser(loaded.payload)
+    except ValueError as exc:  # pydantic ValidationError を含む
+        raise RenderInputIntegrityError(
+            f"{label} artifact {loaded.meta.id} invalid: {str(exc)[:500]}"
+        ) from exc
 
 
 def _result(meta: ArtifactMetadata, *, skipped: bool, job_id: str) -> RenderFinalVideoResult:

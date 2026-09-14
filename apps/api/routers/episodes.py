@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
@@ -21,10 +21,17 @@ from apps.api.schemas import (
     EpisodeView,
     JobView,
     StartProductionResponse,
+    StartRenderRequest,
+    StartRenderResponse,
     StartStoryboardResponse,
 )
 from apps.api.workflow_starter import WorkflowStarter
-from contracts.states import PRODUCTION_ADMISSIBLE_STATUSES, EpisodeStatus
+from contracts.render import DEFAULT_RENDER_PROFILE_ID, get_render_profile
+from contracts.states import (
+    PRODUCTION_ADMISSIBLE_STATUSES,
+    RENDER_ADMISSIBLE_STATUSES,
+    EpisodeStatus,
+)
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -134,6 +141,64 @@ async def start_production(
         ) from exc
     return StartProductionResponse(
         episode_id=episode.id, status=episode.status, workflow_id=workflow_id
+    )
+
+
+@router.post(
+    "/{episode_id}/render",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=StartRenderResponse,
+)
+async def start_render(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+    payload: Annotated[StartRenderRequest | None, Body()] = None,
+) -> StartRenderResponse:
+    """render 工程を起動するだけ（INV-16 / ADR-0019）。
+
+    入場の権威は workflow の admit Activity。ここでは未知の profile（422）と、明らかに入れない状態
+    （409）を早めに返す。profile は Activity でも再検証する。
+    """
+    profile_id = (payload.render_profile_id if payload else None) or DEFAULT_RENDER_PROFILE_ID
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    try:
+        get_render_profile(profile_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown render profile: {profile_id}",
+        ) from exc
+    if (
+        episode.status not in RENDER_ADMISSIBLE_STATUSES
+        and episode.status is not EpisodeStatus.IN_PROGRESS
+    ):
+        allowed = ", ".join(sorted(s.value for s in RENDER_ADMISSIBLE_STATUSES))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"episode {episode.id} is {episode.status.value}; render can start only "
+                f"from {allowed}"
+            ),
+        )
+
+    try:
+        workflow_id = await starter.start_render_workflow(
+            episode_id=episode.id, render_profile_id=profile_id
+        )
+    except WorkflowAlreadyStartedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"render workflow already running for episode {episode.id}",
+        ) from exc
+    return StartRenderResponse(
+        episode_id=episode.id,
+        status=episode.status,
+        workflow_id=workflow_id,
+        render_profile_id=profile_id,
     )
 
 
