@@ -72,3 +72,31 @@ def test_migration_creates_the_modelled_indexes(tmp_path: pathlib.Path) -> None:
         str(index.name) for table in Base.metadata.tables.values() for index in table.indexes
     }
     assert modelled <= migrated, sorted(modelled - migrated)
+
+
+def _normalize_sql(sql: str) -> str:
+    """方言差（空白・括弧・引用符・大小文字）を畳んで比較する。"""
+    import re
+
+    return re.sub(r"[\s()\"`]", "", sql).lower()
+
+
+def test_migration_check_constraints_match_the_models(tmp_path: pathlib.Path) -> None:
+    from sqlalchemy import CheckConstraint
+
+    engine = _upgraded_engine(tmp_path)
+    inspector = inspect(engine)
+    problems: list[str] = []
+    for name, table in Base.metadata.tables.items():
+        migrated = {
+            str(c["name"]): _normalize_sql(str(c["sqltext"]))
+            for c in inspector.get_check_constraints(name)
+        }
+        modelled = {
+            str(c.name): _normalize_sql(str(c.sqltext))
+            for c in table.constraints
+            if isinstance(c, CheckConstraint)
+        }
+        if migrated != modelled:
+            problems.append(f"{name}: migration={migrated} models={modelled}")
+    assert not problems, "\n".join(problems)
