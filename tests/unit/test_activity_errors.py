@@ -86,3 +86,35 @@ def test_round_consumed_is_final_for_the_activity_but_retryable_for_the_workflow
     assert isinstance(raised, ApplicationError)
     assert raised.non_retryable is True
     assert failure_class_from_type_name(raised.type) is FailureClass.RETRYABLE
+
+
+def _s3(code: str, status: int):
+    from types import SimpleNamespace
+
+    from minio.error import S3Error
+
+    return S3Error(SimpleNamespace(status=status), code, "m", "/b/k", "req", "host")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [
+        ("InternalError", 500),
+        ("ServiceUnavailable", 503),
+        ("SlowDown", 503),
+        ("SomethingNew", 502),
+        ("SlowDown", 0),
+    ],
+)
+def test_s3_server_errors_are_transient(code: str, status: int) -> None:
+    translated = translate_error(_s3(code, status))
+    assert isinstance(translated, errors.TransientError)
+    raised = _raised(_s3(code, status))
+    assert isinstance(raised, ApplicationError) and raised.type == "TransientError"
+    assert not raised.non_retryable
+
+
+@pytest.mark.parametrize(("code", "status"), [("NoSuchKey", 404), ("AccessDenied", 403)])
+def test_s3_client_errors_are_not_translated(code: str, status: int) -> None:
+    exc = _s3(code, status)
+    assert translate_error(exc) is exc

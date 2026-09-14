@@ -110,7 +110,7 @@ Activity 境界の写像（画像・音声・動画共通、`infrastructure/prod
 | `UnknownRenderProfileError` | `needs_input` | 未登録の render profile id（API でも先に弾く） |
 
 描画 Activity は retry 最大3回（retryable の型だけ）。使い切ったら `blocked`（`RETRY_BUDGET_EXHAUSTED`）で terminal にしない。
-cancel は失敗ではない（子プロセスを止め、作業領域を片付けて再送出）。MinIO / DB の通信失敗は `transient`。
+workflow の cancel は production と同じく `needs_input`（`blocked`）として記録する（子プロセスを止め、作業領域を片付けてから。terminal にせず POST で再開できる）。MinIO / DB の通信失敗（S3 の 5xx・流量制限を含む）は `transient`。
 検査: `tests/unit/test_render_vocabulary.py::test_render_exceptions_classify_by_their_base`。
 
 ## 2. Episodeをterminal failedにしてよい条件

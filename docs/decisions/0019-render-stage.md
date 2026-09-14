@@ -119,7 +119,9 @@ audio_mix（混合規則: サンプルレート・ch・利得・正規化なし�
 - 同じ input_hash の現行 final_video は、JSON と本体を読み戻して sha256 が一致するときだけ再利用する（不一致は再描画）
 - 作業領域は試行ごと（`<job>/attempt-<n>`）。成功・cancel で片付け、失敗は調査のため残す
 - 失敗の ApplicationError の details に job id を載せ、retry を使い切った record_failure がその job を閉じる
-- 完成動画本体の保存・読み戻し sha256・素材の取り出しはストアから**流して**行い、全体をメモリに載せない
+- 完成動画本体の保存・読み戻し sha256・素材の取り出しはストアから**流して**行い、全体をメモリに載せない。
+  `put_file` の「存在確認 → 書き込み」には競合の窓があるが、キーが本体の sha256 を含む内容アドレスなので
+  競合する書き手は同じバイト列を書き、読み戻し sha256 で確かめる（内容アドレスでないキーには使わない）
   （`ArtifactStore.put_file` / `sha256_of` / `download_to`）
 - API: `POST /episodes/{id}/render`（任意で `render_profile_id`）
 
@@ -140,7 +142,9 @@ audio_mix（混合規則: サンプルレート・ch・利得・正規化なし�
 | `FinalVideoCorruptError` | `retryable` | デコード不能・読み戻し sha256 不一致 |
 | `UnknownRenderProfileError` | `needs_input` | 未登録の profile id |
 
-retryable を使い切ったら `blocked`（`RETRY_BUDGET_EXHAUSTED`）で、terminal にしない。cancel は失敗ではない。
+retryable を使い切ったら `blocked`（`RETRY_BUDGET_EXHAUSTED`）で、terminal にしない。
+workflow の cancel は production と同じく、描画の子プロセスを止めて作業領域を片付けた後に `needs_input` として
+記録し Episode を `blocked` にする（terminal にせず、POST で再開できる。ADR-0017 §8）。
 
 ### 10. 作業領域・並行数・既定値
 
