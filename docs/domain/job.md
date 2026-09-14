@@ -16,7 +16,7 @@ Phase 1 の生成は `uuid.uuid4()`（[[episode]] と同じ。UUIDv7 は Phase 2
 ## 属性
 
 - `id`, `episode_id`, `type`（`dummy` / `write_script`（ADR-0011）/ `plan_storyboard`（ADR-0015）/
-  将来 `generate` / `render` / `upload` ...。語彙の権威は `contracts/states.py::JobType`）
+  `produce_scene_*` / `assemble_production`（ADR-0017）/ `render_final_video`（ADR-0019）/ 将来 `upload` ...。語彙の権威は `contracts/states.py::JobType`）
 - `attempts` — これまでに実施した試行回数。Activity開始のたびに加算する
 - `max_attempts` — 試行枠。TemporalのRetryPolicyの `maximum_attempts` と同じ値を使う
 - `status`: `queued` / `running` / `succeeded` / `retryable_failed` /

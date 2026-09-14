@@ -10,6 +10,20 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from contracts.artifact_refs import (
+    SCRIPT_SCENE_ID_PATTERN,
+    SHA256_HEX_PATTERN,
+    STORYBOARD_SCENE_ID_PATTERN,
+    ArtifactDigestRef,
+    FrozenModel,
+    SourceScriptRef,
+    SourceStoryboardRef,
+    check_canonical_uuid,
+)
+from contracts.artifact_refs import (
+    SourceArtifactRef as SourceArtifactRef,  # 再公開（定義は artifact_refs）
+)
+from contracts.render import RENDER_ARTIFACT_SCHEMA_VERSION, FinalVideoArtifact
 from contracts.states import ArtifactType
 
 DUMMY_ARTIFACT_SCHEMA_VERSION = "1.0"
@@ -25,8 +39,6 @@ SCRIPT_MAX_TOTAL_DURATION_MS = 60_000  # YouTube Shorts の上限
 SCRIPT_MIN_SCENE_DURATION_MS = 1_000
 SCRIPT_MAX_SCENE_DURATION_MS = 20_000
 
-#: シーンIDの語彙。``s1`` .. ``s99``。
-SCRIPT_SCENE_ID_PATTERN = r"^s[0-9]{1,2}$"
 
 #: ナレーションを連結するときの区切り。導出値の定義を1箇所に置く。
 SCRIPT_NARRATION_JOINER = " "
@@ -127,9 +139,6 @@ STORYBOARD_MAX_SCENE_DURATION_MS = 20_000
 #: 総尺の範囲は台本と同じ（storyboard の総尺は台本の総尺に一致しなければならない）。
 STORYBOARD_MIN_TOTAL_DURATION_MS = SCRIPT_MIN_TOTAL_DURATION_MS
 STORYBOARD_MAX_TOTAL_DURATION_MS = SCRIPT_MAX_TOTAL_DURATION_MS
-#: storyboard シーンIDの語彙。``sb1`` .. ``sb99``。システムが order から採番する。
-STORYBOARD_SCENE_ID_PATTERN = r"^sb[0-9]{1,2}$"
-SHA256_HEX_PATTERN = r"^[0-9a-f]{64}$"
 
 
 class StoryboardVisualKind(StrEnum):
@@ -256,48 +265,7 @@ AUDIO_MIME_TYPES: tuple[str, ...] = ("audio/wav",)
 VIDEO_MIME_TYPES: tuple[str, ...] = ("video/mp4",)
 
 
-class _Frozen(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-def _check_canonical_uuid(value: str) -> str:
-    if str(uuid.UUID(value)) != value:
-        raise ValueError(f"artifact_id must be a canonical UUID: {value!r}")
-    return value
-
-
-class SourceArtifactRef(_Frozen):
-    """入力 Artifact の固定（artifact_id / sha256 / schema_version）。"""
-
-    artifact_id: str
-    sha256: str = Field(pattern=SHA256_HEX_PATTERN)
-    schema_version: Literal["1.0"]
-
-    @field_validator("artifact_id")
-    @classmethod
-    def _canonical_uuid(cls, value: str) -> str:
-        return _check_canonical_uuid(value)
-
-
-#: 入力 storyboard の固定。
-SourceStoryboardRef = SourceArtifactRef
-#: 入力台本の固定（``StoryboardSourceScript`` と同形）。
-SourceScriptRef = SourceArtifactRef
-
-
-class ArtifactDigestRef(_Frozen):
-    """別 Artifact への参照（artifact_id / sha256）。"""
-
-    artifact_id: str
-    sha256: str = Field(pattern=SHA256_HEX_PATTERN)
-
-    @field_validator("artifact_id")
-    @classmethod
-    def _canonical_uuid(cls, value: str) -> str:
-        return _check_canonical_uuid(value)
-
-
-class MediaDescriptor(_Frozen):
+class MediaDescriptor(FrozenModel):
     """メディア本体（MinIO 上のバイナリ）の所在と指紋。
 
     ``object_key`` は ``domain.artifact.keys.media_object_key`` の規約。物理パスは持たない。
@@ -309,7 +277,7 @@ class MediaDescriptor(_Frozen):
     mime: str = Field(min_length=1, max_length=64)
 
 
-class GeneratorMetadata(_Frozen):
+class GeneratorMetadata(FrozenModel):
     """生成の来歴。provider の生レスポンスや provider job id は**持たない**（ADR-0017）。"""
 
     generator: str = Field(min_length=1, max_length=128)
@@ -322,7 +290,7 @@ def _require_mime(media: MediaDescriptor, allowed: tuple[str, ...]) -> None:
         raise ValueError(f"media mime {media.mime!r} not in {allowed}")
 
 
-class SceneImageArtifact(_Frozen):
+class SceneImageArtifact(FrozenModel):
     """storyboard シーン1件の静止画（ADR-0017）。"""
 
     episode_id: str = Field(min_length=1, max_length=64)
@@ -341,7 +309,7 @@ class SceneImageArtifact(_Frozen):
         return self
 
 
-class SceneVoiceArtifact(_Frozen):
+class SceneVoiceArtifact(FrozenModel):
     """台本シーン1件のナレーション音声。ナレーション文は複製しない（台本が単一の真実）。"""
 
     episode_id: str = Field(min_length=1, max_length=64)
@@ -370,7 +338,7 @@ class SceneVoiceArtifact(_Frozen):
         return self
 
 
-class SceneVideoArtifact(_Frozen):
+class SceneVideoArtifact(FrozenModel):
     """storyboard シーン1件の動画（静止画から生成。音声は持たない）。
 
     fps は ``fps_millis``（fps × 1000 の int）で持つ。float は正準JSONの sha256 を揺らす。
@@ -397,13 +365,13 @@ class SceneVideoArtifact(_Frozen):
         return self
 
 
-class ManifestScene(_Frozen):
+class ManifestScene(FrozenModel):
     scene_id: str = Field(pattern=STORYBOARD_SCENE_ID_PATTERN)
     image: ArtifactDigestRef
     video: ArtifactDigestRef
 
 
-class ManifestVoice(_Frozen):
+class ManifestVoice(FrozenModel):
     script_scene_id: str = Field(pattern=SCRIPT_SCENE_ID_PATTERN)
     artifact_id: str
     sha256: str = Field(pattern=SHA256_HEX_PATTERN)
@@ -411,10 +379,10 @@ class ManifestVoice(_Frozen):
     @field_validator("artifact_id")
     @classmethod
     def _canonical_uuid(cls, value: str) -> str:
-        return _check_canonical_uuid(value)
+        return check_canonical_uuid(value)
 
 
-class ProductionManifest(_Frozen):
+class ProductionManifest(FrozenModel):
     """1 Episode の production 成果の一覧（ADR-0017）。
 
     storyboard / 台本に対するカバレッジ（全シーンに画像+動画、全台本シーンに音声）は
@@ -584,6 +552,56 @@ def parse_production_manifest(payload: dict[str, Any]) -> ProductionManifest:
     return ProductionManifest.model_validate(payload)
 
 
+def build_final_video_artifact(
+    *,
+    episode_id: str,
+    source_production_manifest: Any,
+    source_script: Any,
+    source_storyboard: Any,
+    render_profile: Any,
+    render_policy: Any,
+    render_plan_sha256: str,
+    render_engine: Any,
+    template_version: int,
+    media: Any,
+    measured: Any,
+    total_duration_ms: int,
+    timeline: Any,
+    voice_placements: Any,
+    subtitle_cues: Any,
+    technical_qa: Any,
+) -> dict[str, Any]:
+    """生成側（ADR-0019）。build の時点で検証（時間軸・実測・技術検査の合格）を通してから返す。"""
+    artifact = FinalVideoArtifact.model_validate(
+        {
+            "episode_id": episode_id,
+            "type": ArtifactType.FINAL_VIDEO.value,
+            "schema_version": RENDER_ARTIFACT_SCHEMA_VERSION,
+            "source_production_manifest": source_production_manifest,
+            "source_script": source_script,
+            "source_storyboard": source_storyboard,
+            "render_profile": render_profile,
+            "render_policy": render_policy,
+            "render_plan_sha256": render_plan_sha256,
+            "render_engine": render_engine,
+            "template_version": template_version,
+            "media": media,
+            "measured": measured,
+            "total_duration_ms": total_duration_ms,
+            "timeline": timeline,
+            "voice_placements": voice_placements,
+            "subtitle_cues": subtitle_cues,
+            "technical_qa": technical_qa,
+        }
+    )
+    return artifact.model_dump(mode="json")
+
+
+def parse_final_video(payload: dict[str, Any]) -> FinalVideoArtifact:
+    """取り込み側。想定外の schema_version は推測せず ValidationError にする。"""
+    return FinalVideoArtifact.model_validate(payload)
+
+
 #: ArtifactType -> モデル。``parse_artifact`` のディスパッチ表。
 #: 新しい ArtifactType を足したらここにも登録する
 #: （``test_every_artifact_type_has_a_registered_model`` が強制する）。
@@ -595,6 +613,7 @@ ARTIFACT_MODELS: dict[ArtifactType, type[BaseModel]] = {
     ArtifactType.SCENE_VOICE: SceneVoiceArtifact,
     ArtifactType.SCENE_VIDEO: SceneVideoArtifact,
     ArtifactType.PRODUCTION_MANIFEST: ProductionManifest,
+    ArtifactType.FINAL_VIDEO: FinalVideoArtifact,
 }
 
 
@@ -682,6 +701,7 @@ AnyArtifact = (
     | SceneVoiceArtifact
     | SceneVideoArtifact
     | ProductionManifest
+    | FinalVideoArtifact
 )
 
 

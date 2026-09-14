@@ -226,12 +226,13 @@ def test_production_vocabulary_and_scene_keys_on_postgres(probe_url) -> None:
         conn.execute(artifact_insert, _artifact("script", "c" * 64, 2, None))
     engine.dispose()
 
-    # Phase 4 の行が残っていれば downgrade は失敗し、スキーマは 0004 のまま
+    # Phase 4 の行が残っていれば downgrade は失敗し、スキーマは head のまま
+    # （downgrade は1トランザクション。0005 を足したので head は 0005。ADR-0019）
     with pytest.raises(IntegrityError):
         command.downgrade(config, "0003")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0005"
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 

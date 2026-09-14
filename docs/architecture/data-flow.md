@@ -14,8 +14,8 @@
     ├─ Activity: plan          → Artifact(episode_plan v1)      → MinIO + DB参照
     ├─ Activity: write_script  → Artifact(script v1)
     ├─ Activity: plan_scenes   → Artifact(scene_plan v1)
-    ├─ Activity: generate      → Artifact(asset_manifest v1) + 素材   [有料]
-    ├─ Activity: render        → Artifact(final_video v1)
+    ├─ Activity: produce_*     → Artifact(scene_* / production_manifest v1) + 素材   [有料]
+    ├─ Activity: render        → Artifact(final_video v1)   入力は production_manifest（ADR-0019）
     ├─ Activity: quality_gate  → Artifact(review_report v1)
     │      └─ 不合格 → 失敗クラス分類 → retryable なら再生成へ分岐
     ├─ (signal待ち: 人間承認が要る場合)
@@ -44,6 +44,24 @@
     │     → 解釈 → 時間軸正規化 → 採番 → 契約 → 台本カバレッジ
     │     → MinIO put → 読み戻し sha256 照合 → artifact_metadata 記録 → job succeeded
     └─ storyboard_mark_ready（in_progress → storyboard_ready）| storyboard_record_failure
+```
+
+## 1c. render 工程（Phase 5 / ADR-0019）
+
+```text
+[UI] ──POST /episodes/{id}/render {render_profile_id?}──> [FastAPI]
+        │ profile id の検証（4xx）→ start_workflow(RenderWorkflow, id=episode-{id}-render)
+        └──> 202（重複は 409）
+
+[Temporal] RenderWorkflow（task queue "render"）
+    ├─ render_admit          assets_ready|render_ready → in_progress（render 自身の needs_work|blocked は再開）
+    ├─ render_final_video    （単一の重い Activity、heartbeat ≤10秒）
+    │     現行 production_manifest を PG から解決 → script / storyboard / 音声 / 動画を MinIO から読み
+    │     sha256 照合 + 契約検証 → 描画計画 → input_hash
+    │     → 同じ input_hash の現行 final_video があれば job=skipped で返す
+    │     → 空き容量の事前検査 → 作業領域 → 描画 → 実測 → 技術検査（合格のみ先へ）
+    │     → mp4 と JSON を MinIO put → 読み戻し sha256 照合 → artifact_metadata 記録 → job succeeded
+    └─ render_mark_ready（in_progress → render_ready）| render_record_failure
 ```
 
 ## 2. Artifactの読み書き

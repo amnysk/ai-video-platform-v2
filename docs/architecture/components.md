@@ -32,8 +32,8 @@
 |---|---|---|---|
 | `planning` | （なし / 学習ログ） | `episode_plan` | LLM |
 | `storyboard` | 現行の `script` | `storyboard`（ADR-0015） | LLM（Codex CLI + OpenMontage 仕様、**有料**・予約台帳） |
-| `generation` | `episode_plan`, `scene_plan` | `asset_manifest`, 素材本体 | **有料** provider |
-| `render` | `asset_manifest`, `edit_decisions` | `final_video` | なし（ローカル計算） |
+| `production`（旧 `generation`） | 現行の `storyboard`, `script` | `scene_image` / `scene_voice` / `scene_video`, `production_manifest`（ADR-0017） | **有料** provider（画像・動画）/ ローカル TTS |
+| `render` | 現行の `production_manifest`（と、それが指す `script` / `storyboard` / シーン素材） | `final_video`（ADR-0019） | なし（ローカル計算。CPU・ディスクを占有） |
 | `upload` | `final_video`, `video_metadata` | `upload_receipt` | **YouTube投稿** |
 | `analytics` | `upload_receipt` | `performance_report` | YouTube Analytics |
 
