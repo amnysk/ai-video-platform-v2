@@ -7,7 +7,7 @@
 失敗の写像:
 - 素材がマニフェストにあるのに渡されていない → ``RenderInputMissingError``
 - 参照の id / sha256 の食い違い・余計な素材・契約違反 → ``RenderInputIntegrityError``
-- 尺を合わせられない → ``DurationReconciliationError``
+- 尺を合わせられない・総尺が profile の最短最長を外れる → ``DurationReconciliationError``
 - 音声が重なる → ``VoiceTimelineOverflowError``
 """
 
@@ -27,6 +27,7 @@ from contracts.artifacts import (
 )
 from contracts.render import RenderEngineIdentity, RenderPlan, RenderProfile, TimelinePolicy
 from domain.errors import (
+    DurationReconciliationError,
     ProductionInputInvalidError,
     RenderInputIntegrityError,
     RenderInputMissingError,
@@ -174,6 +175,13 @@ def build_render_plan(
         },
         policy,
     )
+    limits = profile.limits
+    if not limits.min_duration_ms <= layout.total_duration_ms <= limits.max_duration_ms:
+        # 描画前に弾く（描画後の技術検査でも同じ規則を見る）。素材か profile を人間が選び直す
+        raise DurationReconciliationError(
+            f"timeline total {layout.total_duration_ms} ms is outside profile "
+            f"{profile.profile_id} limits [{limits.min_duration_ms}, {limits.max_duration_ms}] ms"
+        )
     cues = build_subtitle_cues(script.artifact, layout.voices, profile.subtitles)
     try:
         return RenderPlan(
