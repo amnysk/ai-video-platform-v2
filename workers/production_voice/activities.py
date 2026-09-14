@@ -80,16 +80,17 @@ def compute_voice_input_hash(
 ) -> str:
     """``voice_input_hash`` の呼び出しを1箇所に閉じる。
 
-    ``storyboard_sha256`` / ``storyboard_scene_ids`` は foundation 側の修正で
-    ``voice_input_hash`` の引数に加わる予定（merge 時にここへ渡す）。現時点の関数は受け取らない。
+    storyboard の再計画で古い音声を再利用しないよう、
+    storyboard の sha と参照シーンも含める（ADR-0017 §6）。
     """
-    del storyboard_sha256, storyboard_scene_ids  # TODO(merge): voice_input_hash へ渡す
     return voice_input_hash(
         episode_id=episode_id,
         artifact_type=ArtifactType.SCENE_VOICE.value,
         schema_version=PRODUCTION_ARTIFACT_SCHEMA_VERSION,
         script_sha256=script_sha256,
         script_scene_id=script_scene_id,
+        storyboard_sha256=storyboard_sha256,
+        storyboard_scene_ids=storyboard_scene_ids,
         narration_sha256=narration_sha256(narration),
         voice_id=generator.voice_id,
         language=language,
