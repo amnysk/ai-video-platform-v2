@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     video_concurrency: int = 1
     #: ローカル TTS の音声モデル。未設定なら voice worker を組めない。
     piper_voice_path: str | None = None
+    #: Piper を入れた**隔離 venv** の python（scripts/setup-piper.sh）。
+    #: piper-tts は GPL-3.0 なので共有 venv に入れない。
+    piper_python: str | None = None
+    #: 合成パラメータ。未設定なら音声モデルの .onnx.json の既定値を使う。
+    piper_length_scale: float | None = None
+    piper_noise_scale: float | None = None
+    piper_noise_w_scale: float | None = None
     production_submit_timeout_seconds: int = 120
     production_await_timeout_seconds: int = 40 * 60
     production_await_heartbeat_seconds: int = 90

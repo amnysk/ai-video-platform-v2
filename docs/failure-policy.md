@@ -60,6 +60,7 @@
 | `MediaValidationError` | `retryable` | 生成メディアが形式・解像度・尺の規則を満たさない |
 | `ProductionInputMissingError` | `needs_input` | 現行の storyboard / 台本 / シーン画像が無い |
 | `ProductionInputInvalidError` | `needs_input` | 入力 Artifact が読めない・sha256 不一致・相互に食い違う |
+| `VoiceLanguageUnsupportedError` | `needs_input` | 設定した音声モデルが台本の言語を話せない（音声モデルか台本の言語を人間が直す） |
 
 有料の submit Activity は `maximum_attempts=1`、await Activity は provider job 参照に対して冪等なので
 retry してよい（最大5回）。ローカル非課金の音声合成は台帳に載せず Temporal の retry（最大3回）に委ねる
