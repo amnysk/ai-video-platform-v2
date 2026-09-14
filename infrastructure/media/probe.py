@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 from fractions import Fraction
 from typing import Any
 
@@ -17,6 +18,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from domain.errors import MediaValidationError
 from domain.production.media import AudioInfo, ImageInfo, VideoInfo
+from domain.render.ports import FinalVideoInfo
 
 _PIL_FORMATS = {"PNG": "png", "JPEG": "jpeg", "WEBP": "webp"}
 
@@ -124,6 +126,73 @@ class PillowAvMediaProbe:
             has_audio=has_audio,
             decoded_duration_ms=decoded_ms,
             decode_errors=errors,
+        )
+
+    def probe_final_video(self, path: str) -> FinalVideoInfo:
+        """完成動画をファイルから流しながら全フレーム（映像・音声とも）デコードする。
+
+        ``bytes`` で渡す既存の probe と違い、GiB 級のファイルをメモリに載せない。
+        """
+        try:
+            size = os.path.getsize(path)
+            with _capture_ffmpeg_errors() as logs, av.open(path, mode="r") as container:
+                if not container.streams.video:
+                    raise MediaValidationError("no video stream")
+                video = container.streams.video[0]
+                audio = container.streams.audio[0] if container.streams.audio else None
+                rate = video.average_rate or video.guessed_rate
+                width = video.codec_context.width
+                height = video.codec_context.height
+                video_codec = video.codec_context.name
+                pix_fmt = video.codec_context.format.name if video.codec_context.format else ""
+                frames = 0
+                samples = 0
+                sample_rate = 0
+                channels = 0
+                streams = (video, audio) if audio is not None else (video,)
+                for packet in container.demux(*streams):
+                    for frame in packet.decode():
+                        if packet.stream.type == "video":
+                            frames += 1
+                        elif isinstance(frame, av.AudioFrame):
+                            samples += frame.samples
+                            sample_rate = frame.sample_rate
+                            channels = len(frame.layout.channels)
+                if video.duration is not None and video.time_base is not None:
+                    duration_ms = round(float(video.duration * video.time_base) * 1000)
+                elif container.duration is not None:
+                    duration_ms = round(container.duration / 1000)
+                else:
+                    duration_ms = 0
+                audio_codec = audio.codec_context.name if audio is not None else None
+                if audio is not None and sample_rate <= 0:
+                    sample_rate = audio.codec_context.sample_rate
+                    channels = audio.codec_context.channels
+            errors = _count_errors(logs)
+        except MediaValidationError:
+            raise
+        except (FFmpegError, OSError, ValueError) as exc:
+            raise MediaValidationError(f"final video is not decodable: {exc}") from exc
+        fps = Fraction(rate) if rate else Fraction(0)
+        if duration_ms <= 0 and fps > 0:
+            duration_ms = round(frames * 1000 / fps)
+        return FinalVideoInfo(
+            duration_ms=duration_ms,
+            width=width,
+            height=height,
+            fps_millis=round(fps * 1000),
+            frames_decoded=frames,
+            decode_errors=errors,
+            video_codec=video_codec,
+            pix_fmt=pix_fmt,
+            audio_present=audio is not None,
+            audio_codec=audio_codec,
+            audio_sample_rate_hz=sample_rate if audio is not None else None,
+            audio_channels=channels if audio is not None else None,
+            audio_duration_ms=(
+                round(samples * 1000 / sample_rate) if audio is not None and sample_rate else None
+            ),
+            bytes=size,
         )
 
 
