@@ -5,6 +5,15 @@ from __future__ import annotations
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from contracts.production_activities import (
+    DEFAULT_AWAIT_REEXECUTIONS,
+    DEFAULT_IMAGE_CONCURRENCY,
+    DEFAULT_IMAGE_MAX_ROUNDS,
+    DEFAULT_VIDEO_CONCURRENCY,
+    DEFAULT_VIDEO_MAX_ROUNDS,
+    DEFAULT_VOICE_CONCURRENCY,
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -44,9 +53,9 @@ class Settings(BaseSettings):
     #: ``SecretStr``: repr / model_dump / ログに値を出さない。使う箇所で ``get_secret_value()``。
     fal_key: SecretStr | None = None
     #: task queue ごとの並行 Activity 数（worker が max_concurrent_activities に使う）
-    image_concurrency: int = 2
-    voice_concurrency: int = 1
-    video_concurrency: int = 1
+    image_concurrency: int = DEFAULT_IMAGE_CONCURRENCY
+    voice_concurrency: int = DEFAULT_VOICE_CONCURRENCY
+    video_concurrency: int = DEFAULT_VIDEO_CONCURRENCY
     #: ローカル TTS の音声モデル。未設定なら voice worker を組めない。
     piper_voice_path: str | None = None
     #: Piper を入れた**隔離 venv** の python（scripts/setup-piper.sh）。
@@ -67,10 +76,10 @@ class Settings(BaseSettings):
     production_poll_interval_seconds: int = 10
     production_voice_timeout_seconds: int = 300
     #: ProductionWorkflow の1実行あたりの submit 試行予算（台帳のラウンド番号ではない）
-    production_image_max_rounds: int = 3
-    production_video_max_rounds: int = 2
+    production_image_max_rounds: int = DEFAULT_IMAGE_MAX_ROUNDS
+    production_video_max_rounds: int = DEFAULT_VIDEO_MAX_ROUNDS
     #: 状態不明の await 失敗に対し、同じ予約で await を追加実行する回数
-    production_await_reexecutions: int = 3
+    production_await_reexecutions: int = DEFAULT_AWAIT_REEXECUTIONS
 
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"

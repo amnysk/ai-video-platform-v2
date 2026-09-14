@@ -139,33 +139,9 @@ submit の失敗の扱い（`infrastructure/production/paid_job.py`）:
 - seed は provider へ送らない。再現性は `input_hash` による Artifact の再利用で、
   バリエーションはラウンドで得る
 
-### 8. 入場・再開・引き継ぎ・cancel（ADR-0015 の「再開 API が無い」負債を production で解消）
-
-`POST /episodes/{id}/production` が再試行 / 再開の操作である。admit が権威、API は明らかに入れない
-状態（下表以外かつ `in_progress` 以外）を 409 で先に返すだけ。
-
-| Episode 状態 | admit | 事象 |
-|---|---|---|
-| `storyboard_ready` / `assets_ready` | 入る | `STAGE_ADMITTED` |
-| `needs_work` | 記録トークンが**同じ production workflow id** なら入る | `RETRY_ADMITTED` |
-| `blocked` | 同上 | `RESUMED`（人間の POST が再開） |
-| `in_progress` | トークン完全一致（Activity 再実行）/ 同じ workflow id の**閉じた** run なら引き継ぐ | なし（トークンを書き換え） |
-| `failed` / `cancelled` / 他工程で止まった状態 / その他 | 入らない | — |
-
-- 引き継ぎの判定は port `WorkflowRunInspector`（`workers/production/run_inspector.py`）。Temporal の
-  describe で RUNNING 以外は閉じている、NotFound も閉じている、それ以外の RPC 失敗は `TransientError`
-  （retry）。**走っている run は決して引き継がない**
-- 再開は production 自身が止めた Episode だけ。他工程（storyboard 等）で止まった Episode を production から
-  再開すると上流を飛ばすため
-- 再実行で済んだシーンは再課金しない: 現行 Artifact の再利用（INV-17）と台帳の実効ラウンド（§3）
-- **workflow の cancel**（運用者の操作）: 進行中の枝の cancel 完了を待ち、cancel されない形で
-  record_failure（`needs_input` → `blocked`、要約に `cancelled`）を記録してから cancel を再送出する。
-  terminal `cancelled` にしないのは、Episode の中止（`CANCELLED` 事象）は別の人間の判断であり、
-  workflow を止めただけでは作品を諦めたことにならないため。再開は POST
-- record_failure が閉じる job は workflow 自身が作る `ASSEMBLE_PRODUCTION` だけ。`PRODUCE_SCENE_*` は
-  メディア worker の所有物で、cancel 中も worker が書くので触らない（非終端のまま次の実行の `find_open` が再利用）
-- マニフェストは動画の元画像を**メディア本体の sha256**で照合する（動画の `input_hash` が覆うのは
-  画像メディア sha。同じメディアで画像 Artifact が記録し直されても動画は有効）
+- **並行数は二重に効く**: worker の `max_concurrent_activities`（worker プロセスの Settings）と、workflow 入力の
+  semaphore（API プロセスの Settings から渡る）。環境が食い違うと**小さい方**が黙って効く。既定値の宣言元は
+  `contracts/production_activities.py` の `DEFAULT_*` の1箇所で、単一宣言元テストが Settings / workflow 入力との一致を検査する。
 
 ### 5. INV-15 の限定例外: ローカル非課金の生成器
 
@@ -202,6 +178,34 @@ Activity 境界（画像・音声・動画で共通、`infrastructure/production
 - DB の接続断・操作エラー、オブジェクトストアの通信失敗・5xx、作業領域の `OSError` は `TransientError`
   （入力 Artifact の読み取りで起きても `ProductionInputInvalidError` にしない）
 - 未分類の例外はそのまま（Temporal の retry と workflow の型名分類 / INV-12）
+
+### 8. 入場・再開・引き継ぎ・cancel（ADR-0015 の「再開 API が無い」負債を production で解消）
+
+`POST /episodes/{id}/production` が再試行 / 再開の操作である。admit が権威、API は明らかに入れない
+状態（下表以外かつ `in_progress` 以外）を 409 で先に返すだけ。
+
+| Episode 状態 | admit | 事象 |
+|---|---|---|
+| `storyboard_ready` / `assets_ready` | 入る | `STAGE_ADMITTED` |
+| `needs_work` | 記録トークンが**同じ production workflow id** なら入る | `RETRY_ADMITTED` |
+| `blocked` | 同上 | `RESUMED`（人間の POST が再開） |
+| `in_progress` | トークン完全一致（Activity 再実行）/ 同じ workflow id の**閉じた** run なら引き継ぐ | なし（トークンを書き換え） |
+| `failed` / `cancelled` / 他工程で止まった状態 / その他 | 入らない | — |
+
+- 引き継ぎの判定は port `WorkflowRunInspector`（`workers/production/run_inspector.py`）。Temporal の
+  describe で RUNNING 以外は閉じている、NotFound も閉じている、それ以外の RPC 失敗は `TransientError`
+  （retry）。**走っている run は決して引き継がない**
+- 再開は production 自身が止めた Episode だけ。他工程（storyboard 等）で止まった Episode を production から
+  再開すると上流を飛ばすため
+- 再実行で済んだシーンは再課金しない: 現行 Artifact の再利用（INV-17）と台帳の実効ラウンド（§3）
+- **workflow の cancel**（運用者の操作）: 進行中の枝の cancel 完了を待ち、cancel されない形で
+  record_failure（`needs_input` → `blocked`、要約に `cancelled`）を記録してから cancel を再送出する。
+  terminal `cancelled` にしないのは、Episode の中止（`CANCELLED` 事象）は別の人間の判断であり、
+  workflow を止めただけでは作品を諦めたことにならないため。再開は POST
+- record_failure が閉じる job は workflow 自身が作る `ASSEMBLE_PRODUCTION` だけ。`PRODUCE_SCENE_*` は
+  メディア worker の所有物で、cancel 中も worker が書くので触らない（非終端のまま次の実行の `find_open` が再利用）
+- マニフェストは動画の元画像を**メディア本体の sha256**で照合する（動画の `input_hash` が覆うのは
+  画像メディア sha。同じメディアで画像 Artifact が記録し直されても動画は有効）
 
 ## Alternatives
 

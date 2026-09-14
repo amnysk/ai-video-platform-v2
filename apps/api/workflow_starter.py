@@ -9,6 +9,11 @@ from typing import Protocol
 
 from temporalio.client import Client
 
+from contracts.production_activities import (
+    DEFAULT_AWAIT_REEXECUTIONS,
+    DEFAULT_IMAGE_MAX_ROUNDS,
+    DEFAULT_VIDEO_MAX_ROUNDS,
+)
 from contracts.states import (
     PIPELINE_WORKFLOWS,
     PRODUCTION_WORKFLOW,
@@ -16,11 +21,6 @@ from contracts.states import (
     Pipeline,
 )
 from infrastructure.config import Settings
-
-#: Settings に値が無いときの既定（workflow の入力 dataclass の既定と揃える / ADR-0017）
-DEFAULT_IMAGE_MAX_ROUNDS = 3
-DEFAULT_VIDEO_MAX_ROUNDS = 2
-DEFAULT_AWAIT_REEXECUTIONS = 3
 
 
 class WorkflowStarter(Protocol):

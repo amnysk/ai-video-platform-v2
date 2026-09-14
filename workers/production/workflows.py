@@ -41,6 +41,12 @@ with workflow.unsafe.imports_passed_through():
         AWAIT_HEARTBEAT_TIMEOUT_SECONDS,
         AWAIT_MAX_ATTEMPTS,
         AWAIT_START_TO_CLOSE_SECONDS,
+        DEFAULT_AWAIT_REEXECUTIONS,
+        DEFAULT_IMAGE_CONCURRENCY,
+        DEFAULT_IMAGE_MAX_ROUNDS,
+        DEFAULT_VIDEO_CONCURRENCY,
+        DEFAULT_VIDEO_MAX_ROUNDS,
+        DEFAULT_VOICE_CONCURRENCY,
         IMAGE_AWAIT,
         IMAGE_SUBMIT,
         PRODUCTION_ADMIT,
@@ -147,8 +153,6 @@ REAWAIT_ERROR_TYPE_NAMES: frozenset[str] = frozenset(
 NEW_ROUND_ERROR_TYPE_NAMES: frozenset[str] = frozenset(
     {ProviderJobFailedError.__name__, MediaValidationError.__name__}
 )
-#: 同じ予約に対する追加の await Activity 実行回数の既定（各実行の中で Temporal retry が別にある）。
-DEFAULT_AWAIT_REEXECUTIONS = 3
 
 #: ローカル非課金の音声合成（ADR-0017 §5 の限定例外）。
 VOICE_RETRY_POLICY = RetryPolicy(
@@ -176,13 +180,13 @@ class ProductionWorkflowInput:
     episode_id: str
     #: workflow 側で同時に走らせる submit+await の上限（worker の並行数設定と揃える）。
     #: provider へ未消化の submit を積み上げないための枠。
-    image_concurrency: int = 2
-    video_concurrency: int = 1
-    voice_concurrency: int = 1
+    image_concurrency: int = DEFAULT_IMAGE_CONCURRENCY
+    video_concurrency: int = DEFAULT_VIDEO_CONCURRENCY
+    voice_concurrency: int = DEFAULT_VOICE_CONCURRENCY
     #: この実行の中での submit 試行の予算（台帳のラウンド番号ではない）
-    image_max_rounds: int = 3
-    video_max_rounds: int = 2
-    #: 状態不明の await 失敗に対し、同じ予約で await を追加実行する回数
+    image_max_rounds: int = DEFAULT_IMAGE_MAX_ROUNDS
+    video_max_rounds: int = DEFAULT_VIDEO_MAX_ROUNDS
+    #: 状態不明の await 失敗に対し、同じ予約で await を追加実行する回数（既定は契約の定数）
     await_reexecutions: int = DEFAULT_AWAIT_REEXECUTIONS
     #: メディア Activity の task queue。既定は契約の定数。テストが共有サーバ上で
     #: 本物のメディア worker と取り合わないように差し替えられる。
@@ -657,7 +661,6 @@ async def _rounds(
 
 __all__ = [
     "AWAIT_RETRY_POLICY",
-    "DEFAULT_AWAIT_REEXECUTIONS",
     "FAILURE_PRECEDENCE",
     "NEW_ROUND_ERROR_TYPE_NAMES",
     "REAWAIT_ERROR_TYPE_NAMES",
