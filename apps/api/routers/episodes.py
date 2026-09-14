@@ -20,6 +20,7 @@ from apps.api.schemas import (
     CreateEpisodeResponse,
     EpisodeView,
     JobView,
+    StartProductionResponse,
     StartStoryboardResponse,
 )
 from apps.api.workflow_starter import WorkflowStarter
@@ -86,6 +87,37 @@ async def start_storyboard(
             detail=f"storyboard workflow already running for episode {episode.id}",
         ) from exc
     return StartStoryboardResponse(
+        episode_id=episode.id, status=episode.status, workflow_id=workflow_id
+    )
+
+
+@router.post(
+    "/{episode_id}/production",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=StartProductionResponse,
+)
+async def start_production(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+) -> StartProductionResponse:
+    """production 工程を起動するだけ（INV-16 / ADR-0017）。
+
+    状態の前提（``storyboard_ready`` / ``assets_ready``）は workflow の admit Activity が判定する。
+    """
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+
+    try:
+        workflow_id = await starter.start_production_workflow(episode_id=episode.id)
+    except WorkflowAlreadyStartedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"production workflow already running for episode {episode.id}",
+        ) from exc
+    return StartProductionResponse(
         episode_id=episode.id, status=episode.status, workflow_id=workflow_id
     )
 

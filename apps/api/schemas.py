@@ -30,6 +30,13 @@ class StartStoryboardResponse(BaseModel):
     workflow_id: str
 
 
+class StartProductionResponse(BaseModel):
+    episode_id: str
+    #: 起動を受け付けた時点の状態。工程に入れたかは workflow の admit が決める。
+    status: EpisodeStatus
+    workflow_id: str
+
+
 class JobView(BaseModel):
     id: str
     type: JobType
