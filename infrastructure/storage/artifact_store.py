@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from domain.artifact.hashing import sha256_hex
 from domain.errors import ArtifactConflictError
 
 __all__ = [
@@ -21,7 +20,11 @@ __all__ = [
     "PutResult",
     "read_bytes_source",
     "readback_sha256",
+    "STREAM_CHUNK_BYTES",
 ]
+
+#: 大きなメディア（完成動画は最大 8GiB）を流して読むときの1回分。
+STREAM_CHUNK_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,8 +49,11 @@ def read_bytes_source(data: bytes | Path) -> bytes:
 
 
 async def readback_sha256(store: ArtifactStore, key: str) -> str:
-    """保存物を読み戻して sha256 を取る。一致しない保存物を「現行」にしないための検査。"""
-    return sha256_hex(await store.get_bytes(key))
+    """保存物を読み戻して sha256 を取る。一致しない保存物を「現行」にしないための検査。
+
+    本体をメモリに載せず、ストアから流しながら計算する（``ArtifactStore.sha256_of``）。
+    """
+    return await store.sha256_of(key)
 
 
 @runtime_checkable
@@ -80,6 +86,18 @@ class ArtifactStore(Protocol):
 
     async def get_bytes(self, key: str) -> bytes:
         """無ければ ``KeyError``。"""
+        ...
+
+    async def sha256_of(self, key: str) -> str:
+        """流しながら読んで sha256 を返す（全体をメモリに載せない）。無ければ ``KeyError``。"""
+        ...
+
+    async def download_to(self, key: str, path: Path) -> str:
+        """保存物を ``path`` へ流して書き、書いた内容の sha256 を返す。無ければ ``KeyError``。"""
+        ...
+
+    async def put_file(self, key: str, path: Path, content_type: str) -> PutResult:
+        """ファイルを流して保存する（大きなメディア用）。immutability は ``put_bytes`` と同じ。"""
         ...
 
     async def stat(self, key: str) -> ObjectStat:

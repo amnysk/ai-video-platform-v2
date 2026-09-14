@@ -100,12 +100,18 @@ audio_mix（混合規則: サンプルレート・ch・利得・正規化なし�
 
 ### 8. Temporal
 
-- `RENDER_WORKFLOW = ("RenderWorkflow", "render")`、workflow id `episode-{id}-render`、task queue `render`
-  （`RENDER_TASK_QUEUE`）。Activity 名と入出力は `contracts/render_activities.py`
+- `RENDER_WORKFLOW = ("RenderWorkflow", "render")`、workflow id `episode-{id}-render`。
+  workflow と状態系 Activity は task queue `render`（`RENDER_TASK_QUEUE`、通常の並行枠）、
+  重い描画 Activity だけ `render-media`（`RENDER_MEDIA_TASK_QUEUE`、並行数 `render_concurrency`）。
+  同じ枠を共有すると長い描画の間に他 Episode の admit / record_failure が待たされ、状態系の
+  schedule_to_close を超えうるため（production のメディア queue 分割と同じ考え方）。1プロセスが両方の Worker を持つ。
+  Activity 名と入出力は `contracts/render_activities.py`
 - admit → `render_final_video`（単一の重い Activity）→ mark_ready、失敗時は record_failure
 - 描画 Activity: start_to_close `DEFAULT_RENDER_TIMEOUT_SECONDS`（30分）、heartbeat timeout 60秒、
   heartbeat は10秒以内ごと、retry 最大3回（retryable の型だけ）、`WAIT_CANCELLATION_COMPLETED`。
   cancel では子プロセスグループへ終了要求 → 5秒 → 強制終了 → 作業領域を片付けて再送出
+- 完成動画本体の保存・読み戻し sha256・素材の取り出しはストアから**流して**行い、全体をメモリに載せない
+  （`ArtifactStore.put_file` / `sha256_of` / `download_to`）
 - API: `POST /episodes/{id}/render`（任意で `render_profile_id`）
 
 ### 9. 失敗クラス
