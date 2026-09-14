@@ -131,3 +131,29 @@ def test_video_for_wrong_scene_is_integrity_error() -> None:
     )
     with pytest.raises(RenderInputIntegrityError):
         changed.plan()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("max_duration_ms", 24_999), ("min_duration_ms", 25_001)]
+)
+def test_total_outside_profile_limits_fails_before_rendering(field: str, value: int) -> None:
+    profile = get_render_profile("shorts_vertical")
+    limits = profile.limits.model_copy(update={field: value})
+    if field == "min_duration_ms":
+        limits = limits.model_copy(update={"max_duration_ms": 180_000})
+    profile = profile.model_copy(update={"limits": limits})
+    with pytest.raises(DurationReconciliationError):
+        render_inputs().plan(profile=profile)
+
+
+def test_total_on_profile_limits_is_accepted() -> None:
+    profile = get_render_profile("shorts_vertical")
+    limits = profile.limits.model_copy(
+        update={"min_duration_ms": 25_000, "max_duration_ms": 25_000}
+    )
+    assert (
+        render_inputs()
+        .plan(profile=profile.model_copy(update={"limits": limits}))
+        .total_duration_ms
+        == 25_000
+    )
