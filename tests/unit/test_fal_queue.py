@@ -14,6 +14,7 @@ from domain.errors import (
     ProviderSubmitAmbiguousError,
     ProviderUnavailableError,
     TransientError,
+    UnreconciledReservationError,
 )
 from infrastructure.providers.fal_queue import (
     QUEUE_BASE_URL,
@@ -116,7 +117,9 @@ async def test_submit_transport_failures_split_not_accepted_from_ambiguous(exc, 
         await _client(handler).submit(ENDPOINT, {"prompt": "x"})
 
 
-async def test_submit_refuses_urls_off_the_queue_host() -> None:
+async def test_submit_accepted_with_off_host_urls_still_returns_the_ref() -> None:
+    """2xx + request_id は受理。URL の異常で「受理されなかった」にしない（台帳に参照を残す）。"""
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -127,8 +130,48 @@ async def test_submit_refuses_urls_off_the_queue_host() -> None:
             },
         )
 
-    with pytest.raises(ProviderJobFailedError):
+    submission = await _client(handler).submit(ENDPOINT, {})
+    assert submission.request_id == "r"
+    assert FalSubmission.from_ref(submission.to_ref()).status_url == "https://evil.example/status"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"request_id": "r", "status_url": 12, "response_url": ["x"]},
+        {"request_id": "r", "cancel_url": {"nested": True}},
+    ],
+)
+async def test_submit_accepted_with_odd_fields_never_reports_not_accepted(body) -> None:
+    submission = await _client(lambda r: httpx.Response(200, json=body)).submit(ENDPOINT, {})
+    assert submission.request_id == "r"
+
+
+async def test_submit_unexpected_http_error_after_send_is_ambiguous() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.DecodingError("bad gzip")
+
+    with pytest.raises(ProviderSubmitAmbiguousError):
         await _client(handler).submit(ENDPOINT, {})
+
+
+@pytest.mark.parametrize("what", ["status", "result"])
+async def test_poll_off_host_ref_is_unreconciled_and_never_sends_the_key(what) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"status": "COMPLETED"})
+
+    evil = FalSubmission(
+        endpoint_id=ENDPOINT,
+        request_id="r",
+        status_url="https://evil.example/status",
+        response_url="https://evil.example/r",
+    )
+    with pytest.raises(UnreconciledReservationError):
+        await getattr(_client(handler), what)(evil)
+    assert seen == []
 
 
 @pytest.mark.parametrize(
@@ -252,11 +295,28 @@ async def test_download_rejects_non_https() -> None:
         await _client(lambda r: httpx.Response(200)).download("http://cdn.example/a", write)
 
 
-def test_unreadable_ref_is_a_job_failure() -> None:
-    with pytest.raises(ProviderJobFailedError):
-        FalSubmission.from_ref("fake-job-1")
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "fake-job-1",
+        '{"v": 9}',
+        '{"v": 1, "endpoint": "e"}',
+        "[]",
+        '{"v": 1, "endpoint": "e", "request_id": "r", "status_url": 1, "response_url": "u"}',
+    ],
+)
+def test_unreadable_ref_is_unreconciled(ref) -> None:
+    with pytest.raises(UnreconciledReservationError):
+        FalSubmission.from_ref(ref)
 
 
 def test_missing_key_refuses_to_build() -> None:
     with pytest.raises(ProviderUnavailableError):
         FalQueueClient("")
+
+
+def test_api_read_timeout_is_configurable_and_short_by_default() -> None:
+    client = FalQueueClient(KEY)
+    assert client._api.timeout.read == 30  # noqa: SLF001
+    custom = FalQueueClient(KEY, read_timeout_seconds=12)
+    assert custom._api.timeout.read == 12 and custom._cdn.timeout.read == 12  # noqa: SLF001

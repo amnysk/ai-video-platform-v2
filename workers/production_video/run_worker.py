@@ -39,12 +39,13 @@ async def main() -> None:
     await store.ensure_bucket()
     session_factory = session_factory_from_settings(settings)
 
+    fal_key = settings.fal_key.get_secret_value()
     fal = FalQueueClient(
-        settings.fal_key, timeout_seconds=settings.production_submit_timeout_seconds
+        fal_key,
+        timeout_seconds=settings.production_submit_timeout_seconds,
+        read_timeout_seconds=settings.production_fal_read_timeout_seconds,
     )
-    storage = FalStorageClient(
-        settings.fal_key, timeout_seconds=settings.production_submit_timeout_seconds
-    )
+    storage = FalStorageClient(fal_key, timeout_seconds=settings.production_submit_timeout_seconds)
     generator = FalSeedanceVideoGenerator(fal, storage)
     activities = VideoProductionActivities(
         session_factory=session_factory,

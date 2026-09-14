@@ -24,7 +24,7 @@ from contracts.states import (
 from domain.artifact.entities import ArtifactMetadata
 from domain.episode.entities import Episode
 from domain.episode.transitions import EpisodeEvent, Rejected, transition_episode
-from domain.errors import InvalidTransitionError
+from domain.errors import InvalidTransitionError, UnreconciledReservationError
 from domain.job.entities import Job
 from domain.job.transitions import JobEvent, transition_job
 from domain.provider.reservations import ReservationEvent, transition_reservation
@@ -530,6 +530,41 @@ class ProviderReservationRepository:
         row = (await self._session.scalars(stmt)).first()
         return _to_reservation(row) if row else None
 
+    async def find_latest_for_input(
+        self,
+        episode_id: uuid.UUID | str,
+        provider: ProviderCall,
+        scene_id: str | None,
+        input_hash: str,
+    ) -> ProviderReservation | None:
+        """同じ入力（Episode + provider + scene + input_hash）で最も大きいラウンドの予約。
+
+        台帳のラウンドは workflow の run ごとの試行番号ではなく**ここから導く**（ADR-0017 §3）。
+        同じラウンドの並行 INSERT は ``idempotency_key`` の一意制約が止める。
+        """
+        scene_filter = (
+            ProviderReservationRow.scene_id.is_(None)
+            if scene_id is None
+            else ProviderReservationRow.scene_id == scene_id
+        )
+        stmt = (
+            select(ProviderReservationRow)
+            .where(
+                ProviderReservationRow.episode_id == _as_uuid(episode_id),
+                ProviderReservationRow.provider == provider.value,
+                scene_filter,
+                ProviderReservationRow.input_hash == input_hash,
+            )
+            .order_by(
+                ProviderReservationRow.round.desc(),
+                ProviderReservationRow.reserved_at.desc(),
+                ProviderReservationRow.id,
+            )
+            .limit(1)
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_reservation(row) if row else None
+
     async def find_unreconciled(
         self,
         episode_id: uuid.UUID | str,
@@ -599,11 +634,32 @@ class ProviderReservationRepository:
 
         状態は ``reserved`` のまま。``dispatched_at`` が「呼んだ可能性」の境界であり、
         NULL なら起動前 crash（呼んでいない証拠）と判定できる。
+
+        検査と書き込みを1文の条件付き UPDATE にする（``reserved`` かつ未 dispatch の行だけ）。
+        並行する2つの submit が同じ予約を読んでも、dispatch できるのは片方だけ。
+        更新0行は「既に呼んだかもしれない行」なので ``UnreconciledReservationError``（人手照合）。
         """
-        row = await self._row(reservation_id)
-        row.dispatched_at = _now()
-        await self._session.flush()
-        return _to_reservation(row)
+        table = ProviderReservationRow
+        await self._row(reservation_id)  # 行が無ければ InvalidTransitionError
+        result = await self._session.execute(
+            update(table)
+            .where(
+                table.id == _as_uuid(reservation_id),
+                table.status == ReservationStatus.RESERVED.value,
+                table.dispatched_at.is_(None),
+            )
+            .values(dispatched_at=_now())
+            .execution_options(synchronize_session=False)
+        )
+        if getattr(result, "rowcount", 0) != 1:
+            raise UnreconciledReservationError(
+                f"reservation {reservation_id} is already dispatched or closed; "
+                "refusing to dispatch it again"
+            )
+        fresh = await self._session.get(table, _as_uuid(reservation_id), populate_existing=True)
+        if fresh is None:
+            raise InvalidTransitionError(f"reservation not found: {reservation_id}")
+        return _to_reservation(fresh)
 
     async def record_provider_job_ref(
         self, reservation_id: uuid.UUID | str, provider_job_ref: str

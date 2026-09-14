@@ -251,6 +251,6 @@ def test_settings_defaults_for_production() -> None:
         1,
         1,
     )
-    assert settings.production_await_timeout_seconds == 2400
+    assert settings.production_await_timeout_seconds == 2100
     assert settings.production_await_heartbeat_seconds == 90
     assert "fal" not in repr(settings).lower()

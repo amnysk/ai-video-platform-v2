@@ -3,8 +3,9 @@
 Activity は「入力から出力 Artifact を作って結果を返す」だけ。次に何をするかは決めない（INV-4）。
 他の worker を import しない（INV-3）。有料呼び出しの順序は ``infrastructure.production.paid_job``。
 
-失敗は domain の例外型をそのまま送出する。Temporal は ``ApplicationError.type`` に型名を載せ、
-workflow が ``failure_class_from_type_name`` で分類する（storyboard と同じ）。
+失敗は ``infrastructure.production.activity_errors`` が ``ApplicationError(type=<型名>)`` にする
+（needs_input / permanent は non_retryable、DB・ストア・作業領域の一時障害は ``TransientError``）。
+workflow は ``failure_class_from_type_name`` で分類する（voice / video と同じ）。
 """
 
 from __future__ import annotations
@@ -37,8 +38,10 @@ from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key, media_object_key
 from domain.errors import (
     ArtifactConflictError,
+    MediaValidationError,
     ProductionInputInvalidError,
     ProductionInputMissingError,
+    TransientError,
     classify_failure,
 )
 from domain.job.transitions import job_event_for_failure
@@ -52,6 +55,11 @@ from infrastructure.db.repositories import (
     ProviderReservationRepository,
 )
 from infrastructure.media.normalize import normalize_image_9x16
+from infrastructure.production.activity_errors import (
+    AWAIT_ROUND_FINAL_ERRORS,
+    raise_activity_error,
+    translate_error,
+)
 from infrastructure.production.paid_job import PaidJobRunner, PaidJobSpec, Reused
 from infrastructure.storage.artifact_store import ArtifactStore, readback_sha256
 
@@ -103,6 +111,13 @@ class ImageProductionActivities:
 
     @activity.defn(name=IMAGE_SUBMIT)
     async def submit(self, request: ImageSubmitRequest) -> SubmitResult:
+        """ドメイン例外は型名つき ``ApplicationError``、インフラの一時障害は ``TransientError``。"""
+        try:
+            return await self._submit(request)
+        except Exception as exc:
+            raise_activity_error(exc)
+
+    async def _submit(self, request: ImageSubmitRequest) -> SubmitResult:
         loaded = await self._load_storyboard(
             request.episode_id, request.storyboard_artifact_id, request.scene_id
         )
@@ -138,6 +153,16 @@ class ImageProductionActivities:
 
     @activity.defn(name=IMAGE_AWAIT)
     async def await_image(self, request: ImageAwaitRequest) -> SceneArtifactResult:
+        """ラウンド確定済みの失敗（``AWAIT_ROUND_FINAL_ERRORS``）は Activity の retry を止める。
+
+        型名は変えないので workflow は retryable として新ラウンドへ進む（ADR-0017 §4）。
+        """
+        try:
+            return await self._await_image(request)
+        except Exception as exc:
+            raise_activity_error(exc, final_for_activity=AWAIT_ROUND_FINAL_ERRORS)
+
+    async def _await_image(self, request: ImageAwaitRequest) -> SceneArtifactResult:
         loaded = await self._load_storyboard(
             request.episode_id, request.storyboard_artifact_id, request.scene_id
         )
@@ -182,9 +207,13 @@ class ImageProductionActivities:
             return _result(output.artifact, reused=True)
 
         # spent は commit 済み。ここから検証（落ちても課金の事実は残る / ADR-0013）
-        normalized = normalize_image_9x16(output.data)
-        info = self._probe.probe_image(normalized.data)
-        validate_image(info, len(normalized.data))
+        try:
+            normalized = normalize_image_9x16(output.data)
+            info = self._probe.probe_image(normalized.data)
+            validate_image(info, len(normalized.data))
+        except MediaValidationError as exc:
+            await self._record_rejected(request.reservation_id, exc)
+            raise
 
         media_sha = sha256_hex(normalized.data)
         media_key = media_object_key(
@@ -256,6 +285,15 @@ class ImageProductionActivities:
         await self._succeed_job(job_id)
         return _result(meta, reused=False)
 
+    async def _record_rejected(self, reservation_id: str, exc: BaseException) -> None:
+        """検証に落ちた evidence を台帳に記録する（次の submit が新ラウンドへ進む）。"""
+        try:
+            await self._runner.record_output_rejected(reservation_id, exc)
+        except Exception:  # 記録の失敗で検証の失敗を隠さない
+            logger.warning(
+                "could not record rejected output reservation=%s", reservation_id, exc_info=True
+            )
+
     # ------------------------------------------------------------------ 入力
 
     async def _load_storyboard(
@@ -277,6 +315,8 @@ class ImageProductionActivities:
         try:
             payload = await self._store.get_json(meta.object_key)
         except Exception as exc:
+            if isinstance(translate_error(exc), TransientError):
+                raise  # ストアの通信障害は入力の欠陥ではない（境界で TransientError）
             raise ProductionInputInvalidError(
                 f"storyboard {meta.object_key} is not readable: {type(exc).__name__}"
             ) from exc
@@ -343,9 +383,13 @@ class ImageProductionActivities:
         async with self._session_factory() as session:
             jobs = JobRepository(session)
             job = await jobs.get(job_id)
-            if job is not None and job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
-                await jobs.mark_skipped(job_id)
-                await session.commit()
+            if job is None or job.status in _JOB_DONE:
+                return
+            if job.status is JobStatus.RETRYABLE_FAILED:
+                # 表に retryable_failed → skipped の辺は無い。RETRY_ADMITTED で running へ戻す
+                await jobs.start(job_id)
+            await jobs.mark_skipped(job_id)
+            await session.commit()
 
     async def _succeed_job(self, job_id: str) -> None:
         async with self._session_factory() as session:
@@ -359,24 +403,28 @@ class ImageProductionActivities:
             await session.commit()
 
     async def _mark_job_failed(self, job_id: str, exc: BaseException) -> None:
-        failure_class = classify_failure(exc)
-        async with self._session_factory() as session:
-            jobs = JobRepository(session)
-            job = await jobs.get(job_id)
-            if job is None or job.status in _JOB_DONE:
-                return
-            if job.status is JobStatus.RETRYABLE_FAILED and failure_class in {
-                FailureClass.TRANSIENT,
-                FailureClass.RETRYABLE,
-            }:
-                return
-            await jobs.record_failure(
-                job_id,
-                event=job_event_for_failure(failure_class),
-                failure_class=failure_class,
-                error_summary=f"{type(exc).__name__}: {exc}",
-            )
-            await session.commit()
+        failure = translate_error(exc)
+        failure_class = classify_failure(failure)
+        try:
+            async with self._session_factory() as session:
+                jobs = JobRepository(session)
+                job = await jobs.get(job_id)
+                if job is None or job.status in _JOB_DONE:
+                    return
+                if job.status is JobStatus.RETRYABLE_FAILED and failure_class in {
+                    FailureClass.TRANSIENT,
+                    FailureClass.RETRYABLE,
+                }:
+                    return
+                await jobs.record_failure(
+                    job_id,
+                    event=job_event_for_failure(failure_class),
+                    failure_class=failure_class,
+                    error_summary=f"{type(failure).__name__}: {failure}",
+                )
+                await session.commit()
+        except Exception:  # 記録の失敗（DB 断など）で元の失敗を隠さない
+            logger.warning("could not record %s job failure job=%s", "image", job_id, exc_info=True)
 
 
 def _activity_heartbeat(*details: Any) -> None:

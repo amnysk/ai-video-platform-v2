@@ -6,6 +6,7 @@ import dataclasses
 import itertools
 
 import pytest
+from temporalio.exceptions import ApplicationError
 
 from contracts.artifacts import build_scene_image_artifact, parse_scene_video_artifact
 from contracts.production_activities import VideoAwaitRequest, VideoSubmitRequest
@@ -13,10 +14,7 @@ from contracts.states import ArtifactType, JobStatus, JobType, ProviderCall, Res
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key, media_object_key
 from domain.errors import (
-    MediaValidationError,
-    ProductionInputInvalidError,
     ProviderInvocationError,
-    ProviderPollDeadlineError,
 )
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
@@ -201,7 +199,7 @@ async def test_upload_failure_leaves_no_reservation(
     ep, sb, images = await seed(session_factory, artifact_store)
     gen = _FailingPrepare()
     acts = make_activities(session_factory, artifact_store, gen, tmp_path)
-    with pytest.raises(ProviderInvocationError):
+    with pytest.raises(ApplicationError, match="^ProviderInvocationError"):
         await acts.submit(_submit(ep, sb, images["sb1"]))
     assert gen.submit_calls == 0
     assert await _reservations(session_factory, ep) == []
@@ -215,7 +213,7 @@ async def test_await_resume_never_resubmits(session_factory, artifact_store, tmp
         session_factory, artifact_store, gen, tmp_path, await_deadline_seconds=0
     )
     submitted = await impatient.submit(_submit(ep, sb, images["sb1"]))
-    with pytest.raises(ProviderPollDeadlineError):
+    with pytest.raises(ApplicationError, match="^ProviderPollDeadlineError"):
         await impatient.await_video(_await(ep, sb, images["sb1"], submitted.reservation_id))
     patient = make_activities(session_factory, artifact_store, gen, tmp_path)
     # submit の再実行も台帳の参照から再開する
@@ -231,9 +229,9 @@ async def test_image_sha_mismatch_and_scene_mismatch_are_invalid(
 ) -> None:
     ep, sb, images = await seed(session_factory, artifact_store, scenes=("sb1", "sb2"))
     acts = make_activities(session_factory, artifact_store, FakeVideoGenerator(), tmp_path)
-    with pytest.raises(ProductionInputInvalidError):
+    with pytest.raises(ApplicationError, match="^ProductionInputInvalidError"):
         await acts.submit(_submit(ep, sb, images["sb2"], scene="sb1"))  # 別シーンの画像
-    with pytest.raises(ProductionInputInvalidError):
+    with pytest.raises(ApplicationError, match="^ProductionInputInvalidError"):
         bad = dataclasses.replace(_submit(ep, sb, images["sb1"]), requested_duration_ms=3000)
         await acts.submit(bad)
 
@@ -244,7 +242,7 @@ async def test_image_sha_mismatch_and_scene_mismatch_are_invalid(
     artifact_store._objects[image["media"]["object_key"]] = b"tampered"  # type: ignore[attr-defined]
     gen = FakeVideoGenerator()
     acts = make_activities(session_factory, artifact_store, gen, tmp_path)
-    with pytest.raises(ProductionInputInvalidError):
+    with pytest.raises(ApplicationError, match="^ProductionInputInvalidError"):
         await acts.submit(_submit(ep, sb, images["sb1"]))
     assert gen.submit_calls == 0
 
@@ -269,7 +267,7 @@ async def test_invalid_media_is_rejected_after_spending(
     kwargs = {"probe": probe} if probe else {}
     acts = make_activities(session_factory, artifact_store, gen, tmp_path, **kwargs)
     s = await acts.submit(_submit(ep, sb, images["sb1"]))
-    with pytest.raises(MediaValidationError):
+    with pytest.raises(ApplicationError, match="^MediaValidationError"):
         await acts.await_video(_await(ep, sb, images["sb1"], s.reservation_id))
     async with session_factory() as session:
         row = await ProviderReservationRepository(session).get(s.reservation_id)
@@ -288,3 +286,25 @@ def test_activity_names_match_contracts(session_factory, artifact_store, tmp_pat
     acts = make_activities(session_factory, artifact_store, FakeVideoGenerator(), tmp_path)
     names = {activity._Definition.must_from_callable(fn).name for fn in acts.all_activities()}  # type: ignore[attr-defined]
     assert names == {VIDEO_SUBMIT, VIDEO_AWAIT}
+
+
+async def test_video_round_consumed_await_is_final_and_outage_is_transient(
+    session_factory, artifact_store, tmp_path
+) -> None:
+    from domain.production.ports import JobFailed
+
+    ep, sb, images = await seed(session_factory, artifact_store)
+    gen = FakeVideoGenerator(pending_polls=0, fail_with=JobFailed("runner crashed"))
+    acts = make_activities(session_factory, artifact_store, gen, tmp_path)
+    submitted = await acts.submit(_submit(ep, sb, images["sb1"]))
+    with pytest.raises(ApplicationError) as info:
+        await acts.await_video(_await(ep, sb, images["sb1"], submitted.reservation_id))
+    assert info.value.type == "ProviderJobFailedError" and info.value.non_retryable is True
+
+    async def broken_get_bytes(key):
+        raise ConnectionResetError("reset by peer")
+
+    artifact_store.get_bytes = broken_get_bytes
+    with pytest.raises(ApplicationError) as info:
+        await acts.submit(_submit(ep, sb, images["sb1"], round=2))
+    assert info.value.type == "TransientError" and info.value.non_retryable is False
