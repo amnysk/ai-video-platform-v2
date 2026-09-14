@@ -348,3 +348,111 @@ async def test_unclassified_submit_failure_is_ambiguous_not_spent(runner, sessio
     assert row.dispatched_at is not None and row.provider_job_ref is None
     with pytest.raises(UnreconciledReservationError):
         await runner.submit(replace(spec, round=2), FakeImageGenerator(), REQUEST)
+
+
+class _SlowDownload(FakeImageGenerator):
+    async def download(self, ref, dest):
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+        await super().download(ref, dest)
+
+
+async def test_keepalive_heartbeats_while_downloading_and_storing(
+    session_factory, artifact_store, tmp_path
+) -> None:
+    runner = PaidJobRunner(
+        session_factory=session_factory,
+        store=artifact_store,
+        workdir=WorkDirectory(tmp_path / "work", forbidden=()),
+        heartbeat_interval_seconds=0.01,
+    )
+    spec = await _spec(session_factory)
+    gen = _SlowDownload(pending_polls=0)
+    outcome = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(outcome, Submitted)
+    beats: list[object] = []
+    await _await(runner, outcome.reservation_id, gen, heartbeat=beats.append)
+    download_beats = [b for b in beats if isinstance(b, dict) and b.get("phase") == "download"]
+    assert len(download_beats) >= 3
+
+
+class _ConcurrentAttemptFinishes(FakeImageGenerator):
+    """download 中に、heartbeat 切れで並行した別の await 試行が spent + Artifact まで済ませた。"""
+
+    def __init__(self, session_factory, store, **kw) -> None:
+        super().__init__(**kw)
+        self.session_factory = session_factory
+        self.store = store
+        self.reservation_id: str | None = None
+        self.episode_id: str | None = None
+        self.artifact_id: str | None = None
+
+    async def download(self, ref, dest):
+        chunks: list[bytes] = []
+
+        class _Tee:
+            async def write(self, chunk: bytes) -> None:
+                chunks.append(chunk)
+                await dest.write(chunk)
+
+        await super().download(ref, _Tee())
+        assert self.reservation_id and self.episode_id
+        key = raw_output_key(self.episode_id, self.reservation_id)
+        # 同じジョブの取得物なので、並行試行の evidence は同じバイト列
+        await self.store.put_bytes(key, b"".join(chunks), "application/octet-stream")
+        async with self.session_factory() as session:
+            await ProviderReservationRepository(session).mark_spent(
+                self.reservation_id, raw_output_key=key, reconciled_by="evidence"
+            )
+            meta = await ArtifactMetadataRepository(session).record(
+                episode_id=self.episode_id,
+                artifact_type=ArtifactType.SCENE_IMAGE,
+                schema_version="1",
+                bucket="b",
+                object_key=f"artifacts/{self.episode_id}/x.json",
+                sha256="c" * 64,
+                size_bytes=1,
+                input_hash="h" * 64,
+                scene_id="sb1",
+            )
+            await ProviderReservationRepository(session).attach_artifact(
+                self.reservation_id, meta.id
+            )
+            await session.commit()
+            self.artifact_id = meta.id
+
+
+async def test_already_spent_with_same_evidence_is_idempotent(
+    runner, session_factory, artifact_store
+) -> None:
+    spec = await _spec(session_factory)
+    gen = _ConcurrentAttemptFinishes(session_factory, artifact_store, pending_polls=0)
+    outcome = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(outcome, Submitted)
+    gen.reservation_id, gen.episode_id = outcome.reservation_id, spec.episode_id
+    output = await _await(runner, outcome.reservation_id, gen)
+    assert output.reservation.status is ReservationStatus.SPENT
+    assert output.artifact is not None and output.artifact.id == gen.artifact_id
+
+
+async def test_already_spent_with_different_evidence_still_refuses(runner, session_factory) -> None:
+    from domain.errors import InvalidTransitionError
+
+    class _OtherEvidence(FakeImageGenerator):
+        reservation_id = ""
+
+        async def download(self, ref, dest):
+            await super().download(ref, dest)
+            async with session_factory() as session:
+                await ProviderReservationRepository(session).mark_spent(
+                    self.reservation_id, raw_output_key=None, reconciled_by="conservative"
+                )
+                await session.commit()
+
+    spec = await _spec(session_factory)
+    gen = _OtherEvidence(pending_polls=0)
+    outcome = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(outcome, Submitted)
+    gen.reservation_id = outcome.reservation_id
+    with pytest.raises(InvalidTransitionError):
+        await _await(runner, outcome.reservation_id, gen)

@@ -296,8 +296,14 @@ async def test_download_rejects_non_https() -> None:
 
 
 @pytest.mark.parametrize(
-    "ref", ["fake-job-1", '{"v": 9}', '{"v": 1, "endpoint": "e"}', "[]", '{"v": 1, "endpoint": "e", '
-    '"request_id": "r", "status_url": 1, "response_url": "u"}']
+    "ref",
+    [
+        "fake-job-1",
+        '{"v": 9}',
+        '{"v": 1, "endpoint": "e"}',
+        "[]",
+        '{"v": 1, "endpoint": "e", "request_id": "r", "status_url": 1, "response_url": "u"}',
+    ],
 )
 def test_unreadable_ref_is_unreconciled(ref) -> None:
     with pytest.raises(UnreconciledReservationError):
@@ -307,3 +313,10 @@ def test_unreadable_ref_is_unreconciled(ref) -> None:
 def test_missing_key_refuses_to_build() -> None:
     with pytest.raises(ProviderUnavailableError):
         FalQueueClient("")
+
+
+def test_api_read_timeout_is_configurable_and_short_by_default() -> None:
+    client = FalQueueClient(KEY)
+    assert client._api.timeout.read == 30  # noqa: SLF001
+    custom = FalQueueClient(KEY, read_timeout_seconds=12)
+    assert custom._api.timeout.read == 12 and custom._cdn.timeout.read == 12  # noqa: SLF001

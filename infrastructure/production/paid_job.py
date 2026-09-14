@@ -10,12 +10,18 @@ submit: 再利用確認 → 未照合確認 → reserve **commit** → dispatche
 await:  参照を台帳から読む → poll（heartbeat）→ download → 生の取得物を ``provider-raw/`` へ →
         ``mark_spent(evidence)`` **commit** → 呼び出し側へ返す（検証はその後）
 
+heartbeat: poll の各回に加え、download・evidence 保存・spent の commit の間は背景タスクが
+``heartbeat_interval_seconds`` ごとに送る（1つの長い await で heartbeat timeout を越えない）。
+並行した別の await 試行（heartbeat 切れの旧試行）が同じ evidence で先に spent にしていたら、
+それを受け入れて続ける（紐づいた Artifact があればそれを返す）。
+
 submit の失敗:
 
 - ``ProviderSubmitAmbiguousError`` / cancel: 予約は ``reserved`` + dispatched + 参照なしで残す
   （曖昧の証拠。人手照合まで同じシーンの新ラウンドを止める）
 - adapter が「受理されなかった」と分類した例外（``NOT_ACCEPTED_SUBMIT_ERRORS``: 接続前の失敗・
-  429・4xx）だけ: ADR-0013 の「戻ってきた上での失敗」なので ``spent`` + ``reconciled_by="conservative"``。
+  429・4xx）だけ: ADR-0013 の「戻ってきた上での失敗」なので
+  ``spent`` + ``reconciled_by="conservative"``。
   台帳に「受理されなかった」辺は無く、``abandoned`` は人手専用なので、課金された前提で確定して
   次ラウンドを進める（安全側。見積もり額は過大計上になりうる / ADR-0017 負債）
 - それ以外の例外はすべて曖昧扱い（``ProviderSubmitAmbiguousError`` として送出し、予約は残す）
@@ -24,10 +30,11 @@ submit の失敗:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -38,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from contracts.states import ArtifactType, ProviderCall, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
 from domain.errors import (
+    InvalidTransitionError,
     MediaValidationError,
     ProviderJobFailedError,
     ProviderPollDeadlineError,
@@ -61,6 +69,8 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_RAW_PREFIX = "provider-raw"
 _COST_QUANTUM = Decimal("0.0001")
+#: 長い単発の await（download / 保存 / commit）の間に送る heartbeat の間隔（秒）
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 20.0
 #: submit がこれらを投げたら「受理されていない」と adapter が示している（fal_queue の分類）。
 #: ここに無い例外は受理されたか分からないものとして扱う（再送しない・消さない）。
 NOT_ACCEPTED_SUBMIT_ERRORS: tuple[type[Exception], ...] = (
@@ -166,10 +176,12 @@ class PaidJobRunner:
         session_factory: async_sessionmaker[AsyncSession],
         store: ArtifactStore,
         workdir: WorkDirectory,
+        heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
         self._workdir = workdir
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
 
     # ------------------------------------------------------------------ submit
 
@@ -310,9 +322,10 @@ class PaidJobRunner:
 
         # 取得物の保存と spent の commit の間で落ちていた: 保存済みの取得物が evidence
         if await self._store.exists(raw_key):
-            await self._mark_spent_with_evidence(reservation.id, raw_key)
-            data = await self._store.get_bytes(raw_key)
-            return PaidOutput(await self._load(reservation_id), data, raw_key)
+            async with self._keepalive(heartbeat, reservation.id, "evidence"):
+                await self._mark_spent_with_evidence(reservation.id, raw_key)
+                data = await self._store.get_bytes(raw_key)
+                return await self._output_after_spent(reservation_id, data, raw_key)
 
         ref = ProviderJobRef(reservation.provider_job_ref)
         started = clock()
@@ -339,14 +352,16 @@ class PaidJobRunner:
                 )
             await sleep(poll_interval_seconds)
 
-        data = await self._download(reservation, generator, ref, max_bytes=max_bytes)
+        async with self._keepalive(heartbeat, reservation.id, "download"):
+            data = await self._download(reservation, generator, ref, max_bytes=max_bytes)
         if heartbeat is not None:
             heartbeat({"reservation_id": reservation.id, "downloaded": len(data)})
 
-        await self._store_result_evidence(reservation, generator, ref)
-        await self._store.put_bytes(raw_key, data, "application/octet-stream")
-        await self._mark_spent_with_evidence(reservation.id, raw_key)
-        return PaidOutput(await self._load(reservation_id), data, raw_key)
+        async with self._keepalive(heartbeat, reservation.id, "evidence"):
+            await self._store_result_evidence(reservation, generator, ref)
+            await self._store.put_bytes(raw_key, data, "application/octet-stream")
+            await self._mark_spent_with_evidence(reservation.id, raw_key)
+            return await self._output_after_spent(reservation_id, data, raw_key)
 
     async def attach_artifact(self, session: AsyncSession, reservation_id: str, artifact_id: str):
         """呼び出し側の Artifact 記録と同じトランザクションで紐づける。"""
@@ -414,11 +429,68 @@ class PaidJobRunner:
         return reservation
 
     async def _mark_spent_with_evidence(self, reservation_id: str, raw_key: str) -> None:
-        async with self._session_factory() as session:
-            await ProviderReservationRepository(session).mark_spent(
-                reservation_id, raw_output_key=raw_key, reconciled_by="evidence"
-            )
-            await session.commit()
+        """evidence で spent にする。**同じ evidence で既に spent なら冪等に受け入れる**。
+
+        heartbeat 切れで並行した旧試行が先に commit していた場合に当たる。別の evidence や
+        conservative で閉じていた場合は食い違いなので ``InvalidTransitionError`` のまま
+        （needs_input）。
+        """
+        try:
+            async with self._session_factory() as session:
+                await ProviderReservationRepository(session).mark_spent(
+                    reservation_id, raw_output_key=raw_key, reconciled_by="evidence"
+                )
+                await session.commit()
+        except InvalidTransitionError:
+            current = await self._load(reservation_id)
+            if current.status is ReservationStatus.SPENT and current.raw_output_key == raw_key:
+                logger.info(
+                    "reservation already spent with the same evidence (concurrent attempt) "
+                    "reservation=%s",
+                    reservation_id,
+                )
+                return
+            raise
+
+    async def _output_after_spent(
+        self, reservation_id: str, data: bytes, raw_key: str
+    ) -> PaidOutput:
+        reservation = await self._load(reservation_id)
+        if reservation.outcome_artifact_id is not None:
+            async with self._session_factory() as session:
+                meta = await ArtifactMetadataRepository(session).get(
+                    reservation.outcome_artifact_id
+                )
+            if meta is not None:
+                return PaidOutput(reservation, b"", raw_key, meta)
+        return PaidOutput(reservation, data, raw_key)
+
+    @contextlib.asynccontextmanager
+    async def _keepalive(
+        self, heartbeat: Callable[..., None] | None, reservation_id: str, phase: str
+    ) -> AsyncIterator[None]:
+        """単発の長い await の間、背景タスクで heartbeat を送る。
+
+        Temporal の activity context は contextvar なので、Activity 内で作ったタスクから送れる。
+        """
+        if heartbeat is None:
+            yield
+            return
+        beat = heartbeat
+        interval = self._heartbeat_interval_seconds
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(interval)
+                beat({"reservation_id": reservation_id, "phase": phase})
+
+        task = asyncio.create_task(_loop())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     async def _spend_conservatively(self, reservation_id: str, exc: BaseException) -> None:
         async with self._session_factory() as session:
@@ -451,6 +523,7 @@ def _resume_submit(reservation: ProviderReservation) -> SubmitOutcome | None:
 
 
 __all__ = [
+    "DEFAULT_HEARTBEAT_INTERVAL_SECONDS",
     "NOT_ACCEPTED_SUBMIT_ERRORS",
     "PROVIDER_RAW_PREFIX",
     "AsyncJobGenerator",

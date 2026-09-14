@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,7 +41,8 @@ class Settings(BaseSettings):
 
     # --- production（ADR-0017） ---
     #: 有料の画像・動画 provider の鍵。**secret**。未設定なら該当 worker を組めない。
-    fal_key: str | None = None
+    #: ``SecretStr``: repr / model_dump / ログに値を出さない。使う箇所で ``get_secret_value()``。
+    fal_key: SecretStr | None = None
     #: task queue ごとの並行 Activity 数（worker が max_concurrent_activities に使う）
     image_concurrency: int = 2
     voice_concurrency: int = 1
@@ -55,8 +57,13 @@ class Settings(BaseSettings):
     piper_noise_scale: float | None = None
     piper_noise_w_scale: float | None = None
     production_submit_timeout_seconds: int = 120
-    production_await_timeout_seconds: int = 40 * 60
+    #: await の poll 期限。Activity の start_to_close
+    #: （``AWAIT_START_TO_CLOSE_SECONDS``）より**短く**
+    #: 取り、Temporal に殺される前に ``ProviderPollDeadlineError`` を返す（参照は台帳に残る）
+    production_await_timeout_seconds: int = 35 * 60
     production_await_heartbeat_seconds: int = 90
+    #: fal API の1回の読み取り待ちの上限。heartbeat timeout（90秒）より十分短くする
+    production_fal_read_timeout_seconds: int = 30
     production_poll_interval_seconds: int = 10
     production_voice_timeout_seconds: int = 300
 

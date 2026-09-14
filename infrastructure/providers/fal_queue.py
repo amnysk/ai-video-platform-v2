@@ -47,6 +47,8 @@ QUEUE_BASE_URL = "https://queue.fal.run"
 REF_VERSION = 1
 #: 生の取得物の上限（正規化前。Artifact の上限とは別）。
 DEFAULT_DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024
+#: status / result / download の読み取り待ち（heartbeat timeout 90秒より十分短く）
+DEFAULT_READ_TIMEOUT_SECONDS = 30.0
 
 #: 人間が入力を直せば回復する拒否（docs: 422 detail[].type）。
 REJECTED_ERROR_TYPES = frozenset(
@@ -183,12 +185,22 @@ class FalQueueClient:
         base_url: str = QUEUE_BASE_URL,
         timeout_seconds: float = 120.0,
         connect_timeout_seconds: float = 10.0,
+        read_timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        """``read_timeout_seconds`` は status / result / download の1回の読み取り待ち。
+
+        await Activity の heartbeat timeout（90秒）より十分短くする（1回の待ちで heartbeat を
+        途切れさせない）。submit だけは ``timeout_seconds`` を使う（送信後の読み取りタイムアウトは
+        曖昧になるので、窓を短くしない）。
+        """
         if not api_key:
             raise ProviderUnavailableError("FAL_KEY is not configured")
         self._base_url = base_url.rstrip("/")
-        timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout_seconds)
+        self._submit_timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout_seconds)
+        timeout = httpx.Timeout(
+            timeout_seconds, connect=connect_timeout_seconds, read=read_timeout_seconds
+        )
         self._api = httpx.AsyncClient(
             headers={"Authorization": f"Key {api_key}"},
             timeout=timeout,
@@ -207,7 +219,7 @@ class FalQueueClient:
     async def submit(self, endpoint_id: str, payload: dict[str, Any]) -> FalSubmission:
         url = f"{self._base_url}/{endpoint_id.strip('/')}"
         try:
-            response = await self._api.post(url, json=payload)
+            response = await self._api.post(url, json=payload, timeout=self._submit_timeout)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
             # 送信前に失敗した（接続拒否・DNS・TLS 前）。受理されていない。
             raise ProviderJobFailedError(
@@ -374,6 +386,7 @@ class FalQueueClient:
 __all__ = [
     "CONTENT_POLICY_ERROR_TYPE",
     "DEFAULT_DOWNLOAD_MAX_BYTES",
+    "DEFAULT_READ_TIMEOUT_SECONDS",
     "QUEUE_BASE_URL",
     "FalQueueClient",
     "FalQueueState",
