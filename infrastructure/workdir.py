@@ -82,9 +82,13 @@ class WorkDirectory:
     def root(self) -> Path:
         return self._root
 
-    def create(self, episode_id: str, job_id: str) -> JobWorkDir:
-        """作業領域を作って返す。既にあれば再利用する（冪等）。"""
-        base = self._job_dir(episode_id, job_id)
+    def create(self, episode_id: str, job_id: str, *, attempt: int | None = None) -> JobWorkDir:
+        """作業領域を作って返す。既にあれば再利用する（冪等）。
+
+        ``attempt`` を渡すと ``<job>/attempt-<n>/`` を作る。同じ job の試行が重なっても（前の試行が
+        heartbeat timeout 後もまだ走っている等）互いのファイルを消さない。
+        """
+        base = self._job_dir(episode_id, job_id, attempt)
         try:
             self._root.mkdir(parents=True, exist_ok=True)
             self._check_root()
@@ -99,9 +103,12 @@ class WorkDirectory:
             raise WorkspaceUnavailableError(f"cannot create work directory {base}: {exc}") from exc
         return JobWorkDir(base=base, **paths)
 
-    def cleanup(self, episode_id: str, job_id: str) -> bool:
-        """job の作業領域を削除する。無ければ ``False``。symlink を含めば拒否する。"""
-        base = self._job_dir(episode_id, job_id)
+    def cleanup(self, episode_id: str, job_id: str, *, attempt: int | None = None) -> bool:
+        """job（``attempt`` を渡せばその試行だけ）の作業領域を削除する。
+
+        無ければ ``False``。symlink を含めば拒否する。
+        """
+        base = self._job_dir(episode_id, job_id, attempt)
         try:
             if not os.path.lexists(self._root):
                 return False
@@ -119,10 +126,15 @@ class WorkDirectory:
             ) from exc
         return True
 
-    def _job_dir(self, episode_id: str, job_id: str) -> Path:
+    def _job_dir(self, episode_id: str, job_id: str, attempt: int | None = None) -> Path:
         episode = _canonical_uuid(episode_id, "episode_id")
         job = _canonical_uuid(job_id, "job_id")
-        return self._root / "episodes" / episode / job
+        base = self._root / "episodes" / episode / job
+        if attempt is None:
+            return base
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+            raise WorkspaceUnavailableError(f"attempt must be a positive int: {attempt!r}")
+        return base / f"attempt-{attempt}"
 
     def _check_root(self) -> None:
         resolved = self._root.resolve(strict=True)

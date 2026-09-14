@@ -378,7 +378,7 @@ async def test_prepare_writes_audit_inputs_without_calling_the_llm(tmp_path) -> 
 
 
 class _BrokenCreate(WorkDirectory):
-    def create(self, episode_id: str, job_id: str):
+    def create(self, episode_id: str, job_id: str, *, attempt: int | None = None):
         raise WorkspaceUnavailableError("disk gone")
 
 
@@ -438,7 +438,7 @@ async def test_provider_errors_propagate_and_generate_leaves_cleanup_to_release(
 
 
 class _BrokenCleanup(WorkDirectory):
-    def cleanup(self, episode_id: str, job_id: str) -> bool:
+    def cleanup(self, episode_id: str, job_id: str, *, attempt: int | None = None) -> bool:
         raise WorkspaceUnavailableError("cannot remove")
 
 

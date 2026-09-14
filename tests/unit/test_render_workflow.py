@@ -46,6 +46,7 @@ from contracts.render_activities import (
 from contracts.states import EpisodeStatus, FailureClass
 from workers.render.workflows import (
     RENDER_ACTIVITY_MARGIN_SECONDS,
+    RENDER_IO_SECONDS_PER_OUTPUT_SECOND,
     RenderWorkflow,
     RenderWorkflowInput,
     classify_render_failure,
@@ -70,7 +71,9 @@ class Mocks:
         async def admit(req: RenderAdmitRequest) -> RenderAdmitResult:
             self.calls.append("admit")
             if self.admitted:
-                return RenderAdmitResult(admitted=True, status="in_progress")
+                return RenderAdmitResult(
+                    admitted=True, status="in_progress", render_timeout_seconds=120
+                )
             return RenderAdmitResult(admitted=False, status="storyboard_ready")
 
         @activity.defn(name=RENDER_FINAL_VIDEO)
@@ -209,7 +212,7 @@ async def test_retry_exhaustion_blocks_and_never_fails_terminally(env) -> None:
         ("RenderInputMissingError", FailureClass.NEEDS_INPUT),
         ("DurationReconciliationError", FailureClass.NEEDS_INPUT),
         ("RenderInputIntegrityError", FailureClass.PERMANENT),
-        ("UnknownRenderProfileError", FailureClass.PERMANENT),
+        ("UnknownRenderProfileError", FailureClass.NEEDS_INPUT),
         ("SomethingUnclassified", FailureClass.NEEDS_INPUT),
     ],
 )
@@ -239,10 +242,28 @@ async def test_cancel_waits_for_the_render_to_stop_then_records_and_reraises(env
     assert "cancelled" in failure.error_summary
 
 
-def test_render_start_to_close_leaves_margin_over_the_engine_timeout() -> None:
-    assert render_start_to_close(DEFAULT_RENDER_TIMEOUT_SECONDS) == timedelta(
-        seconds=DEFAULT_RENDER_TIMEOUT_SECONDS + RENDER_ACTIVITY_MARGIN_SECONDS
+def test_render_start_to_close_scales_the_margin_with_the_profile_max_duration() -> None:
+    shorts = render_start_to_close(DEFAULT_RENDER_TIMEOUT_SECONDS, "shorts_vertical")
+    assert shorts == timedelta(
+        seconds=DEFAULT_RENDER_TIMEOUT_SECONDS
+        + RENDER_ACTIVITY_MARGIN_SECONDS
+        + RENDER_IO_SECONDS_PER_OUTPUT_SECOND * 180
     )
+    long_form = render_start_to_close(DEFAULT_RENDER_TIMEOUT_SECONDS, "long_form_horizontal")
+    assert long_form - shorts == timedelta(
+        seconds=RENDER_IO_SECONDS_PER_OUTPUT_SECOND * (10_800 - 180)
+    )
+    unknown = render_start_to_close(60, "nope")
+    assert unknown == timedelta(seconds=60 + RENDER_ACTIVITY_MARGIN_SECONDS)
+
+
+async def test_exhausted_failure_passes_the_job_id_to_record_failure(env) -> None:
+    mocks = Mocks(always_fail=ApplicationError("boom", "job-123", type="RenderEngineFailedError"))
+
+    await _run(env, mocks)
+
+    (failure,) = mocks.failures
+    assert failure.job_id == "job-123" and failure.retry_exhausted
 
 
 def test_temporal_timeouts_count_as_retryable() -> None:

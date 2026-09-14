@@ -33,6 +33,7 @@ def render_input_hash(
     engine: RenderEngineIdentity,
     font_sha256: str,
     audio_mix: AudioMixSpec | None = None,
+    engine_threads: int | None = None,
 ) -> str:
     """完成動画の入力指紋。profile は字幕設定を含む全体を正準化して入れる。"""
     mix = audio_mix if audio_mix is not None else audio_mix_spec(profile)
@@ -49,6 +50,8 @@ def render_input_hash(
                 "policy": policy.model_dump(mode="json"),
                 "template_version": policy.template_version,
                 "engine": engine.model_dump(mode="json"),
+                #: エンジンのスレッド数（x264 の出力はスレッド数で変わりうる）
+                "engine_threads": engine_threads,
                 "font_sha256": font_sha256,
                 "audio_mix": mix.as_payload(),
             }
