@@ -190,6 +190,10 @@ FAL_ADAPTER_IMPORTERS = frozenset(
         "tests/unit/test_fal_queue.py",
         "tests/unit/test_fal_seedream_image.py",
         "tests/live/test_fal_image_live.py",
+        "workers/production_video/run_worker.py",
+        "tests/unit/test_fal_storage.py",
+        "tests/unit/test_fal_seedance_video.py",
+        "tests/live/test_fal_video_live.py",
     }
 )
 

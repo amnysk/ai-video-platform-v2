@@ -62,9 +62,50 @@ def build_image_prompt(
     return ". ".join(p for p in parts if p) + "."
 
 
+# --------------------------------------------------------------------------- 動画（動き）
+
+#: 動画プロンプトの組み立て規則の版。文面・並びを変えたら上げる。
+VIDEO_PROMPT_BUILDER_VERSION = "1"
+
+
+@dataclass(frozen=True, slots=True)
+class VideoMotionProfile:
+    name: str
+    motion: str
+
+    @property
+    def motion_profile_id(self) -> str:
+        """``input_hash`` に入る同一性（生成プロファイルに連結する）。"""
+        return f"{self.name}:video-prompt-v{VIDEO_PROMPT_BUILDER_VERSION}"
+
+
+DEFAULT_VIDEO_MOTION = VideoMotionProfile(
+    name="vertical-short-subtle-motion-v1",
+    motion="subtle natural motion, stable framing, no cuts, keep the composition of the image",
+)
+
+
+def build_video_prompt(
+    scene: StoryboardScene, motion: VideoMotionProfile = DEFAULT_VIDEO_MOTION
+) -> str:
+    """storyboard シーン → 元画像を動かす指示。見た目（visual_description）+ 動き。"""
+    parts = [scene.visual_description.strip()]
+    if scene.camera_movement:
+        parts.append(f"camera: {scene.camera_movement.strip()}")
+    if scene.transition_in:
+        parts.append(f"opening: {scene.transition_in.strip()}")
+    parts.append(motion.motion)
+    parts.append(_CONSTRAINTS)
+    return ". ".join(p for p in parts if p) + "."
+
+
 __all__ = [
     "DEFAULT_IMAGE_STYLE",
+    "DEFAULT_VIDEO_MOTION",
     "IMAGE_PROMPT_BUILDER_VERSION",
+    "VIDEO_PROMPT_BUILDER_VERSION",
     "ImageStyleProfile",
+    "VideoMotionProfile",
     "build_image_prompt",
+    "build_video_prompt",
 ]

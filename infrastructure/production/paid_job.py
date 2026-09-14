@@ -196,6 +196,10 @@ class PaidJobRunner:
                     f"unreconciled reservation {stale[0].id} blocks a new "
                     f"{spec.provider.value} call for scene {spec.scene_id}"
                 )
+            # 非課金の準備（例: 元画像のアップロード）は予約の**前**。失敗しても台帳に何も残らない
+            prepare = getattr(generator, "prepare", None)
+            if prepare is not None:
+                request = await prepare(request)
             if reservation is None:
                 reservation = await reservations.reserve(
                     episode_id=spec.episode_id,
