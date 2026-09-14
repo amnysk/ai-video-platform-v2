@@ -83,7 +83,6 @@ pytestmark = [
 ]
 
 RUN_TIMEOUT_SECONDS = 180
-REQUIRES_FIXES = "requires claude/p4-workflow-fixes"
 
 #: sample_storyboard の visual_description（画像/動画プロンプトに入る）→ scene_id
 SCENE_BY_DESCRIPTION = {
@@ -520,12 +519,14 @@ async def test_ambiguous_submit_blocks_without_duplicate_submit(
     assert await _current(factory, episode_id, ArtifactType.PRODUCTION_MANIFEST) == []
     async with factory() as session:
         jobs = await JobRepository(session).list_for_episode(episode_id)
-    assert not any(j.status in {JobStatus.QUEUED, JobStatus.RUNNING} for j in jobs), [
-        (j.type, j.scene_id, j.status) for j in jobs
-    ]
+    # ADR-0017 §8: record_failure は workflow 所有の job だけを閉じる。シーン job は media worker の
+    # 所有で、非終端のまま残り次回の実行で find_open により再利用される（再実行テストで確認）。
+    assert not any(
+        j.type is JobType.ASSEMBLE_PRODUCTION and j.status in {JobStatus.QUEUED, JobStatus.RUNNING}
+        for j in jobs
+    ), [(j.type, j.scene_id, j.status) for j in jobs]
 
 
-@pytest.mark.xfail(strict=False, reason=REQUIRES_FIXES)
 async def test_rerun_from_blocked_is_admitted_and_does_not_resubmit_ambiguous_scene(
     client, factory, store, tmp_path
 ) -> None:
