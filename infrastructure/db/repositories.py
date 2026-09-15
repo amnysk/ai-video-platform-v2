@@ -127,17 +127,35 @@ class EpisodeRepository:
         if row is None:
             raise InvalidTransitionError(f"episode not found: {episode_id}")
 
-        result = transition_episode(EpisodeStatus(row.status), event)
+        current = EpisodeStatus(row.status)
+        result = transition_episode(current, event)
         if isinstance(result, Rejected):
             raise InvalidTransitionError(result.reason)
 
-        row.status = result.value
-        row.status_changed_at = _now()
-        row.updated_at = _now()
+        # compare-and-set: 読んだ状態のままの行だけを進める。並行する2つの入場が同じ
+        # ``render_ready`` を読んでも、進められるのは片方だけ（もう片方は InvalidTransitionError）。
+        now = _now()
+        values: dict[str, object] = {
+            "status": result.value,
+            "status_changed_at": now,
+            "updated_at": now,
+        }
         if blocked_reason is not None:
-            row.blocked_reason = blocked_reason
-        await self._session.flush()
-        return _to_episode(row)
+            values["blocked_reason"] = blocked_reason
+        outcome = await self._session.execute(
+            update(EpisodeRow)
+            .where(EpisodeRow.id == row.id, EpisodeRow.status == current.value)
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        fresh = await self._session.get(EpisodeRow, row.id, populate_existing=True)
+        if getattr(outcome, "rowcount", 0) != 1 or fresh is None:
+            actual = fresh.status if fresh is not None else "missing"
+            raise InvalidTransitionError(
+                f"episode transition rejected: concurrent change "
+                f"(expected {current.value}, found {actual}) + {event.value}"
+            )
+        return _to_episode(fresh)
 
     async def get_workflow_id(self, episode_id: uuid.UUID | str) -> str | None:
         """相関用に記録した workflow id（無ければ ``None``）。"""
@@ -569,6 +587,20 @@ class ProviderReservationRepository:
         row = (await self._session.scalars(stmt)).first()
         return _to_reservation(row) if row else None
 
+    async def list_for_episode_provider(
+        self, episode_id: uuid.UUID | str, provider: ProviderCall
+    ) -> list[ProviderReservation]:
+        """Episode × provider の全予約（ラウンド順）。Episode 単位の二重投稿検査（ADR-0020）。"""
+        stmt = (
+            select(ProviderReservationRow)
+            .where(
+                ProviderReservationRow.episode_id == _as_uuid(episode_id),
+                ProviderReservationRow.provider == provider.value,
+            )
+            .order_by(ProviderReservationRow.reserved_at, ProviderReservationRow.round)
+        )
+        return [_to_reservation(r) for r in (await self._session.scalars(stmt)).all()]
+
     async def find_unreconciled(
         self,
         episode_id: uuid.UUID | str,
@@ -753,15 +785,15 @@ class ProviderReservationRepository:
 
     async def mark_upload_dispatched(
         self, reservation_id: uuid.UUID | str, session_ref: str
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         """``session_ref`` へ最初の bytes を送る直前に呼び、commit してから送る。
 
-        予約の session が ``session_ref`` のときだけ True
-        （既に同じ session で dispatch 済みも True）。
-        session が差し替わっていた・閉じた予約なら False（送ってはならない）。
+        戻り値 ``(ok, changed)``。``ok``: 予約の session が ``session_ref`` で dispatch 済み
+        （送ってよい）。``changed``: この呼び出しが ``dispatched_at`` を立てた。
+        session が差し替わっていた・閉じた予約なら ``ok`` は False（送ってはならない）。
         """
         table = ProviderReservationRow
-        await self._session.execute(
+        changed = await self._session.execute(
             update(table)
             .where(
                 table.id == _as_uuid(reservation_id),
@@ -773,12 +805,15 @@ class ProviderReservationRepository:
             .execution_options(synchronize_session=False)
         )
         fresh = await self._session.get(table, _as_uuid(reservation_id), populate_existing=True)
-        return (
+        ok = (
             fresh is not None
             and ReservationStatus(fresh.status) is ReservationStatus.RESERVED
             and fresh.provider_job_ref == session_ref
             and fresh.dispatched_at is not None
         )
+        # (送ってよいか, この呼び出しが dispatched_at を立てたか)。立てた呼び出しだけが
+        # offset 0 から送ってよい。他は status query で受理位置を確かめる
+        return ok, ok and getattr(changed, "rowcount", 0) == 1
 
     async def record_upload_result(
         self, reservation_id: uuid.UUID | str, result_ref: str, *, reconciled_by: str

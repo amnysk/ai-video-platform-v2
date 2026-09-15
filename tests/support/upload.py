@@ -108,6 +108,9 @@ class CrashingUploader:
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
         return await self.inner.find_video_by_marker(marker_tag)
 
+    async def own_channel_id(self) -> str:
+        return await self.inner.own_channel_id()
+
 
 class ExpireOnQueryUploader:
     """完了応答を失った直後に session が失効する YouTube（status query は 404）。"""
@@ -129,3 +132,6 @@ class ExpireOnQueryUploader:
 
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
         return await self.inner.find_video_by_marker(marker_tag)
+
+    async def own_channel_id(self) -> str:
+        return await self.inner.own_channel_id()

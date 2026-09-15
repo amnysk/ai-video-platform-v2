@@ -68,13 +68,18 @@ class CountingUploader:
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
         return await self.inner.find_video_by_marker(marker_tag)
 
+    async def own_channel_id(self) -> str:
+        return await self.inner.own_channel_id()
+
 
 async def main() -> None:
     if os.environ.get("AVP_FAKE_YOUTUBE") != "1":
         raise SystemExit("fake upload worker: refusing to start without AVP_FAKE_YOUTUBE=1")
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
-    uploader = CountingUploader(FakeVideoUploader(chunk_bytes=FAKE_CHUNK_BYTES))
+    uploader = CountingUploader(
+        FakeVideoUploader(chunk_bytes=FAKE_CHUNK_BYTES, channel_id=FAKE_CHANNEL_ID)
+    )
     client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()

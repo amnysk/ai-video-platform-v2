@@ -60,7 +60,14 @@ provider `youtube_upload`）の `idempotency_key` にする。1 予約の中で:
    見つからなければ `UploadOutcomeUnknownError` で `blocked`。**新しい session は自動で開かない**
 
 `dispatched_at` が入った予約の session は条件付き UPDATE で二度と差し替わらないので、bytes を受け取る session は
-予約あたり1つだけになる。session URI は DB の予約行にだけ置き、ログ・受領・API 応答に出さない（INV-20）。
+予約あたり1つだけになる。加えて:
+
+- Episode の状態遷移は compare-and-set（同じ状態を読んだ2つの入場のうち進めるのは1つ）
+- 投稿 Activity は session 開始と dispatch の直前に入場トークンを確かめ、所有者でなければ YouTube を呼ばずに降りる
+- 送信中も数チャンクごとに予約を読み直し、閉じられていたら止まる
+- dispatch を実際に立てた試行だけが offset 0 から送り、他は status query で受理位置を確かめる
+- status query の 404/410 は、少し待った2回目の照会でも失効のときだけ失効とみなす
+- マーカーはタグと description の最終行の両方に入り、照合はどちらかで一致すればよいsession URI は DB の予約行にだけ置き、ログ・受領・API 応答に出さない（INV-20）。
 
 ## 5. blocked の扱い
 
@@ -97,18 +104,41 @@ SET status = 'spent', provider_result_ref = '<video_id>',
 WHERE id = '<reservation_id>' AND status = 'reserved' AND provider_result_ref IS NULL;
 ```
 
-4. 動画が**無い**とき（処理中で見えないだけの可能性があるので、数時間おいて再確認してから）: 予約を放棄する。
-   予約は消さない。放棄後の POST は新しいラウンド（round 2）で投稿し直す:
+4. 動画が**無い**とき（処理中で見えないだけの可能性があるので、数時間おいて再確認してから）:
+   1. その Episode の upload workflow が**走っていない**ことを確かめる（走っている間は承認しない）:
 
-```sql
-UPDATE provider_reservations
-SET status = 'abandoned', reconciled_by = 'operator:<your-name>', reconciled_at = now()
-WHERE id = '<reservation_id>' AND status = 'reserved';
-```
+      ```bash
+      temporal workflow describe --workflow-id episode-<episode_id>-upload   # Status が Running でないこと
+      ```
+
+   2. 予約を放棄し、**同時に再投稿を承認する**（予約は消さない）。`dispatched_at` が入った予約は、ただの放棄
+      （`reconciled_by` が `operator:<name>`）では次のラウンドを開かない。承認は `reconciled_by` の値で記録する:
+
+      ```sql
+      UPDATE provider_reservations
+      SET status = 'abandoned', reconciled_by = 'operator_reupload_approved', reconciled_at = now()
+      WHERE id = '<reservation_id>' AND status = 'reserved' AND provider_result_ref IS NULL;
+      ```
+
+   3. POST で再開する。round 2 は投稿の前に**もう一度マーカー照合**を行い、見つかればその video id を記録して
+      投稿しない（`reconciled_by = marker_lookup`）。見つからなければ新しい session で投稿する
+
+`dispatched_at` が NULL の予約（bytes を1つも送っていない）は、ただの放棄でも次のラウンドへ進める
+（その場合も round 2 はまずマーカー照合をする）。
 
 いずれも `WHERE ... status = 'reserved'` で1行だけ更新されたことを確かめる（0 行なら状態が変わっている。読み直す）。
-同じ意味の操作は `ProviderReservationRepository.record_upload_result` / `abandon` で行える。
-自動の処理が `abandoned` を書くことは無い（ADR-0013 / INV-15）。
+自動の処理が `abandoned` や承認を書くことは無い（ADR-0013 / INV-15）。
+
+### 別の final_video・チャンネルの投稿が既にあるとき
+
+同じ Episode に、別の upload key（final_video の sha256 か `YOUTUBE_CHANNEL_ID` が違う）の予約が `spent`、または
+`reserved` で `dispatched_at` 入りのものがあると、upload は `UploadOutcomeUnknownError` で止まる
+（再描画・チャンネル変更で同じ Episode を2本目として投稿しない）。意図した再投稿なら、上の手順で古い予約を確認・放棄する。
+
+### チャンネルの照合
+
+worker は起動時に `channels.list(mine=true)` のチャンネル id が `YOUTUBE_CHANNEL_ID` と一致することを確かめ、
+違えば起動しない。投稿の直前にも（worker ごとに1回）確かめ、違えば `UploadAuthError`（`blocked`）。
 
 ## 6. 検査
 
