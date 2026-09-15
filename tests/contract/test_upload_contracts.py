@@ -95,7 +95,7 @@ def test_upload_vocabulary_is_declared_once() -> None:
         EpisodeStatus.BLOCKED,
     } == UPLOAD_ADMISSIBLE_STATUSES
     assert EpisodeStatus.UPLOADED not in UPLOAD_ADMISSIBLE_STATUSES
-    assert len(set(UPLOAD_ACTIVITY_NAMES)) == 4
+    assert len(set(UPLOAD_ACTIVITY_NAMES)) == 5
 
 
 def test_upload_success_moves_in_progress_to_uploaded() -> None:

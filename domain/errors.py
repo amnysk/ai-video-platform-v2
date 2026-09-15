@@ -256,6 +256,22 @@ class UploadOutcomeUnknownError(NeedsInputError):
     """
 
 
+class UploadProcessingPendingError(RetryableError):
+    """投稿は受理されたが YouTube の処理が終わっていない / まだ見えない（ADR-0022）。
+
+    時間が解決するので retryable。照会は workflow の RetryPolicy で間隔を広げて繰り返し、
+    期限（schedule_to_close）を過ぎたら ``blocked``。再投稿はしない。
+    """
+
+
+class UploadProcessingFailedError(NeedsInputError):
+    """YouTube が動画を拒否・処理失敗・削除した、または
+    チャンネル / 公開範囲が期待と違う（ADR-0022）。
+
+    再投稿で直るとは限らず（重複・権利・規約）、人間が YouTube Studio で確かめる。
+    """
+
+
 class UploadOwnershipLostError(NeedsInputError):
     """投稿中に入場トークンが別の実行へ移った（ADR-0020）。
 

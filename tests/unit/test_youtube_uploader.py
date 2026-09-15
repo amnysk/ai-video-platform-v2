@@ -408,3 +408,95 @@ async def test_own_channel_id() -> None:
     empty, _ = _uploader(lambda r: httpx.Response(200, json={"items": []}))
     with pytest.raises(YouTubeAuthError):
         await empty.own_channel_id()
+
+
+# --- 処理状態（ADR-0022） ---------------------------------------------------------
+
+
+def _video_item(**overrides) -> dict:
+    item = {
+        "id": "abc123",
+        "snippet": {"channelId": "UC" + "b" * 22, "title": "t"},
+        "status": {"uploadStatus": "processed", "privacyStatus": "private"},
+        "processingDetails": {"processingStatus": "succeeded"},
+    }
+    item.update(overrides)
+    return item
+
+
+async def test_processing_status_reads_status_processing_and_snippet() -> None:
+    uploader, api = _uploader(lambda r: httpx.Response(200, json={"items": [_video_item()]}))
+    state = await uploader.processing_status("abc123")
+    (req,) = api.requests
+    assert str(req.url).startswith(f"{API_BASE_URL}/videos")
+    assert req.url.params["part"] == "status,processingDetails,snippet"
+    assert req.url.params["id"] == "abc123"
+    assert state.found and state.upload_status == "processed"
+    assert state.processing_status == "succeeded" and state.privacy_status == "private"
+    assert state.channel_id == "UC" + "b" * 22
+
+
+async def test_processing_status_reads_failure_and_rejection_reasons() -> None:
+    item = _video_item(
+        status={
+            "uploadStatus": "rejected",
+            "rejectionReason": "duplicate",
+            "failureReason": "codec",
+            "privacyStatus": "private",
+        },
+        processingDetails={"processingStatus": "failed"},
+    )
+    uploader, _ = _uploader(lambda r: httpx.Response(200, json={"items": [item]}))
+    state = await uploader.processing_status("abc123")
+    assert (state.rejection_reason, state.failure_reason) == ("duplicate", "codec")
+    assert state.processing_status == "failed"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [httpx.Response(200, json={"items": []}), httpx.Response(200, json={}), httpx.Response(404)],
+)
+async def test_processing_status_not_found(response: httpx.Response) -> None:
+    uploader, _ = _uploader(lambda r: response)
+    state = await uploader.processing_status("abc123")
+    assert not state.found and state.upload_status is None
+
+
+async def test_processing_status_drops_unsafe_values() -> None:
+    item = _video_item(
+        status={"uploadStatus": "x&access_token=zzz", "privacyStatus": ["private"]},
+        snippet={"channelId": "UC bad"},
+    )
+    uploader, _ = _uploader(lambda r: httpx.Response(200, json={"items": [item]}))
+    state = await uploader.processing_status("abc123")
+    assert state.found and state.upload_status is None
+    assert state.privacy_status is None and state.channel_id is None
+    assert "zzz" not in repr(state)
+
+
+async def test_processing_status_refreshes_on_401_and_classifies_errors() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers["Authorization"])
+        if len(calls) == 1:
+            return httpx.Response(401)
+        return httpx.Response(200, json={"items": [_video_item()]})
+
+    uploader, _ = _uploader(handler)
+    assert (await uploader.processing_status("abc123")).found
+    assert calls == ["Bearer at-1", "Bearer at-2"]
+    quota, _ = _uploader(lambda r: _error(403, "quotaExceeded"))
+    with pytest.raises(YouTubeQuotaError):
+        await quota.processing_status("abc123")
+    down, _ = _uploader(lambda r: httpx.Response(503))
+    with pytest.raises(YouTubeTransientError):
+        await down.processing_status("abc123")
+
+
+async def test_processing_status_refuses_an_unsafe_video_id() -> None:
+    uploader, api = _uploader(lambda r: httpx.Response(500))
+    for bad in ("", "a,b", "a&id=b"):
+        with pytest.raises(ValueError):
+            await uploader.processing_status(bad)
+    assert api.requests == []

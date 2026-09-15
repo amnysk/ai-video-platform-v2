@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+from collections import deque
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
@@ -19,6 +20,7 @@ from domain.upload.ports import (
     UploadIncomplete,
     UploadProgress,
     UploadSessionRef,
+    VideoProcessingState,
 )
 from infrastructure.youtube.errors import YouTubeTransientError
 
@@ -85,6 +87,12 @@ class FakeVideoUploader:
         self.fail_send_with: Exception | None = None
         self.fail_query_with: Exception | None = None
         self.fail_lookup_with: Exception | None = None
+        self.fail_processing_with: Exception | None = None
+        #: ``processing_status`` の呼び出し回数
+        self.processing_checks = 0
+        #: 台本どおりに返す処理状態（全動画共通）。最後の1つは消費せず返し続ける。
+        #: 空なら既定（投稿した動画は processed / メタデータの privacy / 自チャンネル）
+        self._processing_script: deque[VideoProcessingState] = deque()
         self._ids = itertools.count(1)
         self._lock = asyncio.Lock()
 
@@ -98,6 +106,35 @@ class FakeVideoUploader:
         snippet = {"tags": list(tags), "description": description}
         self.videos[video_id] = FakeVideo(video_id, {"snippet": snippet}, b"")
         return video_id
+
+    def processing_state(self, **overrides: Any) -> VideoProcessingState:
+        """自チャンネル・private・found の状態を土台に一部だけ変えた状態を作る。"""
+        base = VideoProcessingState(
+            found=True,
+            upload_status="processed",
+            processing_status="succeeded",
+            privacy_status="private",
+            channel_id=self.channel_id,
+        )
+        return replace(base, **overrides)
+
+    def script_processing(self, *states: VideoProcessingState) -> None:
+        self._processing_script = deque(states)
+
+    async def processing_status(self, video_id: str) -> VideoProcessingState:
+        async with self._lock:
+            self.processing_checks += 1
+            exc, self.fail_processing_with = self.fail_processing_with, None
+            self._take(exc)
+            if self._processing_script:
+                if len(self._processing_script) > 1:
+                    return self._processing_script.popleft()
+                return self._processing_script[0]
+            video = self.videos.get(video_id)
+            if video is None:
+                return VideoProcessingState(found=False)
+            status = video.metadata.get("status") or {}
+            return self.processing_state(privacy_status=status.get("privacyStatus", "private"))
 
     async def own_channel_id(self) -> str:
         async with self._lock:

@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -28,6 +30,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from contracts.operations import OperationalSwitch
 from contracts.states import (
     ArtifactType,
     EpisodeStatus,
@@ -247,6 +250,45 @@ class ProviderReservationRow(Base):
     provider_result_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: 予約時点の見積もり（USD、ADR-0013 Alternatives (e) を ADR-0017 で解決）。確定額ではない。
     estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+
+
+class OperationalSwitchRow(Base):
+    """DB の停止スイッチ（ADR-0021）。行が無ければ off。"""
+
+    __tablename__ = "operational_switches"
+    __table_args__ = (_check("name", OperationalSwitch, "ck_operational_switches_name"),)
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    is_on: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DailyEpisodeSlotRow(Base):
+    """日次 Episode 枠（ADR-0021）。1日の本数上限を DB の主キーで守る。
+
+    ``(slot_date, slot_index)`` の主キーで同じ番号の枠を2本作れず、``trigger_id`` の一意性で
+    同じ起動（Temporal workflow id）の再試行が枠を増やさない。
+    """
+
+    __tablename__ = "daily_episode_slots"
+    __table_args__ = (
+        CheckConstraint("slot_index >= 0", name="ck_daily_episode_slots_index_nonnegative"),
+        UniqueConstraint("trigger_id", name="uq_daily_episode_slots_trigger_id"),
+        UniqueConstraint("episode_id", name="uq_daily_episode_slots_episode_id"),
+    )
+
+    slot_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    slot_index: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    trigger_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 #: scene キー。NULL を '' に畳んで一意性の比較に使う（ADR-0018）。

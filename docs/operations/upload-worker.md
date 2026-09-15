@@ -26,7 +26,7 @@ export YOUTUBE_CLIENT_ID=... YOUTUBE_CLIENT_SECRET=...
 | `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` | ○ | secret は表示しない |
 | `YOUTUBE_REFRESH_TOKEN_PATH` | ○ | repo 外・0600 でなければ起動しない |
 | `YOUTUBE_CHANNEL_ID` | ○ | `UC...`。upload key の destination に入る（変えると別キー） |
-| `UPLOADS_PAUSED` | | `true` なら YouTube を一切呼ばずに `UploadsPausedError`（`blocked`）。worker の再起動で反映 |
+| `UPLOADS_PAUSED` | | `true` なら YouTube を呼ばずに `UploadsPausedError`（`blocked`）。worker の再起動で反映。再起動なしで止めるには DB の operational switch（see ADR-0021 operational switch uploads_paused）。どちらかが有効なら停止 |
 | `YOUTUBE_CHUNK_BYTES` | | 既定 `DEFAULT_UPLOAD_CHUNK_BYTES`（8 MiB、256 KiB の倍数） |
 | `AI_VIDEO_WORK_ROOT` | | 本体を試行ごとの作業領域へ落として sha256 を照合する。成功・失敗とも片付ける |
 
@@ -55,7 +55,7 @@ provider `youtube_upload`）の `idempotency_key` にする。1 予約の中で:
 1. 予約が `spent` + `provider_result_ref`（video id）→ YouTube を呼ばず受領を作る / 再利用する
 2. session を開始 → session URI を `provider_job_ref` へ commit → `dispatched_at` を commit → 最初の bytes
 3. crash・一時障害の後は必ず保存済み session の status query から続ける
-4. 完了 → video id と `spent` を commit → 受領 Artifact → `uploaded`
+4. 完了 → video id と `spent` を commit → 受領 Artifact → YouTube の処理状態を確認（§4.1）→ `uploaded`
 5. `dispatched_at` の後に session が失効したら、uploads playlist でマーカー（タグ `avpu` + key 先頭 24 hex）を探す。
    見つからなければ `UploadOutcomeUnknownError` で `blocked`。**新しい session は自動で開かない**
 
@@ -69,13 +69,30 @@ provider `youtube_upload`）の `idempotency_key` にする。1 予約の中で:
 - status query の 404/410 は、少し待った2回目の照会でも失効のときだけ失効とみなす
 - マーカーはタグと description の最終行の両方に入り、照合はどちらかで一致すればよいsession URI は DB の予約行にだけ置き、ログ・受領・API 応答に出さない（INV-20）。
 
+### 4.1 処理状態の確認（ADR-0022）
+
+bytes の受理は「使える動画」を意味しないので、`videos.list(part=status,processingDetails,snippet)`（1 unit）で
+`uploadStatus = processed`・`privacyStatus = private`・`snippet.channelId = YOUTUBE_CHANNEL_ID` を確かめてから `uploaded` にする。
+
+- 処理中・まだ見えない: 30 秒から倍々で最大 10 分間隔に照会し直す。Episode は `in_progress` のまま。6 時間で `blocked`
+- 拒否（duplicate / copyright など）・失敗・削除・チャンネル違い・private でない: `UploadProcessingFailedError` で `blocked`
+- 再開（POST）は予約の `spent` を見て**再投稿せず**、照会からやり直す
+
+### 4.2 一時停止
+
+`UPLOADS_PAUSED`、または operational switch `uploads_paused`（see ADR-0021 operational switch uploads_paused）が有効だと、
+session 開始前と送信中（数チャンクごと）に `UploadsPausedError` で止まる。送信中に止めた session は予約に残るので、
+解除して POST すると受理済みの位置から続きを送る（新しい動画は作らない）。
+
 ## 5. blocked の扱い
 
 | `blocked_reason` の型 | 対応 |
 |---|---|
 | `UploadAuthError` | §1 の同意をやり直し、POST で再開 |
 | `UploadQuotaExceededError`（retry 使い切り） | quota の回復（翌日）を待って POST で再開 |
-| `UploadsPausedError` | `UPLOADS_PAUSED=false` で worker を再起動し POST |
+| `UploadsPausedError` | `UPLOADS_PAUSED=false`（worker 再起動）/ switch `uploads_paused` を off にして POST |
+| `UploadProcessingPendingError`（期限切れ） | YouTube Studio で処理状況を見て、処理が終わってから POST（再投稿はしない） |
+| `UploadProcessingFailedError` | `blocked_reason` の理由（`rejected_duplicate` / `channel_mismatch` / `not_private` 等）を YouTube Studio で確認。動画は削除しない。直せないなら人間が判断する |
 | `UploadIntegrityError` | final_video が壊れている。render をやり直す（YouTube は呼んでいない） |
 | `UploadRejectedError` | 台本の title 等を直してから render / upload をやり直す |
 | `UploadOutcomeUnknownError` | 下の手順（結果不明） |
@@ -145,4 +162,6 @@ worker は起動時に `channels.list(mine=true)` のチャンネル id が `YOU
 - 二重投稿しない: `tests/unit/test_upload_activities.py::test_concurrent_attempts_on_the_same_key_create_one_video`、
   `tests/unit/test_upload_activities.py::test_session_expired_after_bytes_without_marker_blocks_and_never_reopens`
 - private だけを送る: `tests/unit/test_upload_activities.py::test_upload_creates_one_private_video_receipt_and_spent_reservation`
+- 処理状態: `tests/unit/test_upload_processing.py`、`tests/unit/test_upload_processing_e2e.py`
+- 送信中の一時停止: `tests/unit/test_upload_activities.py::test_pause_during_sending_stops_and_resumes_the_saved_session`
 - 実環境（PostgreSQL / MinIO / Temporal + fake uploader）: `tests/integration/test_upload_workflow_persistence.py`

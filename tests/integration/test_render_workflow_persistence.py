@@ -28,39 +28,39 @@ from infrastructure.db.repositories import (
 )
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.workdir import WorkDirectory
+from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.fake_render_engine import FakeFinalVideoProbe, FakeRenderEngine
 from tests.support.render_activity import PassingSourceProbe, seed_render_inputs
 from workers.render.activities import RenderActivities
 from workers.render.run_inspector import TemporalWorkflowRunInspector
 from workers.render.workflows import RenderWorkflow, RenderWorkflowInput
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+TEST_DATABASE_URL = require_test_database_url()
 TEMPORAL_ADDRESS = os.environ.get("TEMPORAL_ADDRESS")
 
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL
-    or "postgresql" not in DATABASE_URL
-    or not os.environ.get("MINIO_ENDPOINT")
-    or not TEMPORAL_ADDRESS,
-    reason="DATABASE_URL (PostgreSQL), MINIO_ENDPOINT and TEMPORAL_ADDRESS are required",
+    not TEST_DATABASE_URL or not os.environ.get("MINIO_ENDPOINT") or not TEMPORAL_ADDRESS,
+    reason="TEST_DATABASE_URL (*_test), MINIO_ENDPOINT and TEMPORAL_ADDRESS are required",
 )
 
 
 @pytest_asyncio.fixture
 async def pg_session_factory():
     schema = f"render_test_{uuid.uuid4().hex[:12]}"
-    admin = create_async_engine(DATABASE_URL or "")
+    admin = create_async_engine(TEST_DATABASE_URL or "")
     async with admin.begin() as conn:
         await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_async_engine(
-        DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
+        TEST_DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
     )
     try:
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         yield async_sessionmaker(engine, expire_on_commit=False)
     finally:
         await engine.dispose()
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with admin.begin() as conn:
             await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         await admin.dispose()

@@ -16,8 +16,11 @@ from infrastructure.db.urls import sync_database_url
 
 config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# CLI 実行時だけ alembic.ini のロギング設定を使う。プログラムから呼ぶ側（テスト等）は
+# ``config.attributes["configure_logger"] = False`` で抑止できる。既存ロガーは無効化しない
+# （無効化すると import 済みモジュールのログが消え、caplog 依存のテストが順序で落ちる）。
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

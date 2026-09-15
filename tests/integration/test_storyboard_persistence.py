@@ -19,6 +19,7 @@ from contracts.states import ArtifactType, EpisodeStatus
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from infrastructure.db.models import Base
 from infrastructure.db.repositories import ArtifactMetadataRepository, EpisodeRepository
+from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.fakes import FakeStoryboardGenerator
 from tests.support.storyboard import (
     BUCKET,
@@ -37,11 +38,11 @@ from workers.storyboard.activities import (
     StoryboardActivities,
 )
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+TEST_DATABASE_URL = require_test_database_url()
 
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL or "postgresql" not in DATABASE_URL or not os.environ.get("MINIO_ENDPOINT"),
-    reason="DATABASE_URL (PostgreSQL) and MINIO_ENDPOINT must be set (docker compose core)",
+    not TEST_DATABASE_URL or not os.environ.get("MINIO_ENDPOINT"),
+    reason="TEST_DATABASE_URL (*_test) and MINIO_ENDPOINT must be set",
 )
 
 RUN_ID = "run-1"
@@ -51,18 +52,20 @@ WORKFLOW_ID = "episode-test-storyboard"
 @pytest_asyncio.fixture
 async def pg_session_factory():
     schema = f"sb_test_{uuid.uuid4().hex[:12]}"
-    admin = create_async_engine(DATABASE_URL or "")
+    admin = create_async_engine(TEST_DATABASE_URL or "")
     async with admin.begin() as conn:
         await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_async_engine(
-        DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
+        TEST_DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
     )
     try:
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         yield async_sessionmaker(engine, expire_on_commit=False)
     finally:
         await engine.dispose()
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with admin.begin() as conn:
             await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         await admin.dispose()

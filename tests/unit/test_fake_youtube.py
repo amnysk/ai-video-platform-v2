@@ -120,3 +120,34 @@ def test_default_chunk_bytes_follow_the_contract() -> None:
     from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
 
     assert FakeVideoUploader().chunk_bytes == DEFAULT_UPLOAD_CHUNK_BYTES
+
+
+async def test_processing_defaults_to_processed_private_own_channel() -> None:
+    fake = FakeVideoUploader(chunk_bytes=4)
+    video_id = await _upload(fake)
+    state = await fake.processing_status(video_id)
+    assert state.found and state.upload_status == "processed"
+    assert state.privacy_status == "private" and state.channel_id == fake.channel_id
+    assert fake.processing_checks == 1
+    assert not (await fake.processing_status("missing")).found
+
+
+async def test_scripted_processing_states_are_consumed_and_the_last_one_sticks() -> None:
+    fake = FakeVideoUploader(chunk_bytes=4)
+    video_id = await _upload(fake)
+    fake.script_processing(
+        fake.processing_state(upload_status="uploaded", processing_status="processing"),
+        fake.processing_state(upload_status="rejected", rejection_reason="duplicate"),
+    )
+    assert (await fake.processing_status(video_id)).upload_status == "uploaded"
+    assert (await fake.processing_status(video_id)).upload_status == "rejected"
+    assert (await fake.processing_status(video_id)).upload_status == "rejected"
+    assert fake.processing_checks == 3
+
+
+async def test_processing_one_shot_error() -> None:
+    fake = FakeVideoUploader(chunk_bytes=4)
+    fake.fail_processing_with = YouTubeQuotaError("quotaExceeded")
+    with pytest.raises(YouTubeQuotaError):
+        await fake.processing_status("x")
+    assert not (await fake.processing_status("x")).found

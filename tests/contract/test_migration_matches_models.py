@@ -22,6 +22,7 @@ def _upgraded_engine(tmp_path: pathlib.Path):
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "infrastructure" / "db" / "migrations"))
     config.set_main_option("sqlalchemy.url", url)
+    config.attributes["configure_logger"] = False
     command.upgrade(config, "head")
     return create_engine(url)
 
@@ -49,6 +50,7 @@ def test_downgrade_removes_the_tables(tmp_path: pathlib.Path) -> None:
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "infrastructure" / "db" / "migrations"))
     config.set_main_option("sqlalchemy.url", url)
+    config.attributes["configure_logger"] = False
     command.upgrade(config, "head")
     command.downgrade(config, "base")
     remaining = set(inspect(create_engine(url)).get_table_names()) - {"alembic_version"}

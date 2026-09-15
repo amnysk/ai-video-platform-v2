@@ -20,12 +20,15 @@ from contracts.states import UPLOAD_MEDIA_TASK_QUEUE, EpisodeStatus, FailureClas
 from contracts.upload import DEFAULT_UPLOAD_MIN_TIMEOUT_SECONDS
 from contracts.upload_activities import (
     UPLOAD_ADMIT,
+    UPLOAD_AWAIT_PROCESSING,
     UPLOAD_FINAL_VIDEO,
     UPLOAD_MARK_UPLOADED,
     UPLOAD_MAX_ATTEMPTS,
     UPLOAD_RECORD_FAILURE,
     UploadAdmitRequest,
     UploadAdmitResult,
+    UploadAwaitProcessingRequest,
+    UploadAwaitProcessingResult,
     UploadFailureOutcome,
     UploadFinalVideoRequest,
     UploadFinalVideoResult,
@@ -34,6 +37,8 @@ from contracts.upload_activities import (
     UploadRecordFailureRequest,
 )
 from workers.upload.workflows import (
+    PROCESSING_RETRY_POLICY,
+    PROCESSING_SCHEDULE_TO_CLOSE,
     UPLOAD_ACTIVITY_MARGIN_SECONDS,
     UploadWorkflow,
     UploadWorkflowInput,
@@ -51,6 +56,9 @@ class Mocks:
     hang: bool = False
     cancelled: bool = False
     started: asyncio.Event = field(default_factory=asyncio.Event)
+    processing_errors: list[ApplicationError] = field(default_factory=list)
+    processing_always_fail: ApplicationError | None = None
+    processing_requests: list[UploadAwaitProcessingRequest] = field(default_factory=list)
 
     def activities(self) -> list[Any]:
         @activity.defn(name=UPLOAD_ADMIT)
@@ -86,6 +94,18 @@ class Mocks:
                 reconciled_by="upload_response",
             )
 
+        @activity.defn(name=UPLOAD_AWAIT_PROCESSING)
+        async def processing(req: UploadAwaitProcessingRequest) -> UploadAwaitProcessingResult:
+            self.calls.append("processing")
+            self.processing_requests.append(req)
+            if self.processing_always_fail is not None:
+                raise self.processing_always_fail
+            if self.processing_errors:
+                raise self.processing_errors.pop(0)
+            return UploadAwaitProcessingResult(
+                video_id=req.video_id, upload_status="processed", reason="processed"
+            )
+
         @activity.defn(name=UPLOAD_MARK_UPLOADED)
         async def mark(req: UploadMarkUploadedRequest) -> UploadMarkUploadedResult:
             self.calls.append("mark_uploaded")
@@ -102,7 +122,7 @@ class Mocks:
             }.get(req.failure_class, "blocked")
             return UploadFailureOutcome(episode_status=status)
 
-        return [admit, upload, mark, record_failure]
+        return [admit, upload, processing, mark, record_failure]
 
 
 @pytest_asyncio.fixture
@@ -124,7 +144,12 @@ async def _run(env: WorkflowEnvironment, mocks: Mocks, *, cancel: bool = False):
     queue = f"upload-test-{uuid.uuid4().hex[:10]}"
     media_queue = f"upload-media-test-{uuid.uuid4().hex[:10]}"
     acts = mocks.activities()
-    state_names = {UPLOAD_ADMIT, UPLOAD_MARK_UPLOADED, UPLOAD_RECORD_FAILURE}
+    state_names = {
+        UPLOAD_ADMIT,
+        UPLOAD_AWAIT_PROCESSING,
+        UPLOAD_MARK_UPLOADED,
+        UPLOAD_RECORD_FAILURE,
+    }
     async with (
         Worker(
             env.client,
@@ -158,9 +183,12 @@ async def _run(env: WorkflowEnvironment, mocks: Mocks, *, cancel: bool = False):
 async def test_happy_path_admits_uploads_and_marks_uploaded(env) -> None:
     mocks = Mocks()
     result = await _run(env, mocks)
-    assert mocks.calls == ["admit", "upload", "mark_uploaded"]
+    assert mocks.calls == ["admit", "upload", "processing", "mark_uploaded"]
     assert result.status == EpisodeStatus.UPLOADED.value
     assert result.upload is not None and result.upload.video_id == "vid00000001"
+    (req,) = mocks.processing_requests
+    assert req.video_id == "vid00000001" and req.episode_id == "ep-1"
+    assert result.processing is not None and result.processing.upload_status == "processed"
 
 
 async def test_not_admitted_does_nothing(env) -> None:
@@ -172,7 +200,7 @@ async def test_not_admitted_does_nothing(env) -> None:
 async def test_transient_failure_is_retried(env) -> None:
     mocks = Mocks(errors=[_error("TransientError")])
     result = await _run(env, mocks)
-    assert mocks.calls == ["admit", "upload", "upload", "mark_uploaded"]
+    assert mocks.calls == ["admit", "upload", "upload", "processing", "mark_uploaded"]
     assert result.status == EpisodeStatus.UPLOADED.value
 
 
@@ -212,6 +240,49 @@ async def test_cancel_stops_the_upload_then_records_and_reraises(env) -> None:
     assert mocks.cancelled and mocks.calls[-2:] == ["upload_cancelled", "record_failure"]
     (failure,) = mocks.failures
     assert failure.failure_class == FailureClass.NEEDS_INPUT.value
+
+
+async def test_processing_pending_is_polled_until_processed(env) -> None:
+    pending = _error("UploadProcessingPendingError")
+    mocks = Mocks(processing_errors=[pending, pending])
+    result = await _run(env, mocks)
+    assert mocks.calls == ["admit", "upload", "processing", "processing", "processing"] + [
+        "mark_uploaded"
+    ]
+    assert result.status == EpisodeStatus.UPLOADED.value
+
+
+async def test_processing_failed_is_recorded_once_and_never_marks_uploaded(env) -> None:
+    mocks = Mocks(processing_always_fail=_error("UploadProcessingFailedError", non_retryable=True))
+    result = await _run(env, mocks)
+    assert mocks.calls == ["admit", "upload", "processing", "record_failure"]
+    (failure,) = mocks.failures
+    assert failure.failure_class == FailureClass.NEEDS_INPUT.value
+    assert not failure.retry_exhausted and result.status == "blocked"
+
+
+async def test_processing_that_never_finishes_blocks_after_the_deadline(env) -> None:
+    mocks = Mocks(processing_always_fail=_error("UploadProcessingPendingError"))
+    result = await _run(env, mocks)
+    assert "mark_uploaded" not in mocks.calls and mocks.calls.count("upload") == 1
+    assert mocks.calls.count("processing") > 3
+    (failure,) = mocks.failures
+    assert failure.failure_class == FailureClass.RETRYABLE.value and failure.retry_exhausted
+    assert result.status == "blocked"
+
+
+def test_processing_retry_policy_matches_adr_0022() -> None:
+    assert PROCESSING_RETRY_POLICY.initial_interval == timedelta(seconds=30)
+    assert PROCESSING_RETRY_POLICY.backoff_coefficient == 2.0
+    assert PROCESSING_RETRY_POLICY.maximum_interval == timedelta(minutes=10)
+    assert PROCESSING_RETRY_POLICY.maximum_attempts == 0
+    assert "UploadProcessingFailedError" in (
+        PROCESSING_RETRY_POLICY.non_retryable_error_types or []
+    )
+    assert "UploadProcessingPendingError" not in (
+        PROCESSING_RETRY_POLICY.non_retryable_error_types or []
+    )
+    assert timedelta(hours=6) == PROCESSING_SCHEDULE_TO_CLOSE
 
 
 def test_start_to_close_uses_the_admit_estimate_plus_lookup_margin() -> None:

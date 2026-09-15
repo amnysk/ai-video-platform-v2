@@ -28,31 +28,34 @@ from infrastructure.db.repositories import (
 )
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.storage.artifact_store import readback_sha256
+from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.production import make_mp4, make_png
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+TEST_DATABASE_URL = require_test_database_url()
 
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL or "postgresql" not in DATABASE_URL,
-    reason="DATABASE_URL must point at PostgreSQL (docker compose core)",
+    not TEST_DATABASE_URL,
+    reason="TEST_DATABASE_URL must point at PostgreSQL (docker compose core)",
 )
 
 
 @pytest_asyncio.fixture
 async def pg_session_factory():
     schema = f"prod_test_{uuid.uuid4().hex[:12]}"
-    admin = create_async_engine(DATABASE_URL or "")
+    admin = create_async_engine(TEST_DATABASE_URL or "")
     async with admin.begin() as conn:
         await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_async_engine(
-        DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
+        TEST_DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
     )
     try:
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         yield async_sessionmaker(engine, expire_on_commit=False)
     finally:
         await engine.dispose()
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with admin.begin() as conn:
             await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         await admin.dispose()

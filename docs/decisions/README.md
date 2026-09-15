@@ -44,3 +44,6 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0018](./0018-scene-scoped-artifacts.md) | シーン単位の Artifact・job・予約 | Accepted |
 | [0019](./0019-render-stage.md) | Render 工程（完成動画）と Episode `render_ready` | Accepted |
 | [0020](./0020-upload-stage.md) | Upload 工程（YouTube private 投稿）と Episode `uploaded` | Accepted |
+| [0021](./0021-operational-switches-daily-slots-and-test-db-isolation.md) | 運用スイッチ・日次 Episode 枠とテストDBの隔離 | Accepted |
+| [0022](./0022-youtube-processing-check.md) | 投稿後の YouTube 処理状態の確認と送信中の一時停止 | Accepted |
+| [0023](./0023-daily-schedule-and-episode-pipeline.md) | Daily Schedule と Episode pipeline workflow | Accepted |

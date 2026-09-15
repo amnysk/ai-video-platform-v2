@@ -30,6 +30,7 @@ from domain.upload.ports import (
     UploadIncomplete,
     UploadProgress,
     UploadSessionRef,
+    VideoProcessingState,
 )
 from infrastructure.youtube.errors import (
     YouTubeAuthError,
@@ -84,6 +85,8 @@ REJECTED_REASONS = frozenset(
     }
 )
 
+#: 処理状態の値・video id として受け入れる文字（token や URL を状態に持ち込まない）
+_SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _RANGE_RE = re.compile(r"^bytes=0-(\d+)$")
 _SECRETISH_RE = re.compile(r"(upload_id|access_token|refresh_token|code)=[^&\s\"']+")
 
@@ -138,6 +141,14 @@ def _raise_for_error(response: httpx.Response, operation: str) -> None:
     if 400 <= status < 500:
         raise YouTubeRejectedError(label)
     raise YouTubeTransientError(label)
+
+
+def _safe(value: object) -> str | None:
+    return value if isinstance(value, str) and _SAFE_VALUE_RE.match(value) else None
+
+
+def _mapping(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
 
 
 def _check_session_uri(uri: str) -> None:
@@ -359,6 +370,45 @@ class YouTubeResumableUploader:
                 return None
             page_token = next_token
         return None
+
+    async def processing_status(self, video_id: str) -> VideoProcessingState:
+        """``videos.list(part=status,processingDetails,snippet)``（1 unit、readonly scope）。
+
+        items が空・404 はまだ見えない（``found=False``）。値は識別子として安全なものだけ残す。
+        """
+        if not _SAFE_VALUE_RE.match(video_id or ""):
+            raise ValueError("video_id is not a YouTube video id")
+        operation = "video processing status"
+        response = await self._request(
+            "GET",
+            f"{API_BASE_URL}/videos",
+            operation,
+            params={"part": "status,processingDetails,snippet", "id": video_id},
+        )
+        if response.status_code == 404:
+            return VideoProcessingState(found=False)
+        if response.status_code != 200:
+            _raise_for_error(response, operation)
+        try:
+            body = response.json()
+        except ValueError:
+            raise YouTubeTransientError(f"{operation}: response is not JSON") from None
+        items = body.get("items") if isinstance(body, dict) else None
+        video = items[0] if isinstance(items, list) and items else None
+        if not isinstance(video, dict):
+            return VideoProcessingState(found=False)
+        status = _mapping(video.get("status"))
+        details = _mapping(video.get("processingDetails"))
+        snippet = _mapping(video.get("snippet"))
+        return VideoProcessingState(
+            found=True,
+            upload_status=_safe(status.get("uploadStatus")),
+            processing_status=_safe(details.get("processingStatus")),
+            failure_reason=_safe(status.get("failureReason")),
+            rejection_reason=_safe(status.get("rejectionReason")),
+            privacy_status=_safe(status.get("privacyStatus")),
+            channel_id=_safe(snippet.get("channelId")),
+        )
 
     async def _get_json(
         self, resource: str, params: Mapping[str, str], operation: str

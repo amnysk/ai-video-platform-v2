@@ -29,6 +29,7 @@ from contracts.states import (
 from contracts.upload import parse_upload_receipt, upload_marker
 from contracts.upload_activities import (
     UploadAdmitRequest,
+    UploadAwaitProcessingRequest,
     UploadFinalVideoRequest,
     UploadMarkUploadedRequest,
     UploadRecordFailureRequest,
@@ -83,6 +84,9 @@ class Harness:
         self.heartbeats: list[tuple[Any, ...]] = []
         self.episode_id = ""
 
+    async def is_paused(self) -> bool:
+        return self.paused
+
     def activities(self, uploader: Any = None, **overrides: Any) -> UploadActivities:
         kwargs: dict[str, Any] = {
             "session_factory": self.factory,
@@ -91,7 +95,7 @@ class Harness:
             "workdir": WorkDirectory(self.tmp_path / "upload-work", forbidden=()),
             "uploader": uploader or self.fake,
             "channel_id": CHANNEL_ID,
-            "uploads_paused": lambda: self.paused,
+            "uploads_paused": self.is_paused,
             "chunk_bytes": TEST_CHUNK_BYTES,
             "marker_lookup_attempts": 2,
             "marker_lookup_delay_seconds": 0.0,
@@ -480,6 +484,97 @@ async def test_uploads_paused_never_calls_youtube(h: Harness) -> None:
 
     assert err.type == "UploadsPausedError" and err.non_retryable
     assert (h.fake.sessions_started, h.fake.status_queries, h.fake.marker_lookups) == (0, 0, 0)
+    assert h.fake.videos_created == 0 and await h.reservations() == []
+
+
+async def test_pause_during_sending_stops_and_resumes_the_saved_session(h: Harness) -> None:
+    """送信中に一時停止 → 送信を止める。解除後の再実行は保存済み session から続け、動画は1本。"""
+    await _admitted(h)
+    harness = h
+
+    class PauseAfterFirstChunk(FakeVideoUploader):
+        async def send_chunk(self, session, offset, chunk, total_bytes):
+            progress = await super().send_chunk(session, offset, chunk, total_bytes)
+            harness.paused = True
+            return progress
+
+    paused_fake = PauseAfterFirstChunk(chunk_bytes=TEST_CHUNK_BYTES)
+    h.fake = paused_fake
+    err = await _error(h.upload(h.activities(reservation_check_every_chunks=1)))
+
+    assert err.type == "UploadsPausedError" and err.non_retryable
+    assert paused_fake.chunk_sends == 1 and paused_fake.videos_created == 0
+    (row,) = await h.reservations()
+    assert row.status is ReservationStatus.RESERVED and row.dispatched_at is not None
+
+    h.paused = False
+    plain = FakeVideoUploader(chunk_bytes=TEST_CHUNK_BYTES)
+    plain.sessions, plain.videos = paused_fake.sessions, paused_fake.videos
+    result = await h.upload(h.activities(plain))
+
+    assert result.video_id and plain.sessions_started == 0 and len(plain.videos) == 1
+    assert paused_fake.sessions_started == 1
+
+
+# --------------------------------------------------------------------------- 処理状態
+
+
+async def _uploaded(h: Harness):
+    acts = await _admitted(h)
+    result = await h.upload(acts)
+    return acts, result
+
+
+async def _processing(acts: UploadActivities, h: Harness, video_id: str, run: str = "run-1"):
+    return await acts.await_processing(
+        UploadAwaitProcessingRequest(h.episode_id, WF, run, video_id)
+    )
+
+
+async def test_await_processing_processed_returns_the_verdict(h: Harness) -> None:
+    acts, uploaded = await _uploaded(h)
+    result = await _processing(acts, h, uploaded.video_id)
+    assert result.video_id == uploaded.video_id and result.upload_status == "processed"
+    assert result.reason == "processed" and h.fake.processing_checks == 1
+
+
+async def test_await_processing_pending_is_retryable(h: Harness) -> None:
+    acts, uploaded = await _uploaded(h)
+    h.fake.script_processing(
+        h.fake.processing_state(upload_status="uploaded", processing_status="processing")
+    )
+    err = await _error(_processing(acts, h, uploaded.video_id))
+    assert err.type == "UploadProcessingPendingError" and not err.non_retryable
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"upload_status": "rejected", "rejection_reason": "duplicate"}, "rejected_duplicate"),
+        ({"channel_id": "UC" + "z" * 22}, "channel_mismatch"),
+        ({"privacy_status": "public"}, "not_private"),
+    ],
+)
+async def test_await_processing_failures_are_needs_input(h: Harness, overrides, reason) -> None:
+    acts, uploaded = await _uploaded(h)
+    h.fake.script_processing(h.fake.processing_state(**overrides))
+    err = await _error(_processing(acts, h, uploaded.video_id))
+    assert err.type == "UploadProcessingFailedError" and err.non_retryable
+    assert reason in str(err)
+
+
+async def test_await_processing_youtube_errors_are_translated(h: Harness) -> None:
+    acts, uploaded = await _uploaded(h)
+    h.fake.fail_processing_with = YouTubeQuotaError("quotaExceeded")
+    err = await _error(_processing(acts, h, uploaded.video_id))
+    assert err.type == "UploadQuotaExceededError" and not err.non_retryable
+
+
+async def test_await_processing_refuses_a_non_owner(h: Harness) -> None:
+    acts, uploaded = await _uploaded(h)
+    err = await _error(_processing(acts, h, uploaded.video_id, run="run-other"))
+    assert err.type == "UploadOwnershipLostError" and err.non_retryable
+    assert h.fake.processing_checks == 0
 
 
 async def test_missing_final_video_is_needs_input(factory, tmp_path) -> None:

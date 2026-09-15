@@ -64,11 +64,14 @@ from contracts.upload import (
 )
 from contracts.upload_activities import (
     UPLOAD_ADMIT,
+    UPLOAD_AWAIT_PROCESSING,
     UPLOAD_FINAL_VIDEO,
     UPLOAD_MARK_UPLOADED,
     UPLOAD_RECORD_FAILURE,
     UploadAdmitRequest,
     UploadAdmitResult,
+    UploadAwaitProcessingRequest,
+    UploadAwaitProcessingResult,
     UploadFailureOutcome,
     UploadFinalVideoRequest,
     UploadFinalVideoResult,
@@ -89,6 +92,8 @@ from domain.errors import (
     UploadIntegrityError,
     UploadOutcomeUnknownError,
     UploadOwnershipLostError,
+    UploadProcessingFailedError,
+    UploadProcessingPendingError,
     UploadsPausedError,
     classify_failure,
 )
@@ -102,6 +107,7 @@ from domain.upload.ports import (
     UploadSessionRef,
     VideoUploader,
 )
+from domain.upload.processing import ProcessingOutcome, classify_processing
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -148,6 +154,14 @@ OPERATOR_REUPLOAD_APPROVED = "operator_reupload_approved"
 _RETRY_IN_ACTIVITY = (YouTubeTransientError, YouTubeRateLimitError)
 
 HeartbeatFn = Callable[..., None]
+#: 投稿の一時停止スイッチ（env ``UPLOADS_PAUSED`` / DB の operational switch。ADR-0021）
+PausedFn = Callable[[], Awaitable[bool]]
+
+
+async def _never_paused() -> bool:
+    return False
+
+
 SleepFn = Callable[[float], Awaitable[None]]
 
 
@@ -218,7 +232,7 @@ class UploadActivities:
         workdir: WorkDirectory,
         uploader: VideoUploader,
         channel_id: str,
-        uploads_paused: Callable[[], bool] = lambda: False,
+        uploads_paused: PausedFn = _never_paused,
         chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES,
         marker_lookup_attempts: int = DEFAULT_UPLOAD_MARKER_LOOKUP_ATTEMPTS,
         marker_lookup_delay_seconds: float = DEFAULT_UPLOAD_MARKER_LOOKUP_DELAY_SECONDS,
@@ -254,7 +268,7 @@ class UploadActivities:
 
     def state_activities(self) -> Sequence[Callable[..., object]]:
         """``UPLOAD_TASK_QUEUE``（workflow と同じ queue）へ登録する。"""
-        return [self.admit, self.mark_uploaded, self.record_failure]
+        return [self.admit, self.await_processing, self.mark_uploaded, self.record_failure]
 
     def media_activities(self) -> Sequence[Callable[..., object]]:
         """``UPLOAD_MEDIA_TASK_QUEUE``（並行数 1）へ登録する。"""
@@ -406,8 +420,7 @@ class UploadActivities:
                 episode_id, job_id, final, metadata, upload_key, latest, outcome, called=False
             )
 
-        if self._uploads_paused():
-            raise UploadsPausedError("UPLOADS_PAUSED is set; refusing to start or resume an upload")
+        await self._refuse_if_paused("refusing to start or resume an upload")
 
         work = self._workdir.create(episode_id, job_id, attempt=attempt)
         path = work.input / FINAL_VIDEO_FILENAME
@@ -714,6 +727,8 @@ class UploadActivities:
         row = await self._reservation(reservation_id)
         if row.status is ReservationStatus.SPENT:
             return _spent_outcome(row)
+        # 一時停止は送信の途中でも効かせる。session は予約に残るので、解除後の POST で続きから送る
+        await self._refuse_if_paused("stopped sending; the saved session resumes after unpausing")
         if (
             row.status is not ReservationStatus.RESERVED
             or row.provider_job_ref != session.uri
@@ -782,6 +797,12 @@ class UploadActivities:
                 if stalls > self._transient_retries:
                     raise TransientError("upload made no progress; will retry the activity")
             offset = progress.next_offset
+
+    async def _refuse_if_paused(self, action: str) -> None:
+        if await self._uploads_paused():
+            raise UploadsPausedError(
+                f"uploads are paused (UPLOADS_PAUSED / uploads_paused); {action}"
+            )
 
     async def _lookup_marker(self, marker: str) -> str | None:
         """uploads playlist をマーカー（タグ / description の行）で探す。見つからなければ None。"""
@@ -1035,6 +1056,51 @@ class UploadActivities:
             logger.warning("upload job failure could not be recorded job=%s", job_id, exc_info=True)
 
     # ------------------------------------------------------------------ 完了 / 失敗
+
+    # ------------------------------------------------------------------ 処理状態（ADR-0022）
+
+    @activity.defn(name=UPLOAD_AWAIT_PROCESSING)
+    async def await_processing(
+        self, request: UploadAwaitProcessingRequest
+    ) -> UploadAwaitProcessingResult:
+        """投稿済み動画の YouTube 側の処理状態を**1回だけ**照会して判定する。
+
+        - 処理完了・private・投稿先チャンネル → 結果を返す（workflow が mark_uploaded へ進む）
+        - 処理中・まだ見えない → ``UploadProcessingPendingError``
+          （retryable。間隔は workflow の RetryPolicy）
+        - 拒否・失敗・削除・チャンネル違い・private でない
+          → ``UploadProcessingFailedError``（needs_input）
+
+        YouTube を書き換えず、再投稿もしない。入場トークンを持たない実行は照会せずに降りる。
+        """
+        token = admission_token(request.workflow_id, request.run_id)
+        try:
+            await self._require_owner(request.episode_id, token)
+            try:
+                state = await self._uploader.processing_status(request.video_id)
+            except _RETRY_IN_ACTIVITY as exc:
+                raise TransientError(
+                    f"video processing status query failed ({type(exc).__name__})"
+                ) from None
+            verdict = classify_processing(state, self._channel_id)
+            if verdict.outcome is ProcessingOutcome.PENDING:
+                raise UploadProcessingPendingError(
+                    f"video {request.video_id} is not processed yet ({verdict.reason})"
+                )
+            if verdict.outcome is ProcessingOutcome.FAILED:
+                raise UploadProcessingFailedError(
+                    f"video {request.video_id} failed the YouTube processing check "
+                    f"({verdict.reason}); check YouTube Studio (docs/operations/upload-worker.md)"
+                )
+        except Exception as exc:
+            raise_activity_error(sanitize_error(translate_youtube_error(exc), []))
+        logger.info("upload processed episode=%s video=%s", request.episode_id, request.video_id)
+        return UploadAwaitProcessingResult(
+            video_id=request.video_id,
+            upload_status=state.upload_status or "",
+            reason=verdict.reason,
+            processing_status=state.processing_status or "",
+        )
 
     @activity.defn(name=UPLOAD_MARK_UPLOADED)
     async def mark_uploaded(self, request: UploadMarkUploadedRequest) -> UploadMarkUploadedResult:

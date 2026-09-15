@@ -24,7 +24,7 @@ from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
 from infrastructure.workdir import WorkDirectory
 from tests.support.fake_youtube import FakeVideoUploader
 from workers.upload.activities import UploadActivities
-from workers.upload.run_worker import build_workers
+from workers.upload.run_worker import build_workers, uploads_paused_switch
 
 logger = logging.getLogger("fake_upload_worker")
 
@@ -71,6 +71,16 @@ class CountingUploader:
     async def own_channel_id(self) -> str:
         return await self.inner.own_channel_id()
 
+    async def processing_status(self, video_id: str):
+        state = await self.inner.processing_status(video_id)
+        logger.info(
+            "FAKE_YOUTUBE processing_status upload_status=%s privacy=%s checks=%d",
+            state.upload_status,
+            state.privacy_status,
+            self.inner.processing_checks,
+        )
+        return state
+
 
 async def main() -> None:
     if os.environ.get("AVP_FAKE_YOUTUBE") != "1":
@@ -83,14 +93,16 @@ async def main() -> None:
     client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
+    session_factory = session_factory_from_settings(settings)
     activities = UploadActivities(
-        session_factory=session_factory_from_settings(settings),
+        session_factory=session_factory,
         store=store,
         bucket=settings.minio_bucket,
         workdir=WorkDirectory(settings.ai_video_work_root),
         uploader=uploader,
         channel_id=FAKE_CHANNEL_ID,
         chunk_bytes=FAKE_CHUNK_BYTES,
+        uploads_paused=uploads_paused_switch(settings, session_factory),
         run_inspector=TemporalWorkflowRunInspector(client),
     )
     state, media = build_workers(client, activities)

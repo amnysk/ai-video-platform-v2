@@ -13,13 +13,16 @@ import logging
 import re
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.client import Client
 from temporalio.worker import Worker
 
+from contracts.operations import OperationalSwitch
 from contracts.states import UPLOAD_MEDIA_TASK_QUEUE, UPLOAD_TASK_QUEUE
 from contracts.upload import DEFAULT_UPLOAD_CONCURRENCY, YOUTUBE_CHANNEL_ID_PATTERN
 from domain.upload.ports import VideoUploader
 from infrastructure.config import Settings
+from infrastructure.db.repositories import OperationalSwitchRepository
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
@@ -94,6 +97,23 @@ async def verify_channel(uploader: VideoUploader, channel_id: str) -> None:
         )
 
 
+def uploads_paused_switch(settings: Settings, session_factory: async_sessionmaker[AsyncSession]):
+    """``UPLOADS_PAUSED``（env）OR DB スイッチ ``uploads_paused``（ADR-0021）。
+
+    DB は確認のたびに読むので、worker を再起動しなくても次の確認（session 開始前・送信中）で効く。
+    """
+
+    async def paused() -> bool:
+        if settings.uploads_paused:
+            return True
+        async with session_factory() as session:
+            return await OperationalSwitchRepository(session).is_on(
+                OperationalSwitch.UPLOADS_PAUSED
+            )
+
+    return paused
+
+
 def build_workers(client: Client, activities: UploadActivities) -> tuple[Worker, Worker]:
     state = Worker(
         client,
@@ -123,16 +143,17 @@ async def main() -> None:
         client = await Client.connect(
             settings.temporal_address, namespace=settings.temporal_namespace
         )
+        session_factory = session_factory_from_settings(settings)
         store = MinioArtifactStore.from_settings(settings)
         await store.ensure_bucket()
         activities = UploadActivities(
-            session_factory=session_factory_from_settings(settings),
+            session_factory=session_factory,
             store=store,
             bucket=settings.minio_bucket,
             workdir=WorkDirectory(settings.ai_video_work_root),
             uploader=uploader,
             channel_id=channel_id,
-            uploads_paused=lambda: settings.uploads_paused,
+            uploads_paused=uploads_paused_switch(settings, session_factory),
             chunk_bytes=uploader.chunk_bytes,
             run_inspector=TemporalWorkflowRunInspector(client),
         )

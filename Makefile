@@ -36,7 +36,8 @@ types:
 test-unit:
 	pytest tests/unit tests/contract tests/architecture
 
-test-integration:
+test-integration:  ## TEST_DATABASE_URL（*_test のローカルDB）が必要。DATABASE_URL は読まない（ADR-0021）
+	@test -n "$$TEST_DATABASE_URL" || { echo "TEST_DATABASE_URL (*_test) is required"; exit 1; }
 	pytest tests/integration -m integration
 
 test-live:      ## 本物のCodexを呼ぶ。所有者の明示操作のみ。CIからは走らない

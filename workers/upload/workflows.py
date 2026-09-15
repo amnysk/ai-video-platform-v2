@@ -2,7 +2,10 @@
 
 **工程の順序を知る唯一の場所**（INV-4 / INV-5）。I/O をしない。構造は RenderWorkflow と同じ::
 
-    admit → upload_final_video（queue upload-media、並行数 1、retry 上限つき）→ mark_uploaded
+    admit → upload_final_video（queue upload-media、並行数 1、retry 上限つき）
+      → await_processing（YouTube の処理完了を RetryPolicy の間隔で待つ。ADR-0022）→ mark_uploaded
+      処理の拒否・失敗 / 期限切れ → record_failure（blocked）
+      再開は予約の spent で再投稿せず、照会からやり直す
       投稿が失敗 → 失敗クラスで record_failure（retryable を使い切ったら blocked）
       workflow の cancel → 投稿 Activity の cancel 完了を待ち、record_failure → cancel を再送出
                            （予約の session は残るので、POST で続きから再開できる）
@@ -34,15 +37,21 @@ with workflow.unsafe.imports_passed_through():
         DEFAULT_UPLOAD_MARKER_LOOKUP_ATTEMPTS,
         DEFAULT_UPLOAD_MARKER_LOOKUP_DELAY_SECONDS,
         DEFAULT_UPLOAD_MIN_TIMEOUT_SECONDS,
+        DEFAULT_UPLOAD_PROCESSING_DEADLINE_SECONDS,
+        DEFAULT_UPLOAD_PROCESSING_INITIAL_INTERVAL_SECONDS,
+        DEFAULT_UPLOAD_PROCESSING_MAX_INTERVAL_SECONDS,
     )
     from contracts.upload_activities import (
         UPLOAD_ADMIT,
+        UPLOAD_AWAIT_PROCESSING,
         UPLOAD_FINAL_VIDEO,
         UPLOAD_MARK_UPLOADED,
         UPLOAD_MAX_ATTEMPTS,
         UPLOAD_RECORD_FAILURE,
         UploadAdmitRequest,
         UploadAdmitResult,
+        UploadAwaitProcessingRequest,
+        UploadAwaitProcessingResult,
         UploadFailureOutcome,
         UploadFinalVideoRequest,
         UploadFinalVideoResult,
@@ -79,6 +88,18 @@ UPLOAD_RETRY_POLICY = RetryPolicy(
 )
 
 
+#: 処理状態の照会（ADR-0022）。1回は短い読み取り。待ちは retry の間隔で表し、期限で blocked にする
+PROCESSING_START_TO_CLOSE = timedelta(minutes=2)
+PROCESSING_SCHEDULE_TO_CLOSE = timedelta(seconds=DEFAULT_UPLOAD_PROCESSING_DEADLINE_SECONDS)
+PROCESSING_RETRY_POLICY = RetryPolicy(
+    initial_interval=timedelta(seconds=DEFAULT_UPLOAD_PROCESSING_INITIAL_INTERVAL_SECONDS),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(seconds=DEFAULT_UPLOAD_PROCESSING_MAX_INTERVAL_SECONDS),
+    maximum_attempts=0,
+    non_retryable_error_types=list(NON_RETRYABLE_ERROR_TYPE_NAMES),
+)
+
+
 @dataclass
 class UploadWorkflowInput:
     episode_id: str
@@ -95,6 +116,7 @@ class UploadWorkflowResult:
     owned: bool = True
     upload: UploadFinalVideoResult | None = None
     failure_class: str | None = None
+    processing: UploadAwaitProcessingResult | None = None
 
 
 @dataclass
@@ -212,6 +234,29 @@ class UploadWorkflow:
                 ),
             )
 
+        try:
+            processed: UploadAwaitProcessingResult = await workflow.execute_activity(
+                UPLOAD_AWAIT_PROCESSING,
+                UploadAwaitProcessingRequest(
+                    episode_id=request.episode_id,
+                    workflow_id=info.workflow_id,
+                    run_id=info.run_id,
+                    video_id=uploaded.video_id,
+                ),
+                result_type=UploadAwaitProcessingResult,
+                start_to_close_timeout=PROCESSING_START_TO_CLOSE,
+                schedule_to_close_timeout=PROCESSING_SCHEDULE_TO_CLOSE,
+                retry_policy=PROCESSING_RETRY_POLICY,
+            )
+        except ActivityError as err:
+            if isinstance(err.cause, CancelledError):
+                raise asyncio.CancelledError() from err
+            cls = classify_upload_failure(err)
+            return await self._settle(
+                request,
+                _StageFailure(cls, _summary(err), retry_exhausted=cls in RETRYABLE_FAILURE_CLASSES),
+            )
+
         marked: UploadMarkUploadedResult = await workflow.execute_activity(
             UPLOAD_MARK_UPLOADED,
             UploadMarkUploadedRequest(
@@ -227,6 +272,7 @@ class UploadWorkflow:
             status=marked.status,
             owned=marked.owned,
             upload=uploaded,
+            processing=processed,
         )
 
     async def _settle(
@@ -258,6 +304,9 @@ class UploadWorkflow:
 
 
 __all__ = [
+    "PROCESSING_RETRY_POLICY",
+    "PROCESSING_SCHEDULE_TO_CLOSE",
+    "PROCESSING_START_TO_CLOSE",
     "STATE_RETRY_POLICY",
     "TASK_QUEUE",
     "UPLOAD_ACTIVITY_MARGIN_SECONDS",

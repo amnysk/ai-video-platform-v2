@@ -78,3 +78,26 @@ async def test_missing_youtube_config_fails_fast_without_printing_secrets(tmp_pa
             client,
         )
         assert "secret" not in repr(uploader)
+
+
+async def test_uploads_paused_reads_env_or_db_switch_without_restart(session_factory) -> None:
+    """DB スイッチ（ADR-0021）は worker を再起動しなくても次の確認で効く。"""
+    from contracts.operations import OperationalSwitch
+    from infrastructure.db.repositories import OperationalSwitchRepository
+    from workers.upload.run_worker import uploads_paused_switch
+
+    paused = uploads_paused_switch(Settings(uploads_paused=False), session_factory)
+    assert await paused() is False
+
+    async with session_factory() as session:
+        await OperationalSwitchRepository(session).set(OperationalSwitch.UPLOADS_PAUSED, True)
+        await session.commit()
+    assert await paused() is True
+
+    async with session_factory() as session:
+        await OperationalSwitchRepository(session).set(OperationalSwitch.UPLOADS_PAUSED, False)
+        await session.commit()
+    assert await paused() is False
+
+    env_paused = uploads_paused_switch(Settings(uploads_paused=True), session_factory)
+    assert await env_paused() is True

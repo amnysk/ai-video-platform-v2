@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from contracts.operations import (
+    ClaimOutcome,
+    DailyEpisodeSlot,
+    DailySlotClaim,
+    OperationalSwitch,
+)
 from contracts.states import (
     DEFAULT_MAX_ATTEMPTS,
     JOB_TERMINAL_STATUSES,
@@ -30,8 +37,10 @@ from domain.job.transitions import JobEvent, transition_job
 from domain.provider.reservations import ReservationEvent, transition_reservation
 from infrastructure.db.models import (
     ArtifactMetadataRow,
+    DailyEpisodeSlotRow,
     EpisodeRow,
     JobRow,
+    OperationalSwitchRow,
     ProviderReservationRow,
 )
 
@@ -947,3 +956,116 @@ class ProviderReservationRepository:
         row.error_summary = (error_summary or "")[:2000] or None
         await self._session.flush()
         return _to_reservation(row)
+
+
+class OperationalSwitchRepository:
+    """DB の停止スイッチ（ADR-0021）。行が無ければ off。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def is_on(self, switch: OperationalSwitch) -> bool:
+        row = await self._session.get(OperationalSwitchRow, switch.value, populate_existing=True)
+        return bool(row is not None and row.is_on)
+
+    async def set(self, switch: OperationalSwitch, on: bool, *, reason: str | None = None) -> None:
+        row = await self._session.get(OperationalSwitchRow, switch.value)
+        if row is None:
+            self._session.add(
+                OperationalSwitchRow(name=switch.value, is_on=on, reason=reason, updated_at=_now())
+            )
+        else:
+            row.is_on = on
+            row.reason = reason
+            row.updated_at = _now()
+        await self._session.flush()
+
+
+class DailyEpisodeSlotRepository:
+    """日次 Episode 枠（ADR-0021）。上限は DB の主キーで守り、アプリの読みに頼らない。"""
+
+    #: 並行 claim の衝突で読み直す回数の上限（衝突ごとに枠が1つ埋まるので有限で足りる）
+    MAX_ATTEMPTS = 16
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _by_trigger(self, trigger_id: str) -> DailyEpisodeSlotRow | None:
+        result = await self._session.execute(
+            select(DailyEpisodeSlotRow).where(DailyEpisodeSlotRow.trigger_id == trigger_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def _rows_for_date(self, slot_date: date) -> list[DailyEpisodeSlotRow]:
+        result = await self._session.execute(
+            select(DailyEpisodeSlotRow)
+            .where(DailyEpisodeSlotRow.slot_date == slot_date)
+            .order_by(DailyEpisodeSlotRow.slot_index)
+            .execution_options(populate_existing=True)
+        )
+        return list(result.scalars())
+
+    async def claim(
+        self, *, slot_date: date, trigger_id: str, daily_limit: int, topic: str | None
+    ) -> DailySlotClaim:
+        """1回の claim。commit は呼び出し側。衝突は savepoint を戻して読み直す。"""
+        for _ in range(self.MAX_ATTEMPTS):
+            existing = await self._by_trigger(trigger_id)
+            if existing is not None:
+                return DailySlotClaim(
+                    outcome=ClaimOutcome.EXISTING,
+                    slot_date=existing.slot_date,
+                    episode_id=str(existing.episode_id),
+                    slot_index=existing.slot_index,
+                )
+            rows = await self._rows_for_date(slot_date)
+            if len(rows) >= daily_limit:
+                return await self._resume_or_limit(slot_date, rows)
+            index = max((r.slot_index for r in rows), default=-1) + 1
+            try:
+                async with self._session.begin_nested():
+                    episode = await EpisodeRepository(self._session).create(topic=topic)
+                    self._session.add(
+                        DailyEpisodeSlotRow(
+                            slot_date=slot_date,
+                            slot_index=index,
+                            trigger_id=trigger_id,
+                            episode_id=_as_uuid(episode.id),
+                            created_at=_now(),
+                        )
+                    )
+                    await self._session.flush()
+            except IntegrityError:
+                continue  # 別の claim が同じ番号か同じ trigger を先に取った。読み直す
+            return DailySlotClaim(
+                outcome=ClaimOutcome.CREATED,
+                slot_date=slot_date,
+                episode_id=episode.id,
+                slot_index=index,
+            )
+        raise RuntimeError(f"daily slot claim did not converge: {slot_date} {trigger_id}")
+
+    async def _resume_or_limit(
+        self, slot_date: date, rows: list[DailyEpisodeSlotRow]
+    ) -> DailySlotClaim:
+        for row in rows:
+            episode = await self._session.get(EpisodeRow, row.episode_id, populate_existing=True)
+            if episode is not None and episode.status == EpisodeStatus.PLANNED.value:
+                return DailySlotClaim(
+                    outcome=ClaimOutcome.RESUME,
+                    slot_date=slot_date,
+                    episode_id=str(row.episode_id),
+                    slot_index=row.slot_index,
+                )
+        return DailySlotClaim(outcome=ClaimOutcome.LIMIT_REACHED, slot_date=slot_date)
+
+    async def list_for_date(self, slot_date: date) -> list[DailyEpisodeSlot]:
+        return [
+            DailyEpisodeSlot(
+                slot_date=r.slot_date,
+                slot_index=r.slot_index,
+                trigger_id=r.trigger_id,
+                episode_id=str(r.episode_id),
+            )
+            for r in await self._rows_for_date(slot_date)
+        ]

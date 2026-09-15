@@ -18,7 +18,7 @@ UIの入口は FastAPI のHTTP APIだけ。
 ### INV-2 SchedulerはWorkerを直接呼ばない
 cron・timer 等のスケジューラは Temporal の schedule/workflow start だけを行い、
 Activity や worker 関数を直接呼ばない。
-**機械検査**: 未検査
+**機械検査**: `tests/architecture/test_pipeline_scheduling.py`（Schedule を作るのは `infrastructure/temporal/schedules.py` だけ・プロセス内 cron ライブラリ禁止 / ADR-0023）
 
 ### INV-3 Workerは他のWorkerを直接呼ばない
 `workers/<a>/` から `workers/<b>/` へのimportを禁止する。共有したいロジックは

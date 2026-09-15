@@ -5,6 +5,12 @@ from __future__ import annotations
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from contracts.pipeline import (
+    DAILY_SCHEDULE_ID,
+    DEFAULT_DAILY_EPISODE_LIMIT,
+    DEFAULT_DAILY_SCHEDULE_CRON,
+    DEFAULT_SCHEDULE_TIMEZONE,
+)
 from contracts.production_activities import (
     DEFAULT_AWAIT_REEXECUTIONS,
     DEFAULT_IMAGE_CONCURRENCY,
@@ -17,6 +23,7 @@ from contracts.render import (
     DEFAULT_RENDER_CONCURRENCY,
     DEFAULT_RENDER_FFMPEG_THREADS,
     DEFAULT_RENDER_MIN_FREE_BYTES,
+    DEFAULT_RENDER_PROFILE_ID,
     DEFAULT_RENDER_TIMEOUT_SECONDS,
 )
 from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
@@ -118,6 +125,18 @@ class Settings(BaseSettings):
     uploads_paused: bool = False
     #: resumable upload の chunk（256 KiB の倍数）
     youtube_chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES
+
+    # --- pipeline（ADR-0023） ---
+    #: 1 日（``schedule_timezone`` の日付）に自動生成する Episode の上限
+    daily_episode_limit: int = DEFAULT_DAILY_EPISODE_LIMIT
+    #: Temporal Schedule の cron（``schedule_timezone`` で解釈する）
+    daily_schedule_cron: str = DEFAULT_DAILY_SCHEDULE_CRON
+    schedule_timezone: str = DEFAULT_SCHEDULE_TIMEZONE
+    daily_schedule_id: str = DAILY_SCHEDULE_ID
+    #: 自動 pipeline が Render に渡す出力 profile（Shorts 前提にしない）
+    pipeline_render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
+    #: ``PAUSED=true`` なら Daily の起動と投稿ゲートを止める（DB の switch と OR）
+    paused: bool = False
 
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"

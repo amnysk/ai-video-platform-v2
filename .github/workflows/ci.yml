@@ -83,9 +83,14 @@ jobs:
           code=$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose ps -aq migrate)")
           docker compose logs --no-color migrate
           test "$code" = "0" || { echo "migrate exited with $code"; exit 1; }
+      - name: Assert the isolated test database exists
+        run: docker compose exec -T postgres psql -U avp -d avp_test -c 'SELECT 1'
       - run: pytest tests/integration -q -m integration
         env:
           DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
+          # 破壊的なテストは *_test にだけ向く（ADR-0021）。avp_test は
+          # deploy/postgres-init/01-test-db.sql が初回起動時に作る
+          TEST_DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp_test
           MINIO_ENDPOINT: http://localhost:9000
           MINIO_ACCESS_KEY: minioadmin
           MINIO_SECRET_KEY: change-me

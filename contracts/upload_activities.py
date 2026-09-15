@@ -17,6 +17,7 @@ from contracts.upload import DEFAULT_UPLOAD_HEARTBEAT_INTERVAL_SECONDS, DEFAULT_
 
 UPLOAD_ADMIT = "upload_admit"
 UPLOAD_FINAL_VIDEO = "upload_final_video"
+UPLOAD_AWAIT_PROCESSING = "upload_await_processing"
 UPLOAD_MARK_UPLOADED = "upload_mark_uploaded"
 UPLOAD_RECORD_FAILURE = "upload_record_failure"
 
@@ -24,6 +25,7 @@ UPLOAD_RECORD_FAILURE = "upload_record_failure"
 UPLOAD_ACTIVITY_NAMES: tuple[str, ...] = (
     UPLOAD_ADMIT,
     UPLOAD_FINAL_VIDEO,
+    UPLOAD_AWAIT_PROCESSING,
     UPLOAD_MARK_UPLOADED,
     UPLOAD_RECORD_FAILURE,
 )
@@ -115,9 +117,32 @@ class UploadFinalVideoResult:
     job_id: str = ""
 
 
+@dataclass
+class UploadAwaitProcessingRequest:
+    """投稿済み動画の処理状態を1回照会する（ADR-0022）。待ちは workflow の RetryPolicy が持つ。"""
+
+    episode_id: str
+    workflow_id: str
+    run_id: str
+    video_id: str
+
+
+@dataclass
+class UploadAwaitProcessingResult:
+    video_id: str
+    #: ``status.uploadStatus``（processed）
+    upload_status: str
+    #: ``domain.upload.processing.ProcessingVerdict.reason``
+    reason: str
+    processing_status: str = ""
+
+
 __all__ = [
     "UPLOAD_ACTIVITY_NAMES",
     "UPLOAD_ADMIT",
+    "UPLOAD_AWAIT_PROCESSING",
+    "UploadAwaitProcessingRequest",
+    "UploadAwaitProcessingResult",
     "UPLOAD_FINAL_VIDEO",
     "UPLOAD_HEARTBEAT_INTERVAL_SECONDS",
     "UPLOAD_MARK_UPLOADED",

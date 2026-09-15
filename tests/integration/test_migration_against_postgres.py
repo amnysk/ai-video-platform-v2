@@ -7,7 +7,6 @@ psycopg2 未導入で migrate コンテナが落ちた事故は、まさにこ�
 
 from __future__ import annotations
 
-import os
 import pathlib
 
 import pytest
@@ -18,29 +17,31 @@ from sqlalchemy.engine import make_url
 
 from infrastructure.db.models import Base
 from infrastructure.db.urls import sync_database_url
+from tests.support.db import assert_destructive_allowed, require_test_database_url
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+TEST_DATABASE_URL = require_test_database_url()
 
 pytestmark = pytest.mark.skipif(
-    "postgresql" not in DATABASE_URL,
-    reason="DATABASE_URL must point at PostgreSQL (docker compose --profile core up -d)",
+    not TEST_DATABASE_URL,
+    reason="TEST_DATABASE_URL (*_test) must point at PostgreSQL (docker compose --profile core)",
 )
 
 
 def _sync_url() -> str:
     """env.py と同じ関数で同期URLを得る。ここで独自に組み立て直さない。"""
-    return sync_database_url(DATABASE_URL)
+    return sync_database_url(TEST_DATABASE_URL or "")
 
 
 def _config(url: str) -> Config:
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "infrastructure" / "db" / "migrations"))
     config.set_main_option("sqlalchemy.url", url)
+    config.attributes["configure_logger"] = False
     return config
 
 
-PROBE_DATABASE = "avp_alembic_probe"
+PROBE_DATABASE = "avp_alembic_probe_test"
 
 
 @pytest.fixture
@@ -52,14 +53,16 @@ def probe_url():
     そのため schema ではなく database を分ける。
     """
     admin_url = _sync_url()
+    url = make_url(admin_url).set(database=PROBE_DATABASE).render_as_string(hide_password=False)
+    assert_destructive_allowed(url)
     admin = create_engine(admin_url, isolation_level="AUTOCOMMIT")
     with admin.connect() as conn:
         conn.execute(text(f'DROP DATABASE IF EXISTS "{PROBE_DATABASE}"'))
         conn.execute(text(f'CREATE DATABASE "{PROBE_DATABASE}"'))
 
-    url = make_url(admin_url).set(database=PROBE_DATABASE).render_as_string(hide_password=False)
     yield url
 
+    assert_destructive_allowed(url)
     with admin.connect() as conn:
         conn.execute(text(f'DROP DATABASE IF EXISTS "{PROBE_DATABASE}"'))
     admin.dispose()
@@ -227,12 +230,12 @@ def test_production_vocabulary_and_scene_keys_on_postgres(probe_url) -> None:
     engine.dispose()
 
     # Phase 4 の行が残っていれば downgrade は失敗し、スキーマは head のまま
-    # （downgrade は1トランザクション。head は 0006。ADR-0020）
+    # （downgrade は1トランザクション。head は 0007。ADR-0021）
     with pytest.raises(IntegrityError):
         command.downgrade(config, "0003")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0006"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0007"
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 
@@ -410,7 +413,7 @@ def test_upload_vocabulary_and_result_ref_on_postgres(probe_url) -> None:
         command.downgrade(config, "0005")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0006"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0007"
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 
@@ -418,5 +421,50 @@ def test_upload_vocabulary_and_result_ref_on_postgres(probe_url) -> None:
     engine = create_engine(probe_url)
     columns = {c["name"] for c in inspect(engine).get_columns("provider_reservations")}
     assert "provider_result_ref" not in columns
+    engine.dispose()
+    command.upgrade(config, "head")
+
+
+def test_operational_switches_and_daily_slots_on_postgres(probe_url) -> None:
+    """0007: スイッチ語彙、枠の主キー・一意性、downgrade（ADR-0021）。"""
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    config = _config(probe_url)
+    command.upgrade(config, "head")
+    engine = create_engine(probe_url)
+    ep1, ep2 = uuid.uuid4(), uuid.uuid4()
+    slot = text(
+        "INSERT INTO daily_episode_slots (slot_date, slot_index, trigger_id, episode_id) "
+        "VALUES ('2026-09-15', :idx, :trigger, :ep)"
+    )
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO operational_switches (name, is_on) VALUES ('paused', true)"))
+        for ep in (ep1, ep2):
+            conn.execute(
+                text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'planned', 't')"),
+                {"id": ep},
+            )
+        conn.execute(slot, {"idx": 0, "trigger": "t1", "ep": ep1})
+    rejected = [
+        (text("INSERT INTO operational_switches (name, is_on) VALUES ('nope', true)"), {}),
+        (slot, {"idx": 0, "trigger": "t2", "ep": ep2}),  # 同じ番号
+        (slot, {"idx": 1, "trigger": "t1", "ep": ep2}),  # 同じ trigger
+        (slot, {"idx": 1, "trigger": "t2", "ep": ep1}),  # 同じ episode
+        (slot, {"idx": -1, "trigger": "t3", "ep": ep2}),
+    ]
+    for statement, params in rejected:
+        with pytest.raises(IntegrityError), engine.begin() as conn:
+            conn.execute(statement, params)
+    engine.dispose()
+
+    command.downgrade(config, "0006")
+    engine = create_engine(probe_url)
+    tables = set(inspect(engine).get_table_names())
+    assert {"operational_switches", "daily_episode_slots"}.isdisjoint(tables)
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT count(*) FROM episodes")).scalar() == 2
+        conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
     command.upgrade(config, "head")

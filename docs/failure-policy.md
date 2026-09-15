@@ -119,11 +119,13 @@ workflow の cancel は production と同じく `needs_input`（`blocked`）と�
 |---|---|---|
 | `UploadInputMissingError` | `needs_input` | 現行の final_video / 台本の参照か本体が無い |
 | `UploadIntegrityError` | `permanent` | final_video の sha256 がメタデータ・契約と不一致（YouTube を呼ばない） |
-| `UploadsPausedError` | `needs_input` | `UPLOADS_PAUSED` が有効（session 開始前に止める） |
+| `UploadsPausedError` | `needs_input` | `UPLOADS_PAUSED` / operational switch `uploads_paused` が有効（session 開始前と送信中に止める。session は残る） |
 | `UploadAuthError` | `needs_input` | OAuth の `invalid_grant` / 権限不足 / チャンネル未開設（401 は1度 refresh してから） |
 | `UploadQuotaExceededError` | `retryable` | quotaExceeded / uploadLimitExceeded / rateLimitExceeded（長い backoff） |
 | `UploadRejectedError` | `needs_input` | YouTube がメタデータ・動画を拒否（invalidTitle 等） |
 | `UploadOutcomeUnknownError` | `needs_input` | bytes 送信後に結果が読めず、マーカー照合でも見つからない。**新しい session を開かない** |
+| `UploadProcessingPendingError` | `retryable` | 受理済みだが YouTube の処理中 / まだ見えない（ADR-0022。30 秒〜10 分間隔、6 時間で `blocked`） |
+| `UploadProcessingFailedError` | `needs_input` | YouTube が拒否・処理失敗・削除、またはチャンネル違い・private でない（ADR-0022。再投稿しない） |
 
 投稿 Activity は retry 最大3回（retryable の型だけ）。使い切ったら `blocked`。自動で開く予約ラウンドは1つだけで、
 同じ upload key で投稿し直すのは運用者の `OPERATOR_ABANDONED` の後だけ（ADR-0020 §8）。cancel は送信を止め、

@@ -44,15 +44,16 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
 )
+from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.production import GENERATOR, media_descriptor, sample_storyboard
 from tests.support.storyboard import BUCKET, record_script
 from workers.production.activities import ProductionActivities, admission_token
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+TEST_DATABASE_URL = require_test_database_url()
 
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL or "postgresql" not in DATABASE_URL or not os.environ.get("MINIO_ENDPOINT"),
-    reason="DATABASE_URL (PostgreSQL) and MINIO_ENDPOINT must be set (docker compose core)",
+    not TEST_DATABASE_URL or not os.environ.get("MINIO_ENDPOINT"),
+    reason="TEST_DATABASE_URL (*_test) and MINIO_ENDPOINT must be set",
 )
 
 WF, RUN = "episode-x-production", "run-1"
@@ -62,18 +63,20 @@ TOKEN = admission_token(WF, RUN)
 @pytest_asyncio.fixture
 async def factory():
     schema = f"prod_act_{uuid.uuid4().hex[:12]}"
-    admin = create_async_engine(DATABASE_URL or "")
+    admin = create_async_engine(TEST_DATABASE_URL or "")
     async with admin.begin() as conn:
         await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_async_engine(
-        DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
+        TEST_DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
     )
     try:
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         yield async_sessionmaker(engine, expire_on_commit=False)
     finally:
         await engine.dispose()
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with admin.begin() as conn:
             await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         await admin.dispose()

@@ -54,6 +54,26 @@ class UploadExpired:
 type UploadProgress = UploadIncomplete | UploadCompleted | UploadExpired
 
 
+@dataclass(frozen=True, slots=True)
+class VideoProcessingState:
+    """投稿済み動画の YouTube 側の状態（``videos.list`` の status / processingDetails / snippet）。
+
+    値は adapter が識別子として安全なものだけに絞る（読めない値は ``None``）。ADR-0022。
+    """
+
+    #: False: まだ見えない（items が空 / 404）
+    found: bool
+    #: ``status.uploadStatus``（deleted / failed / processed / rejected / uploaded）
+    upload_status: str | None = None
+    #: ``processingDetails.processingStatus``（processing / succeeded / failed / terminated）
+    processing_status: str | None = None
+    failure_reason: str | None = None
+    rejection_reason: str | None = None
+    privacy_status: str | None = None
+    #: ``snippet.channelId``
+    channel_id: str | None = None
+
+
 class VideoUploader(Protocol):
     """resumable upload の最小操作。すべて非同期で、キャンセルされても状態を壊さない。
 
@@ -78,4 +98,8 @@ class VideoUploader(Protocol):
 
     async def own_channel_id(self) -> str:
         """認証中のアカウントのチャンネル id（投稿先の設定と照合する）。"""
+        ...
+
+    async def processing_status(self, video_id: str) -> VideoProcessingState:
+        """投稿済み動画の処理状態（読み取りのみ・quota 1 unit。ADR-0022）。"""
         ...

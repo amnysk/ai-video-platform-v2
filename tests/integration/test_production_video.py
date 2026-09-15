@@ -27,15 +27,16 @@ from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.production.paid_job import PaidJobRunner
 from infrastructure.storage.artifact_store import readback_sha256
 from infrastructure.workdir import WorkDirectory
+from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.production import FakeVideoGenerator
 from tests.unit.test_production_video_activities import DURATIONS, seed
 from workers.production_video.activities import VideoProductionActivities
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+TEST_DATABASE_URL = require_test_database_url()
 
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL or "postgresql" not in DATABASE_URL or not os.environ.get("MINIO_ENDPOINT"),
-    reason="DATABASE_URL (PostgreSQL) and MINIO_ENDPOINT must be set (docker compose core)",
+    not TEST_DATABASE_URL or not os.environ.get("MINIO_ENDPOINT"),
+    reason="TEST_DATABASE_URL (*_test) and MINIO_ENDPOINT must be set",
 )
 
 SEEDANCE_RATE = 0.2419
@@ -51,18 +52,20 @@ class _PricedFake(FakeVideoGenerator):
 @pytest_asyncio.fixture
 async def pg_session_factory():
     schema = f"vid_test_{uuid.uuid4().hex[:12]}"
-    admin = create_async_engine(DATABASE_URL or "")
+    admin = create_async_engine(TEST_DATABASE_URL or "")
     async with admin.begin() as conn:
         await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_async_engine(
-        DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
+        TEST_DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
     )
     try:
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         yield async_sessionmaker(engine, expire_on_commit=False)
     finally:
         await engine.dispose()
+        assert_destructive_allowed(TEST_DATABASE_URL)
         async with admin.begin() as conn:
             await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         await admin.dispose()

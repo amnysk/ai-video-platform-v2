@@ -25,6 +25,7 @@ from tests.integration.test_production_activities import (  # noqa: F401
     factory,
     store,
 )
+from tests.support.db import require_test_database_url
 from tests.support.production import FakeImageGenerator, FakeVideoGenerator, FakeVoiceGenerator
 from tests.support.storyboard import BUCKET
 from workers.production.activities import ProductionActivities
@@ -35,14 +36,11 @@ from workers.production_video.activities import VideoProductionActivities
 from workers.production_voice.activities import VoiceActivities
 
 TEMPORAL_ADDRESS = os.environ.get("TEMPORAL_ADDRESS")
-DATABASE_URL = os.environ.get("DATABASE_URL")
+TEST_DATABASE_URL = require_test_database_url()
 
 pytestmark = pytest.mark.skipif(
-    not TEMPORAL_ADDRESS
-    or not DATABASE_URL
-    or "postgresql" not in DATABASE_URL
-    or not os.environ.get("MINIO_ENDPOINT"),
-    reason="TEMPORAL_ADDRESS, DATABASE_URL (PostgreSQL) and MINIO_ENDPOINT must be set",
+    not TEMPORAL_ADDRESS or not TEST_DATABASE_URL or not os.environ.get("MINIO_ENDPOINT"),
+    reason="TEMPORAL_ADDRESS, TEST_DATABASE_URL (*_test) and MINIO_ENDPOINT must be set",
 )
 
 
