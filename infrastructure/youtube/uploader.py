@@ -251,9 +251,7 @@ class YouTubeResumableUploader:
             raise ValueError("chunk range is outside the upload")
         if end < total_bytes and len(chunk) != self.chunk_bytes:
             # 最後以外のチャンクは設定値ちょうど（256 KiB の倍数）。短いのは最後だけ
-            raise ValueError(
-                f"non-final chunk must be exactly chunk_bytes ({self.chunk_bytes})"
-            )
+            raise ValueError(f"non-final chunk must be exactly chunk_bytes ({self.chunk_bytes})")
         response = await self._request(
             "PUT",
             session.uri,

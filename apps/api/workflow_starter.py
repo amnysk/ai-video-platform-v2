@@ -20,6 +20,7 @@ from contracts.states import (
     PRODUCTION_WORKFLOW,
     RENDER_WORKFLOW,
     STORYBOARD_WORKFLOW,
+    UPLOAD_WORKFLOW,
     Pipeline,
 )
 from infrastructure.config import Settings
@@ -42,6 +43,10 @@ class WorkflowStarter(Protocol):
         self, *, episode_id: str, render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
     ) -> str:
         """既存 Episode に対して RenderWorkflow を起動する（ADR-0019）。"""
+        ...
+
+    async def start_upload_workflow(self, *, episode_id: str) -> str:
+        """既存 Episode に対して UploadWorkflow を起動する（ADR-0020）。"""
         ...
 
 
@@ -131,6 +136,23 @@ class TemporalWorkflowStarter:
             task_queue=task_queue,
         )
         return workflow_id
+
+    async def start_upload_workflow(self, *, episode_id: str) -> str:
+        workflow_name, task_queue = UPLOAD_WORKFLOW
+        workflow_id = upload_workflow_id(episode_id)
+        # 入力は UploadWorkflowInput と同じ形の dict。公開範囲などの投稿設定は渡さない
+        # （private は契約で固定 / INV-19）。同じ id が走っていれば Temporal が拒否する。
+        await self._client.start_workflow(
+            workflow_name,
+            {"episode_id": episode_id},
+            id=workflow_id,
+            task_queue=task_queue,
+        )
+        return workflow_id
+
+
+def upload_workflow_id(episode_id: str) -> str:
+    return f"episode-{episode_id}-upload"
 
 
 def render_workflow_id(episode_id: str) -> str:
