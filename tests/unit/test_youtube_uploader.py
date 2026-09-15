@@ -276,7 +276,7 @@ def test_chunk_size_must_be_multiple_of_256_kib() -> None:
 async def test_send_chunk_validates_ranges_before_sending() -> None:
     uploader, api = _uploader(lambda r: httpx.Response(500))
     total = CHUNK_UNIT_BYTES * 2
-    with pytest.raises(ValueError, match="256 KiB"):
+    with pytest.raises(ValueError, match="exactly"):
         await uploader.send_chunk(_session(total), 0, b"x" * 1000, total)
     # 256 KiB の倍数でも設定値と違う非最終チャンクは送らない
     big, _ = _uploader(lambda r: httpx.Response(500), chunk_bytes=2 * CHUNK_UNIT_BYTES)
