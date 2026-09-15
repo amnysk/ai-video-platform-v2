@@ -477,6 +477,8 @@ class ProviderReservation:
     scene_id: str | None = None
     provider_job_ref: str | None = None
     estimated_cost_usd: Decimal | None = None
+    #: 外部呼び出しの結果参照（YouTube video id、ADR-0020）
+    provider_result_ref: str | None = None
 
 
 def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
@@ -500,6 +502,7 @@ def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
         scene_id=row.scene_id,
         provider_job_ref=row.provider_job_ref,
         estimated_cost_usd=row.estimated_cost_usd,
+        provider_result_ref=row.provider_result_ref,
     )
 
 
@@ -707,6 +710,117 @@ class ProviderReservationRepository:
             )
         raise InvalidTransitionError(
             f"reservation {reservation_id} is not dispatched; job ref needs dispatched_at"
+        )
+
+    # ------------------------------------------------------------ resumable upload（ADR-0020）
+    #
+    # upload は「session 開始 → session を保存 → dispatched → bytes」の順で、ADR-0017 の
+    # submit（dispatched → submit → 参照）と順序が逆になる。session の作成は動画を作らないので、
+    # 保存前の crash は無害（孤児 session は bytes を受け取らない）。
+    #
+    # 不変条件（すべて1文の条件付き UPDATE で DB が守る。行ロックを長時間持たない）:
+    # - ``dispatched_at`` が入った後、``provider_job_ref``（session）は二度と変わらない
+    # - bytes を送ってよいのは、``dispatched_at`` を**その session に対して**立てた後だけ
+    # → bytes を受け取る session は予約あたり高々1つ → 動画は高々1本（INV-14）
+
+    async def record_upload_session(
+        self, reservation_id: uuid.UUID | str, session_ref: str, *, replaces: str | None = None
+    ) -> bool:
+        """未 dispatch の予約に session を書く。``replaces`` を渡すと、その session からの差し替え。
+
+        書けたら True。別の試行が先に書いた・dispatch 済み・閉じた予約なら False（読み直すこと）。
+        """
+        if not session_ref:
+            raise ValueError("session_ref must be non-empty")
+        table = ProviderReservationRow
+        ref_filter = (
+            table.provider_job_ref.is_(None)
+            if replaces is None
+            else table.provider_job_ref == replaces
+        )
+        result = await self._session.execute(
+            update(table)
+            .where(
+                table.id == _as_uuid(reservation_id),
+                table.status == ReservationStatus.RESERVED.value,
+                table.dispatched_at.is_(None),
+                ref_filter,
+            )
+            .values(provider_job_ref=session_ref)
+            .execution_options(synchronize_session=False)
+        )
+        return getattr(result, "rowcount", 0) == 1
+
+    async def mark_upload_dispatched(
+        self, reservation_id: uuid.UUID | str, session_ref: str
+    ) -> bool:
+        """``session_ref`` へ最初の bytes を送る直前に呼び、commit してから送る。
+
+        予約の session が ``session_ref`` のときだけ True
+        （既に同じ session で dispatch 済みも True）。
+        session が差し替わっていた・閉じた予約なら False（送ってはならない）。
+        """
+        table = ProviderReservationRow
+        await self._session.execute(
+            update(table)
+            .where(
+                table.id == _as_uuid(reservation_id),
+                table.status == ReservationStatus.RESERVED.value,
+                table.provider_job_ref == session_ref,
+                table.dispatched_at.is_(None),
+            )
+            .values(dispatched_at=_now())
+            .execution_options(synchronize_session=False)
+        )
+        fresh = await self._session.get(table, _as_uuid(reservation_id), populate_existing=True)
+        return (
+            fresh is not None
+            and ReservationStatus(fresh.status) is ReservationStatus.RESERVED
+            and fresh.provider_job_ref == session_ref
+            and fresh.dispatched_at is not None
+        )
+
+    async def record_upload_result(
+        self, reservation_id: uuid.UUID | str, result_ref: str, *, reconciled_by: str
+    ) -> ProviderReservation:
+        """結果（video id）を書き、同時に ``spent`` にする。受領 Artifact より先に commit。
+
+        同じ結果での再記録は no-op。異なる結果・abandoned への記録は ``InvalidTransitionError``。
+        """
+        if not result_ref:
+            raise ValueError("result_ref must be non-empty")
+        target = transition_reservation(
+            ReservationStatus.RESERVED, ReservationEvent.EVIDENCE_RECONCILED
+        )
+        if isinstance(target, Rejected):  # pragma: no cover - 表の定義で起きない
+            raise InvalidTransitionError(target.reason)
+        table = ProviderReservationRow
+        await self._session.execute(
+            update(table)
+            .where(
+                table.id == _as_uuid(reservation_id),
+                table.status == ReservationStatus.RESERVED.value,
+                table.provider_result_ref.is_(None),
+            )
+            .values(
+                status=target.value,
+                provider_result_ref=result_ref,
+                reconciled_by=reconciled_by,
+                reconciled_at=_now(),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        fresh = await self._session.get(table, _as_uuid(reservation_id), populate_existing=True)
+        if fresh is None:
+            raise InvalidTransitionError(f"reservation not found: {reservation_id}")
+        if (
+            ReservationStatus(fresh.status) is ReservationStatus.SPENT
+            and fresh.provider_result_ref == result_ref
+        ):
+            return _to_reservation(fresh)
+        raise InvalidTransitionError(
+            f"reservation {reservation_id} is {fresh.status} with a different or missing "
+            "result ref; refusing to record another result"
         )
 
     async def get(self, reservation_id: uuid.UUID | str) -> ProviderReservation | None:

@@ -19,6 +19,7 @@ from contracts.render import (
     DEFAULT_RENDER_MIN_FREE_BYTES,
     DEFAULT_RENDER_TIMEOUT_SECONDS,
 )
+from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
 
 
 class Settings(BaseSettings):
@@ -116,7 +117,7 @@ class Settings(BaseSettings):
     #: ``UPLOADS_PAUSED=true`` なら session を開始する前に止める
     uploads_paused: bool = False
     #: resumable upload の chunk（256 KiB の倍数）
-    youtube_chunk_bytes: int = 8 * 1024 * 1024
+    youtube_chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES
 
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"

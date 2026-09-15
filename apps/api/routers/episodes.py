@@ -24,12 +24,14 @@ from apps.api.schemas import (
     StartRenderRequest,
     StartRenderResponse,
     StartStoryboardResponse,
+    StartUploadResponse,
 )
-from apps.api.workflow_starter import WorkflowStarter, render_workflow_id
+from apps.api.workflow_starter import WorkflowStarter, render_workflow_id, upload_workflow_id
 from contracts.render import DEFAULT_RENDER_PROFILE_ID, get_render_profile
 from contracts.states import (
     PRODUCTION_ADMISSIBLE_STATUSES,
     RENDER_ADMISSIBLE_STATUSES,
+    UPLOAD_ADMISSIBLE_STATUSES,
     EpisodeStatus,
 )
 from infrastructure.db.repositories import (
@@ -212,6 +214,66 @@ async def start_render(
         status=episode.status,
         workflow_id=workflow_id,
         render_profile_id=profile_id,
+    )
+
+
+@router.post(
+    "/{episode_id}/upload",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=StartUploadResponse,
+)
+async def start_upload(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+) -> StartUploadResponse:
+    """upload 工程を起動するだけ（INV-16 / ADR-0020）。本文は受け取らない。
+
+    入場の権威は workflow の admit Activity。ここでは明らかに入れない状態を早めに 409 で返す。
+    ``uploaded`` は再投稿しないので 409（INV-14 / INV-19）。
+    """
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    if episode.status is EpisodeStatus.UPLOADED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"episode {episode.id} is already uploaded; it is never uploaded twice",
+        )
+    if (
+        episode.status not in UPLOAD_ADMISSIBLE_STATUSES
+        and episode.status is not EpisodeStatus.IN_PROGRESS
+    ):
+        allowed = ", ".join(sorted(s.value for s in UPLOAD_ADMISSIBLE_STATUSES))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"episode {episode.id} is {episode.status.value}; upload can start only "
+                f"from {allowed}"
+            ),
+        )
+    if episode.status in {EpisodeStatus.NEEDS_WORK, EpisodeStatus.BLOCKED}:
+        async with session_factory() as session:
+            owner = await EpisodeRepository(session).get_workflow_id(episode.id)
+        owner_workflow = (owner or "").rsplit(":", 1)[0]
+        if owner_workflow != upload_workflow_id(episode.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"episode {episode.id} is {episode.status.value} but was stopped by another "
+                    f"stage ({owner_workflow or 'unknown'}); resume that stage instead"
+                ),
+            )
+    try:
+        workflow_id = await starter.start_upload_workflow(episode_id=episode.id)
+    except WorkflowAlreadyStartedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"upload workflow already running for episode {episode.id}",
+        ) from exc
+    return StartUploadResponse(
+        episode_id=episode.id, status=episode.status, workflow_id=workflow_id
     )
 
 

@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES, YOUTUBE_CHUNK_ALIGNMENT_BYTES
 from domain.upload.ports import (
     UploadCompleted,
     UploadExpired,
@@ -46,8 +47,8 @@ API_BASE_URL = "https://www.googleapis.com/youtube/v3"
 SESSION_HOST = "www.googleapis.com"
 SESSION_PATH = "/upload/youtube/v3/videos"
 
-CHUNK_UNIT_BYTES = 256 * 1024
-DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024
+CHUNK_UNIT_BYTES = YOUTUBE_CHUNK_ALIGNMENT_BYTES
+DEFAULT_CHUNK_BYTES = DEFAULT_UPLOAD_CHUNK_BYTES
 MAX_PAGE_SIZE = 50
 DEFAULT_LOOKUP_PAGES = 5
 REQUIRED_PRIVACY = "private"
@@ -73,6 +74,13 @@ REJECTED_REASONS = frozenset(
         "invalidVideoMetadata",
         "forbiddenPrivacySetting",
         "mediaBodyRequired",
+        # videos.insert の公式エラー（2026-09-15）。403 でも入力の拒否であり認証ではない
+        "forbiddenLicenseSetting",
+        "invalidFilename",
+        "defaultLanguageNotSet",
+        "invalidRecordingDetails",
+        "invalidPublishAt",
+        "invalidVideoGameRating",
     }
 )
 
@@ -220,7 +228,7 @@ class YouTubeResumableUploader:
         if not location:
             raise YouTubeTransientError("start upload session: response has no Location")
         _check_session_uri(location)
-        return UploadSessionRef(uri=location, total_bytes=total_bytes)
+        return UploadSessionRef(uri=location, total_bytes=total_bytes, content_type=content_type)
 
     async def query_status(self, session: UploadSessionRef) -> UploadProgress:
         _check_session_uri(session.uri)
@@ -241,13 +249,17 @@ class YouTubeResumableUploader:
         end = offset + len(chunk)
         if offset < 0 or not chunk or end > total_bytes:
             raise ValueError("chunk range is outside the upload")
-        if end < total_bytes and len(chunk) % CHUNK_UNIT_BYTES:
-            raise ValueError("non-final chunk must be a multiple of 256 KiB")
+        if end < total_bytes and len(chunk) != self.chunk_bytes:
+            # 最後以外のチャンクは設定値ちょうど（256 KiB の倍数）。短いのは最後だけ
+            raise ValueError(f"non-final chunk must be exactly chunk_bytes ({self.chunk_bytes})")
         response = await self._request(
             "PUT",
             session.uri,
             "send upload chunk",
-            headers={"Content-Range": f"bytes {offset}-{end - 1}/{total_bytes}"},
+            headers={
+                "Content-Range": f"bytes {offset}-{end - 1}/{total_bytes}",
+                "Content-Type": session.content_type,
+            },
             content=chunk,
         )
         return self._progress(response, "send upload chunk", total_bytes)

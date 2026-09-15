@@ -125,7 +125,8 @@ async def test_send_chunk_sets_content_range_and_parses_308() -> None:
     chunk = b"x" * CHUNK_UNIT_BYTES
     total = CHUNK_UNIT_BYTES * 3
     uploader, api = _uploader(
-        lambda r: httpx.Response(308, headers={"Range": f"bytes=0-{2 * CHUNK_UNIT_BYTES - 1}"})
+        lambda r: httpx.Response(308, headers={"Range": f"bytes=0-{2 * CHUNK_UNIT_BYTES - 1}"}),
+        chunk_bytes=CHUNK_UNIT_BYTES,
     )
     progress = await uploader.send_chunk(_session(total), CHUNK_UNIT_BYTES, chunk, total)
     assert progress == UploadIncomplete(next_offset=2 * CHUNK_UNIT_BYTES)
@@ -136,6 +137,7 @@ async def test_send_chunk_sets_content_range_and_parses_308() -> None:
         == f"bytes {CHUNK_UNIT_BYTES}-{2 * CHUNK_UNIT_BYTES - 1}/{total}"
     )
     assert req.content == chunk
+    assert req.headers["Content-Type"] == "video/mp4"
 
 
 async def test_308_without_range_means_zero() -> None:
@@ -274,8 +276,14 @@ def test_chunk_size_must_be_multiple_of_256_kib() -> None:
 async def test_send_chunk_validates_ranges_before_sending() -> None:
     uploader, api = _uploader(lambda r: httpx.Response(500))
     total = CHUNK_UNIT_BYTES * 2
-    with pytest.raises(ValueError, match="256 KiB"):
+    with pytest.raises(ValueError, match="exactly"):
         await uploader.send_chunk(_session(total), 0, b"x" * 1000, total)
+    # 256 KiB の倍数でも設定値と違う非最終チャンクは送らない
+    big, _ = _uploader(lambda r: httpx.Response(500), chunk_bytes=2 * CHUNK_UNIT_BYTES)
+    with pytest.raises(ValueError, match="exactly"):
+        await big.send_chunk(
+            _session(4 * CHUNK_UNIT_BYTES), 0, b"x" * CHUNK_UNIT_BYTES, 4 * CHUNK_UNIT_BYTES
+        )
     with pytest.raises(ValueError):
         await uploader.send_chunk(_session(total), total - 1, b"xx", total)
     with pytest.raises(ValueError):
@@ -354,3 +362,9 @@ async def test_find_video_by_marker_quota_error() -> None:
     uploader, _ = _uploader(lambda r: _error(403, "quotaExceeded"))
     with pytest.raises(YouTubeQuotaError):
         await uploader.find_video_by_marker("m")
+
+
+async def test_forbidden_license_setting_is_a_rejection_not_auth() -> None:
+    uploader, _ = _uploader(lambda r: _error(403, "forbiddenLicenseSetting"))
+    with pytest.raises(YouTubeRejectedError):
+        await uploader.start_session(METADATA, 10, "video/mp4")

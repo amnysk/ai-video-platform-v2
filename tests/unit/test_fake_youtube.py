@@ -31,12 +31,12 @@ async def _upload(fake: FakeVideoUploader, chunk: int = 4) -> str:
 
 
 def test_is_a_video_uploader() -> None:
-    port: VideoUploader = FakeVideoUploader()
+    port: VideoUploader = FakeVideoUploader(chunk_bytes=4)
     assert port is not None
 
 
 async def test_happy_path_creates_one_video_with_bytes_and_tags() -> None:
-    fake = FakeVideoUploader()
+    fake = FakeVideoUploader(chunk_bytes=4)
     video_id = await _upload(fake)
     assert fake.videos_created == 1
     assert fake.videos[video_id].data == DATA
@@ -45,14 +45,14 @@ async def test_happy_path_creates_one_video_with_bytes_and_tags() -> None:
 
 
 async def test_transient_chunk_failures_do_not_accept_bytes() -> None:
-    fake = FakeVideoUploader()
+    fake = FakeVideoUploader(chunk_bytes=4)
     fake.fail_chunk_sends = 2
     await _upload(fake)
     assert fake.videos_created == 1 and fake.chunk_sends == 5
 
 
 async def test_lost_completion_response_is_visible_via_status() -> None:
-    fake = FakeVideoUploader()
+    fake = FakeVideoUploader(chunk_bytes=4)
     fake.lose_completion_responses = 1
     video_id = await _upload(fake)
     assert fake.videos_created == 1 and fake.status_queries == 1
@@ -60,7 +60,7 @@ async def test_lost_completion_response_is_visible_via_status() -> None:
 
 
 async def test_session_expiry_after_bytes() -> None:
-    fake = FakeVideoUploader()
+    fake = FakeVideoUploader(chunk_bytes=4)
     fake.expire_session_at_offset = 4
     session = await fake.start_session(META, len(DATA), "video/mp4")
     with pytest.raises(YouTubeTransientError):
@@ -71,7 +71,7 @@ async def test_session_expiry_after_bytes() -> None:
 
 
 async def test_one_shot_errors() -> None:
-    fake = FakeVideoUploader()
+    fake = FakeVideoUploader(chunk_bytes=4)
     fake.fail_start_with = YouTubeAuthError("invalid_grant")
     with pytest.raises(YouTubeAuthError):
         await fake.start_session(META, 10, "video/mp4")
@@ -86,7 +86,7 @@ async def test_one_shot_errors() -> None:
 
 
 async def test_resend_after_completion_does_not_duplicate() -> None:
-    fake = FakeVideoUploader()
+    fake = FakeVideoUploader(chunk_bytes=4)
     session = await fake.start_session(META, 10, "video/mp4")
     first = await fake.send_chunk(session, 0, DATA, 10)
     again = await fake.send_chunk(session, 0, DATA, 10)
@@ -94,7 +94,7 @@ async def test_resend_after_completion_does_not_duplicate() -> None:
 
 
 async def test_concurrent_sends_are_serialized() -> None:
-    fake = FakeVideoUploader()
+    fake = FakeVideoUploader(chunk_bytes=4)
     session = await fake.start_session(META, 10, "video/mp4")
     results = await asyncio.gather(*(fake.send_chunk(session, 0, DATA, 10) for _ in range(5)))
     assert all(isinstance(r, UploadCompleted) for r in results)
@@ -102,6 +102,21 @@ async def test_concurrent_sends_are_serialized() -> None:
 
 
 def test_existing_video_is_found() -> None:
-    fake = FakeVideoUploader()
+    fake = FakeVideoUploader(chunk_bytes=4)
     video_id = fake.add_existing_video(["m"])
     assert asyncio.run(fake.find_video_by_marker("m")) == video_id
+
+
+async def test_non_final_chunks_must_be_exactly_chunk_bytes() -> None:
+    fake = FakeVideoUploader(chunk_bytes=4)
+    session = await fake.start_session(META, len(DATA), "video/mp4")
+    with pytest.raises(ValueError):
+        await fake.send_chunk(session, 0, DATA[:3], len(DATA))
+    assert await fake.send_chunk(session, 0, DATA[:4], len(DATA)) == UploadIncomplete(4)
+    assert fake.content_types == ["video/mp4"]
+
+
+def test_default_chunk_bytes_follow_the_contract() -> None:
+    from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
+
+    assert FakeVideoUploader().chunk_bytes == DEFAULT_UPLOAD_CHUNK_BYTES

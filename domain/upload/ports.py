@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from contracts.upload import UPLOAD_CONTENT_TYPE
+
 
 @dataclass(frozen=True, slots=True)
 class UploadSessionRef:
@@ -20,9 +22,14 @@ class UploadSessionRef:
 
     uri: str = field(repr=False)
     total_bytes: int
+    #: session 開始時の ``X-Upload-Content-Type``。media PUT の ``Content-Type`` にも同じ値を送る
+    content_type: str = UPLOAD_CONTENT_TYPE
 
     def __repr__(self) -> str:
-        return f"UploadSessionRef(uri=<redacted>, total_bytes={self.total_bytes})"
+        return (
+            f"UploadSessionRef(uri=<redacted>, total_bytes={self.total_bytes}, "
+            f"content_type={self.content_type})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
