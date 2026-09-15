@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
 from domain.upload.ports import (
     UploadCompleted,
     UploadExpired,
@@ -49,7 +50,12 @@ class FakeVideo:
 class FakeVideoUploader:
     """失敗注入つきの ``VideoUploader``。フィールドを書き換えて注入する。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES) -> None:
+        #: 最後以外のチャンクはこの長さちょうど（実 adapter と同じ規則。テストは小さくしてよい）
+        if chunk_bytes <= 0:
+            raise ValueError("chunk_bytes must be positive")
+        self.chunk_bytes = chunk_bytes
+        self.content_types: list[str] = []
         self.sessions: dict[str, FakeSession] = {}
         self.videos: dict[str, FakeVideo] = {}
         self.sessions_started = 0
@@ -106,7 +112,7 @@ class FakeVideoUploader:
             self.sessions_started += 1
             uri = f"{FAKE_SESSION_PREFIX}{next(self._ids)}"
             self.sessions[uri] = FakeSession(total_bytes, content_type, dict(metadata_json))
-            return UploadSessionRef(uri=uri, total_bytes=total_bytes)
+            return UploadSessionRef(uri=uri, total_bytes=total_bytes, content_type=content_type)
 
     def _progress(self, session: FakeSession) -> UploadProgress:
         if session.video_id is not None:
@@ -135,6 +141,9 @@ class FakeVideoUploader:
                 return UploadExpired()
             if total_bytes != state.total_bytes or offset + len(chunk) > total_bytes:
                 raise ValueError("chunk range is outside the upload")
+            if not chunk or (offset + len(chunk) < total_bytes and len(chunk) != self.chunk_bytes):
+                raise ValueError("non-final chunk must be exactly chunk_bytes")
+            self.content_types.append(session.content_type)
             if self.fail_chunk_sends > 0:
                 self.fail_chunk_sends -= 1
                 raise YouTubeTransientError("send upload chunk: HTTP 503 (injected)")

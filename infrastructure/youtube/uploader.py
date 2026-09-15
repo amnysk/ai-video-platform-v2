@@ -74,6 +74,13 @@ REJECTED_REASONS = frozenset(
         "invalidVideoMetadata",
         "forbiddenPrivacySetting",
         "mediaBodyRequired",
+        # videos.insert の公式エラー（2026-09-15）。403 でも入力の拒否であり認証ではない
+        "forbiddenLicenseSetting",
+        "invalidFilename",
+        "defaultLanguageNotSet",
+        "invalidRecordingDetails",
+        "invalidPublishAt",
+        "invalidVideoGameRating",
     }
 )
 
@@ -221,7 +228,7 @@ class YouTubeResumableUploader:
         if not location:
             raise YouTubeTransientError("start upload session: response has no Location")
         _check_session_uri(location)
-        return UploadSessionRef(uri=location, total_bytes=total_bytes)
+        return UploadSessionRef(uri=location, total_bytes=total_bytes, content_type=content_type)
 
     async def query_status(self, session: UploadSessionRef) -> UploadProgress:
         _check_session_uri(session.uri)
@@ -242,13 +249,19 @@ class YouTubeResumableUploader:
         end = offset + len(chunk)
         if offset < 0 or not chunk or end > total_bytes:
             raise ValueError("chunk range is outside the upload")
-        if end < total_bytes and len(chunk) % CHUNK_UNIT_BYTES:
-            raise ValueError("non-final chunk must be a multiple of 256 KiB")
+        if end < total_bytes and len(chunk) != self.chunk_bytes:
+            # 最後以外のチャンクは設定値ちょうど（256 KiB の倍数）。短いのは最後だけ
+            raise ValueError(
+                f"non-final chunk must be exactly chunk_bytes ({self.chunk_bytes})"
+            )
         response = await self._request(
             "PUT",
             session.uri,
             "send upload chunk",
-            headers={"Content-Range": f"bytes {offset}-{end - 1}/{total_bytes}"},
+            headers={
+                "Content-Range": f"bytes {offset}-{end - 1}/{total_bytes}",
+                "Content-Type": session.content_type,
+            },
             content=chunk,
         )
         return self._progress(response, "send upload chunk", total_bytes)
