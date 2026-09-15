@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES, YOUTUBE_CHUNK_ALIGNMENT_BYTES
 from domain.upload.ports import (
     UploadCompleted,
     UploadExpired,
@@ -46,8 +47,8 @@ API_BASE_URL = "https://www.googleapis.com/youtube/v3"
 SESSION_HOST = "www.googleapis.com"
 SESSION_PATH = "/upload/youtube/v3/videos"
 
-CHUNK_UNIT_BYTES = 256 * 1024
-DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024
+CHUNK_UNIT_BYTES = YOUTUBE_CHUNK_ALIGNMENT_BYTES
+DEFAULT_CHUNK_BYTES = DEFAULT_UPLOAD_CHUNK_BYTES
 MAX_PAGE_SIZE = 50
 DEFAULT_LOOKUP_PAGES = 5
 REQUIRED_PRIVACY = "private"
