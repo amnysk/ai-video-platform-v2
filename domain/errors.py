@@ -256,6 +256,14 @@ class UploadOutcomeUnknownError(NeedsInputError):
     """
 
 
+class UploadOwnershipLostError(NeedsInputError):
+    """投稿中に入場トークンが別の実行へ移った（ADR-0020）。
+
+    この試行は YouTube を呼ばずに降りる。Episode・job の記録は所有者の実行に任せる
+    （record_failure はトークン不一致なので何も書かない）。retry しない。
+    """
+
+
 class InvalidTransitionError(DomainError):
     """表に無い状態遷移を永続化しようとした。"""
 

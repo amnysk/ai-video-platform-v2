@@ -46,11 +46,23 @@ class FakeVideo:
         snippet = self.metadata.get("snippet") or {}
         return list(snippet.get("tags") or [])
 
+    @property
+    def description_lines(self) -> list[str]:
+        snippet = self.metadata.get("snippet") or {}
+        return [line.strip() for line in str(snippet.get("description") or "").splitlines()]
+
 
 class FakeVideoUploader:
     """失敗注入つきの ``VideoUploader``。フィールドを書き換えて注入する。"""
 
-    def __init__(self, *, chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES) -> None:
+    #: 認証中アカウントのチャンネル（``own_channel_id``）。tests/support/upload.CHANNEL_ID と同じ
+    DEFAULT_CHANNEL_ID = "UC" + "a" * 22
+
+    def __init__(
+        self, *, chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES, channel_id: str = DEFAULT_CHANNEL_ID
+    ) -> None:
+        self.channel_id = channel_id
+        self.channel_lookups = 0
         #: 最後以外のチャンクはこの長さちょうど（実 adapter と同じ規則。テストは小さくしてよい）
         if chunk_bytes <= 0:
             raise ValueError("chunk_bytes must be positive")
@@ -80,11 +92,17 @@ class FakeVideoUploader:
     def videos_created(self) -> int:
         return len(self.videos)
 
-    def add_existing_video(self, tags: list[str]) -> str:
+    def add_existing_video(self, tags: list[str], description: str = "") -> str:
         """チャンネルに既にある動画（照合用）を置く。"""
         video_id = f"vid{next(self._ids):08d}"
-        self.videos[video_id] = FakeVideo(video_id, {"snippet": {"tags": list(tags)}}, b"")
+        snippet = {"tags": list(tags), "description": description}
+        self.videos[video_id] = FakeVideo(video_id, {"snippet": snippet}, b"")
         return video_id
+
+    async def own_channel_id(self) -> str:
+        async with self._lock:
+            self.channel_lookups += 1
+            return self.channel_id
 
     def expire_all_sessions(self) -> None:
         for session in self.sessions.values():
@@ -172,6 +190,6 @@ class FakeVideoUploader:
             exc, self.fail_lookup_with = self.fail_lookup_with, None
             self._take(exc)
             for video in reversed(list(self.videos.values())):
-                if marker_tag in video.tags:
+                if marker_tag in video.tags or marker_tag in video.description_lines:
                     return video.video_id
             return None

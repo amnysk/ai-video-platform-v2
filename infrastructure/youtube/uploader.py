@@ -292,8 +292,20 @@ class YouTubeResumableUploader:
         _raise_for_error(response, operation)
         raise AssertionError("unreachable")  # pragma: no cover
 
+    async def own_channel_id(self) -> str:
+        """認証中のアカウントのチャンネル id（``channels.list(mine=true)``、readonly scope）。"""
+        channels = await self._get_json("channels", {"part": "id", "mine": "true"}, "own channel")
+        items = channels.get("items") or []
+        channel_id = items[0].get("id") if items and isinstance(items[0], dict) else None
+        if not isinstance(channel_id, str) or not channel_id:
+            raise YouTubeAuthError("own channel: no channel for these credentials")
+        return channel_id
+
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
-        """uploads playlist を新しい順に最大 max_lookup_pages × 50 件、marker tag で照合する。"""
+        """uploads playlist を新しい順に最大 max_lookup_pages × 50 件、マーカーで照合する。
+
+        タグ、または description の行のどれかがマーカーと一致すれば自分の投稿とみなす。
+        """
         if not marker_tag:
             raise ValueError("marker_tag must be non-empty")
         channels = await self._get_json(
@@ -333,7 +345,12 @@ class YouTubeResumableUploader:
                         continue
                     snippet = video.get("snippet")
                     tags = snippet.get("tags") if isinstance(snippet, dict) else None
-                    if isinstance(tags, list) and marker_tag in tags:
+                    description = snippet.get("description") if isinstance(snippet, dict) else None
+                    in_tags = isinstance(tags, list) and marker_tag in tags
+                    in_description = isinstance(description, str) and marker_tag in (
+                        line.strip() for line in description.splitlines()
+                    )
+                    if in_tags or in_description:
                         video_id = video.get("id")
                         if isinstance(video_id, str) and video_id:
                             return video_id

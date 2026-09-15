@@ -54,7 +54,7 @@ from tests.support.upload import (
     ExpireOnQueryUploader,
     seed_render_ready,
 )
-from workers.upload.activities import UploadActivities
+from workers.upload.activities import OPERATOR_REUPLOAD_APPROVED, UploadActivities
 
 WF = "episode-x-upload"
 
@@ -96,6 +96,7 @@ class Harness:
             "marker_lookup_attempts": 2,
             "marker_lookup_delay_seconds": 0.0,
             "transient_backoff_seconds": 0.0,
+            "expiry_confirm_delay_seconds": 0.0,
             "heartbeat": lambda *d: self.heartbeats.append(d),
         }
         kwargs.update(overrides)
@@ -387,8 +388,9 @@ async def test_session_expired_after_bytes_without_marker_blocks_and_never_reope
     # 運用者がチャンネルを確認して予約を放棄した後だけ、新しいラウンドで投稿できる
     (reservation,) = await h.reservations()
     async with h.factory() as s:
+        # dispatch 済みなので、ただの放棄ではなく再投稿の承認が要る
         await ProviderReservationRepository(s).abandon(
-            reservation.id, reconciled_by="operator:test"
+            reservation.id, reconciled_by=OPERATOR_REUPLOAD_APPROVED
         )
         await s.commit()
     result = await h.upload(h.activities())

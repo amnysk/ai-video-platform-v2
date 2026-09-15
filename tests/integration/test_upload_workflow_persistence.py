@@ -103,6 +103,7 @@ class Stack:
             "marker_lookup_attempts": 2,
             "marker_lookup_delay_seconds": 0.0,
             "transient_backoff_seconds": 0.0,
+            "expiry_confirm_delay_seconds": 0.0,
         }
         kwargs.update(overrides)
         return UploadActivities(**kwargs)

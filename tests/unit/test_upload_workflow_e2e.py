@@ -69,6 +69,7 @@ async def test_double_start_is_refused_and_upload_happens_once(env, factory, tmp
         channel_id=CHANNEL_ID,
         chunk_bytes=TEST_CHUNK_BYTES,
         transient_backoff_seconds=0.0,
+        expiry_confirm_delay_seconds=0.0,
     )
     queue = f"upload-e2e-{uuid.uuid4().hex[:8]}"
     async with (

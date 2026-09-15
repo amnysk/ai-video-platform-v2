@@ -163,13 +163,19 @@ def build_youtube_metadata(
     """台本の値から決定的にメタデータを組む（ADR-0020 §5）。
 
     同じ入力なら同じメタデータ。タグは投稿マーカーだけ（照合に必須、それ以外は足さない）。
+    マーカーは description の最終行にも入る（照合はタグ・description のどちらかで一致すればよい）。
     """
     safe_title = sanitize_youtube_text(title.strip())[:YOUTUBE_TITLE_MAX_CHARS]
     body = sanitize_youtube_text(f"{hook.strip()}\n\n{narration.strip()}".strip())
+    marker = upload_marker(upload_key)
+    # マーカーは description の最終行にも置く（タグが編集・除去されても照合できる）。
+    # 本文だけを切り詰め、マーカーの行は必ず残す
+    suffix = f"\n\n{marker}"
+    budget = YOUTUBE_DESCRIPTION_MAX_BYTES - len(suffix.encode("utf-8"))
     return YouTubeVideoMetadata(
         title=safe_title,
-        description=truncate_utf8(body, YOUTUBE_DESCRIPTION_MAX_BYTES),
-        tags=(upload_marker(upload_key),),
+        description=truncate_utf8(body, budget) + suffix,
+        tags=(marker,),
         category_id=category_id,
         default_language=language,
         privacy_status="private",

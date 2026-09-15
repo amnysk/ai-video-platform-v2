@@ -23,6 +23,7 @@ session URI はログ・例外・Artifact・heartbeat に出さない（INV-20�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -81,10 +82,13 @@ from domain.artifact.keys import artifact_object_key
 from domain.episode.transitions import EpisodeEvent
 from domain.errors import (
     DomainError,
+    InvalidTransitionError,
     TransientError,
+    UploadAuthError,
     UploadInputMissingError,
     UploadIntegrityError,
     UploadOutcomeUnknownError,
+    UploadOwnershipLostError,
     UploadsPausedError,
     classify_failure,
 )
@@ -134,6 +138,13 @@ DEFAULT_TRANSIENT_RETRIES = 4
 DEFAULT_TRANSIENT_BACKOFF_SECONDS = 2.0
 #: 予約行を読み直して状態機械をやり直す上限（並行試行との競合）
 MAX_LEDGER_STEPS = 8
+#: status query の 404/410 を失効と確定する前に、もう一度照会するまでの待ち（秒）
+DEFAULT_EXPIRY_CONFIRM_DELAY_SECONDS = 2.0
+#: 送信中に予約行を読み直す間隔（チャンク数）
+DEFAULT_RESERVATION_CHECK_EVERY_CHUNKS = 8
+#: dispatch 済みで結果不明の予約を運用者が放棄し、**再投稿も承認した**ときの ``reconciled_by``。
+#: ただの放棄（``operator:<name>``）では次のラウンドを開かない（docs/operations/upload-worker.md）
+OPERATOR_REUPLOAD_APPROVED = "operator_reupload_approved"
 _RETRY_IN_ACTIVITY = (YouTubeTransientError, YouTubeRateLimitError)
 
 HeartbeatFn = Callable[..., None]
@@ -213,6 +224,8 @@ class UploadActivities:
         marker_lookup_delay_seconds: float = DEFAULT_UPLOAD_MARKER_LOOKUP_DELAY_SECONDS,
         transient_retries: int = DEFAULT_TRANSIENT_RETRIES,
         transient_backoff_seconds: float = DEFAULT_TRANSIENT_BACKOFF_SECONDS,
+        expiry_confirm_delay_seconds: float = DEFAULT_EXPIRY_CONFIRM_DELAY_SECONDS,
+        reservation_check_every_chunks: int = DEFAULT_RESERVATION_CHECK_EVERY_CHUNKS,
         run_inspector: WorkflowRunInspector | None = None,
         heartbeat: HeartbeatFn = _activity_heartbeat,
         sleep: SleepFn = asyncio.sleep,
@@ -231,9 +244,13 @@ class UploadActivities:
         self._lookup_delay = marker_lookup_delay_seconds
         self._transient_retries = max(0, transient_retries)
         self._transient_backoff = transient_backoff_seconds
+        self._expiry_confirm_delay = expiry_confirm_delay_seconds
+        self._check_every = max(1, reservation_check_every_chunks)
         self._run_inspector = run_inspector
         self._heartbeat = heartbeat
         self._sleep = sleep
+        #: 認証中チャンネルの照合は worker（インスタンス）ごとに1回
+        self._channel_verified = False
 
     def state_activities(self) -> Sequence[Callable[..., object]]:
         """``UPLOAD_TASK_QUEUE``（workflow と同じ queue）へ登録する。"""
@@ -247,7 +264,10 @@ class UploadActivities:
 
     @activity.defn(name=UPLOAD_ADMIT)
     async def admit(self, request: UploadAdmitRequest) -> UploadAdmitResult:
-        """render の admit と同じ規則。``uploaded`` は入れない（再投稿しない）。"""
+        """render の admit と同じ規則。``uploaded`` は入れない（再投稿しない）。
+
+        状態遷移は compare-and-set。同じ状態を読んだ別の入場に負けたら入れない（何も書かない）。
+        """
         token = admission_token(request.workflow_id, request.run_id)
         async with self._session_factory() as session:
             episodes = EpisodeRepository(session)
@@ -274,7 +294,18 @@ class UploadActivities:
                     parsed = parse_admission_token(owner)
                     if parsed is None or parsed[0] != request.workflow_id:
                         return UploadAdmitResult(admitted=False, status=episode.status.value)
-                updated = await episodes.apply_event(request.episode_id, event)
+                try:
+                    updated = await episodes.apply_event(request.episode_id, event)
+                except InvalidTransitionError:
+                    await session.rollback()
+                    async with self._session_factory() as fresh_session:
+                        fresh = await EpisodeRepository(fresh_session).get(request.episode_id)
+                    logger.warning(
+                        "upload admit lost a concurrent admission episode=%s", episode.id
+                    )
+                    return UploadAdmitResult(
+                        admitted=False, status=fresh.status.value if fresh else ""
+                    )
                 await episodes.set_workflow_id(request.episode_id, token)
                 await self._ensure_job(session, request.episode_id)
                 await session.commit()
@@ -314,6 +345,8 @@ class UploadActivities:
         """現行 final_video を private で1回だけ投稿し、受領を保存する（docstring 冒頭の順序）。
 
         失敗は job に記録してから ``ApplicationError(type=<型名>, details=(job_id,))`` で送出する。
+        例外文は session URI を伏せてから記録・送出する（INV-20）。
+        所有権を失った試行（``UploadOwnershipLostError``）は job を書かない（所有者に任せる）。
         cancel は送信を止め、予約（session）を残して再送出する（再実行で続きから）。
         """
         async with self._session_factory() as session:
@@ -325,8 +358,9 @@ class UploadActivities:
             await session.commit()
         secrets: list[str] = []
         attempt = _attempt()
+        token = admission_token(request.workflow_id, request.run_id)
         try:
-            return await self._upload(request.episode_id, job_id, attempt, secrets)
+            return await self._upload(request.episode_id, job_id, attempt, token, secrets)
         except asyncio.CancelledError:
             logger.warning(
                 "upload cancelled episode=%s job=%s; the saved session is kept for resume",
@@ -335,16 +369,17 @@ class UploadActivities:
             )
             raise
         except Exception as exc:
-            mapped = translate_youtube_error(exc, secrets)
-            if isinstance(mapped, DomainError):
-                mapped = _scrubbed(mapped, secrets)
-            await self._mark_job_failed(job_id, translate_error(mapped))
-            raise_activity_error(mapped, details=(job_id,))
+            translated = sanitize_error(
+                translate_error(translate_youtube_error(exc, secrets)), secrets
+            )
+            if not isinstance(translated, UploadOwnershipLostError):
+                await self._mark_job_failed(job_id, translated)
+            raise_activity_error(translated, details=(job_id,))
         finally:
             self._cleanup(request.episode_id, job_id, attempt)
 
     async def _upload(
-        self, episode_id: str, job_id: str, attempt: int, secrets: list[str]
+        self, episode_id: str, job_id: str, attempt: int, token: str, secrets: list[str]
     ) -> UploadFinalVideoResult:
         final = await self._current_final_video(episode_id)
         media = final.artifact.media
@@ -379,15 +414,26 @@ class UploadActivities:
         await self._download_verified(final, path)
 
         reservation = await self._reserve(episode_id, upload_key, job_id)
-        outcome = await self._drive(
-            reservation.id, path, media.bytes, insert_body(metadata), upload_key, secrets
-        )
-        async with self._session_factory() as session:
-            # 受領より先に video id と spent を commit（crash 後も再投稿なしで受領を作れる）
-            reservation = await ProviderReservationRepository(session).record_upload_result(
-                reservation.id, outcome.video_id, reconciled_by=outcome.reconciled_by
+        if reservation.status is ReservationStatus.SPENT:
+            # round 2 の事前照合で見つかった / 並行する試行が先に記録した
+            outcome = _spent_outcome(reservation)
+        else:
+            outcome = await self._drive(
+                episode_id,
+                token,
+                reservation.id,
+                path,
+                media.bytes,
+                insert_body(metadata),
+                upload_key,
+                secrets,
             )
-            await session.commit()
+            async with self._session_factory() as session:
+                # 受領より先に video id と spent を commit（crash 後も再投稿なしで受領を作れる）
+                reservation = await ProviderReservationRepository(session).record_upload_result(
+                    reservation.id, outcome.video_id, reconciled_by=outcome.reconciled_by
+                )
+                await session.commit()
         logger.info(
             "uploaded episode=%s video=%s reconciled_by=%s",
             episode_id,
@@ -409,16 +455,58 @@ class UploadActivities:
             )
 
     async def _reserve(self, episode_id: str, upload_key: str, job_id: str) -> ProviderReservation:
-        """``reserved`` / ``spent`` の最新予約を返す。無い・abandoned 後だけ新ラウンド。"""
+        """``reserved`` / ``spent`` の最新予約を返す。無い・放棄の後だけ新ラウンドを作る。
+
+        - 同じ Episode に**別の upload key**（final_video か投稿先が違う）の投稿済み・送信済みの
+          予約があれば止める（2本目にしない）
+        - dispatch 済みで video id の無い予約の放棄は、運用者の再投稿承認
+          （``reconciled_by = OPERATOR_REUPLOAD_APPROVED``）が無ければ次ラウンドを開かない
+        - round 2 以降は作る前にマーカー照合をやり直し、見つかればその video id を記録して返す
+        """
         for _ in range(3):
             async with self._session_factory() as session:
                 repo = ProviderReservationRepository(session)
+                everything = await repo.list_for_episode_provider(
+                    episode_id, ProviderCall.YOUTUBE_UPLOAD
+                )
+                conflicting = [
+                    r
+                    for r in everything
+                    if r.input_hash != upload_key
+                    and (
+                        r.status is ReservationStatus.SPENT
+                        or (r.status is ReservationStatus.RESERVED and r.dispatched_at is not None)
+                    )
+                ]
+                if conflicting:
+                    raise UploadOutcomeUnknownError(
+                        f"episode {episode_id} already has an upload for a different final_video "
+                        f"or channel (reservation {conflicting[0].id}, "
+                        f"{conflicting[0].status.value}); refusing a second video "
+                        "(docs/operations/upload-worker.md)"
+                    )
                 latest = await repo.find_latest_for_input(
                     episode_id, ProviderCall.YOUTUBE_UPLOAD, None, upload_key
                 )
-                if latest is not None and latest.status is not ReservationStatus.ABANDONED:
-                    return latest
-                ledger_round = 1 if latest is None else latest.round + 1
+            if latest is not None and latest.status is not ReservationStatus.ABANDONED:
+                return latest
+            found: str | None = None
+            if latest is not None:
+                if (
+                    latest.dispatched_at is not None
+                    and not latest.provider_result_ref
+                    and latest.reconciled_by != OPERATOR_REUPLOAD_APPROVED
+                ):
+                    raise UploadOutcomeUnknownError(
+                        f"upload reservation {latest.id} was abandoned after bytes were sent; "
+                        f"a new upload needs reconciled_by='{OPERATOR_REUPLOAD_APPROVED}' "
+                        "(docs/operations/upload-worker.md)"
+                    )
+                # 承認があっても、まずマーカーで既存の動画を探す（見つかれば投稿しない）
+                found = await self._lookup_marker(upload_marker(upload_key))
+            ledger_round = 1 if latest is None else latest.round + 1
+            async with self._session_factory() as session:
+                repo = ProviderReservationRepository(session)
                 try:
                     created = await repo.reserve(
                         episode_id=episode_id,
@@ -429,10 +517,16 @@ class UploadActivities:
                         job_id=job_id,
                     )
                     await session.commit()
-                    return created
                 except IntegrityError:
                     # 並行する試行が同じラウンドを先に作った。読み直してそれを使う
                     await session.rollback()
+                    continue
+                if found is not None:
+                    created = await repo.record_upload_result(
+                        created.id, found, reconciled_by="marker_lookup"
+                    )
+                    await session.commit()
+                return created
         raise TransientError("could not reserve the upload after concurrent inserts")
 
     async def _reservation(self, reservation_id: str) -> ProviderReservation:
@@ -450,16 +544,31 @@ class UploadActivities:
             await session.commit()
         return saved
 
-    async def _dispatch(self, reservation_id: str, uri: str) -> bool:
+    async def _dispatch(self, reservation_id: str, uri: str) -> tuple[bool, bool]:
+        """``(送ってよいか, この試行が dispatched_at を立てたか)``。"""
         async with self._session_factory() as session:
-            ok = await ProviderReservationRepository(session).mark_upload_dispatched(
+            result = await ProviderReservationRepository(session).mark_upload_dispatched(
                 reservation_id, uri
             )
             await session.commit()
-        return ok
+        return result
+
+    async def _require_owner(self, episode_id: str, token: str) -> None:
+        """この実行が入場トークンを持ち Episode が ``in_progress`` のときだけ YouTube に触れる。"""
+        async with self._session_factory() as session:
+            episodes = EpisodeRepository(session)
+            episode = await episodes.get(episode_id)
+            owner = await episodes.get_workflow_id(episode_id)
+        if episode is None or episode.status is not EpisodeStatus.IN_PROGRESS or owner != token:
+            raise UploadOwnershipLostError(
+                f"episode {episode_id} is no longer owned by this upload run "
+                f"(status={episode.status.value if episode else None}); stopping without upload"
+            )
 
     async def _drive(
         self,
+        episode_id: str,
+        token: str,
         reservation_id: str,
         path: Path,
         total: int,
@@ -477,84 +586,162 @@ class UploadActivities:
                     f"upload reservation {reservation_id} was closed ({row.status.value}) "
                     "while uploading; re-run the upload"
                 )
+            result: _Outcome | UploadExpired | None
             if row.provider_job_ref is None:
                 # (b) session なし。session の作成は動画を作らないので繰り返してよい
+                await self._require_owner(episode_id, token)
                 session = await self._start_session(body, total, secrets)
                 if not await self._save_session(reservation_id, session.uri, None):
                     continue  # 別の試行が先に session を保存した
-                if not await self._dispatch(reservation_id, session.uri):
-                    continue
-                result = await self._send(session, path, 0)
+                result = await self._dispatch_and_send(
+                    episode_id, token, reservation_id, session, path
+                )
             else:
                 session = UploadSessionRef(
                     uri=row.provider_job_ref, total_bytes=total, content_type=UPLOAD_CONTENT_TYPE
                 )
                 secrets.append(session.uri)
-                progress, _ = await self._query(session)
+                progress = await self._query(session)
                 if row.dispatched_at is None:
                     # (c) session はあるが bytes を1つも送っていない
                     if isinstance(progress, UploadExpired):
+                        await self._require_owner(episode_id, token)
                         fresh = await self._start_session(body, total, secrets)
                         if not await self._save_session(
                             reservation_id, fresh.uri, replaces=session.uri
                         ):
                             continue
-                        if not await self._dispatch(reservation_id, fresh.uri):
-                            continue
-                        result = await self._send(fresh, path, 0)
+                        result = await self._dispatch_and_send(
+                            episode_id, token, reservation_id, fresh, path
+                        )
                     elif isinstance(progress, UploadCompleted):
                         result = _Outcome(progress.video_id, "status_query")
                     else:
-                        if not await self._dispatch(reservation_id, session.uri):
-                            continue
-                        result = await self._send(session, path, progress.next_offset)
+                        result = await self._dispatch_and_send(
+                            episode_id, token, reservation_id, session, path
+                        )
                 elif isinstance(progress, UploadCompleted):
                     # (d) dispatch 済み。完了していた（応答を失った / 記録前の crash）
                     result = _Outcome(progress.video_id, "status_query")
                 elif isinstance(progress, UploadExpired):
                     result = progress
                 else:
-                    result = await self._send(session, path, progress.next_offset)
+                    result = await self._send(reservation_id, session, path, progress.next_offset)
+            if result is None:
+                continue  # dispatch に負けた。読み直す
             if isinstance(result, _Outcome):
                 return result
             # dispatch 済みの session が失効した。bytes が届いていたかもしれない
             return await self._reconcile_by_marker(upload_marker(upload_key))
         raise TransientError("upload reservation kept changing under concurrent attempts")
 
+    async def _dispatch_and_send(
+        self,
+        episode_id: str,
+        token: str,
+        reservation_id: str,
+        session: UploadSessionRef,
+        path: Path,
+    ) -> _Outcome | UploadExpired | None:
+        """所有権を確かめて dispatch し送る。dispatch を立てた試行だけが offset 0 から送る。
+
+        ``None``: この session では送れない（差し替え・閉じた予約）。呼び出し側が読み直す。
+        """
+        await self._require_owner(episode_id, token)
+        ok, changed = await self._dispatch(reservation_id, session.uri)
+        if not ok:
+            return None
+        if changed:
+            return await self._send(reservation_id, session, path, 0)
+        # 別の試行が先に dispatch した。受理位置を確かめてから続ける
+        progress = await self._query(session)
+        if isinstance(progress, UploadCompleted):
+            return _Outcome(progress.video_id, "status_query")
+        if isinstance(progress, UploadExpired):
+            return progress
+        return await self._send(reservation_id, session, path, progress.next_offset)
+
     # ------------------------------------------------------------------ YouTube
+
+    async def _verify_channel(self) -> None:
+        """認証中のチャンネルが投稿先の設定と一致することを（worker ごとに1回）確かめる。"""
+        if self._channel_verified:
+            return
+        own = await self._beating("channel", self._uploader.own_channel_id())
+        if own != self._channel_id:
+            raise UploadAuthError(
+                "the authenticated YouTube channel differs from YOUTUBE_CHANNEL_ID; refusing to "
+                "upload (re-run scripts/youtube-oauth.py with the right account)"
+            )
+        self._channel_verified = True
 
     async def _start_session(
         self, body: dict[str, Any], total: int, secrets: list[str]
     ) -> UploadSessionRef:
+        await self._verify_channel()
         session = await self._beating(
             "start_session", self._uploader.start_session(body, total, UPLOAD_CONTENT_TYPE)
         )
         secrets.append(session.uri)
         return session
 
-    async def _query(self, session: UploadSessionRef) -> tuple[UploadProgress, bool]:
+    async def _query_once(self, session: UploadSessionRef) -> UploadProgress:
         """status query。一時障害は backoff して繰り返し、尽きたら ``TransientError``。"""
         last: BaseException | None = None
         for attempt in range(self._transient_retries + 1):
             if attempt:
                 await self._pause(self._transient_backoff * 2 ** (attempt - 1), "backoff")
             try:
-                return await self._beating("status", self._uploader.query_status(session)), True
+                return await self._beating("status", self._uploader.query_status(session))
             except _RETRY_IN_ACTIVITY as exc:
                 last = exc
         raise TransientError(
             f"upload status query kept failing ({type(last).__name__}); will retry the activity"
         )
 
+    async def _query(self, session: UploadSessionRef) -> UploadProgress:
+        """404/410（失効）は、少し待った2回目の照会でも失効のときだけ失効とみなす。"""
+        progress = await self._query_once(session)
+        if not isinstance(progress, UploadExpired):
+            return progress
+        await self._pause(self._expiry_confirm_delay, "confirm_expiry")
+        return await self._query_once(session)
+
+    async def _check_reservation(
+        self, reservation_id: str, session: UploadSessionRef
+    ) -> _Outcome | None:
+        """送信中の予約の再確認。spent なら結果を返し、閉じた・session が違えば止める。"""
+        row = await self._reservation(reservation_id)
+        if row.status is ReservationStatus.SPENT:
+            return _spent_outcome(row)
+        if (
+            row.status is not ReservationStatus.RESERVED
+            or row.provider_job_ref != session.uri
+            or row.dispatched_at is None
+        ):
+            raise UploadOutcomeUnknownError(
+                f"upload reservation {reservation_id} changed while uploading "
+                f"({row.status.value}); stopped sending"
+            )
+        return None
+
     async def _send(
-        self, session: UploadSessionRef, path: Path, offset: int
+        self, reservation_id: str, session: UploadSessionRef, path: Path, offset: int
     ) -> _Outcome | UploadExpired:
-        """``offset`` から最後まで送る。一時障害は status query で受理位置を確かめて再開する。"""
+        """``offset`` から最後まで送る。一時障害は status query で受理位置を確かめて再開する。
+
+        最初のチャンクの前と ``reservation_check_every_chunks`` チャンクごとに予約を読み直す。
+        """
         total = session.total_bytes
         stalls = 0
+        chunks = 0
         while True:
+            if chunks % self._check_every == 0:
+                done = await self._check_reservation(reservation_id, session)
+                if done is not None:
+                    return done
             if offset >= total:
-                progress, _ = await self._query(session)
+                progress = await self._query(session)
                 if isinstance(progress, UploadCompleted):
                     return _Outcome(progress.video_id, "status_query")
                 if isinstance(progress, UploadExpired):
@@ -577,7 +764,12 @@ class UploadActivities:
                         "upload chunk kept failing; will retry the activity from the saved session"
                     ) from None
                 await self._pause(self._transient_backoff * 2 ** (stalls - 1), "backoff")
-                progress, _ = await self._query(session)
+                progress = await self._query(session)
+                via = "status_query"
+            chunks += 1
+            if isinstance(progress, UploadExpired) and via == "upload_response":
+                # 送信の 404 も照会で確かめる（1回の 404 で失効としない）
+                progress = await self._query(session)
                 via = "status_query"
             if isinstance(progress, UploadCompleted):
                 return _Outcome(progress.video_id, via)
@@ -591,8 +783,8 @@ class UploadActivities:
                     raise TransientError("upload made no progress; will retry the activity")
             offset = progress.next_offset
 
-    async def _reconcile_by_marker(self, marker: str) -> _Outcome:
-        """失効した dispatch 済み session の結果を uploads playlist のマーカーで確かめる。"""
+    async def _lookup_marker(self, marker: str) -> str | None:
+        """uploads playlist をマーカー（タグ / description の行）で探す。見つからなければ None。"""
         for attempt in range(self._lookup_attempts):
             if attempt:
                 await self._pause(self._lookup_delay, "marker_lookup_wait")
@@ -604,7 +796,14 @@ class UploadActivities:
                 logger.warning("upload marker lookup failed (attempt %s)", attempt + 1)
                 continue
             if video_id is not None:
-                return _Outcome(video_id, "marker_lookup")
+                return video_id
+        return None
+
+    async def _reconcile_by_marker(self, marker: str) -> _Outcome:
+        """失効した dispatch 済み session の結果を uploads playlist のマーカーで確かめる。"""
+        video_id = await self._lookup_marker(marker)
+        if video_id is not None:
+            return _Outcome(video_id, "marker_lookup")
         raise UploadOutcomeUnknownError(
             f"upload session expired after bytes were sent and marker {marker} was not found "
             f"after {self._lookup_attempts} lookups; check the channel, then follow "
@@ -628,7 +827,11 @@ class UploadActivities:
                     return task.result()
                 self._heartbeat(label)
         except asyncio.CancelledError:
+            # 送信中のチャンク（PUT）が終わるまで待ってから抜ける。workflow が失敗を記録する時点で
+            # まだ bytes が飛んでいないようにする
             task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
             raise
 
     # ------------------------------------------------------------------ 入力
@@ -899,13 +1102,26 @@ def _spent_outcome(reservation: ProviderReservation) -> _Outcome:
     return _Outcome(reservation.provider_result_ref, cast(str, reconciled_by))
 
 
-def _scrubbed(exc: DomainError, secrets: list[str]) -> DomainError:
+class ScrubbedError(Exception):
+    """session URI を含んでいた未分類の例外の置き換え（型名は保つ）。"""
+
+
+def sanitize_error(exc: BaseException, secrets: list[str]) -> BaseException:
+    """例外文から token と既知の session URI を伏せる。変わらなければ ``exc`` をそのまま返す。
+
+    ドメイン例外は同じ型で作り直す（失敗クラスを保つ）。それ以外は ``ScrubbedError`` に包む。
+    元の例外は cause に繋がない（Temporal が cause の文を運ぶため）。
+    """
     text = str(exc)
     clean = scrub(text, secrets)
     if clean == text:
         return exc
-    replacement = type(exc)(clean)
+    if isinstance(exc, DomainError):
+        replacement: BaseException = type(exc)(clean)
+    else:
+        replacement = ScrubbedError(f"{type(exc).__name__}: {clean}")
     replacement.__cause__ = None
+    replacement.__suppress_context__ = True
     return replacement
 
 
@@ -971,6 +1187,9 @@ __all__ = [
     "ADMISSIBLE_STATUSES",
     "ADMIT_EVENTS",
     "MAX_LEDGER_STEPS",
+    "OPERATOR_REUPLOAD_APPROVED",
+    "ScrubbedError",
+    "sanitize_error",
     "RESUMABLE_STATUSES",
     "WORKFLOW_OWNED_JOB_TYPES",
     "UploadActivities",

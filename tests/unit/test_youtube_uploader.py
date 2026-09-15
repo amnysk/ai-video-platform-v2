@@ -306,7 +306,14 @@ def test_redact() -> None:
     assert "upload_id=<redacted>" in redact(SESSION_URI)
 
 
-def _lookup_handler(pages: list[list[str]], tags: dict[str, list[str]], log: list[str]) -> Handler:
+def _lookup_handler(
+    pages: list[list[str]],
+    tags: dict[str, list[str]],
+    log: list[str],
+    descriptions: dict[str, str] | None = None,
+) -> Handler:
+    descriptions = descriptions or {}
+
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         params = request.url.params
@@ -328,9 +335,17 @@ def _lookup_handler(pages: list[list[str]], tags: dict[str, list[str]], log: lis
             ids = params["id"].split(",")
             log.append(f"videos{len(ids)}")
             assert params["part"] == "snippet"
-            return httpx.Response(
-                200, json={"items": [{"id": v, "snippet": {"tags": tags.get(v, [])}} for v in ids]}
-            )
+            items = [
+                {
+                    "id": v,
+                    "snippet": {
+                        "tags": tags.get(v, []),
+                        "description": descriptions.get(v, ""),
+                    },
+                }
+                for v in ids
+            ]
+            return httpx.Response(200, json={"items": items})
         raise AssertionError(url)
 
     return handler
@@ -368,3 +383,28 @@ async def test_forbidden_license_setting_is_a_rejection_not_auth() -> None:
     uploader, _ = _uploader(lambda r: _error(403, "forbiddenLicenseSetting"))
     with pytest.raises(YouTubeRejectedError):
         await uploader.start_session(METADATA, 10, "video/mp4")
+
+
+async def test_find_video_by_marker_matches_a_description_line() -> None:
+    log: list[str] = []
+    handler = _lookup_handler(
+        [["a", "b"]], {}, log, descriptions={"b": "hook\n\nnarration\n\navp-marker"}
+    )
+    uploader, _ = _uploader(handler)
+    assert await uploader.find_video_by_marker("avp-marker") == "b"
+    # 部分一致（行の一部）は数えない
+    uploader2, _ = _uploader(_lookup_handler([["c"]], {}, [], descriptions={"c": "xavp-marker"}))
+    assert await uploader2.find_video_by_marker("avp-marker") is None
+
+
+async def test_own_channel_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url).startswith(f"{API_BASE_URL}/channels")
+        assert request.url.params["mine"] == "true"
+        return httpx.Response(200, json={"items": [{"id": "UC" + "b" * 22}]})
+
+    uploader, _ = _uploader(handler)
+    assert await uploader.own_channel_id() == "UC" + "b" * 22
+    empty, _ = _uploader(lambda r: httpx.Response(200, json={"items": []}))
+    with pytest.raises(YouTubeAuthError):
+        await empty.own_channel_id()

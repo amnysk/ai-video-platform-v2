@@ -18,12 +18,13 @@ from temporalio.worker import Worker
 
 from contracts.states import UPLOAD_MEDIA_TASK_QUEUE, UPLOAD_TASK_QUEUE
 from contracts.upload import DEFAULT_UPLOAD_CONCURRENCY, YOUTUBE_CHANNEL_ID_PATTERN
+from domain.upload.ports import VideoUploader
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
 from infrastructure.workdir import WorkDirectory
-from infrastructure.youtube.errors import YouTubeAuthError
+from infrastructure.youtube.errors import YouTubeAuthError, YouTubeError
 from infrastructure.youtube.oauth import RefreshTokenCredentials
 from infrastructure.youtube.uploader import YouTubeResumableUploader, validate_chunk_bytes
 from workers.upload.activities import UploadActivities
@@ -80,6 +81,19 @@ def build_uploader(settings: Settings, client: httpx.AsyncClient) -> YouTubeResu
     return YouTubeResumableUploader(credentials, client=client, chunk_bytes=chunk_bytes)
 
 
+async def verify_channel(uploader: VideoUploader, channel_id: str) -> None:
+    """認証中のチャンネルが ``YOUTUBE_CHANNEL_ID`` と違えば起動しない（誤チャンネル防止）。"""
+    try:
+        own = await uploader.own_channel_id()
+    except YouTubeError as exc:
+        raise SystemExit(f"upload worker: cannot read the authenticated channel: {exc}") from None
+    if own != channel_id:
+        raise SystemExit(
+            "upload worker: the OAuth credentials belong to a different channel than "
+            "YOUTUBE_CHANNEL_ID; re-run scripts/youtube-oauth.py with the right account"
+        )
+
+
 def build_workers(client: Client, activities: UploadActivities) -> tuple[Worker, Worker]:
     state = Worker(
         client,
@@ -105,6 +119,7 @@ async def main() -> None:
     channel_id = require_channel_id(settings)
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as http:
         uploader = build_uploader(settings, http)
+        await verify_channel(uploader, channel_id)
         client = await Client.connect(
             settings.temporal_address, namespace=settings.temporal_namespace
         )
