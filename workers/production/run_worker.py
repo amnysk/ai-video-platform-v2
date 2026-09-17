@@ -9,13 +9,13 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from temporalio.client import Client
 from temporalio.worker import Worker
 
 from contracts.states import PRODUCTION_WORKFLOW
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.storage.minio_store import MinioArtifactStore
+from infrastructure.temporal.connect import connect_with_retry
 from workers.production.activities import ProductionActivities
 from workers.production.run_inspector import TemporalWorkflowRunInspector
 from workers.production.workflows import ProductionWorkflow
@@ -28,7 +28,7 @@ _, PRODUCTION_TASK_QUEUE = PRODUCTION_WORKFLOW
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
-    client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
+    client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
     activities = ProductionActivities(

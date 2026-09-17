@@ -69,6 +69,8 @@
 | `providers/` | fal.ai / YouTube / LLM の adapter。**必ずProtocolの背後に置く** |
 | `observability/` | OpenTelemetry のtracer/meter設定、Prometheus exporter |
 
+- worker の常駐は compose の1サービス1 worker（共通イメージ `worker` target）。起動は
+  `infrastructure/runtime/worker_entry.py`、health は `infrastructure/temporal/poller_check.py`（ADR-0024）
 - provider adapter は必ずfakeに差し替えられること（INV-18）
 - secretはここから外へ出さない（INV-20）
 

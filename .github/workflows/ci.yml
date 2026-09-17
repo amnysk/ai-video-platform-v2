@@ -76,7 +76,8 @@ jobs:
       - name: Prepare MinIO data directory
         run: sudo mkdir -p /mnt/minio-hdd/minio-data && sudo chmod 777 /mnt/minio-hdd/minio-data
       - name: Start core services
-        run: docker compose --profile core up -d --wait
+        # 常駐 Worker は host の ffmpeg / Codex 認証 / OAuth を要するので CI では起動しない（ADR-0024）
+        run: docker compose --profile core up -d --wait postgres minio temporal temporal-ui migrate api dummy-worker
       - name: Assert the migration container succeeded
         # --wait の依存条件に頼らず、ワンショットの migrate が 0 で終わったことを直接見る
         run: |
@@ -126,6 +127,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          target: base
           push: false
           load: true
           tags: avp2-app:ci
@@ -143,3 +145,27 @@ jobs:
           "
       - name: Alembic is usable inside the image
         run: docker run --rm avp2-app:ci alembic --help
+      - name: Build the worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: worker
+          push: false
+          load: true
+          tags: avp2-worker:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Worker image runtime check
+        # 版の固定（Codex CLI / 隔離 venv の piper-tts）と全 worker モジュールの import を見る
+        run: |
+          docker run --rm --entrypoint codex avp2-worker:ci --version | grep -q '0.154.0'
+          docker run --rm --entrypoint /opt/piper/venv/bin/python avp2-worker:ci -c "import importlib.metadata as m; assert m.version('piper-tts') == '1.8.0'"
+          docker run --rm --entrypoint git avp2-worker:ci --version
+          docker run --rm avp2-worker:ci python -c "
+          import infrastructure.runtime.worker_entry, infrastructure.temporal.poller_check
+          import workers.planning.run_worker, workers.storyboard.run_worker, workers.production.run_worker
+          import workers.production_image.run_worker, workers.production_voice.run_worker
+          import workers.production_video.run_worker, workers.render.run_worker
+          import workers.upload.run_worker, workers.pipeline.run_worker
+          print('worker imports OK')
+          "

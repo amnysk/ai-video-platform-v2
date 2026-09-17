@@ -9,7 +9,6 @@ import asyncio
 import logging
 import sys
 
-from temporalio.client import Client
 from temporalio.worker import Worker
 
 from contracts.states import PRODUCTION_VIDEO_TASK_QUEUE
@@ -21,6 +20,7 @@ from infrastructure.providers.fal_queue import FalQueueClient
 from infrastructure.providers.fal_seedance_video import FalSeedanceVideoGenerator
 from infrastructure.providers.fal_storage import FalStorageClient
 from infrastructure.storage.minio_store import MinioArtifactStore
+from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.workdir import WorkDirectory
 from workers.production_video.activities import VideoProductionActivities
 
@@ -34,7 +34,7 @@ async def main() -> None:
     if not settings.fal_key:
         sys.exit("FAL_KEY is not set: production video worker calls a paid provider")
 
-    client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
+    client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
     session_factory = session_factory_from_settings(settings)

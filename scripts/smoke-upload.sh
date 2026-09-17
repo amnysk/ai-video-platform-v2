@@ -45,7 +45,17 @@ fi
 py check-input "$EPISODE_ID"
 echo "episode : $EPISODE_ID"
 
-if pgrep -f 'workers.upload.run_worker|fake_upload_worker' >/dev/null; then
+# 本物の upload worker（compose / host）との競合は Temporal の poller で判定する（identity を問わない）
+guard=0
+PYTHONPATH=. "$VENV/bin/python" -m infrastructure.temporal.poller_check \
+  --queue upload --queue upload-media --identity-suffix '' >/dev/null || guard=$?
+if [ "$guard" -ne 1 ]; then
+  echo "NG: the upload queues already have a poller (or Temporal is unreachable: rc=$guard);" \
+       "stop it first (e.g. docker compose stop upload-worker; 停止直後は Temporal が poller を約2分表示し続ける)" >&2
+  exit 2
+fi
+# host の fake worker の二重起動だけ pgrep で見る（poll していない compose の upload-worker では止めない）
+if pgrep -f 'fake_upload_worker' >/dev/null; then
   echo "NG: an upload worker is already polling the upload queues; refusing to race it" >&2
   exit 2
 fi

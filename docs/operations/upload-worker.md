@@ -2,6 +2,9 @@
 
 Status: **Accepted (2026-09-15)**（ADR-0020）
 
+> **常駐運用は compose**（`docker compose --profile core up -d`、`docs/operations/workers.md` / ADR-0024）。
+> 以下の host プロセス方式はデバッグ用の代替。同じ queue に両方を同時に立てないこと。
+
 現行の `final_video` を検証し、YouTube へ **private で1回だけ**投稿して `upload_receipt` を保存し、
 Episode を `uploaded` にする worker。公開（public / unlisted）は所有者が YouTube Studio で手動で行う（INV-19）。
 

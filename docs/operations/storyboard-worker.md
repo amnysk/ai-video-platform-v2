@@ -2,6 +2,9 @@
 
 Status: **Accepted (2026-09-13)**（ADR-0015 / ADR-0016）
 
+> **常駐運用は compose**（`docker compose --profile core up -d`、`docs/operations/workers.md` / ADR-0024）。
+> 以下の host プロセス方式はデバッグ用の代替。同じ queue に両方を同時に立てないこと。
+
 台本（`script`）から storyboard Artifact を作る worker。Codex CLI と OpenMontage checkout がホストに
 あるため、**Ubuntu ホストのプロセス**として動かす（Temporal / PostgreSQL / MinIO は compose 側）。
 

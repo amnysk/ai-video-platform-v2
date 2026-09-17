@@ -10,7 +10,6 @@ import asyncio
 import logging
 from pathlib import Path
 
-from temporalio.client import Client
 from temporalio.worker import Worker
 
 from infrastructure.config import Settings
@@ -18,6 +17,7 @@ from infrastructure.db.session import session_factory_from_settings
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
 from infrastructure.providers.process import SubprocessRunner
 from infrastructure.storage.minio_store import MinioArtifactStore
+from infrastructure.temporal.connect import connect_with_retry
 from workers.planning.activities import ScriptActivities
 from workers.planning.workflows import ScriptWorkflow
 
@@ -30,7 +30,7 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
 
-    client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
+    client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
 

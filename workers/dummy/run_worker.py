@@ -8,12 +8,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from temporalio.client import Client
 from temporalio.worker import Worker
 
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.storage.minio_store import MinioArtifactStore
+from infrastructure.temporal.connect import connect_with_retry
 from workers.dummy.activities import DummyActivities
 from workers.dummy.workflows import EpisodeSkeletonWorkflow
 
@@ -24,7 +24,7 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
 
-    client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
+    client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
 

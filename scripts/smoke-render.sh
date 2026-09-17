@@ -69,6 +69,18 @@ if ! curl -sS -f "$API/openapi.json" 2>/dev/null | grep -q '/episodes/{episode_i
 fi
 
 # --- render worker ---
+# compose の render-worker 等、host の pgrep から見えない poller も Temporal に問い合わせる
+# （identity を問わない）。居れば、この worktree のコードで検証できないので拒否する
+if [ "${USE_RUNNING_WORKER:-}" != "1" ]; then
+  guard=0
+  PYTHONPATH=. "$VENV/bin/python" -m infrastructure.temporal.poller_check \
+    --queue render --queue render-media --identity-suffix '' >/dev/null || guard=$?
+  if [ "$guard" -ne 1 ]; then
+    echo "NG: the render queues already have a poller (or Temporal is unreachable: rc=$guard);" \
+         "stop it first (e.g. docker compose stop render-worker; 停止直後は約2分待つ) or set USE_RUNNING_WORKER=1" >&2
+    exit 2
+  fi
+fi
 if pgrep -f 'workers.render.run_worker' >/dev/null; then
   if [ "${USE_RUNNING_WORKER:-}" != "1" ]; then
     echo "NG: a render worker is already running (pid $(pgrep -f workers.render.run_worker | tr '\n' ' '));" \

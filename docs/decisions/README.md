@@ -47,3 +47,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0021](./0021-operational-switches-daily-slots-and-test-db-isolation.md) | 運用スイッチ・日次 Episode 枠とテストDBの隔離 | Accepted |
 | [0022](./0022-youtube-processing-check.md) | 投稿後の YouTube 処理状態の確認と送信中の一時停止 | Accepted |
 | [0023](./0023-daily-schedule-and-episode-pipeline.md) | Daily Schedule と Episode pipeline workflow | Accepted |
+| [0024](./0024-compose-managed-workers.md) | 常駐 Worker を Docker Compose で管理する | Accepted |

@@ -2,6 +2,9 @@
 
 Status: **Accepted (2026-09-14)**（ADR-0019）
 
+> **常駐運用は compose**（`docker compose --profile core up -d`、`docs/operations/workers.md` / ADR-0024）。
+> 以下の host プロセス方式はデバッグ用の代替。同じ queue に両方を同時に立てないこと。
+
 現行の `production_manifest` から完成動画（`final_video`）を描き、技術検査に合格したものだけを保存して
 Episode を `render_ready` に置く worker。固定版の static ffmpeg を子プロセスで使うため、
 **Ubuntu ホストのプロセス**として動かす（Temporal / PostgreSQL / MinIO は compose 側）。

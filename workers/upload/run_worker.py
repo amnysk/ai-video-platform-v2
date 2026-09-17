@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import timedelta
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,6 +26,7 @@ from infrastructure.config import Settings
 from infrastructure.db.repositories import OperationalSwitchRepository
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.storage.minio_store import MinioArtifactStore
+from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
 from infrastructure.workdir import WorkDirectory
 from infrastructure.youtube.errors import YouTubeAuthError, YouTubeError
@@ -34,6 +36,10 @@ from workers.upload.activities import UploadActivities
 from workers.upload.workflows import UploadWorkflow
 
 logger = logging.getLogger(__name__)
+
+#: 停止時（docker compose stop / SIGTERM）に実行中の Activity の完了を待つ上限。
+#: compose の stop_grace_period（120s）より短くする（ADR-0024）。
+GRACEFUL_SHUTDOWN_TIMEOUT = timedelta(seconds=100)
 
 #: 送信・照会 1 回の HTTP timeout（秒）。8 MiB を低速回線でも送り切れる値
 HTTP_TIMEOUT_SECONDS = 300.0
@@ -120,12 +126,14 @@ def build_workers(client: Client, activities: UploadActivities) -> tuple[Worker,
         task_queue=UPLOAD_TASK_QUEUE,
         workflows=[UploadWorkflow],
         activities=activities.state_activities(),
+        graceful_shutdown_timeout=GRACEFUL_SHUTDOWN_TIMEOUT,
     )
     media = Worker(
         client,
         task_queue=UPLOAD_MEDIA_TASK_QUEUE,
         activities=activities.media_activities(),
         max_concurrent_activities=DEFAULT_UPLOAD_CONCURRENCY,
+        graceful_shutdown_timeout=GRACEFUL_SHUTDOWN_TIMEOUT,
     )
     return state, media
 
@@ -140,9 +148,7 @@ async def main() -> None:
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as http:
         uploader = build_uploader(settings, http)
         await verify_channel(uploader, channel_id)
-        client = await Client.connect(
-            settings.temporal_address, namespace=settings.temporal_namespace
-        )
+        client = await connect_with_retry(settings)
         session_factory = session_factory_from_settings(settings)
         store = MinioArtifactStore.from_settings(settings)
         await store.ensure_bucket()

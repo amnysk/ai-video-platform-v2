@@ -11,7 +11,6 @@ import logging
 import sys
 from pathlib import Path
 
-from temporalio.client import Client
 from temporalio.worker import Worker
 
 from contracts.states import STORYBOARD_WORKFLOW
@@ -24,6 +23,7 @@ from infrastructure.providers.openmontage_storyboard import (
 )
 from infrastructure.providers.process import SubprocessRunner
 from infrastructure.storage.minio_store import MinioArtifactStore
+from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.workdir import WorkDirectory
 from prompts import STORYBOARD_PROMPT_TEMPLATE_ID, STORYBOARD_PROMPT_TEMPLATE_VERSION
 from workers.storyboard.activities import DEFAULT_MODEL_LABEL, StoryboardActivities
@@ -45,7 +45,7 @@ async def main() -> None:
             "checkout (read-only) to load the pinned generation spec"
         )
 
-    client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
+    client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
 

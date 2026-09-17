@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -20,12 +21,17 @@ from infrastructure.db.session import session_factory_from_settings
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.render.ffmpeg_engine import FfmpegRenderEngine
 from infrastructure.storage.minio_store import MinioArtifactStore
+from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.workdir import WorkDirectory
 from workers.render.activities import RenderActivities
 from workers.render.run_inspector import TemporalWorkflowRunInspector
 from workers.render.workflows import RenderWorkflow
 
 logger = logging.getLogger(__name__)
+
+#: 停止時（docker compose stop / SIGTERM）に実行中の Activity の完了を待つ上限。
+#: compose の stop_grace_period（120s）より短くする（ADR-0024）。
+GRACEFUL_SHUTDOWN_TIMEOUT = timedelta(seconds=100)
 
 
 def build_engine(settings: Settings) -> FfmpegRenderEngine:
@@ -66,12 +72,14 @@ def build_workers(
         task_queue=RENDER_TASK_QUEUE,
         workflows=[RenderWorkflow],
         activities=activities.state_activities(),
+        graceful_shutdown_timeout=GRACEFUL_SHUTDOWN_TIMEOUT,
     )
     media = Worker(
         client,
         task_queue=RENDER_MEDIA_TASK_QUEUE,
         activities=activities.media_activities(),
         max_concurrent_activities=max(1, settings.render_concurrency),
+        graceful_shutdown_timeout=GRACEFUL_SHUTDOWN_TIMEOUT,
     )
     return state, media
 
@@ -80,7 +88,7 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
     engine = build_engine(settings)
-    client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
+    client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
     activities = RenderActivities(

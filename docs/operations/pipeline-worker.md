@@ -1,5 +1,8 @@
 # Pipeline worker と Daily Schedule（ADR-0023）
 
+> **常駐運用は compose**（`docker compose --profile core up -d`、`docs/operations/workers.md` / ADR-0024）。
+> 以下の host プロセス方式はデバッグ用の代替。同じ queue に両方を同時に立てないこと。
+
 毎日 1 本（`DAILY_EPISODE_LIMIT`）の Episode を自動生成し、Script → Storyboard → Production → Render →
 （投稿ゲート）→ Upload まで進める。順序は Temporal workflow だけが持つ（INV-4 / INV-5）。
 

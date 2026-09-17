@@ -1,20 +1,59 @@
 # ローカル開発環境（ADR-0005）。本番構成ではない。
-# 起動:      docker compose --profile core up -d
+# 起動:      docker compose --profile core up -d   （常駐 Worker も含む。ADR-0024 / docs/operations/workers.md）
 # 監視つき:  docker compose --profile core --profile observability up -d
 name: avp2
 
-x-app-env: &app-env
+# DB と Temporal だけ（MinIO を使わない pipeline-worker 用）
+x-core-env: &core-env
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-avp}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-avp}
+  TEMPORAL_ADDRESS: temporal:7233
+  TEMPORAL_NAMESPACE: default
+
+x-app-env: &app-env
+  <<: *core-env
   MINIO_ENDPOINT: http://minio:9000
   MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change-me}
   MINIO_BUCKET: ${MINIO_BUCKET:-artifacts}
-  TEMPORAL_ADDRESS: temporal:7233
-  TEMPORAL_NAMESPACE: default
   TEMPORAL_TASK_QUEUE: episode-skeleton
+
+# 常駐 Worker の共通部（ADR-0024）。起動する worker は command、見張る queue は healthcheck で決める。
+# worker_entry は起動直後の設定不足などで落ちたとき backoff してから終了するので、
+# restart: unless-stopped でも高速な再起動ループにならない。
+x-worker: &worker
+  build: {context: ., target: worker}
+  image: avp2-worker:local
+  profiles: [core]
+  user: "${AVP_UID:-1000}:${AVP_GID:-1000}"
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 60s
+  # 権限を持たせない（rootless の AVP_UID=0 でも host 上は非特権。rootful 誤用の被害も狭める）
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+x-worker-health: &worker-health
+  interval: 30s
+  timeout: 15s
+  retries: 3
+  start_period: 60s
+
+x-deps-minio: &deps-minio
+  postgres: {condition: service_healthy}
+  migrate: {condition: service_completed_successfully}
+  temporal: {condition: service_healthy}
+  minio: {condition: service_healthy}
+
+# 一時作業領域。host と同じパスに見せる（DB に残るパスと食い違わせない）。
+# 補間の既定値に `:` を含むので volume は long syntax で書く。
+x-work-root: &work-root
+  type: bind
+  source: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
+  target: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
 
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:17-alpine
     profiles: [core]
     environment:
@@ -33,6 +72,7 @@ services:
       retries: 20
 
   minio:
+    restart: unless-stopped
     image: minio/minio:latest
     profiles: [core]
     command: server /data --console-address ":9001"
@@ -65,8 +105,16 @@ services:
       POSTGRES_PWD: ${POSTGRES_PASSWORD:-change-me}
       POSTGRES_SEEDS: postgres
     ports: ["7233:7233"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address temporal:7233 | grep -qx SERVING"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   temporal-ui:
+    restart: unless-stopped
     image: temporalio/ui:latest
     profiles: [core]
     depends_on: [temporal]
@@ -76,7 +124,9 @@ services:
     ports: ["8233:8080"]
 
   migrate:
-    build: .
+    # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は base を明示する
+    build: {context: ., target: base}
+    image: avp2-app:local
     profiles: [core]
     depends_on:
       postgres: {condition: service_healthy}
@@ -86,7 +136,9 @@ services:
     restart: "no"
 
   api:
-    build: .
+    # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は base を明示する
+    build: {context: ., target: base}
+    image: avp2-app:local
     profiles: [core]
     depends_on:
       postgres: {condition: service_healthy}
@@ -96,23 +148,219 @@ services:
     environment:
       <<: *app-env
     ports: ["8000:8000"]
+    restart: unless-stopped
     command:
       ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   dummy-worker:
-    build: .
+    # 骨組み worker は既存の base イメージのまま（worker イメージの依存を要しない）
+    # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は base を明示する
+    build: {context: ., target: base}
+    image: avp2-app:local
     profiles: [core]
-    depends_on:
-      postgres: {condition: service_healthy}
-      migrate: {condition: service_completed_successfully}
-      temporal: {condition: service_started}
-      minio: {condition: service_started}
+    init: true
+    restart: unless-stopped
+    depends_on: *deps-minio
     environment:
       <<: *app-env
-    command: ["python", "-m", "workers.dummy.run_worker"]
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.dummy.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "episode-skeleton"]
     # Workerは水平に増やせる。互いを直接呼ばない（INV-3）。
     deploy:
       replicas: 1
+
+  script-worker:
+    <<: *worker
+    # Codex の Linux sandbox（bubblewrap）は user namespace を作る。Docker 既定の seccomp はそれを拒むので
+    # Codex を使う2つだけ seccomp を外す（sandbox 自体は read-only を強制する。ADR-0024）
+    # uid 0 の map に CAP_SETFCAP が要る（実測。他の cap は不要）
+    cap_add: [SETFCAP]
+    security_opt: ["no-new-privileges:true", "seccomp=unconfined"]
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+      HOME: /home/avp
+      CODEX_BINARY: /usr/local/bin/codex
+      CODEX_MODEL: ${CODEX_MODEL:-}
+      CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
+    volumes:
+      # Codex の認証・設定。token 更新を書き戻すので rw（中身はイメージに焼かない）
+      - type: bind
+        source: ${CODEX_HOME_HOST_DIR:-${HOME}/.codex}
+        target: /home/avp/.codex
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.planning.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "script"]
+
+  storyboard-worker:
+    <<: *worker
+    # Codex の Linux sandbox（bubblewrap）は user namespace を作る。Docker 既定の seccomp はそれを拒むので
+    # Codex を使う2つだけ seccomp を外す（sandbox 自体は read-only を強制する。ADR-0024）
+    # uid 0 の map に CAP_SETFCAP が要る（実測。他の cap は不要）
+    cap_add: [SETFCAP]
+    security_opt: ["no-new-privileges:true", "seccomp=unconfined"]
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+      HOME: /home/avp
+      CODEX_BINARY: /usr/local/bin/codex
+      CODEX_MODEL: ${CODEX_MODEL:-}
+      CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
+      AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
+      # コンテナ内の固定パス。host 側は OPENMONTAGE_HOST_PATH
+      OPENMONTAGE_REPO_PATH: /opt/openmontage
+      OPENMONTAGE_COMMIT: ${OPENMONTAGE_COMMIT:-2fa571e39ad0632148dad77c7a2134f7e6fe0797}
+      STORYBOARD_TIMEOUT_SECONDS: ${STORYBOARD_TIMEOUT_SECONDS:-900}
+    volumes:
+      - type: bind
+        source: ${CODEX_HOME_HOST_DIR:-${HOME}/.codex}
+        target: /home/avp/.codex
+      - type: bind
+        source: ${OPENMONTAGE_HOST_PATH:-${HOME}/projects/ai-video-platform-v2/ai-toolbox/repos/OpenMontage}
+        target: /opt/openmontage
+        read_only: true
+      - *work-root
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.storyboard.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "storyboard"]
+
+  production-worker:
+    <<: *worker
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.production.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "production"]
+
+  production-image-worker:
+    <<: *worker
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+      FAL_KEY: ${FAL_KEY:-}
+      AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
+      IMAGE_CONCURRENCY: ${IMAGE_CONCURRENCY:-2}
+    volumes:
+      - *work-root
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.production_image.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "production-image", "--max-age-seconds", "2700"]
+
+  production-voice-worker:
+    <<: *worker
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+      AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
+      PIPER_PYTHON: /opt/piper/venv/bin/python
+      # コンテナ内の固定パス。host 側の置き場は PIPER_VOICES_HOST_DIR
+      PIPER_VOICE_PATH: /opt/piper/voices/${PIPER_VOICE_FILE:-en_US-kristin-medium.onnx}
+      VOICE_CONCURRENCY: ${VOICE_CONCURRENCY:-1}
+    volumes:
+      - type: bind
+        source: ${PIPER_VOICES_HOST_DIR:-${HOME}/.local/share/avp2/piper/voices}
+        target: /opt/piper/voices
+        read_only: true
+      - *work-root
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.production_voice.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "production-voice", "--max-age-seconds", "900"]
+
+  production-video-worker:
+    <<: *worker
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+      FAL_KEY: ${FAL_KEY:-}
+      AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
+      VIDEO_CONCURRENCY: ${VIDEO_CONCURRENCY:-1}
+    volumes:
+      - *work-root
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.production_video.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "production-video", "--max-age-seconds", "2700"]
+
+  render-worker:
+    <<: *worker
+    # 描画中の Activity を heartbeat 付きで区切りよく止める猶予
+    stop_grace_period: 120s
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+      AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
+      # コンテナ内の固定パス。host 側は AVP_FFMPEG_DIR / RENDER_FONT_HOST_PATH
+      RENDER_FFMPEG_PATH: /opt/avp/ffmpeg/ffmpeg
+      RENDER_FFMPEG_SHA256: ${RENDER_FFMPEG_SHA256:-810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f3a15b0bf2c5c}
+      RENDER_FFPROBE_PATH: /opt/avp/ffmpeg/ffprobe
+      RENDER_FFPROBE_SHA256: ${RENDER_FFPROBE_SHA256:-4818b8964b5d7b699370628a4154c97e88205678ee506ca72e9330600e917667}
+      RENDER_FONT_PATH: /opt/avp/fonts/NotoSansCJK-Regular.ttc
+      RENDER_FONT_SHA256: ${RENDER_FONT_SHA256:-b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a}
+      RENDER_FFMPEG_THREADS: ${RENDER_FFMPEG_THREADS:-4}
+      RENDER_CONCURRENCY: ${RENDER_CONCURRENCY:-1}
+    volumes:
+      - type: bind
+        source: ${AVP_FFMPEG_DIR:-${HOME}/.local/share/avp/ffmpeg/7.1.1}
+        target: /opt/avp/ffmpeg
+        read_only: true
+      - type: bind
+        source: ${RENDER_FONT_HOST_PATH:-/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc}
+        target: /opt/avp/fonts/NotoSansCJK-Regular.ttc
+        read_only: true
+      - *work-root
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.render.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "render"]
+
+  upload-worker:
+    <<: *worker
+    # resumable upload の chunk 送信を区切りよく止める猶予
+    stop_grace_period: 120s
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+      AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
+      YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
+      YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET:-}
+      YOUTUBE_CHANNEL_ID: ${YOUTUBE_CHANNEL_ID:-}
+      # refresh token は値を env に置かず、ro mount したファイルのパスだけを渡す（repo 外・0600）
+      YOUTUBE_REFRESH_TOKEN_PATH: /run/avp/youtube/${YOUTUBE_REFRESH_TOKEN_FILE:-youtube-refresh-token}
+      UPLOADS_PAUSED: ${UPLOADS_PAUSED:-false}
+    volumes:
+      # host 側のディレクトリは事前に所有者が作る（make worker-dirs）。無いと Docker が root 所有で作ってしまう
+      - type: bind
+        source: ${YOUTUBE_TOKEN_HOST_DIR:-${HOME}/.config/avp}
+        target: /run/avp/youtube
+        read_only: true
+      - *work-root
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.upload.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "upload"]
+
+  pipeline-worker:
+    <<: *worker
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      temporal: {condition: service_healthy}
+    environment:
+      <<: *core-env
+      PAUSED: ${PAUSED:-false}
+      UPLOADS_PAUSED: ${UPLOADS_PAUSED:-false}
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.pipeline.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "pipeline"]
 
   prometheus:
     image: prom/prometheus:latest

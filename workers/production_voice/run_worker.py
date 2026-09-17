@@ -10,7 +10,6 @@ import asyncio
 import logging
 import sys
 
-from temporalio.client import Client
 from temporalio.worker import Worker
 
 from contracts.states import PRODUCTION_VOICE_TASK_QUEUE
@@ -21,6 +20,7 @@ from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.providers.piper_voice import PiperVoiceGenerator
 from infrastructure.providers.process import SubprocessRunner
 from infrastructure.storage.minio_store import MinioArtifactStore
+from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.workdir import WorkDirectory
 from workers.production_voice.activities import VoiceActivities
 
@@ -45,7 +45,7 @@ async def main() -> None:
         # 組めないまま起動すると全 Activity が needs_input で落ちるだけになる。
         sys.exit(f"voice worker cannot start: {exc}")
 
-    client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
+    client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
 
