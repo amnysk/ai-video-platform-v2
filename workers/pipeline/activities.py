@@ -77,10 +77,21 @@ class PipelineActivities:
                 trigger_id=request.trigger_id,
                 daily_limit=request.daily_limit,
                 topic=request.topic,
+                topic_plan_id=request.topic_plan_id,
+            )
+            # 返す Episode に結び付いている plan（ADR-0025）。None なら pipeline は始めない
+            episode = (
+                await EpisodeRepository(session).get(claim.episode_id)
+                if claim.episode_id is not None
+                else None
             )
             # commit 後に応答を失っても、再試行は同じ trigger_id で EXISTING を引く
             await session.commit()
-        return ClaimDailySlotResult(outcome=claim.outcome.value, episode_id=claim.episode_id)
+        return ClaimDailySlotResult(
+            outcome=claim.outcome.value,
+            episode_id=claim.episode_id,
+            topic_plan_id=episode.topic_plan_id if episode is not None else None,
+        )
 
     @activity.defn(name=PIPELINE_UPLOAD_GATE)
     async def upload_gate(self, request: UploadGateRequest) -> UploadGateResult:

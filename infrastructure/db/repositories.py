@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +30,12 @@ from contracts.states import (
     ProviderCall,
     ReservationStatus,
 )
+from contracts.topic_planning import (
+    AnalyticsMode,
+    DuplicateLevel,
+    MemoryItem,
+    TopicPlanStatus,
+)
 from domain.artifact.entities import ArtifactMetadata
 from domain.episode.entities import Episode
 from domain.episode.transitions import EpisodeEvent, Rejected, transition_episode
@@ -36,12 +44,15 @@ from domain.job.entities import Job
 from domain.job.transitions import JobEvent, transition_job
 from domain.provider.reservations import ReservationEvent, transition_reservation
 from infrastructure.db.models import (
+    AnalyticsSnapshotRow,
     ArtifactMetadataRow,
     DailyEpisodeSlotRow,
     EpisodeRow,
     JobRow,
     OperationalSwitchRow,
     ProviderReservationRow,
+    TopicCandidateRow,
+    TopicPlanRow,
 )
 
 
@@ -60,6 +71,7 @@ def _to_episode(row: EpisodeRow) -> Episode:
         topic=row.topic,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        topic_plan_id=str(row.topic_plan_id) if row.topic_plan_id else None,
     )
 
 
@@ -104,11 +116,14 @@ class EpisodeRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create(self, *, topic: str | None = None) -> Episode:
+    async def create(
+        self, *, topic: str | None = None, topic_plan_id: uuid.UUID | str | None = None
+    ) -> Episode:
         row = EpisodeRow(
             id=uuid.uuid4(),
             status=EpisodeStatus.PLANNED.value,
             topic=topic,
+            topic_plan_id=_as_uuid(topic_plan_id) if topic_plan_id is not None else None,
             created_at=_now(),
             updated_at=_now(),
             status_changed_at=_now(),
@@ -1006,9 +1021,27 @@ class DailyEpisodeSlotRepository:
         return list(result.scalars())
 
     async def claim(
-        self, *, slot_date: date, trigger_id: str, daily_limit: int, topic: str | None
+        self,
+        *,
+        slot_date: date,
+        trigger_id: str,
+        daily_limit: int,
+        topic: str | None,
+        topic_plan_id: uuid.UUID | str | None = None,
     ) -> DailySlotClaim:
-        """1回の claim。commit は呼び出し側。衝突は savepoint を戻して読み直す。"""
+        """1回の claim。commit は呼び出し側。衝突は savepoint を戻して読み直す。
+
+        ``topic_plan_id``（ADR-0025）:
+
+        - CREATED: 新しい Episode に結び付け、plan を ``assigned`` にする
+        - EXISTING: 何も書かない（Episode に結び付いている plan は ``Episode.topic_plan_id``）
+        - RESUME: plan の無い planned Episode なら、この plan を結び付けてから返す
+        - plan が既に別の Episode に結び付いている（``uq_episodes_topic_plan_id``）なら、
+          その Episode が同じ日の planned 枠なら RESUME、そうでなければ LIMIT_REACHED。
+          plan は「1日・1 profile の組に1つ」なので、同じ plan で2本目の Episode を作ることは
+          その日の同じ題材を2度作ることであり、枠が残っていても作らない
+        """
+        plan_id = _as_uuid(topic_plan_id) if topic_plan_id is not None else None
         for _ in range(self.MAX_ATTEMPTS):
             existing = await self._by_trigger(trigger_id)
             if existing is not None:
@@ -1019,12 +1052,21 @@ class DailyEpisodeSlotRepository:
                     slot_index=existing.slot_index,
                 )
             rows = await self._rows_for_date(slot_date)
+            if plan_id is not None:
+                holder = await self._episode_holding_plan(plan_id)
+                if holder is not None:
+                    return self._resume_holder(slot_date, rows, holder)
             if len(rows) >= daily_limit:
-                return await self._resume_or_limit(slot_date, rows)
+                resumed = await self._resume_or_limit(slot_date, rows, plan_id, topic)
+                if resumed is None:
+                    continue  # 結び付けの競合。読み直す
+                return resumed
             index = max((r.slot_index for r in rows), default=-1) + 1
             try:
                 async with self._session.begin_nested():
-                    episode = await EpisodeRepository(self._session).create(topic=topic)
+                    episode = await EpisodeRepository(self._session).create(
+                        topic=topic, topic_plan_id=plan_id
+                    )
                     self._session.add(
                         DailyEpisodeSlotRow(
                             slot_date=slot_date,
@@ -1035,8 +1077,10 @@ class DailyEpisodeSlotRepository:
                         )
                     )
                     await self._session.flush()
+                    if plan_id is not None:
+                        await TopicPlanRepository(self._session).mark_assigned(plan_id)
             except IntegrityError:
-                continue  # 別の claim が同じ番号か同じ trigger を先に取った。読み直す
+                continue  # 別の claim が同じ番号・同じ trigger・同じ plan を先に取った。読み直す
             return DailySlotClaim(
                 outcome=ClaimOutcome.CREATED,
                 slot_date=slot_date,
@@ -1045,19 +1089,80 @@ class DailyEpisodeSlotRepository:
             )
         raise RuntimeError(f"daily slot claim did not converge: {slot_date} {trigger_id}")
 
-    async def _resume_or_limit(
-        self, slot_date: date, rows: list[DailyEpisodeSlotRow]
+    async def _episode_holding_plan(self, plan_id: uuid.UUID) -> EpisodeRow | None:
+        result = await self._session.execute(
+            select(EpisodeRow)
+            .where(EpisodeRow.topic_plan_id == plan_id)
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _resume_holder(
+        slot_date: date, rows: list[DailyEpisodeSlotRow], holder: EpisodeRow
     ) -> DailySlotClaim:
+        if holder.status == EpisodeStatus.PLANNED.value:
+            for row in rows:
+                if row.episode_id == holder.id:
+                    return DailySlotClaim(
+                        outcome=ClaimOutcome.RESUME,
+                        slot_date=slot_date,
+                        episode_id=str(row.episode_id),
+                        slot_index=row.slot_index,
+                    )
+        return DailySlotClaim(outcome=ClaimOutcome.LIMIT_REACHED, slot_date=slot_date)
+
+    async def _resume_or_limit(
+        self,
+        slot_date: date,
+        rows: list[DailyEpisodeSlotRow],
+        plan_id: uuid.UUID | None,
+        topic: str | None,
+    ) -> DailySlotClaim | None:
+        """上限到達時。planned の Episode を再開する。結び付けが競合に負けたら None。"""
         for row in rows:
             episode = await self._session.get(EpisodeRow, row.episode_id, populate_existing=True)
-            if episode is not None and episode.status == EpisodeStatus.PLANNED.value:
-                return DailySlotClaim(
-                    outcome=ClaimOutcome.RESUME,
-                    slot_date=slot_date,
-                    episode_id=str(row.episode_id),
-                    slot_index=row.slot_index,
-                )
+            if episode is None or episode.status != EpisodeStatus.PLANNED.value:
+                continue
+            if (
+                plan_id is not None
+                and episode.topic_plan_id is None
+                and not await self._attach_plan(episode.id, plan_id, topic)
+            ):
+                return None
+            return DailySlotClaim(
+                outcome=ClaimOutcome.RESUME,
+                slot_date=slot_date,
+                episode_id=str(row.episode_id),
+                slot_index=row.slot_index,
+            )
         return DailySlotClaim(outcome=ClaimOutcome.LIMIT_REACHED, slot_date=slot_date)
+
+    async def _attach_plan(
+        self, episode_id: uuid.UUID, plan_id: uuid.UUID, topic: str | None
+    ) -> bool:
+        """plan の無い planned Episode へ plan を結び付ける（compare-and-set）。"""
+        try:
+            async with self._session.begin_nested():
+                values: dict[str, object] = {"topic_plan_id": plan_id, "updated_at": _now()}
+                if topic is not None:
+                    values["topic"] = topic
+                changed = await self._session.execute(
+                    update(EpisodeRow)
+                    .where(
+                        EpisodeRow.id == episode_id,
+                        EpisodeRow.topic_plan_id.is_(None),
+                        EpisodeRow.status == EpisodeStatus.PLANNED.value,
+                    )
+                    .values(**values)
+                    .execution_options(synchronize_session=False)
+                )
+                if getattr(changed, "rowcount", 0) != 1:
+                    return False
+                await TopicPlanRepository(self._session).mark_assigned(plan_id)
+        except IntegrityError:
+            return False  # 同じ plan を別の Episode が先に取った。読み直すと holder が見える
+        return True
 
     async def list_for_date(self, slot_date: date) -> list[DailyEpisodeSlot]:
         return [
@@ -1069,3 +1174,442 @@ class DailyEpisodeSlotRepository:
             )
             for r in await self._rows_for_date(slot_date)
         ]
+
+
+# ------------------------------------------------------------------ Topic Planner（ADR-0025）
+
+
+@dataclass(frozen=True, slots=True)
+class NewTopicCandidate:
+    """保存する候補1件。``payload`` は validation 済み ``TopicCandidate`` の JSON（INV-23）。"""
+
+    ordinal: int
+    round: int
+    payload: dict[str, Any]
+    subject: str
+    angle: str
+    duplicate_level: DuplicateLevel
+    duplicate_score: float
+    rejected: bool
+    duplicate_of: str | None = None
+    score: float | None = None
+    score_breakdown: dict[str, float] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NewTopicPlan:
+    """確定する plan。題材の列は採用候補（``selected_ordinal``）の値。"""
+
+    plan_date: date
+    strategy_profile_id: str
+    strategy_version: str
+    content_profile_id: str
+    content_profile_version: str
+    topic: str
+    subject: str
+    angle: str
+    era: str
+    theme: str
+    hook: str
+    entities: list[str]
+    score: float
+    score_breakdown: dict[str, float]
+    duplicate_score: float
+    duplicate_level: DuplicateLevel
+    analytics_mode: AnalyticsMode
+    analytics_confidence: float
+    planner_version: str
+    prompt_version: str
+    analytics_snapshot_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TopicPlan:
+    id: str
+    plan_date: date
+    strategy_profile_id: str
+    strategy_version: str
+    content_profile_id: str
+    content_profile_version: str
+    selected_candidate_id: str | None
+    topic: str
+    subject: str
+    angle: str
+    era: str
+    theme: str
+    hook: str
+    entities: list[str]
+    score: float
+    score_breakdown: dict[str, float]
+    duplicate_score: float
+    duplicate_level: DuplicateLevel
+    analytics_mode: AnalyticsMode
+    analytics_snapshot_id: str | None
+    analytics_confidence: float
+    planner_version: str
+    prompt_version: str
+    status: TopicPlanStatus
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TopicCandidateRecord:
+    id: str
+    topic_plan_id: str
+    ordinal: int
+    round: int
+    payload: dict[str, Any]
+    subject: str
+    angle: str
+    duplicate_level: DuplicateLevel
+    duplicate_score: float
+    duplicate_of: str | None
+    score: float | None
+    score_breakdown: dict[str, float] | None
+    rejected: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SavedTopicPlan:
+    plan: TopicPlan
+    #: True なら同じ (日, strategy, content) の plan が既にあり、それを返した（上書きしていない）
+    reused: bool
+
+
+def _to_topic_plan(row: TopicPlanRow) -> TopicPlan:
+    return TopicPlan(
+        id=str(row.id),
+        plan_date=row.plan_date,
+        strategy_profile_id=row.strategy_profile_id,
+        strategy_version=row.strategy_version,
+        content_profile_id=row.content_profile_id,
+        content_profile_version=row.content_profile_version,
+        selected_candidate_id=str(row.selected_candidate_id) if row.selected_candidate_id else None,
+        topic=row.topic,
+        subject=row.subject,
+        angle=row.angle,
+        era=row.era,
+        theme=row.theme,
+        hook=row.hook,
+        entities=list(row.entities),
+        score=row.score,
+        score_breakdown=dict(row.score_breakdown),
+        duplicate_score=row.duplicate_score,
+        duplicate_level=DuplicateLevel(row.duplicate_level),
+        analytics_mode=AnalyticsMode(row.analytics_mode),
+        analytics_snapshot_id=str(row.analytics_snapshot_id) if row.analytics_snapshot_id else None,
+        analytics_confidence=row.analytics_confidence,
+        planner_version=row.planner_version,
+        prompt_version=row.prompt_version,
+        status=TopicPlanStatus(row.status),
+        created_at=row.created_at,
+    )
+
+
+def _to_candidate(row: TopicCandidateRow) -> TopicCandidateRecord:
+    return TopicCandidateRecord(
+        id=str(row.id),
+        topic_plan_id=str(row.topic_plan_id),
+        ordinal=row.ordinal,
+        round=row.round,
+        payload=dict(row.payload),
+        subject=row.subject,
+        angle=row.angle,
+        duplicate_level=DuplicateLevel(row.duplicate_level),
+        duplicate_score=row.duplicate_score,
+        duplicate_of=row.duplicate_of,
+        score=row.score,
+        score_breakdown=dict(row.score_breakdown) if row.score_breakdown is not None else None,
+        rejected=row.rejected,
+    )
+
+
+class TopicPlanRepository:
+    """TopicPlan と候補、Content Memory（ADR-0025）。flush まで。commit は呼び出し側。
+
+    Content Memory は表を持たない。``topic_plans`` と ``episodes`` から導出する
+    （PostgreSQL が唯一の source of truth。2つ目の写しを作らない）。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def find(
+        self, plan_date: date, strategy_profile_id: str, content_profile_id: str
+    ) -> TopicPlan | None:
+        result = await self._session.execute(
+            select(TopicPlanRow)
+            .where(
+                TopicPlanRow.plan_date == plan_date,
+                TopicPlanRow.strategy_profile_id == strategy_profile_id,
+                TopicPlanRow.content_profile_id == content_profile_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        row = result.scalar_one_or_none()
+        return _to_topic_plan(row) if row else None
+
+    async def get(self, plan_id: uuid.UUID | str) -> TopicPlan | None:
+        row = await self._session.get(TopicPlanRow, _as_uuid(plan_id), populate_existing=True)
+        return _to_topic_plan(row) if row else None
+
+    async def save_plan(
+        self,
+        plan: NewTopicPlan,
+        candidates: Sequence[NewTopicCandidate],
+        *,
+        selected_ordinal: int,
+    ) -> SavedTopicPlan:
+        """plan と全候補を1つの savepoint で入れる。
+
+        同じ (日, strategy, content) の plan が既にあれば（先に見つかっても、一意制約の衝突で
+        分かっても）既存を ``reused=True`` で返す。既存の plan は決して上書きしない。
+        """
+        existing = await self.find(
+            plan.plan_date, plan.strategy_profile_id, plan.content_profile_id
+        )
+        if existing is not None:
+            return SavedTopicPlan(plan=existing, reused=True)
+        ordinals = [c.ordinal for c in candidates]
+        if selected_ordinal not in ordinals:
+            raise ValueError(f"selected ordinal {selected_ordinal} is not among the candidates")
+        plan_id = uuid.uuid4()
+        candidate_ids = {c.ordinal: uuid.uuid4() for c in candidates}
+        now = _now()
+        try:
+            async with self._session.begin_nested():
+                row = TopicPlanRow(
+                    id=plan_id,
+                    plan_date=plan.plan_date,
+                    strategy_profile_id=plan.strategy_profile_id,
+                    strategy_version=plan.strategy_version,
+                    content_profile_id=plan.content_profile_id,
+                    content_profile_version=plan.content_profile_version,
+                    selected_candidate_id=None,
+                    topic=plan.topic,
+                    subject=plan.subject,
+                    angle=plan.angle,
+                    era=plan.era,
+                    theme=plan.theme,
+                    hook=plan.hook,
+                    entities=list(plan.entities),
+                    score=plan.score,
+                    score_breakdown=dict(plan.score_breakdown),
+                    duplicate_score=plan.duplicate_score,
+                    duplicate_level=plan.duplicate_level.value,
+                    analytics_mode=plan.analytics_mode.value,
+                    analytics_snapshot_id=(
+                        _as_uuid(plan.analytics_snapshot_id) if plan.analytics_snapshot_id else None
+                    ),
+                    analytics_confidence=plan.analytics_confidence,
+                    planner_version=plan.planner_version,
+                    prompt_version=plan.prompt_version,
+                    status=TopicPlanStatus.PLANNED.value,
+                    created_at=now,
+                    updated_at=now,
+                )
+                self._session.add(row)
+                await self._session.flush()  # 一意制約の衝突はここで分かる
+                self._session.add_all(
+                    TopicCandidateRow(
+                        id=candidate_ids[c.ordinal],
+                        topic_plan_id=plan_id,
+                        ordinal=c.ordinal,
+                        round=c.round,
+                        payload=dict(c.payload),
+                        subject=c.subject,
+                        angle=c.angle,
+                        duplicate_level=c.duplicate_level.value,
+                        duplicate_score=c.duplicate_score,
+                        duplicate_of=c.duplicate_of,
+                        score=c.score,
+                        score_breakdown=(
+                            dict(c.score_breakdown) if c.score_breakdown is not None else None
+                        ),
+                        rejected=c.rejected,
+                        created_at=now,
+                    )
+                    for c in candidates
+                )
+                await self._session.flush()
+                row.selected_candidate_id = candidate_ids[selected_ordinal]
+                await self._session.flush()
+        except IntegrityError:
+            winner = await self.find(
+                plan.plan_date, plan.strategy_profile_id, plan.content_profile_id
+            )
+            if winner is None:
+                raise  # 一意制約以外の違反。握りつぶさない
+            return SavedTopicPlan(plan=winner, reused=True)
+        saved = await self.get(plan_id)
+        assert saved is not None
+        return SavedTopicPlan(plan=saved, reused=False)
+
+    async def list_candidates(self, plan_id: uuid.UUID | str) -> list[TopicCandidateRecord]:
+        result = await self._session.scalars(
+            select(TopicCandidateRow)
+            .where(TopicCandidateRow.topic_plan_id == _as_uuid(plan_id))
+            .order_by(TopicCandidateRow.ordinal)
+        )
+        return [_to_candidate(r) for r in result.all()]
+
+    async def mark_assigned(self, plan_id: uuid.UUID | str) -> None:
+        await self._session.execute(
+            update(TopicPlanRow)
+            .where(TopicPlanRow.id == _as_uuid(plan_id))
+            .values(status=TopicPlanStatus.ASSIGNED.value, updated_at=_now())
+            .execution_options(synchronize_session=False)
+        )
+
+    async def list_memory(self) -> list[MemoryItem]:
+        """Content Memory: 全 plan（状態を問わない）+ plan の無い Episode（topic あり・未 cancel）。
+
+        plan に結び付いた Episode は plan として1回だけ数える（正規化した列を持つのは plan）。
+        その status は Episode の状態（制作中の題材が ``in_progress`` 等で見える）。
+        plan の無い Episode（Planner 導入前）は題名だけの項目になる。古い順。
+        """
+        items: list[tuple[datetime, MemoryItem]] = []
+        plans = await self._session.execute(
+            select(TopicPlanRow, EpisodeRow.status)
+            .outerjoin(EpisodeRow, EpisodeRow.topic_plan_id == TopicPlanRow.id)
+            .execution_options(populate_existing=True)
+        )
+        for plan, episode_status in plans.all():
+            items.append(
+                (
+                    datetime.combine(plan.plan_date, datetime.min.time(), UTC),
+                    MemoryItem(
+                        topic=plan.topic,
+                        subject=plan.subject,
+                        entities=list(plan.entities),
+                        era=plan.era,
+                        theme=plan.theme,
+                        angle=plan.angle,
+                        day=plan.plan_date.isoformat(),
+                        status=episode_status or plan.status,
+                    ),
+                )
+            )
+        legacy = await self._session.scalars(
+            select(EpisodeRow).where(
+                EpisodeRow.topic_plan_id.is_(None),
+                EpisodeRow.topic.is_not(None),
+                EpisodeRow.status != EpisodeStatus.CANCELLED.value,
+            )
+        )
+        for episode in legacy.all():
+            created = episode.created_at
+            if created.tzinfo is None:  # SQLite は tz を落とす
+                created = created.replace(tzinfo=UTC)
+            items.append(
+                (
+                    created,
+                    MemoryItem(
+                        topic=episode.topic or "",
+                        subject=None,
+                        entities=[],
+                        era=None,
+                        theme=None,
+                        angle=None,
+                        day=created.date().isoformat(),
+                        status=episode.status,
+                    ),
+                )
+            )
+        items.sort(key=lambda pair: (pair[0], pair[1].topic))
+        return [item for _, item in items]
+
+    async def plans_by_video_id(self, video_ids: Iterable[str]) -> dict[str, TopicPlan]:
+        """YouTube video id → その動画の TopicPlan（Analytics の特徴量の結合用）。
+
+        video id は upload 予約（``youtube_upload`` の spent 行）の ``provider_result_ref``
+        （ADR-0020）。plan の無い Episode の動画は結果に含まれない。
+        """
+        wanted = sorted(set(video_ids))
+        if not wanted:
+            return {}
+        result = await self._session.execute(
+            select(ProviderReservationRow.provider_result_ref, TopicPlanRow)
+            .join(EpisodeRow, EpisodeRow.id == ProviderReservationRow.episode_id)
+            .join(TopicPlanRow, TopicPlanRow.id == EpisodeRow.topic_plan_id)
+            .where(
+                ProviderReservationRow.provider == ProviderCall.YOUTUBE_UPLOAD.value,
+                ProviderReservationRow.status == ReservationStatus.SPENT.value,
+                ProviderReservationRow.provider_result_ref.in_(wanted),
+            )
+        )
+        return {str(video_id): _to_topic_plan(plan) for video_id, plan in result.all()}
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyticsSnapshot:
+    id: str
+    snapshot_date: date
+    provider: str
+    payload: dict[str, Any]
+    fetched_at: datetime
+
+
+def _to_snapshot(row: AnalyticsSnapshotRow) -> AnalyticsSnapshot:
+    return AnalyticsSnapshot(
+        id=str(row.id),
+        snapshot_date=row.snapshot_date,
+        provider=row.provider,
+        payload=dict(row.payload),
+        fetched_at=row.fetched_at,
+    )
+
+
+class AnalyticsSnapshotRepository:
+    """Analytics の取得結果（ADR-0025）。(日, provider) に1行。flush まで。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _find(self, snapshot_date: date, provider: str) -> AnalyticsSnapshotRow | None:
+        result = await self._session.execute(
+            select(AnalyticsSnapshotRow)
+            .where(
+                AnalyticsSnapshotRow.snapshot_date == snapshot_date,
+                AnalyticsSnapshotRow.provider == provider,
+            )
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def save(
+        self, snapshot_date: date, provider: str, payload: dict[str, Any]
+    ) -> AnalyticsSnapshot:
+        """冪等。同じ (日, provider) が既にあれば既存を返す（先に取った方が勝つ・上書きしない）。"""
+        existing = await self._find(snapshot_date, provider)
+        if existing is not None:
+            return _to_snapshot(existing)
+        row = AnalyticsSnapshotRow(
+            id=uuid.uuid4(),
+            snapshot_date=snapshot_date,
+            provider=provider,
+            payload=dict(payload),
+            fetched_at=_now(),
+        )
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError:
+            winner = await self._find(snapshot_date, provider)
+            if winner is None:
+                raise
+            return _to_snapshot(winner)
+        return _to_snapshot(row)
+
+    async def latest(self, provider: str) -> AnalyticsSnapshot | None:
+        result = await self._session.scalars(
+            select(AnalyticsSnapshotRow)
+            .where(AnalyticsSnapshotRow.provider == provider)
+            .order_by(
+                AnalyticsSnapshotRow.snapshot_date.desc(), AnalyticsSnapshotRow.fetched_at.desc()
+            )
+            .limit(1)
+        )
+        row = result.first()
+        return _to_snapshot(row) if row else None

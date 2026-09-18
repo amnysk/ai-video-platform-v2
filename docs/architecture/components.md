@@ -30,7 +30,7 @@
 
 | worker | 入力Artifact | 出力Artifact | 外部副作用 |
 |---|---|---|---|
-| `planning` | （なし / 学習ログ） | `episode_plan` | LLM |
+| `planning` | （Topic Planner）Content Memory（`topic_plans` + `episodes`）・Analytics snapshot / （台本）TopicPlan の topic | `topic_plans` / `topic_candidates` 行（ADR-0025）/ `script` | LLM（Codex CLI）。Topic 生成は予約台帳の外（ADR-0025 §12）/ YouTube Analytics（読み取りのみ） |
 | `storyboard` | 現行の `script` | `storyboard`（ADR-0015） | LLM（Codex CLI + OpenMontage 仕様、**有料**・予約台帳） |
 | `production`（旧 `generation`） | 現行の `storyboard`, `script` | `scene_image` / `scene_voice` / `scene_video`, `production_manifest`（ADR-0017） | **有料** provider（画像・動画）/ ローカル TTS |
 | `render` | 現行の `production_manifest`（と、それが指す `script` / `storyboard` / シーン素材） | `final_video`（ADR-0019） | なし（ローカル計算。CPU・ディスクを占有） |

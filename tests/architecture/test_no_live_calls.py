@@ -16,6 +16,7 @@ FORBIDDEN_TOKENS = {
     "googleapis.com/upload/youtube": "YouTube upload API",
     "oauth2.googleapis.com": "Google OAuth token endpoint",
     "accounts.google.com/o/oauth2": "Google OAuth consent",
+    "youtubeanalytics.googleapis.com": "YouTube Analytics API",
     "api.openai.com": "OpenAI",
     "api.anthropic.com": "Anthropic",
 }
@@ -39,7 +40,13 @@ YOUTUBE_TOKENS = frozenset(
 )
 
 
+#: YouTube Analytics の endpoint を書けるのは Analytics adapter だけ（ADR-0025）
+ANALYTICS_TOKENS = frozenset({"youtubeanalytics.googleapis.com"})
+
+
 def _sanctioned_for(token: str, rel: pathlib.PurePosixPath) -> bool:
+    if token in ANALYTICS_TOKENS:
+        return rel.as_posix() == "infrastructure/analytics/youtube_analytics.py"
     if token in FAL_TOKENS:
         return rel.match("infrastructure/providers/fal_*.py")
     if token in YOUTUBE_TOKENS:

@@ -230,12 +230,12 @@ def test_production_vocabulary_and_scene_keys_on_postgres(probe_url) -> None:
     engine.dispose()
 
     # Phase 4 の行が残っていれば downgrade は失敗し、スキーマは head のまま
-    # （downgrade は1トランザクション。head は 0007。ADR-0021）
+    # （downgrade は1トランザクション。head は 0008。ADR-0025）
     with pytest.raises(IntegrityError):
         command.downgrade(config, "0003")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0007"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008"
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 
@@ -413,7 +413,7 @@ def test_upload_vocabulary_and_result_ref_on_postgres(probe_url) -> None:
         command.downgrade(config, "0005")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0007"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008"
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 
@@ -463,6 +463,104 @@ def test_operational_switches_and_daily_slots_on_postgres(probe_url) -> None:
     engine = create_engine(probe_url)
     tables = set(inspect(engine).get_table_names())
     assert {"operational_switches", "daily_episode_slots"}.isdisjoint(tables)
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT count(*) FROM episodes")).scalar() == 2
+        conn.execute(text("DELETE FROM episodes"))
+    engine.dispose()
+    command.upgrade(config, "head")
+
+
+def test_topic_planner_tables_on_postgres(probe_url) -> None:
+    """0008: plan の一意性・語彙、候補の cascade、episodes.topic_plan_id の一意性（ADR-0025）。"""
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    config = _config(probe_url)
+    command.upgrade(config, "head")
+    engine = create_engine(probe_url)
+    plan_insert = text(
+        "INSERT INTO topic_plans (id, plan_date, strategy_profile_id, strategy_version, "
+        "content_profile_id, content_profile_version, topic, subject, angle, era, theme, hook, "
+        "entities, score, score_breakdown, duplicate_score, duplicate_level, analytics_mode, "
+        "analytics_confidence, planner_version, prompt_version, status) VALUES "
+        "(:id, :day, 's', '1', 'shorts', '1', 't', 'sub', 'reason', 'edo', 'th', 'hook', "
+        "'[]', 0.5, '{}', 0.1, :dup, :mode, 0.0, 'p', 'q', :status)"
+    )
+
+    def _plan(day: str = "2026-09-18", **kw: str) -> dict:
+        return {
+            "id": uuid.uuid4(),
+            "day": day,
+            "dup": kw.get("dup", "none"),
+            "mode": kw.get("mode", "normal"),
+            "status": kw.get("status", "planned"),
+        }
+
+    plan = _plan()
+    candidate = uuid.uuid4()
+    ep1, ep2 = uuid.uuid4(), uuid.uuid4()
+    with engine.begin() as conn:
+        conn.execute(plan_insert, plan)
+        conn.execute(
+            text(
+                "INSERT INTO topic_candidates (id, topic_plan_id, ordinal, round, payload, "
+                "subject, angle, duplicate_level, duplicate_score, rejected) VALUES "
+                "(:id, :plan, 0, 1, '{}', 'sub', 'reason', 'none', 0.0, false)"
+            ),
+            {"id": candidate, "plan": plan["id"]},
+        )
+        conn.execute(
+            text("UPDATE topic_plans SET selected_candidate_id = :c WHERE id = :p"),
+            {"c": candidate, "p": plan["id"]},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO analytics_snapshots (id, snapshot_date, provider, payload) "
+                "VALUES (:id, '2026-09-18', 'yt', '{}')"
+            ),
+            {"id": uuid.uuid4()},
+        )
+        for ep in (ep1, ep2):
+            conn.execute(
+                text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'planned', 't')"),
+                {"id": ep},
+            )
+        conn.execute(
+            text("UPDATE episodes SET topic_plan_id = :p WHERE id = :e"),
+            {"p": plan["id"], "e": ep1},
+        )
+    rejected = [
+        (plan_insert, _plan()),  # 同じ日・同じ profile の組
+        (plan_insert, _plan("2026-09-19", status="nope")),
+        (plan_insert, _plan("2026-09-19", mode="nope")),
+        (plan_insert, _plan("2026-09-19", dup="nope")),
+        (
+            text("UPDATE episodes SET topic_plan_id = :p WHERE id = :e"),
+            {"p": plan["id"], "e": ep2},
+        ),  # 1つの plan に2本目の Episode
+        (
+            text(
+                "INSERT INTO analytics_snapshots (id, snapshot_date, provider, payload) "
+                "VALUES (:id, '2026-09-18', 'yt', '{}')"
+            ),
+            {"id": uuid.uuid4()},
+        ),
+    ]
+    for statement, params in rejected:
+        with pytest.raises(IntegrityError), engine.begin() as conn:
+            conn.execute(statement, params)
+    with engine.begin() as conn:  # 候補は plan と一緒に消える（Episode の参照を外してから）
+        conn.execute(text("UPDATE episodes SET topic_plan_id = NULL"))
+        conn.execute(text("DELETE FROM topic_plans"))
+        assert conn.execute(text("SELECT count(*) FROM topic_candidates")).scalar() == 0
+    engine.dispose()
+
+    command.downgrade(config, "0007")
+    engine = create_engine(probe_url)
+    tables = set(inspect(engine).get_table_names())
+    assert {"topic_plans", "topic_candidates", "analytics_snapshots"}.isdisjoint(tables)
+    assert "topic_plan_id" not in {c["name"] for c in inspect(engine).get_columns("episodes")}
     with engine.begin() as conn:
         assert conn.execute(text("SELECT count(*) FROM episodes")).scalar() == 2
         conn.execute(text("DELETE FROM episodes"))

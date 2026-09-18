@@ -151,3 +151,27 @@ YouTube の resumable session URI も同じ扱い（DB の予約行にだけ置�
 `tests/unit/test_upload_activities.py::test_session_expired_after_bytes_without_marker_blocks_and_never_reopens`、
 起動時の設定エラーが secret を表示しないこと
 `tests/unit/test_upload_worker.py::test_missing_youtube_config_fails_fast_without_printing_secrets`。
+
+## F. 企画（Topic Planner / ADR-0025）
+
+### INV-21 自動生成 Episode には有効な TopicPlan がある
+自動生成（Daily）の Episode は `episodes.topic_plan_id` で確定済みの TopicPlan に結び付く。
+TopicPlan の確定前に Episode の pipeline（`EpisodePipelineWorkflow`）を始めない。Planner が失敗したら
+その日の Episode は作らない。
+**機械検査**: `tests/unit/test_pipeline_workflows.py`（Planner 失敗・`topic_plan_id` 無しで pipeline を起動しないこと）
+/ `tests/unit/test_topic_planner_workflow.py`
+
+### INV-22 同一 plan_date・strategy・content profile の TopicPlan は1件
+`UNIQUE(plan_date, strategy_profile_id, content_profile_id)` を権威とする。Daily の再実行・Activity の再試行は
+既存の Plan を再利用し、別の Topic を作らない（決定論的な子 workflow id + find-first）。
+**機械検査**: `tests/integration/test_topic_plan_persistence.py` / `tests/unit/test_topic_planner_workflow.py`
+
+### INV-23 LLM の候補出力は TopicCandidate 契約で validation してから保存する
+`TopicCandidateBatch` / `TopicCandidate`（`contracts/topic_planning.py`）に通らない出力を DB に入れない。
+修復して読まない。形式不正は retryable（ADR-0014）。
+**機械検査**: `tests/unit/test_topic_planner_workflow.py` / `tests/unit/test_topic_planning_domain.py`
+
+### INV-24 hard duplicate と cooldown 内の同 subject を選ばない
+hard duplicate（exact / semantic）と `same_subject_cooldown_days` 内の同 subject の候補は選ばない。
+重複判定は planned / 制作中 / 公開済みの全 Episode（`cancelled` 以外）と全 TopicPlan を対象にする。
+**機械検査**: `tests/unit/test_topic_planning_domain.py` / `tests/integration/test_topic_plan_persistence.py`（Content Memory の対象範囲）

@@ -3,8 +3,12 @@
 **工程の順序を知る唯一の場所**（INV-4 / INV-5）。I/O をしない::
 
     Schedule（avp-daily-episode）→ DailyEpisodeWorkflow
-        check_paused → claim_daily_slot（trigger id = workflow id で冪等）
-        → 子 EpisodePipelineWorkflow（id episode-{id}-pipeline、ABANDON）を起動して終わる
+        check_paused
+        → 子 TopicPlannerWorkflow（id topic-plan-{日}-{strategy}-{content}）の完了を待つ（ADR-0025）
+          失敗したら Daily も失敗し、Episode を作らない（INV-21）
+        → claim_daily_slot（trigger id = workflow id で冪等。plan を Episode に結び付ける）
+        → Episode に plan があるときだけ子 EpisodePipelineWorkflow（id episode-{id}-pipeline、
+          ABANDON）を起動して終わる
     EpisodePipelineWorkflow
         Script → Storyboard → Production → Render → upload_gate → Upload
         子が駐機点以外を返す・失敗する・同じ id がすでに走っている → そこで止まって結果を返す
@@ -32,6 +36,8 @@ with workflow.unsafe.imports_passed_through():
         PIPELINE_CLAIM_DAILY_SLOT,
         PIPELINE_UPLOAD_GATE,
         STAGE_PARKING_STATUS,
+        TOPIC_PLANNER_BUSY_WAIT_SECONDS,
+        TOPIC_PLANNER_START_ATTEMPTS,
         CheckPausedRequest,
         CheckPausedResult,
         ClaimDailySlotRequest,
@@ -55,6 +61,15 @@ with workflow.unsafe.imports_passed_through():
         storyboard_workflow_id,
         upload_workflow_id,
     )
+    from contracts.topic_planning import (
+        TOPIC_PLANNER_EXECUTION_TIMEOUT_SECONDS,
+        TopicPlannerInput,
+        TopicPlannerResult,
+        topic_plan_workflow_id,
+    )
+
+#: ADR-0025 の Planner 導入を履歴に記録する patch id（旧履歴の replay を旧経路へ振り分ける）
+TOPIC_PLANNER_PATCH_ID = "topic-planner-0025"
 
 STATE_ACTIVITY_TIMEOUT = timedelta(seconds=30)
 STATE_SCHEDULE_TO_CLOSE = timedelta(hours=1)
@@ -99,13 +114,22 @@ class DailyEpisodeWorkflow:
                 outcome=DailyOutcome.PAUSED, slot_date=slot, reason=paused.reason
             )
 
+        # ADR-0025 より前に始まった実行（marker の無い履歴）は旧経路で replay する:
+        # Planner を呼ばず request.topic で claim し、plan の有無を見ずに pipeline を起動する。
+        # 旧経路の実行が残っていないことを確かめたら（docs/operations/pipeline-worker.md）
+        # deprecate_patch を経て削除できる
+        planned = workflow.patched(TOPIC_PLANNER_PATCH_ID)
+        # Planner の失敗はここで伝播し、Daily は失敗する（Episode を作らない / INV-21）
+        plan = await self._plan_topic(request, slot) if planned else None
+
         claim: ClaimDailySlotResult = await _state_activity(
             PIPELINE_CLAIM_DAILY_SLOT,
             ClaimDailySlotRequest(
                 slot_date=slot,
                 trigger_id=workflow.info().workflow_id,
                 daily_limit=request.daily_limit,
-                topic=request.topic,
+                topic=plan.topic if plan is not None else request.topic,
+                topic_plan_id=plan.topic_plan_id if plan is not None else None,
             ),
             ClaimDailySlotResult,
         )
@@ -113,7 +137,16 @@ class DailyEpisodeWorkflow:
             return DailyEpisodeResult(
                 outcome=DailyOutcome.LIMIT_REACHED,
                 slot_date=slot,
+                topic_plan_id=plan.topic_plan_id if plan is not None else None,
                 reason=f"daily limit {request.daily_limit} reached for {slot}",
+            )
+        if planned and claim.topic_plan_id is None:
+            # plan の無い Episode の pipeline は始めない（INV-21）
+            return DailyEpisodeResult(
+                outcome=DailyOutcome.NO_TOPIC_PLAN,
+                slot_date=slot,
+                episode_id=claim.episode_id,
+                reason=f"episode {claim.episode_id} has no topic plan (claim {claim.outcome})",
             )
 
         child_id = pipeline_workflow_id(claim.episode_id)
@@ -135,6 +168,7 @@ class DailyEpisodeWorkflow:
                 slot_date=slot,
                 episode_id=claim.episode_id,
                 pipeline_workflow_id=child_id,
+                topic_plan_id=claim.topic_plan_id,
                 reason=f"{child_id} already started (claim {claim.outcome})",
             )
         return DailyEpisodeResult(
@@ -142,7 +176,42 @@ class DailyEpisodeWorkflow:
             slot_date=slot,
             episode_id=claim.episode_id,
             pipeline_workflow_id=child_id,
+            topic_plan_id=claim.topic_plan_id,
             reason=f"claim {claim.outcome}",
+        )
+
+    @staticmethod
+    async def _plan_topic(request: DailyEpisodeInput, slot: str) -> TopicPlannerResult:
+        """子 TopicPlannerWorkflow の完了を待つ。
+
+        id は (日, strategy, content) で決まる。ALLOW_DUPLICATE: 完了済みの Planner を再実行すると
+        DB の plan を見つけてすぐ返す（再生成しない / INV-22）。同じ id が走っている間は待つ。
+        """
+        name, queue = request.options.topic_planner_workflow
+        child_id = topic_plan_workflow_id(
+            slot, request.strategy_profile_id, request.content_profile_id
+        )
+        planner_input = TopicPlannerInput(
+            plan_date=slot,
+            strategy_profile_id=request.strategy_profile_id,
+            content_profile_id=request.content_profile_id,
+        )
+        for _ in range(TOPIC_PLANNER_START_ATTEMPTS):
+            try:
+                return await workflow.execute_child_workflow(
+                    name,
+                    planner_input,
+                    id=child_id,
+                    task_queue=queue,
+                    result_type=TopicPlannerResult,
+                    id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+                    execution_timeout=timedelta(seconds=TOPIC_PLANNER_EXECUTION_TIMEOUT_SECONDS),
+                )
+            except WorkflowAlreadyStartedError:
+                await workflow.sleep(timedelta(seconds=TOPIC_PLANNER_BUSY_WAIT_SECONDS))
+        raise ApplicationError(
+            f"{child_id} stayed busy for {TOPIC_PLANNER_START_ATTEMPTS} attempts",
+            non_retryable=True,
         )
 
     @staticmethod

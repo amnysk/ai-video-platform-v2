@@ -2,7 +2,8 @@
 """YouTube 用 refresh token を取得する（手動・一回限り。テストからは呼ばない）。
 
 installed app の loopback + PKCE（developers.google.com/identity/protocols/oauth2/native-app）。
-scope は youtube.upload と youtube.readonly だけ。refresh token は **repo 外** のファイルへ
+scope は youtube.upload・youtube.readonly・yt-analytics.readonly
+（Topic Planner / ADR-0025）だけ。refresh token は **repo 外** のファイルへ
 0600 で書き、画面にもログにも出さない。
 
     YOUTUBE_CLIENT_ID=... YOUTUBE_CLIENT_SECRET=... \\
@@ -31,6 +32,7 @@ TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 SCOPES = (
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
 )
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 

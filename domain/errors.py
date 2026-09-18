@@ -280,6 +280,24 @@ class UploadOwnershipLostError(NeedsInputError):
     """
 
 
+class TopicCandidateContractError(RetryableError):
+    """LLM の Topic 候補が読めない・``TopicCandidateBatch`` の検査に落ちた（ADR-0025 / INV-23）。
+
+    生成揺れなので次の round で再生成しうる。修復して DB に入れることはしない。
+    """
+
+
+class AnalyticsUnavailableError(TransientError):
+    """Analytics の取得に失敗した（ADR-0025）。呼び出し側は保存済み snapshot へ fallback する。"""
+
+
+class TopicPlanningExhaustedError(NeedsInputError):
+    """規定 round を使い切っても採用できる Topic が無い（ADR-0025）。
+
+    同じ strategy・memory では繰り返しても尽きる見込みが高く、人間が profile を見直す。
+    """
+
+
 class InvalidTransitionError(DomainError):
     """表に無い状態遷移を永続化しようとした。"""
 

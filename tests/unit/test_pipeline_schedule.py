@@ -16,6 +16,7 @@ from contracts.pipeline import (
     PipelineOptions,
 )
 from contracts.render import DEFAULT_RENDER_PROFILE_ID
+from contracts.topic_planning import DEFAULT_CONTENT_PROFILE_ID, DEFAULT_STRATEGY_PROFILE_ID
 from infrastructure.config import Settings
 from infrastructure.temporal.schedules import (
     build_daily_episode_schedule,
@@ -59,7 +60,14 @@ def test_invalid_timezone_is_rejected_before_registration() -> None:
 
 
 def test_settings_defaults_and_input_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("DAILY_EPISODE_LIMIT", "DAILY_SCHEDULE_CRON", "SCHEDULE_TIMEZONE"):
+    for name in (
+        "DAILY_EPISODE_LIMIT",
+        "DAILY_SCHEDULE_CRON",
+        "SCHEDULE_TIMEZONE",
+        "TOPIC_STRATEGY_PROFILE_ID",
+        "TOPIC_CONTENT_PROFILE_ID",
+        "YOUTUBE_ANALYTICS_ENABLED",
+    ):
         monkeypatch.delenv(name, raising=False)
     settings = Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
     assert settings.daily_episode_limit == DEFAULT_DAILY_EPISODE_LIMIT == 1
@@ -67,6 +75,9 @@ def test_settings_defaults_and_input_from_settings(monkeypatch: pytest.MonkeyPat
     assert settings.schedule_timezone == DEFAULT_SCHEDULE_TIMEZONE == "Asia/Tokyo"
     assert settings.pipeline_render_profile_id == DEFAULT_RENDER_PROFILE_ID
     assert settings.daily_schedule_id == DAILY_SCHEDULE_ID
+    assert settings.topic_strategy_profile_id == DEFAULT_STRATEGY_PROFILE_ID
+    assert settings.topic_content_profile_id == DEFAULT_CONTENT_PROFILE_ID
+    assert settings.youtube_analytics_enabled is False
 
     monkeypatch.setenv("PIPELINE_RENDER_PROFILE_ID", "long_horizontal")
     monkeypatch.setenv("IMAGE_CONCURRENCY", "3")
@@ -75,6 +86,21 @@ def test_settings_defaults_and_input_from_settings(monkeypatch: pytest.MonkeyPat
     assert wf_input.options.production.image_concurrency == 3
     assert wf_input.daily_limit == 1
     assert wf_input.timezone == "Asia/Tokyo"
+    assert wf_input.strategy_profile_id == DEFAULT_STRATEGY_PROFILE_ID
+    assert wf_input.content_profile_id == DEFAULT_CONTENT_PROFILE_ID
+
+    monkeypatch.setenv("TOPIC_CONTENT_PROFILE_ID", "long_form")
+    wf_input = daily_episode_input_from_settings(Settings(_env_file=None))  # pyright: ignore[reportCallIssue]
+    assert wf_input.content_profile_id == "long_form"
+
+
+@pytest.mark.parametrize("env", ["TOPIC_STRATEGY_PROFILE_ID", "TOPIC_CONTENT_PROFILE_ID"])
+def test_unknown_topic_profile_ids_are_rejected(monkeypatch: pytest.MonkeyPatch, env: str) -> None:
+    from pydantic import ValidationError
+
+    monkeypatch.setenv(env, "no_such_profile")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
 
 
 def test_describe_spec_is_printable_without_secrets() -> None:

@@ -13,10 +13,12 @@ from decimal import Decimal
 from enum import Enum
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -40,6 +42,7 @@ from contracts.states import (
     ProviderCall,
     ReservationStatus,
 )
+from contracts.topic_planning import AnalyticsMode, DuplicateLevel, TopicPlanStatus
 
 
 def _enum_values(enum_cls: type[Enum]) -> list[str]:
@@ -87,13 +90,21 @@ class Base(DeclarativeBase):
 
 class EpisodeRow(Base):
     __tablename__ = "episodes"
-    __table_args__ = (_check("status", EpisodeStatus, "ck_episodes_status"),)
+    __table_args__ = (
+        _check("status", EpisodeStatus, "ck_episodes_status"),
+        # 1つの TopicPlan は1つの Episode にだけ結び付く（ADR-0025）
+        UniqueConstraint("topic_plan_id", name="uq_episodes_topic_plan_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     topic: Mapped[str | None] = mapped_column(String(500), nullable=True)
     workflow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     blocked_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    #: この Episode の題材を決めた TopicPlan（ADR-0025）。Planner 導入前の Episode は NULL
+    topic_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("topic_plans.id", name="fk_episodes_topic_plan_id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -291,6 +302,115 @@ class DailyEpisodeSlotRow(Base):
     )
 
 
+class AnalyticsSnapshotRow(Base):
+    """Analytics の取得結果（ADR-0025）。live 取得に失敗したときの stale fallback 元。"""
+
+    __tablename__ = "analytics_snapshots"
+    __table_args__ = (
+        UniqueConstraint("snapshot_date", "provider", name="uq_analytics_snapshots_day_provider"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TopicPlanRow(Base):
+    """1日・1 profile の組につき1つの確定 Topic（ADR-0025）。一度確定したら上書きしない。"""
+
+    __tablename__ = "topic_plans"
+    __table_args__ = (
+        _check("status", TopicPlanStatus, "ck_topic_plans_status"),
+        _check("analytics_mode", AnalyticsMode, "ck_topic_plans_analytics_mode"),
+        _check("duplicate_level", DuplicateLevel, "ck_topic_plans_duplicate_level"),
+        UniqueConstraint(
+            "plan_date",
+            "strategy_profile_id",
+            "content_profile_id",
+            name="uq_topic_plans_day_profile",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    plan_date: Mapped[date] = mapped_column(Date, nullable=False)
+    strategy_profile_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_profile_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_profile_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: 採用した候補。候補と plan は循環参照なので ALTER で張る（use_alter）
+    selected_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(),
+        ForeignKey(
+            "topic_candidates.id",
+            name="fk_topic_plans_selected_candidate_id",
+            use_alter=True,
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    topic: Mapped[str] = mapped_column(String(200), nullable=False)
+    subject: Mapped[str] = mapped_column(String(80), nullable=False)
+    angle: Mapped[str] = mapped_column(String(32), nullable=False)
+    era: Mapped[str] = mapped_column(String(40), nullable=False)
+    theme: Mapped[str] = mapped_column(String(60), nullable=False)
+    hook: Mapped[str] = mapped_column(String(300), nullable=False)
+    entities: Mapped[list] = mapped_column(JSON, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    score_breakdown: Mapped[dict] = mapped_column(JSON, nullable=False)
+    duplicate_score: Mapped[float] = mapped_column(Float, nullable=False)
+    duplicate_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    analytics_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    analytics_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(),
+        ForeignKey("analytics_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    analytics_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    planner_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TopicCandidateRow(Base):
+    """Planner が検討した候補（採否と理由を含む監査記録。ADR-0025）。"""
+
+    __tablename__ = "topic_candidates"
+    __table_args__ = (
+        _check("duplicate_level", DuplicateLevel, "ck_topic_candidates_duplicate_level"),
+        UniqueConstraint("topic_plan_id", "ordinal", name="uq_topic_candidates_plan_ordinal"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    topic_plan_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("topic_plans.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    round: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: validation 済み ``TopicCandidate`` の JSON（INV-23）
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    subject: Mapped[str] = mapped_column(String(80), nullable=False)
+    angle: Mapped[str] = mapped_column(String(32), nullable=False)
+    duplicate_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    duplicate_score: Mapped[float] = mapped_column(Float, nullable=False)
+    duplicate_of: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_breakdown: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    rejected: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 #: scene キー。NULL を '' に畳んで一意性の比較に使う（ADR-0018）。
 _SCENE_KEY = func.coalesce(ArtifactMetadataRow.scene_id, "")
 
@@ -324,10 +444,13 @@ Index(
 
 
 __all__ = [
+    "AnalyticsSnapshotRow",
     "ArtifactMetadataRow",
     "Base",
     "EpisodeRow",
     "FailureClass",
     "JobRow",
     "ProviderReservationRow",
+    "TopicCandidateRow",
+    "TopicPlanRow",
 ]

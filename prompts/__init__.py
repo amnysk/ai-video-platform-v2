@@ -7,13 +7,19 @@
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 PROMPT_TEMPLATE_ID = "script_ja"
 PROMPT_TEMPLATE_VERSION = "1"
 STORYBOARD_PROMPT_TEMPLATE_ID = "storyboard_ja"
 STORYBOARD_PROMPT_TEMPLATE_VERSION = "1"
+TOPIC_PROMPT_TEMPLATE_ID = "topic_en"
+TOPIC_PROMPT_TEMPLATE_VERSION = "2"
+#: topic_plans.prompt_version に記録する値
+TOPIC_PROMPT_VERSION = f"{TOPIC_PROMPT_TEMPLATE_ID}@{TOPIC_PROMPT_TEMPLATE_VERSION}"
 
 PROMPTS_DIR = Path(__file__).resolve().parent
 _NAME_RE = re.compile(r"\A[a-z0-9_]+\Z")
@@ -68,6 +74,38 @@ def render_storyboard_prompt(
         "script_json": script_json,
         "total_duration_seconds": total_duration_seconds,
         "language": language,
+    }
+    return _render(template_name, values)
+
+
+def render_topic_prompt(
+    *,
+    strategy_json: str,
+    format_brief: str,
+    analytics_summary_json: str,
+    memory_subjects: Sequence[str],
+    recent_topics: Sequence[str],
+    avoid_subjects: Sequence[str],
+    candidate_count_min: int,
+    candidate_count_max: int,
+    schema_json: str,
+    template_name: str = TOPIC_PROMPT_TEMPLATE_ID,
+) -> str:
+    """Topic 候補の生成プロンプト（ADR-0025）。
+
+    strategy・形式・Analytics・Content Memory は**すべてデータとして**受け取る。
+    テンプレートに Shorts や特定チャンネルの値を書かない（profile を変えるだけで別の形式に使える）。
+    """
+    values = {
+        "strategy_json": strategy_json,
+        "format_brief": format_brief,
+        "analytics_summary": analytics_summary_json,
+        "memory_subjects": json.dumps(list(memory_subjects), ensure_ascii=False),
+        "recent_topics": json.dumps(list(recent_topics), ensure_ascii=False),
+        "avoid_subjects": json.dumps(list(avoid_subjects), ensure_ascii=False),
+        "candidate_count_min": str(candidate_count_min),
+        "candidate_count_max": str(candidate_count_max),
+        "schema_json": schema_json,
     }
     return _render(template_name, values)
 

@@ -11,7 +11,7 @@ import asyncio
 import os
 import time
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -153,8 +153,10 @@ class PipelineStack:
             ENV_BLOCK_STAGES: block,
             "TEMPORAL_ADDRESS": TEMPORAL_ADDRESS or "",
         }
-        # 過去日付でも未来日付でもよい。同じスキーマは他のテストと共有しない
-        self.slot_date = "2026-09-16"
+        # 実行ごとに一意な遠い未来の日付（2100 年以降）。Topic Planner の workflow id
+        # （topic-plan-{日}-{strategy}-{content}）が本番や他の実行と衝突しない
+        offset = timedelta(days=int(suffix, 16) % (365 * 400))
+        self.slot_date = (date(2100, 1, 1) + offset).isoformat()
 
     def worker(self) -> WorkerProcess:
         p = WorkerProcess(
@@ -173,6 +175,7 @@ class PipelineStack:
             production_workflow=("ProductionWorkflow", q),
             render_workflow=("RenderWorkflow", q),
             upload_workflow=("UploadWorkflow", q),
+            topic_planner_workflow=("TopicPlannerWorkflow", q),
             pipeline_task_queue=self.queue,
         )
 

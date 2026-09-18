@@ -44,6 +44,8 @@ def daily_episode_input_from_settings(settings: Settings) -> DailyEpisodeInput:
     return DailyEpisodeInput(
         daily_limit=settings.daily_episode_limit,
         timezone=settings.schedule_timezone,
+        strategy_profile_id=settings.topic_strategy_profile_id,
+        content_profile_id=settings.topic_content_profile_id,
         options=PipelineOptions(
             render_profile_id=settings.pipeline_render_profile_id,
             production=ProductionParameters(

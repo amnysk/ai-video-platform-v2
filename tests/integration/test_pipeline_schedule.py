@@ -4,6 +4,8 @@
   一意な id / queue を作る
 - Schedule は paused・遠い cron で作り、``trigger()`` でだけ起動する。最後に必ず削除する
 - Activity は stub（DB・有料 provider に到達しない）
+- Topic Planner も同じ名前の stub（同じ一意 queue）。子 id が本番と衝突しないよう
+  strategy profile id にも一意な接尾辞を付ける
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import contextlib
 import uuid
 
 import pytest
-from temporalio import activity
+from temporalio import activity, workflow
 from temporalio.client import Client, ScheduleActionExecutionStartWorkflow
 from temporalio.worker import Worker
 
@@ -33,10 +35,25 @@ from contracts.pipeline import (
     UploadGateRequest,
     UploadGateResult,
 )
+from contracts.topic_planning import TopicPlannerInput, TopicPlannerResult
 from infrastructure.temporal.schedules import ensure_daily_episode_schedule
 from workers.pipeline.workflows import DailyEpisodeWorkflow, EpisodePipelineWorkflow
 
 TEMPORAL_ADDRESS = "localhost:7233"
+
+
+@workflow.defn(name="TopicPlannerWorkflow")
+class StubTopicPlanner:
+    @workflow.run
+    async def run(self, req: TopicPlannerInput) -> TopicPlannerResult:
+        return TopicPlannerResult(
+            topic_plan_id="00000000-0000-0000-0000-000000000001",
+            topic=f"stub topic {req.plan_date}",
+            reused=False,
+            analytics_mode="no_analytics",
+        )
+
+
 #: 2月30日は来ない: 自動では決して発火しない cron
 NEVER_CRON = "0 0 30 2 *"
 
@@ -75,7 +92,13 @@ async def test_schedule_trigger_starts_one_daily_run_and_ensure_is_idempotent() 
     async def gate(req: UploadGateRequest) -> UploadGateResult:
         return UploadGateResult(allowed=False, reason="stub")
 
-    wf_input = DailyEpisodeInput(daily_limit=1, options=PipelineOptions(pipeline_task_queue=queue))
+    wf_input = DailyEpisodeInput(
+        daily_limit=1,
+        strategy_profile_id=f"it_{suffix}",
+        options=PipelineOptions(
+            pipeline_task_queue=queue, topic_planner_workflow=("TopicPlannerWorkflow", queue)
+        ),
+    )
     handle = client.get_schedule_handle(schedule_id)
     try:
         outcome = await ensure_daily_episode_schedule(
@@ -113,7 +136,7 @@ async def test_schedule_trigger_starts_one_daily_run_and_ensure_is_idempotent() 
         async with Worker(
             client,
             task_queue=queue,
-            workflows=[DailyEpisodeWorkflow, EpisodePipelineWorkflow],
+            workflows=[DailyEpisodeWorkflow, EpisodePipelineWorkflow, StubTopicPlanner],
             activities=[check_paused, claim, gate],
         ):
             await handle.trigger()
@@ -130,6 +153,7 @@ async def test_schedule_trigger_starts_one_daily_run_and_ensure_is_idempotent() 
         assert claims[0].trigger_id.startswith(prefix)
         assert claims[0].daily_limit == 2
         assert len(claims[0].slot_date) == 10
+        assert claims[0].topic_plan_id == "00000000-0000-0000-0000-000000000001"
         recent = desc.info.recent_actions
         assert len(recent) == 1
         action = recent[0].action

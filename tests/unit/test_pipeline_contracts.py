@@ -66,3 +66,20 @@ def test_local_slot_date_uses_the_configured_timezone() -> None:
     instant = datetime(2026, 9, 15, 21, 30, tzinfo=UTC)
     assert local_slot_date(instant, "Asia/Tokyo") == date(2026, 9, 16)
     assert local_slot_date(instant, "UTC") == date(2026, 9, 15)
+
+
+def test_busy_wait_budget_covers_the_planner_execution_timeout() -> None:
+    """走行中の Planner が timeout で終わるまで Daily が待ち切れる（予算は timeout から導く）。"""
+    from contracts.pipeline import TOPIC_PLANNER_BUSY_WAIT_SECONDS, TOPIC_PLANNER_START_ATTEMPTS
+    from contracts.topic_planning import TOPIC_PLANNER_EXECUTION_TIMEOUT_SECONDS
+
+    waited = (TOPIC_PLANNER_START_ATTEMPTS - 1) * TOPIC_PLANNER_BUSY_WAIT_SECONDS
+    assert waited >= TOPIC_PLANNER_EXECUTION_TIMEOUT_SECONDS
+
+
+def test_candidate_batch_bounds_come_from_the_planner_policy() -> None:
+    from contracts.topic_planning import DEFAULT_PLANNER_POLICY, TopicCandidateBatch
+
+    schema = TopicCandidateBatch.model_json_schema()["properties"]["candidates"]
+    assert schema["minItems"] == DEFAULT_PLANNER_POLICY.candidate_count_min
+    assert schema["maxItems"] == DEFAULT_PLANNER_POLICY.candidate_count_max

@@ -35,6 +35,12 @@ from contracts.states import (
     EpisodeStatus,
     Pipeline,
 )
+from contracts.topic_planning import (
+    DEFAULT_CONTENT_PROFILE_ID,
+    DEFAULT_STRATEGY_PROFILE_ID,
+    TOPIC_PLANNER_EXECUTION_TIMEOUT_SECONDS,
+    TOPIC_PLANNER_WORKFLOW,
+)
 
 # ------------------------------------------------------------------ workflow 名・queue・Schedule
 
@@ -55,6 +61,14 @@ DEFAULT_DAILY_SCHEDULE_CRON = "0 6 * * *"
 DEFAULT_SCHEDULE_TIMEZONE = "Asia/Tokyo"
 #: サーバ停止中に取りこぼした起動を後から実行してよい幅（秒）。これより古い分は捨てる。
 DEFAULT_SCHEDULE_CATCHUP_WINDOW_SECONDS = 60 * 60
+#: 同じ id の Topic Planner がすでに走っていたとき（別の Daily 実行が起動中）の待ち方。
+#: 待つ間隔（秒）と、起動を試みる最大回数。使い切ったら Daily は失敗する（Episode を作らない）。
+#: 回数は Planner の execution timeout から導く
+#: （走行中の Planner が timeout で終わるまで待ち切れる）
+TOPIC_PLANNER_BUSY_WAIT_SECONDS = 60
+TOPIC_PLANNER_START_ATTEMPTS = (
+    -(-TOPIC_PLANNER_EXECUTION_TIMEOUT_SECONDS // TOPIC_PLANNER_BUSY_WAIT_SECONDS) + 1
+)
 
 # --------------------------------------------------------------------------- Activity 名
 
@@ -98,6 +112,8 @@ class DailyOutcome(StrEnum):
     ALREADY_STARTED = "already_started"
     PAUSED = "paused"
     LIMIT_REACHED = "limit_reached"
+    #: claim が返した Episode に TopicPlan が結び付いていない。pipeline を始めない（INV-21）
+    NO_TOPIC_PLAN = "no_topic_plan"
 
 
 class PipelineOutcome(StrEnum):
@@ -171,6 +187,8 @@ class PipelineOptions:
     production_workflow: tuple[str, str] = PRODUCTION_WORKFLOW
     render_workflow: tuple[str, str] = RENDER_WORKFLOW
     upload_workflow: tuple[str, str] = UPLOAD_WORKFLOW
+    #: Episode 作成の前に走る Topic Planner（ADR-0025）
+    topic_planner_workflow: tuple[str, str] = TOPIC_PLANNER_WORKFLOW
     #: EpisodePipelineWorkflow 自身の task queue
     pipeline_task_queue: str = PIPELINE_TASK_QUEUE
 
@@ -181,8 +199,12 @@ class DailyEpisodeInput:
     timezone: str = DEFAULT_SCHEDULE_TIMEZONE
     #: ISO 日付（``YYYY-MM-DD``）。手動・テスト用。空なら起動時刻から導出する
     slot_date: str | None = None
+    #: 旧入力（ADR-0023）。Topic は Topic Planner が決める（ADR-0025）ので**使わない**。
+    #: 旧 Schedule の入力を decode できるよう残す
     topic: str | None = None
     options: PipelineOptions = field(default_factory=PipelineOptions)
+    strategy_profile_id: str = DEFAULT_STRATEGY_PROFILE_ID
+    content_profile_id: str = DEFAULT_CONTENT_PROFILE_ID
 
 
 @dataclass
@@ -191,6 +213,7 @@ class DailyEpisodeResult:
     slot_date: str
     episode_id: str | None = None
     pipeline_workflow_id: str | None = None
+    topic_plan_id: str | None = None
     reason: str | None = None
 
 
@@ -229,12 +252,17 @@ class ClaimDailySlotRequest:
     trigger_id: str
     daily_limit: int
     topic: str | None = None
+    #: 新しい Episode に結び付ける TopicPlan（ADR-0025）。RESUME で Plan の無い planned Episode を
+    #: 再開するときも、これを結び付けてから返す
+    topic_plan_id: str | None = None
 
 
 @dataclass
 class ClaimDailySlotResult:
     outcome: str
     episode_id: str | None = None
+    #: 返した Episode に結び付いている TopicPlan。None の Episode の pipeline は始めない（INV-21）
+    topic_plan_id: str | None = None
 
 
 @dataclass

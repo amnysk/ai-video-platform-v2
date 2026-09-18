@@ -15,3 +15,5 @@ class Episode:
     topic: str | None
     created_at: datetime
     updated_at: datetime
+    #: 題材を決めた TopicPlan（ADR-0025）。Planner 導入前の Episode は None
+    topic_plan_id: str | None = None

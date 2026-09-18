@@ -131,6 +131,19 @@ workflow の cancel は production と同じく `needs_input`（`blocked`）と�
 同じ upload key で投稿し直すのは運用者の `OPERATOR_ABANDONED` の後だけ（ADR-0020 §8）。cancel は送信を止め、
 session を残して `blocked`。検査（契約）: `tests/contract/test_upload_contracts.py`。
 
+### Topic Planner（ADR-0025）
+
+Planner は Episode を作る**前**に走るので、失敗は Episode の状態ではなく Daily workflow の結果に現れる。
+
+| 事象 | 扱い |
+|---|---|
+| Analytics の live 取得失敗（通信・401/403・scope 未付与・quota） | **致命的でない**。`normal` → 最新 snapshot で `stale_analytics` → snapshot も無ければ `no_analytics` と劣化して続ける。mode は `topic_plans` に記録 |
+| LLM 出力の invalid JSON / `TopicCandidate` 契約違反 | `retryable`（ADR-0014）。Activity は `maximum_attempts=1`、retry は workflow のラウンド（`policy.max_rounds`） |
+| ラウンド内の全候補が hard duplicate / cooldown 内 | 次ラウンド（落ちた subject を `avoid_subjects` で避けさせる） |
+| 全ラウンドを使い切った | non-retryable（`needs_input` クラス）で Planner が失敗 → **Daily も失敗し、Episode を作らない**（INV-21） |
+| DB の失敗（接続断・操作エラー） | `transient` として Temporal が retry。**握りつぶさない**（Analytics の fallback に混ぜない。snapshot / Memory が読めないまま企画しない） |
+| 一意制約の競合（同じ日・profile の Plan が既にある） | 失敗ではない。既存 Plan を返す（INV-22） |
+
 ## 2. Episodeをterminal failedにしてよい条件
 
 次の全てを満たすときだけ `failed`：

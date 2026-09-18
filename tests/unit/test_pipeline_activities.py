@@ -21,6 +21,7 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     OperationalSwitchRepository,
     ProviderReservationRepository,
+    TopicPlanRepository,
 )
 from workers.pipeline.activities import PipelineActivities
 
@@ -140,6 +141,79 @@ async def test_claim_resumes_planned_episode_after_crash(session_factory) -> Non
     )
     assert resumed.outcome == ClaimOutcome.RESUME
     assert resumed.episode_id == first.episode_id
+
+
+async def _plan(session_factory: Any, day: str = "2026-09-16") -> str:
+    from datetime import date
+
+    from tests.unit.test_topic_plan_repositories import candidates, new_plan
+
+    async with session_factory() as s:
+        saved = await TopicPlanRepository(s).save_plan(
+            new_plan(day=date.fromisoformat(day)), candidates(), selected_ordinal=1
+        )
+        await s.commit()
+        return saved.plan.id
+
+
+@pytest.mark.asyncio
+async def test_claim_carries_topic_plan_id_created_and_existing(session_factory) -> None:
+    plan_id = await _plan(session_factory)
+    acts = _acts(session_factory)
+    req = ClaimDailySlotRequest(
+        slot_date="2026-09-16",
+        trigger_id="daily-1",
+        daily_limit=1,
+        topic="Why samurai wore two swords",
+        topic_plan_id=plan_id,
+    )
+    first = await acts.claim_daily_slot(req)
+    assert first.outcome == ClaimOutcome.CREATED and first.topic_plan_id == plan_id
+    again = await acts.claim_daily_slot(req)
+    assert again.outcome == ClaimOutcome.EXISTING
+    assert again.episode_id == first.episode_id and again.topic_plan_id == plan_id
+
+
+@pytest.mark.asyncio
+async def test_claim_resume_attaches_plan_to_planless_episode(session_factory) -> None:
+    acts = _acts(session_factory)
+    crashed = await acts.claim_daily_slot(
+        ClaimDailySlotRequest(slot_date="2026-09-16", trigger_id="old", daily_limit=1)
+    )
+    assert crashed.topic_plan_id is None
+    plan_id = await _plan(session_factory)
+    resumed = await acts.claim_daily_slot(
+        ClaimDailySlotRequest(
+            slot_date="2026-09-16",
+            trigger_id="new",
+            daily_limit=1,
+            topic="Why samurai wore two swords",
+            topic_plan_id=plan_id,
+        )
+    )
+    assert resumed.outcome == ClaimOutcome.RESUME
+    assert resumed.episode_id == crashed.episode_id and resumed.topic_plan_id == plan_id
+
+
+@pytest.mark.asyncio
+async def test_claim_limit_reached_has_no_topic_plan(session_factory) -> None:
+    acts = _acts(session_factory)
+    plan_id = await _plan(session_factory)
+    first = await acts.claim_daily_slot(
+        ClaimDailySlotRequest("2026-09-16", "a", 1, topic="x", topic_plan_id=plan_id)
+    )
+    async with session_factory() as s:
+        await s.execute(
+            update(EpisodeRow)
+            .where(EpisodeRow.id == uuid.UUID(first.episode_id or ""))
+            .values(status=EpisodeStatus.IN_PROGRESS.value)
+        )
+        await s.commit()
+    limited = await acts.claim_daily_slot(
+        ClaimDailySlotRequest("2026-09-16", "b", 2, topic="x", topic_plan_id=plan_id)
+    )
+    assert limited.outcome == ClaimOutcome.LIMIT_REACHED
+    assert limited.episode_id is None and limited.topic_plan_id is None
 
 
 # ------------------------------------------------------------------------- upload gate

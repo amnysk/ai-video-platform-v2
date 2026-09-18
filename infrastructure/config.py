@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from contracts.pipeline import (
@@ -25,6 +25,12 @@ from contracts.render import (
     DEFAULT_RENDER_MIN_FREE_BYTES,
     DEFAULT_RENDER_PROFILE_ID,
     DEFAULT_RENDER_TIMEOUT_SECONDS,
+)
+from contracts.topic_planning import (
+    CONTENT_PROFILES,
+    DEFAULT_CONTENT_PROFILE_ID,
+    DEFAULT_STRATEGY_PROFILE_ID,
+    STRATEGY_PROFILES,
 )
 from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
 
@@ -137,6 +143,28 @@ class Settings(BaseSettings):
     pipeline_render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
     #: ``PAUSED=true`` なら Daily の起動と投稿ゲートを止める（DB の switch と OR）
     paused: bool = False
+
+    # --- Topic Planner（ADR-0025） ---
+    #: profile の **id** だけを選ぶ。中身は ``contracts.topic_planning`` が唯一の宣言元
+    topic_strategy_profile_id: str = DEFAULT_STRATEGY_PROFILE_ID
+    topic_content_profile_id: str = DEFAULT_CONTENT_PROFILE_ID
+    #: True なら planning worker が YouTube Analytics を live で取る（YOUTUBE_* の OAuth を使う）。
+    #: False なら保存済み snapshot があればそれ（stale）、無ければ Analytics 無しで企画する
+    youtube_analytics_enabled: bool = False
+
+    @field_validator("topic_strategy_profile_id")
+    @classmethod
+    def _known_strategy(cls, v: str) -> str:
+        if v not in STRATEGY_PROFILES:
+            raise ValueError(f"unknown strategy profile {v!r}; known: {sorted(STRATEGY_PROFILES)}")
+        return v
+
+    @field_validator("topic_content_profile_id")
+    @classmethod
+    def _known_content(cls, v: str) -> str:
+        if v not in CONTENT_PROFILES:
+            raise ValueError(f"unknown content profile {v!r}; known: {sorted(CONTENT_PROFILES)}")
+        return v
 
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"

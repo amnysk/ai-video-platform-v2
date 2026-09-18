@@ -27,6 +27,22 @@
 
 各Activityの前後で、domainの遷移規則を通してEpisode/Job状態がPostgreSQLへ書かれる。
 
+## 1a. 日次の企画（Topic Planner / ADR-0025）
+
+```text
+[Temporal Schedule] → DailyEpisodeWorkflow（queue "pipeline"）
+    ├─ pipeline_check_paused
+    ├─ 子 TopicPlannerWorkflow（queue "script"、id topic-plan-{date}-{strategy}-{content}）
+    │     ├─ topic_find_plan          既存 Plan があれば返す（再生成しない / INV-22）
+    │     ├─ topic_gather_context     Analytics（live → snapshot → none）+ Content Memory（PG から導出）
+    │     └─ ラウンド × max_rounds
+    │           ├─ topic_generate_candidates  Codex → TopicCandidateBatch で検証（INV-23）
+    │           └─ topic_select_and_save      重複判定 → 採点 → 選択 → topic_plans / topic_candidates を1トランザクション
+    │     失敗 → Daily も失敗、Episode を作らない（INV-21）
+    ├─ pipeline_claim_daily_slot（topic, topic_plan_id）→ episodes.topic_plan_id
+    └─ topic_plan_id があるときだけ 子 EpisodePipelineWorkflow
+```
+
 ## 1b. storyboard 工程（Phase 3 実装済み / ADR-0015）
 
 ```text
