@@ -7,6 +7,7 @@ DB制約で検査する。
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -25,7 +26,7 @@ from domain.script.identity import idempotency_key, script_input_hash
 from infrastructure.db.models import Base, ProviderReservationRow
 from infrastructure.db.repositories import EpisodeRepository, ProviderReservationRepository
 
-INPUT_KWARGS = dict(
+INPUT_KWARGS: dict[str, Any] = dict(
     episode_id="e1",
     topic="ローマ水道",
     artifact_type="script",
@@ -33,6 +34,10 @@ INPUT_KWARGS = dict(
     prompt_template_id="write_script",
     prompt_template_version="3",
     generator_id="codex:gpt-5",
+    # ADR-0026: locale・plan・形式も入力の一部
+    locale="ja-JP",
+    topic_plan_id=None,
+    content_profile="shorts@1",
 )
 
 

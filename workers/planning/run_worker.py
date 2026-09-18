@@ -15,8 +15,12 @@ import httpx
 from temporalio.worker import Worker
 
 from contracts.topic_planning import TOPIC_PLANNER_TASK_QUEUE
-from domain.topic_planning import AnalyticsProvider
-from infrastructure.analytics.youtube_analytics import PROVIDER_ID, YouTubeAnalyticsProvider
+from domain.errors import AnalyticsUnavailableError
+from infrastructure.analytics.youtube_analytics import (
+    PROVIDER_ID,
+    AnalyticsScopeMissingError,
+    YouTubeAnalyticsProvider,
+)
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
@@ -42,7 +46,7 @@ WORKFLOWS = [ScriptWorkflow, TopicPlannerWorkflow]
 
 def build_analytics_provider(
     settings: Settings, client: httpx.AsyncClient
-) -> AnalyticsProvider | None:
+) -> YouTubeAnalyticsProvider | None:
     """``YOUTUBE_ANALYTICS_ENABLED`` のときだけ組む。
 
     組めなければ None（Planner は劣化して続ける）。
@@ -71,6 +75,18 @@ def build_analytics_provider(
         logger.warning("youtube analytics disabled: %s", exc)
         return None
     return YouTubeAnalyticsProvider(credentials, client=client)
+
+
+async def log_analytics_scope_status(provider: YouTubeAnalyticsProvider) -> None:
+    """起動時に scope を確かめてログに残す（診断だけ。失敗しても worker は起動する）。"""
+    try:
+        await provider.verify_scopes()
+    except AnalyticsScopeMissingError as exc:
+        logger.warning("youtube analytics: %s", exc)
+    except AnalyticsUnavailableError as exc:
+        logger.warning("youtube analytics scope check skipped (%s)", type(exc).__name__)
+    else:
+        logger.info("youtube analytics scope granted")
 
 
 async def main() -> None:
@@ -105,6 +121,8 @@ async def main() -> None:
 
     async with httpx.AsyncClient(timeout=ANALYTICS_HTTP_TIMEOUT_SECONDS) as http:
         analytics = build_analytics_provider(settings, http)
+        if analytics is not None:
+            await log_analytics_scope_status(analytics)
         topic_activities = TopicPlannerActivities(
             session_factory=session_factory,
             generator=generator,

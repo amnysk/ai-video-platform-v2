@@ -45,6 +45,15 @@ def _refuse_inside_repo(path: pathlib.Path) -> pathlib.Path:
     return resolved
 
 
+def missing_scopes(granted: object) -> list[str]:
+    """token 応答の ``scope``（空白区切り）に無い、要求した scope。
+
+    同意画面で項目の選択を外されると一部だけ付く（granular consent）。
+    """
+    have = set(granted.split()) if isinstance(granted, str) else set()
+    return [s for s in SCOPES if s not in have]
+
+
 def _pkce() -> tuple[str, str]:
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(48)).rstrip(b"=").decode()
     challenge = (
@@ -149,6 +158,11 @@ def main() -> None:
     token = body.get("refresh_token") if isinstance(body, dict) else None
     if response.status_code != 200 or not isinstance(token, str):
         sys.exit(f"token exchange failed: HTTP {response.status_code} {body.get('error', '')}")
+    missing = missing_scopes(body.get("scope"))
+    if missing:
+        # 部分的な token は書かない（upload・Analytics のどちらかが 403 になる）
+        names = ", ".join(m.rsplit("/", 1)[-1] for m in missing)
+        sys.exit(f"scope missing: {names}; re-run and approve every requested permission")
     _write_token(out, token)
     print(f"refresh token written to {out} (0600)", file=sys.stderr)
 

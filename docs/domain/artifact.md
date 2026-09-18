@@ -66,11 +66,10 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
   `permanent` 失敗（推測して読まない）
 - 後方互換を壊すスキーマ変更はADRを要する（AGENTS.md §6）
 
-## 想定するschema（Phase 1で定義予定）
+## schema 一覧（語彙の権威は `contracts/states.py::ArtifactType`）
 
 | artifact_type | 生成worker | 内容 |
 |---|---|---|
-| `episode_plan` | planning | 企画（トピック、切り口、想定尺） |
 | `script` | planning（Phase 2 実装済み） | 台本（title / hook / scenes / metadata） |
 | `storyboard` | storyboard（Phase 3 実装済み、ADR-0015） | シーン分割と各シーンの映像指示・尺（旧予定名 `scene_plan`）。ナレーションは持たず `script_scene_id` で台本を参照 |
 | `scene_image` | production image（Phase 4、ADR-0017） | storyboard シーンの静止画（1080x1920）。メディア本体への記述子 |
@@ -78,13 +77,14 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 | `scene_video` | production video（Phase 4、ADR-0017） | storyboard シーンの動画（元画像を参照、音声なし、fps は `fps_millis`） |
 | `production_manifest` | production（Phase 4、ADR-0017。旧予定名 `asset_manifest`） | 全シーンの画像・動画・音声の参照一覧 |
 | `final_video` | render（Phase 5、ADR-0019） | 完成動画（mp4 本体への記述子、入力の固定、profile・エンジン・描画計画 sha256、実測、時間軸・音声配置・字幕 cue（文字オフセットのみ）、技術検査の合格記録）。Episode 単位 |
-| `review_report` | render（Phase 5B 予定） | 創作面の品質判定の結果 |
+| `review_report`（**未実装**） | render（Phase 5B 予定） | 創作面の品質判定の結果 |
 
+旧予定の `episode_plan` は作らない。企画は `topic_plans` / `topic_candidates` の行に残し、台本は `script` の `topic` から始まる（ADR-0025）。
 旧予定の `edit_decisions` は採らない。描画計画（`contracts/render.py::RenderPlan`）は固定入力からの純粋関数なので
 保存せず、正準 JSON の sha256 を `final_video.render_plan_sha256` に残す（ADR-0019）。
 旧予定の `video_metadata` は作らない。台本から決定的に導出し、送った値を `upload_receipt` に残す（ADR-0020）。
 | `upload_receipt` | upload（Phase 6、ADR-0020） | 入力 final_video の固定・投稿先チャンネル・YouTube video_id・private・送ったメタデータのスナップショット・upload key・bytes・照合方法。時刻と secret / session URI は持たない。Episode 単位 |
-| `performance_report` | analytics | 実績メトリクス |
+| `performance_report`（**未実装**） | analytics | 実績メトリクス |
 
 ## 再開判定（Phase 2 以降）
 

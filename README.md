@@ -8,10 +8,10 @@ AIでYouTube動画を自動生成・投稿するプラットフォームの**第
 
 ## 現在のフェーズ
 
-**Phase 1: 最小の縦切り。** 1つのEpisodeが Temporal / PostgreSQL / MinIO を
-使って安全に状態遷移するところまで通っている。
-台本（Phase 2）と Storyboard（Phase 3、`POST /episodes/{id}/storyboard`）は worker として実装済み。
-**画像・動画・音声生成・レンダー・YouTube投稿は未実装**（Phase 4以降）。
+**Phase 6 + 日次自動化。** 企画（Topic Planner、ADR-0025）→ 台本 → Storyboard → 素材生成（画像・音声・動画）→
+レンダー → YouTube private 投稿までが worker として実装され、Temporal Schedule から1日1本を自動で流す（ADR-0023）。
+**未実装**: Next.js UI、実績回収（analytics worker）、品質ゲート、OpenTelemetry の実配線。
+構成は [docs/architecture/overview.md](./docs/architecture/overview.md)。
 
 実装を始める前に [AGENTS.md](./AGENTS.md) を読むこと。
 
@@ -95,14 +95,11 @@ docs/          設計・不変条件・ADR
 tests/         unit / integration / contract / architecture
 ```
 
-## 次に実装すべきこと（Phase 2 の入口）
+## 次に実装すべきこと
 
-1. `contracts/schemas/` に本番Artifactのスキーマ（`episode_plan` / `script`）
-2. Artifact の `version` 列と `superseded` 状態（INV-10 / INV-11 の残り）
-3. `input_hash` による工程skip（failure-policy §4 の「途中再開」）
-4. OpenTelemetry の実配線と Prometheus メトリクス
-5. Next.js UI（一覧・詳細・再実行）
-6. 旧repoからの移植: `youtube_uploader/` → upload worker（Phase 6、private 投稿のみ・予約台帳で二重投稿防止。ADR-0020）、fal adapter → generation worker
+1. OpenTelemetry の実配線と Prometheus メトリクス
+2. Next.js UI（一覧・詳細・再実行）
+3. 実績回収（`performance_report`）と品質ゲート（`review_report`）
 
 ## 旧repoについて
 

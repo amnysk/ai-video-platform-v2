@@ -185,11 +185,22 @@ services:
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_MODEL: ${CODEX_MODEL:-}
       CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
+      # Topic Planner の live Analytics（ADR-0025）。既定は無効。upload-worker と同じ OAuth client・token
+      YOUTUBE_ANALYTICS_ENABLED: ${YOUTUBE_ANALYTICS_ENABLED:-false}
+      YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
+      YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET:-}
+      YOUTUBE_CHANNEL_ID: ${YOUTUBE_CHANNEL_ID:-}
+      # refresh token は値を env に置かず、ro mount したファイルのパスだけを渡す（repo 外・0600）
+      YOUTUBE_REFRESH_TOKEN_PATH: /run/avp/youtube/${YOUTUBE_REFRESH_TOKEN_FILE:-youtube-refresh-token}
     volumes:
       # Codex の認証・設定。token 更新を書き戻すので rw（中身はイメージに焼かない）
       - type: bind
         source: ${CODEX_HOME_HOST_DIR:-${HOME}/.codex}
         target: /home/avp/.codex
+      - type: bind
+        source: ${YOUTUBE_TOKEN_HOST_DIR:-${HOME}/.config/avp}
+        target: /run/avp/youtube
+        read_only: true
     command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.planning.run_worker"]
     healthcheck:
       <<: *worker-health

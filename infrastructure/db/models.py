@@ -42,6 +42,7 @@ from contracts.states import (
     ProviderCall,
     ReservationStatus,
 )
+from contracts.topic import TOPIC_MAX_CHARS
 from contracts.topic_planning import AnalyticsMode, DuplicateLevel, TopicPlanStatus
 
 
@@ -98,7 +99,7 @@ class EpisodeRow(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    topic: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    topic: Mapped[str | None] = mapped_column(String(TOPIC_MAX_CHARS), nullable=True)
     workflow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     blocked_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     #: この Episode の題材を決めた TopicPlan（ADR-0025）。Planner 導入前の Episode は NULL

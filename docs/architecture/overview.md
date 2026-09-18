@@ -81,10 +81,16 @@ Temporalは「その実行がどこまで進んだか」を持ち、PostgreSQL�
 
 ## 現在の実装状況
 
-**Phase 1（最小の縦切り）**。上の箱のうち、UI以外は骨組みが通っている:
-FastAPI が Episode を作って workflow を start し、
-`EpisodeSkeletonWorkflow` が dummy Activity を1つ実行し、
-Artifact を MinIO へ、メタデータを PostgreSQL へ書き、Episode を `completed` にする。
+**Phase 6 + 日次自動化（ADR-0023 / ADR-0025）**。UI 以外の箱は実体がある:
 
-まだ無いもの: Next.js UI、企画/台本/素材生成/レンダー/投稿/分析の各worker、
-有料provider adapter、OpenTelemetry の実配線。
+- Temporal Schedule（`avp-daily-episode`）→ `DailyEpisodeWorkflow`（queue `pipeline`）→ 子
+  `TopicPlannerWorkflow`（queue `script`）が Topic を決めて `topic_plans` に保存 → Episode を claim →
+  `EpisodePipelineWorkflow` が Script → Storyboard → Production → Render → upload gate → Upload（YouTube private）を
+  子 workflow として順に起動する
+- worker は compose の1サービス1 worker（ADR-0024）: pipeline / planning / storyboard / production（+ image・voice・video）/
+  render / upload
+- 有料 provider 呼び出しと投稿は予約台帳（`provider_reservations`）で二重実行を防ぐ
+- 骨組みの `EpisodeSkeletonWorkflow`（`workers/dummy`、ADR-0006）も残る
+
+まだ無いもの: Next.js UI、analytics worker（`performance_report`。YouTube Analytics は Topic Planner が読むだけ）、
+品質ゲート（`review_report`）、OpenTelemetry の実配線。

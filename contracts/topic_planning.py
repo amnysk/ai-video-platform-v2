@@ -9,6 +9,8 @@ DailyEpisodeWorkflow → TopicPlannerWorkflow → TopicPlan → Episode → Epis
   （Shorts 固有値を Planner に持ち込まない。形式の説明は prompt へ渡す文字列だけ）
 - 採点の重み・重複の閾値・cooldown・候補数: ``PlannerPolicy``（``DEFAULT_PLANNER_POLICY``）
 - version: ``PLANNER_VERSION`` / ``StrategyProfile.version`` / prompt の version（``prompts``）
+- 台本の locale（ADR-0026）: ``SCRIPT_LOCALES`` / ``DEFAULT_SCRIPT_LOCALE``。
+  plan のある Episode の locale は ``StrategyProfile.language`` だけが決める
 
 Settings は profile の **id** を選ぶだけで中身を持たない。
 DB は採用時点の id と version を記録する。
@@ -20,6 +22,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from contracts.topic import TOPIC_MAX_CHARS
 
 # ------------------------------------------------------------------ workflow 名・queue・version
 
@@ -102,6 +106,33 @@ class TopicAngle(StrEnum):
     LEGACY = "legacy"  # 現代への影響
 
 
+# -------------------------------------------------------------------------- locale
+
+
+class ScriptLocale(BaseModel):
+    """台本の locale（ADR-0026）。prompt テンプレートの選択と ``ScriptArtifact.language`` の元。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    #: BCP 47（``StrategyProfile.language`` と同じ語彙）
+    locale: str
+    #: ``ScriptArtifact.language`` に書く値（下流の音声・字幕・upload が読む ISO 639-1）
+    artifact_language: str
+
+
+#: **台本 locale の唯一の宣言元**。prompt の registry（``prompts.script``）はこの鍵と一致する
+SCRIPT_LOCALES: dict[str, ScriptLocale] = {
+    loc.locale: loc
+    for loc in (
+        ScriptLocale(locale="ja-JP", artifact_language="ja"),
+        ScriptLocale(locale="en-US", artifact_language="en"),
+    )
+}
+
+#: TopicPlan を持たない Episode（手動 API・ADR-0025 以前）の locale。従来どおり日本語
+DEFAULT_SCRIPT_LOCALE = "ja-JP"
+
+
 # ------------------------------------------------------------------------- profile
 
 
@@ -125,6 +156,14 @@ class StrategyProfile(BaseModel):
     #: 若年層に効きやすい切り口（us_young_fit の決定論部分）
     preferred_angles: tuple[TopicAngle, ...]
 
+    @field_validator("language")
+    @classmethod
+    def _language_is_a_script_locale(cls, v: str) -> str:
+        """台本 locale の SSoT（ADR-0026）。未登録の locale の profile は作れない。"""
+        if v not in SCRIPT_LOCALES:
+            raise ValueError(f"language must be one of {sorted(SCRIPT_LOCALES)}: {v!r}")
+        return v
+
 
 class ContentProfile(BaseModel):
     """どの形式で作るか。Planner は ``format_brief`` を prompt に渡すだけで、中身で分岐しない。"""
@@ -134,6 +173,8 @@ class ContentProfile(BaseModel):
     content_profile_id: str
     version: str
     format_brief: str
+    #: 台本の目標尺（秒, 下限・上限）。台本 prompt が locale ごとの言い回しで埋める（ADR-0026）
+    script_duration_seconds: tuple[int, int]
 
 
 STRATEGY_PROFILES: dict[str, StrategyProfile] = {
@@ -189,11 +230,14 @@ CONTENT_PROFILES: dict[str, ContentProfile] = {
             format_brief=(
                 "vertical short video under 60 seconds; one idea, hook in the first seconds"
             ),
+            # ADR-0026 以前の台本 prompt の「30〜45秒」はここへ移した
+            script_duration_seconds=(30, 45),
         ),
         ContentProfile(
             content_profile_id="long_form",
             version="1",
             format_brief="horizontal video of 8-15 minutes; room for context and several beats",
+            script_duration_seconds=(8 * 60, 15 * 60),
         ),
     )
 }
@@ -268,7 +312,9 @@ class TopicCandidate(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    topic: str = Field(min_length=5, max_length=200, description="viewer-facing working title")
+    topic: str = Field(
+        min_length=5, max_length=TOPIC_MAX_CHARS, description="viewer-facing working title"
+    )
     subject: str = Field(pattern=_SLUG, max_length=80, description="canonical snake_case subject")
     entities: list[str] = Field(default_factory=list, max_length=8)
     era: str = Field(pattern=_SLUG, max_length=40)

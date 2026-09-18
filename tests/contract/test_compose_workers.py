@@ -259,9 +259,17 @@ def test_refresh_token_only_via_path_and_ro_volume(services) -> None:
         for key in _env(svc):
             if "REFRESH_TOKEN" in key:
                 assert key.endswith("_PATH"), f"{name}.{key}"
-    upload = _svc(services, "upload-worker")
-    token_path = _resolved(_env(upload).get("YOUTUBE_REFRESH_TOKEN_PATH", ""))
-    _assert_ro_mount_covers(upload, token_path)
+    for name in ("upload-worker", "script-worker"):
+        svc = _svc(services, name)
+        token_path = _resolved(_env(svc).get("YOUTUBE_REFRESH_TOKEN_PATH", ""))
+        _assert_ro_mount_covers(svc, token_path)
+
+
+def test_script_worker_live_analytics_is_off_by_default(services) -> None:
+    env = _env(_svc(services, "script-worker"))
+    assert env["YOUTUBE_ANALYTICS_ENABLED"] == "${YOUTUBE_ANALYTICS_ENABLED:-false}"
+    for key in ("YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_CHANNEL_ID"):
+        assert env[key] == "${" + key + ":-}", key
 
 
 def test_no_service_registers_schedule(services) -> None:
@@ -275,7 +283,7 @@ def test_no_service_registers_schedule(services) -> None:
     ("prefix", "owners"),
     [
         ("FAL_KEY", {"production-image-worker", "production-video-worker"}),
-        ("YOUTUBE_", {"upload-worker"}),
+        ("YOUTUBE_", {"upload-worker", "script-worker"}),
         ("CODEX_", {"script-worker", "storyboard-worker"}),
     ],
 )

@@ -230,12 +230,12 @@ def test_production_vocabulary_and_scene_keys_on_postgres(probe_url) -> None:
     engine.dispose()
 
     # Phase 4 の行が残っていれば downgrade は失敗し、スキーマは head のまま
-    # （downgrade は1トランザクション。head は 0008。ADR-0025）
+    # （downgrade は1トランザクション。head は 0009。ADR-0025）
     with pytest.raises(IntegrityError):
         command.downgrade(config, "0003")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0009"
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 
@@ -413,7 +413,7 @@ def test_upload_vocabulary_and_result_ref_on_postgres(probe_url) -> None:
         command.downgrade(config, "0005")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0009"
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 
@@ -563,6 +563,36 @@ def test_topic_planner_tables_on_postgres(probe_url) -> None:
     assert "topic_plan_id" not in {c["name"] for c in inspect(engine).get_columns("episodes")}
     with engine.begin() as conn:
         assert conn.execute(text("SELECT count(*) FROM episodes")).scalar() == 2
+        conn.execute(text("DELETE FROM episodes"))
+    engine.dispose()
+    command.upgrade(config, "head")
+
+
+def test_episode_topic_length_matches_contract_on_postgres(probe_url) -> None:
+    """0009: episodes.topic は契約の上限（200）。超過は DB が拒否し、downgrade で 500 に戻る。"""
+    import uuid
+
+    from sqlalchemy.exc import DataError
+
+    from contracts.topic import TOPIC_MAX_CHARS
+
+    config = _config(probe_url)
+    command.upgrade(config, "head")
+    engine = create_engine(probe_url)
+    column = {c["name"]: c for c in inspect(engine).get_columns("episodes")}["topic"]
+    assert getattr(column["type"], "length", None) == TOPIC_MAX_CHARS
+    insert = text("INSERT INTO episodes (id, status, topic) VALUES (:id, 'planned', :t)")
+    with engine.begin() as conn:
+        conn.execute(insert, {"id": uuid.uuid4(), "t": "a" * TOPIC_MAX_CHARS})
+    with pytest.raises(DataError), engine.begin() as conn:
+        conn.execute(insert, {"id": uuid.uuid4(), "t": "a" * (TOPIC_MAX_CHARS + 1)})
+    engine.dispose()
+
+    command.downgrade(config, "0008")
+    engine = create_engine(probe_url)
+    column = {c["name"]: c for c in inspect(engine).get_columns("episodes")}["topic"]
+    assert getattr(column["type"], "length", None) == 500
+    with engine.begin() as conn:
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
     command.upgrade(config, "head")

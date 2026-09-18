@@ -24,6 +24,8 @@ class VideoMetrics:
     likes: float
     shares: float
     subscribers_gained: float
+    #: 追加（既定 0.0）。古い snapshot には無い
+    subscribers_lost: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +36,11 @@ class AudienceShares:
     age_18_24: float | None = None
     age_25_34: float | None = None
     shorts: float | None = None
+    #: 以下は追加（best-effort）。鍵は API の値（``age18-24``・``female``・``US``・``SHORTS`` 等）
+    age_groups: dict[str, float] | None = None
+    genders: dict[str, float] | None = None
+    countries: dict[str, float] | None = None
+    content_types: dict[str, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)

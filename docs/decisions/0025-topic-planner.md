@@ -129,3 +129,16 @@ ADR-0023 の `DailyEpisodeWorkflow` は Episode を作るが、Schedule の入�
   replay し、非決定性エラーにしない（`tests/unit/test_pipeline_workflows.py` の旧履歴 replay テスト）。
   導入時は Schedule を pause → 走行中の Daily が無いことを確認 → deploy → unpause の順で入れる
   （`docs/operations/pipeline-worker.md`）
+
+## 追記: 旧入力 `DailyEpisodeInput.topic` と Topic の長さ（2026-09-19）
+
+- **`DailyEpisodeInput.topic` は削除せず deprecated として残す。** Temporal は既存 Schedule の action input と
+  実行中・完了済みの履歴をこの dataclass で decode する。field を消すと旧 payload の decode・replay を壊しうる。
+  patched 経路（`topic-planner-0025` の marker あり）は値を**読まない**（Topic は Plan から取る）。
+  marker の無い旧履歴の replay だけが `request.topic` で claim する。旧経路を `deprecate_patch` で消した後、
+  Schedule の入力を更新してから field を削除できる（`tests/unit/test_pipeline_schedule.py` に topic 入り payload の
+  decode テスト）
+- **Topic の上限は `contracts/topic.py::TOPIC_MAX_CHARS`（200 字）を単一の宣言元にする。** ScriptArtifact・API
+  （`CreateEpisodeRequest`）・`episodes.topic` 列がこれに従う。列は migration 0009 で `String(500)` → `String(200)`
+  （本番の最大長は 24 字で、切り詰めは起きない。200 超の行があれば ALTER が失敗して止まる）
+

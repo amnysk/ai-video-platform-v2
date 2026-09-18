@@ -114,3 +114,17 @@ def test_describe_spec_is_printable_without_secrets() -> None:
     assert "avp-daily-episode" in text
     assert "DailyEpisodeWorkflow" in text
     assert "shorts_vertical" in text
+
+
+def test_legacy_daily_input_with_topic_still_decodes() -> None:
+    """旧 Schedule 入力 / 実行中履歴の ``topic`` を持つ payload が decode できる（ADR-0025）。"""
+    from temporalio.converter import DataConverter
+
+    converter = DataConverter.default
+    legacy = {"daily_limit": 1, "timezone": "Asia/Tokyo", "topic": "旧入力の題材"}
+    payloads = converter.payload_converter.to_payloads([legacy])
+    (decoded,) = converter.payload_converter.from_payloads(payloads, [DailyEpisodeInput])
+    assert isinstance(decoded, DailyEpisodeInput)
+    assert decoded.topic == "旧入力の題材"
+    assert decoded.daily_limit == 1
+    assert decoded.strategy_profile_id == DEFAULT_STRATEGY_PROFILE_ID

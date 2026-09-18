@@ -199,8 +199,9 @@ class DailyEpisodeInput:
     timezone: str = DEFAULT_SCHEDULE_TIMEZONE
     #: ISO 日付（``YYYY-MM-DD``）。手動・テスト用。空なら起動時刻から導出する
     slot_date: str | None = None
-    #: 旧入力（ADR-0023）。Topic は Topic Planner が決める（ADR-0025）ので**使わない**。
-    #: 旧 Schedule の入力を decode できるよう残す
+    #: Deprecated（ADR-0023 の旧入力）。Topic は Topic Planner が決める（ADR-0025）ので、
+    #: patched 経路は**読まない**。旧 Schedule の action input と実行中・旧履歴を
+    #: decode / replay できるよう残す（削除は ADR-0025 追記の手順を踏んでから）
     topic: str | None = None
     options: PipelineOptions = field(default_factory=PipelineOptions)
     strategy_profile_id: str = DEFAULT_STRATEGY_PROFILE_ID

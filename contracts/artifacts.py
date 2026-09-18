@@ -25,6 +25,7 @@ from contracts.artifact_refs import (
 )
 from contracts.render import RENDER_ARTIFACT_SCHEMA_VERSION, FinalVideoArtifact
 from contracts.states import ArtifactType
+from contracts.topic import TOPIC_MAX_CHARS
 from contracts.upload import UploadReceiptArtifact
 
 DUMMY_ARTIFACT_SCHEMA_VERSION = "1.0"
@@ -77,7 +78,7 @@ class ScriptMetadata(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    topic: str = Field(min_length=1, max_length=200)
+    topic: str = Field(min_length=1, max_length=TOPIC_MAX_CHARS)
     generator: str = Field(min_length=1, max_length=64)
     generator_model: str = Field(min_length=1, max_length=64)
 

@@ -22,12 +22,13 @@ TOPIC_PROMPT_TEMPLATE_VERSION = "2"
 TOPIC_PROMPT_VERSION = f"{TOPIC_PROMPT_TEMPLATE_ID}@{TOPIC_PROMPT_TEMPLATE_VERSION}"
 
 PROMPTS_DIR = Path(__file__).resolve().parent
-_NAME_RE = re.compile(r"\A[a-z0-9_]+\Z")
+#: ``<name>`` または locale 別の ``<dir>/<ll-CC>``（ADR-0026: ``script/en-US``）
+_NAME_RE = re.compile(r"\A[a-z0-9_]+(?:/[a-z]{2}-[A-Z]{2})?\Z")
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-z0-9_]+)\s*\}\}")
 
 
 def load_prompt_template(name: str) -> str:
-    """``prompts/<name>.md`` を読む。``name`` はパス要素を含めない。"""
+    """``prompts/<name>.md`` を読む。``..`` などのパス要素は受け付けない。"""
     if not _NAME_RE.match(name):
         raise ValueError(f"invalid prompt template name: {name!r}")
     path = PROMPTS_DIR / f"{name}.md"

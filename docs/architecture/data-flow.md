@@ -1,31 +1,27 @@
 # データフロー
 
-## 1. 正常系（企画から分析まで）
+## 1. 正常系（日次の自動生成 / ADR-0023・ADR-0025）
 
 ```text
-[UI] ──POST /episodes──> [FastAPI]
-                            │ 1. 入力検証
-                            │ 2. INSERT episode (state=planned) ── PostgreSQL
-                            │ 3. start_workflow(EpisodeWorkflow, episode_id)
-                            └──> 202 Accepted {episode_id}
-
-[Temporal] EpisodeWorkflow
-    │
-    ├─ Activity: plan          → Artifact(episode_plan v1)      → MinIO + DB参照
-    ├─ Activity: write_script  → Artifact(script v1)
-    ├─ Activity: plan_scenes   → Artifact(scene_plan v1)
-    ├─ Activity: produce_*     → Artifact(scene_* / production_manifest v1) + 素材   [有料]
-    ├─ Activity: render        → Artifact(final_video v1)   入力は production_manifest（ADR-0019）
-    ├─ Activity: quality_gate  → Artifact(review_report v1)
-    │      └─ 不合格 → 失敗クラス分類 → retryable なら再生成へ分岐
-    ├─ (signal待ち: 人間承認が要る場合)
-    ├─ Activity: package       → Artifact(video_metadata v1)
-    ├─ Activity: upload        → Artifact(upload_receipt v1)     [private投稿]
-    └─ (timer: 成熟待ち)
-       Activity: fetch_metrics → Artifact(performance_report v1)
+[Temporal Schedule avp-daily-episode] → DailyEpisodeWorkflow（queue "pipeline"）
+    ├─ pipeline_check_paused                   停止中なら何もせず終わる
+    ├─ 子 TopicPlannerWorkflow（queue "script"）→ topic_plans / topic_candidates（§1a）
+    ├─ pipeline_claim_daily_slot               Episode を作り topic / topic_plan_id を結ぶ
+    └─ 子 EpisodePipelineWorkflow（id episode-{id}-pipeline、ABANDON）
+          ├─ ScriptWorkflow        → Artifact(script)                     台本の言語は strategy profile で決まる（ADR-0026）
+          ├─ StoryboardWorkflow    → Artifact(storyboard)                 [有料枠・予約台帳]
+          ├─ ProductionWorkflow    → Artifact(scene_* / production_manifest) [有料・予約台帳]
+          ├─ RenderWorkflow        → Artifact(final_video)
+          ├─ pipeline_upload_gate  投稿を許すか（operational switch）。不可なら render_ready で止まる
+          └─ UploadWorkflow        → Artifact(upload_receipt)             [YouTube private 投稿]
+          各子が駐機状態（script_ready …）以外を返す・失敗する → そこで止まり結果を返す
 ```
 
-各Activityの前後で、domainの遷移規則を通してEpisode/Job状態がPostgreSQLへ書かれる。
+各工程は子 workflow として名前と task queue で起動する（INV-3）。各 Activity の前後で domain の遷移規則を通して
+Episode/Job 状態が PostgreSQL へ書かれる。Artifact 本体は MinIO、参照は `artifact_metadata`。
+手動経路（`POST /episodes` と工程ごとの `POST /episodes/{id}/<stage>`）も同じ子 workflow を直接起動する。
+
+未実装: 品質ゲート（`review_report`）、人間承認の signal 待ち、実績回収（`performance_report`）。
 
 ## 1a. 日次の企画（Topic Planner / ADR-0025）
 

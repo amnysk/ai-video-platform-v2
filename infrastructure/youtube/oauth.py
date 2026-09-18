@@ -24,6 +24,8 @@ from infrastructure.youtube.errors import YouTubeAuthError, YouTubeTransientErro
 logger = logging.getLogger(__name__)
 
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+#: access token に付いた scope を返す（Analytics の scope 確認用。ADR-0025）
+TOKENINFO_ENDPOINT = "https://oauth2.googleapis.com/tokeninfo"
 #: 期限の少し前に更新する（時計のずれと通信時間の余裕）
 EXPIRY_SKEW_SECONDS = 60.0
 DEFAULT_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]

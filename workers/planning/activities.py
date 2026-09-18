@@ -34,6 +34,7 @@ from domain.errors import (
     classify_failure,
 )
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
+from domain.script.brief import ScriptBrief, legacy_brief, plan_brief
 from domain.script.identity import idempotency_key, script_input_hash
 from domain.script.ports import GenerationRequest, StoryGenerator
 from infrastructure.db.repositories import (
@@ -41,9 +42,10 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
     ProviderReservationRepository,
+    TopicPlanRepository,
 )
 from infrastructure.storage.artifact_store import ArtifactStore
-from prompts import PROMPT_TEMPLATE_ID, PROMPT_TEMPLATE_VERSION, render_script_prompt
+from prompts.script import render_localized_script_prompt, script_prompt_template
 
 #: 生出力の置き場所。Artifact ではない（スキーマ検証を通らないため / ADR-0013）。
 PROVIDER_RAW_PREFIX = "provider-raw"
@@ -185,18 +187,25 @@ class ScriptActivities:
         """
         async with self._session_factory() as session:
             episode = await EpisodeRepository(session).get(request.episode_id)
-        if episode is None:
-            raise UnreconciledReservationError(f"episode not found: {request.episode_id}")
-        topic = episode.topic or "（トピック未指定）"
+            if episode is None:
+                raise UnreconciledReservationError(f"episode not found: {request.episode_id}")
+            brief = await self._brief(session, episode.topic, episode.topic_plan_id)
+        topic = brief.topic
+        template = script_prompt_template(brief.locale.locale)
 
         input_hash = script_input_hash(
             episode_id=request.episode_id,
             topic=topic,
             artifact_type=ArtifactType.SCRIPT.value,
             target_schema_version=SCRIPT_ARTIFACT_SCHEMA_VERSION,
-            prompt_template_id=PROMPT_TEMPLATE_ID,
-            prompt_template_version=PROMPT_TEMPLATE_VERSION,
+            prompt_template_id=template.template_id,
+            prompt_template_version=template.version,
             generator_id=f"{self._generator_id}:{self._model}",
+            locale=brief.locale.locale,
+            topic_plan_id=brief.topic_plan_id,
+            content_profile=(
+                f"{brief.content_profile.content_profile_id}@{brief.content_profile.version}"
+            ),
         )
 
         # (1) 同じ入力の現行Artifactが既にあれば、生成器を呼ばずに返す（ADR-0012 / INV-17）
@@ -231,7 +240,7 @@ class ScriptActivities:
 
         try:
             payload = await self._generate_round(
-                request=request, topic=topic, input_hash=input_hash
+                request=request, brief=brief, input_hash=input_hash
             )
         except Exception as exc:
             await self._mark_job_failed(request.job_id, exc)
@@ -239,9 +248,32 @@ class ScriptActivities:
 
         return payload
 
+    @staticmethod
+    async def _brief(
+        session: AsyncSession, topic: str | None, topic_plan_id: str | None
+    ) -> ScriptBrief:
+        """plan があれば plan の profile と題材の列、無ければ legacy（ADR-0026）。"""
+        if topic_plan_id is None:
+            return legacy_brief(topic or "（トピック未指定）")
+        plan = await TopicPlanRepository(session).get(topic_plan_id)
+        if plan is None:
+            raise PromptContractError(f"topic plan not found: {topic_plan_id}")
+        return plan_brief(
+            topic_plan_id=plan.id,
+            strategy_profile_id=plan.strategy_profile_id,
+            content_profile_id=plan.content_profile_id,
+            # Episode.topic は plan の topic を写したもの。plan を正とする
+            topic=plan.topic,
+            subject=plan.subject,
+            angle=plan.angle,
+            era=plan.era,
+            hook=plan.hook,
+        )
+
     async def _generate_round(
-        self, *, request: GenerateScriptRequest, topic: str, input_hash: str
+        self, *, request: GenerateScriptRequest, brief: ScriptBrief, input_hash: str
     ) -> ScriptResult:
+        topic = brief.topic
         key = idempotency_key(
             provider=ProviderCall.CODEX_SCRIPT.value, input_hash=input_hash, round=request.round
         )
@@ -284,9 +316,14 @@ class ScriptActivities:
                 await session.commit()
 
             schema = ScriptArtifact.model_json_schema()
-            prompt = render_script_prompt(
-                topic=topic,
-                language="ja",
+            duration_min, duration_max = brief.content_profile.script_duration_seconds
+            prompt = render_localized_script_prompt(
+                locale=brief.locale.locale,
+                language=brief.locale.artifact_language,
+                subject_matter_json=json.dumps(brief.subject_matter, ensure_ascii=False, indent=2),
+                format_brief=brief.content_profile.format_brief,
+                duration_min_seconds=duration_min,
+                duration_max_seconds=duration_max,
                 # プロンプトに埋めるスキーマとパース側のモデルを同じ1つから導出する
                 # （生成側と取り込み側を分けない / AGENTS.md §8）。
                 schema_json=json.dumps(schema, ensure_ascii=False, sort_keys=True),
@@ -338,6 +375,7 @@ class ScriptActivities:
             raw_text,
             episode_id=request.episode_id,
             topic=topic,
+            language=brief.locale.artifact_language,
             model=generated_by_model,
         )
 
@@ -372,7 +410,7 @@ class ScriptActivities:
         )
 
     def _validate(
-        self, raw_text: str, *, episode_id: str, topic: str, model: str
+        self, raw_text: str, *, episode_id: str, topic: str, language: str, model: str
     ) -> dict[str, object]:
         """生出力 → JSON → 契約検証。**修復はしない**（ADR-0014）。"""
         try:
@@ -383,7 +421,9 @@ class ScriptActivities:
         try:
             return build_script_artifact(
                 episode_id=episode_id,
-                language=parsed.get("language", "ja"),
+                # 言語は LLM の自己申告ではなく locale が決める（ADR-0026）。
+                # 下流（音声・字幕・upload）はこの値で分岐する
+                language=language,
                 title=parsed.get("title", ""),
                 hook=parsed.get("hook", ""),
                 scenes=parsed.get("scenes", []),

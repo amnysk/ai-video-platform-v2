@@ -49,3 +49,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0023](./0023-daily-schedule-and-episode-pipeline.md) | Daily Schedule と Episode pipeline workflow | Accepted |
 | [0024](./0024-compose-managed-workers.md) | 常駐 Worker を Docker Compose で管理する | Accepted |
 | [0025](./0025-topic-planner.md) | Topic Planner（TopicPlan を確定してから Episode を作る） | Accepted |
+| [0026](./0026-script-locale.md) | 台本の locale は Strategy profile が決め、Topic Plan の題材を明示的に渡す | Accepted |

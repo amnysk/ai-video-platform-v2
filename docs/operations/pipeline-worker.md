@@ -106,3 +106,9 @@ Daily の流れ: `pipeline_check_paused` → 子 `TopicPlannerWorkflow`（queue 
 
 旧経路の実行が retention 期間を過ぎて残っていないことを確かめてから、patch の分岐（旧経路）を削除できる
 
+
+### ADR-0026 反映後の注意（台本の再利用）
+
+`script_input_hash` に locale・topic_plan_id・content profile が入ったため、**反映前に作られた Episode を
+Script 工程から再実行すると既存台本は再利用されず、Codex で台本を作り直す**（下流の storyboard 以降も古くなる）。
+反映前の Episode は Script から再実行しない。進行中の Production / Render / Upload の再開は影響を受けない。

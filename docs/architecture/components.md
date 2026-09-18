@@ -26,7 +26,7 @@
 
 ## workers/* （Temporal Activity）
 
-1工程 = 1モジュール。現時点で想定するもの:
+1工程 = 1モジュール。実装済みのもの（`pipeline` は順序だけを持つ workflow と状態系 Activity。ADR-0023）:
 
 | worker | 入力Artifact | 出力Artifact | 外部副作用 |
 |---|---|---|---|
@@ -35,7 +35,8 @@
 | `production`（旧 `generation`） | 現行の `storyboard`, `script` | `scene_image` / `scene_voice` / `scene_video`, `production_manifest`（ADR-0017） | **有料** provider（画像・動画）/ ローカル TTS |
 | `render` | 現行の `production_manifest`（と、それが指す `script` / `storyboard` / シーン素材） | `final_video`（ADR-0019） | なし（ローカル計算。CPU・ディスクを占有） |
 | `upload` | 現行の `final_video`（と、メタデータを導出する `script`） | `upload_receipt`（ADR-0020） | **YouTube private 投稿**（予約台帳 `youtube_upload`、1ラウンドのみ） |
-| `analytics` | `upload_receipt` | `performance_report` | YouTube Analytics |
+| `pipeline` | DB の Episode 状態・operational switch | `episodes` 行の claim（`topic_plan_id` を結ぶ） | なし（工程の起動は子 workflow） |
+| `analytics`（**未実装**。`workers/analytics` は空） | `upload_receipt` | `performance_report`（予定） | YouTube Analytics。現状は Topic Planner が `analytics_snapshots` へ読み取るだけ |
 
 - **持つ**: 「入力Artifactを読む → 処理する → 出力Artifactを書く → 結果を返す」
 - **持たない**: 次のJobの決定（INV-4）、他workerのimport（INV-3）、
@@ -63,9 +64,7 @@
 |---|---|
 | `db/` | SQLAlchemy モデル、マイグレーション（Alembic）、リポジトリ実装 |
 | `storage/` | MinIO クライアント、Artifactの put/get、キー規約 |
-| `temporal/` | Temporal client の生成、task queue名、worker起動。**Phase 1 では空**。
-  実体は `apps/api/workflow_starter.py` と `workers/dummy/run_worker.py` にあり、
-  task queue名は `infrastructure/config.py` の `Settings`。worker が増える前にここへ寄せる |
+| `temporal/` | Temporal への接続（`connect.py`）、Daily Schedule の定義（`schedules.py`）、worker の health（`poller_check.py`）、実行の点検（`run_inspector.py`）。workflow 名と task queue 名は `contracts/`（`pipeline.py` / `states.py` / `topic_planning.py`） |
 | `providers/` | fal.ai / YouTube / LLM の adapter。**必ずProtocolの背後に置く** |
 | `observability/` | OpenTelemetry のtracer/meter設定、Prometheus exporter |
 
