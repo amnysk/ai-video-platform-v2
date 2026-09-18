@@ -316,7 +316,7 @@ class TopicCandidate(BaseModel):
         min_length=5, max_length=TOPIC_MAX_CHARS, description="viewer-facing working title"
     )
     subject: str = Field(pattern=_SLUG, max_length=80, description="canonical snake_case subject")
-    entities: list[str] = Field(default_factory=list, max_length=8)
+    entities: list[str] = Field(max_length=8)  # strict 出力のため既定値なし（空なら [] を返させる）
     era: str = Field(pattern=_SLUG, max_length=40)
     theme: str = Field(pattern=_SLUG, max_length=60, description="one of the strategy pillars")
     angle: TopicAngle
