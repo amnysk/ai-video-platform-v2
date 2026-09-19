@@ -109,8 +109,22 @@ class TopicAngle(StrEnum):
 # -------------------------------------------------------------------------- locale
 
 
+class SpeechUnit(StrEnum):
+    """ナレーションの長さを数える単位（ADR-0026 §読み上げ速度の予算）。"""
+
+    #: 空白で区切った語（英語など）
+    WORD = "word"
+    #: 空白以外の文字（句読点を含む。日本語など分かち書きしない言語）
+    CHARACTER = "character"
+
+
 class ScriptLocale(BaseModel):
-    """台本の locale（ADR-0026）。prompt テンプレートの選択と ``ScriptArtifact.language`` の元。"""
+    """台本の locale（ADR-0026）。prompt テンプレートの選択と ``ScriptArtifact.language`` の元。
+
+    読み上げ速度の予算もここが唯一の宣言元: 1シーンのナレーションは
+    ``floor(duration_ms × max_speech_units_per_second / 1000)`` 単位まで。
+    prompt（予算の提示）と台本 activity（決定論的な検査）の両方がここから導く。
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -118,14 +132,42 @@ class ScriptLocale(BaseModel):
     locale: str
     #: ``ScriptArtifact.language`` に書く値（下流の音声・字幕・upload が読む ISO 639-1）
     artifact_language: str
+    #: ナレーションの長さを数える単位
+    speech_unit: SpeechUnit
+    #: 1秒あたりに収めてよい ``speech_unit`` の上限（音声がシーン尺を超えない予算）
+    max_speech_units_per_second: float = Field(gt=0)
+
+    def count_speech_units(self, narration: str) -> int:
+        if self.speech_unit is SpeechUnit.WORD:
+            return len(narration.split())
+        return sum(1 for ch in narration if not ch.isspace())
+
+    def narration_budget(self, duration_ms: int) -> int:
+        """``duration_ms`` のシーンに収めてよいナレーションの単位数（切り捨て）。"""
+        return round(duration_ms * self.max_speech_units_per_second) // 1000
 
 
 #: **台本 locale の唯一の宣言元**。prompt の registry（``prompts.script``）はこの鍵と一致する
 SCRIPT_LOCALES: dict[str, ScriptLocale] = {
     loc.locale: loc
     for loc in (
-        ScriptLocale(locale="ja-JP", artifact_language="ja"),
-        ScriptLocale(locale="en-US", artifact_language="en"),
+        # 日本語の音声は未整備（ADR-0026 負債）。実測が無いので、速めの日本語ナレーション
+        # （約 8 字/秒）より緩い 9 字/秒を上限にし、既存の日本語台本を新たに落とさない
+        ScriptLocale(
+            locale="ja-JP",
+            artifact_language="ja",
+            speech_unit=SpeechUnit.CHARACTER,
+            max_speech_units_per_second=9.0,
+        ),
+        # Piper en_US-kristin-medium の実測（2026-09-19、本番 Episode 87bbf7de）は
+        # 1.97〜2.72 語/秒（シーン前後の無音込み）。重なり判定は厳密なので最も遅い実測
+        # 1.97 を約 5% 下回る 1.9 語/秒にする
+        ScriptLocale(
+            locale="en-US",
+            artifact_language="en",
+            speech_unit=SpeechUnit.WORD,
+            max_speech_units_per_second=1.9,
+        ),
     )
 }
 

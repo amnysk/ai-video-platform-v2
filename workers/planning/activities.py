@@ -21,13 +21,16 @@ from contracts.artifacts import (
     ScriptArtifact,
     build_script_artifact,
     extract_json_object,
+    parse_script_artifact,
 )
 from contracts.states import ArtifactType, EpisodeStatus, JobStatus, JobType, ProviderCall
+from contracts.topic_planning import ScriptLocale
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key
 from domain.episode.transitions import EpisodeEvent
 from domain.errors import (
     PromptContractError,
+    ScriptNarrationOverBudgetError,
     ScriptOutputUnparseableError,
     ScriptSchemaViolationError,
     UnreconciledReservationError,
@@ -45,7 +48,11 @@ from infrastructure.db.repositories import (
     TopicPlanRepository,
 )
 from infrastructure.storage.artifact_store import ArtifactStore
-from prompts.script import render_localized_script_prompt, script_prompt_template
+from prompts.script import (
+    narration_budget_table,
+    render_localized_script_prompt,
+    script_prompt_template,
+)
 
 #: 生出力の置き場所。Artifact ではない（スキーマ検証を通らないため / ADR-0013）。
 PROVIDER_RAW_PREFIX = "provider-raw"
@@ -324,6 +331,8 @@ class ScriptActivities:
                 format_brief=brief.content_profile.format_brief,
                 duration_min_seconds=duration_min,
                 duration_max_seconds=duration_max,
+                max_speech_units_per_second=brief.locale.max_speech_units_per_second,
+                narration_budget_table=narration_budget_table(brief.locale),
                 # プロンプトに埋めるスキーマとパース側のモデルを同じ1つから導出する
                 # （生成側と取り込み側を分けない / AGENTS.md §8）。
                 schema_json=json.dumps(schema, ensure_ascii=False, sort_keys=True),
@@ -378,6 +387,8 @@ class ScriptActivities:
             language=brief.locale.artifact_language,
             model=generated_by_model,
         )
+        # (6b) スキーマの後に、ナレーションが尺に収まるかを決定論的に検査する（ADR-0026）
+        _check_narration_budget(artifact, brief.locale)
 
         body = canonical_json_bytes(artifact)
         digest = sha256_hex(body)
@@ -494,6 +505,24 @@ class ScriptActivities:
                 error_summary=f"{type(exc).__name__}: {exc}",
             )
             await session.commit()
+
+
+def _check_narration_budget(artifact: dict[str, object], locale: ScriptLocale) -> None:
+    """各シーンのナレーションが ``locale`` の予算に収まること。超過は修復せず retryable。"""
+    over = []
+    for scene in parse_script_artifact(artifact).scenes:
+        units = locale.count_speech_units(scene.narration)
+        budget = locale.narration_budget(scene.duration_ms)
+        if units > budget:
+            over.append(
+                f"{scene.id}: {units} {locale.speech_unit.value}s > budget {budget} "
+                f"for {scene.duration_ms} ms"
+            )
+    if over:
+        raise ScriptNarrationOverBudgetError(
+            f"narration exceeds {locale.max_speech_units_per_second:g} "
+            f"{locale.speech_unit.value}s/s ({locale.locale}): " + "; ".join(over)
+        )
 
 
 __all__ = [

@@ -66,3 +66,50 @@ ADR-0025 で TopicPlan（`us_young_history_v1`、`language="en-US"`）が確定�
   `ja` の台本は en の voice で `VoiceLanguageUnsupportedError`（needs_input）になる
 - 字幕の分割（`domain/render/subtitles.py`）は言語非依存（`.!?` と空白で折る）。ただし shorts の
   `max_chars_per_line=16` は日本語向けの値で、英語では 1 行 2〜3 語になる（render profile の調整は別件）
+
+## 追補: 読み上げ速度の予算（2026-09-19）
+
+### Context
+
+本番の初 en-US Episode（`87bbf7de`）が描画で `VoiceTimelineOverflowError: voice s1 ends at 10147 ms,
+after voice s2 starts at 7000 ms` になり blocked した。LLM は尺と語数を独立に選び、英語は 1 シーンに
+約 3.7 語/秒を詰めていた（s1: 7,000 ms に 26 語）。Piper `en_US-kristin-medium` の実測は
+
+| scene | duration_ms | 語 | 音声 ms | 語/秒（音声） |
+|---|---|---|---|---|
+| s1 | 7,000 | 26 | 10,147 | 2.56 |
+| s2 | 9,000 | 27 | 10,449 | 2.58 |
+| s3 | 8,000 | 21 | 10,635 | 1.97 |
+| s4 | 8,000 | 21 | 8,022 | 2.62 |
+| s5 | 7,000 | 27 | 9,915 | 2.72 |
+
+で、5 シーン中 5 つが尺を超えていた。台本にもテンプレートにも長さと尺を結ぶ規則が無かった。
+
+### Decision
+
+1. **予算の唯一の宣言元は `ScriptLocale`**（`contracts/topic_planning.py`）:
+   `speech_unit`（`word` = 空白区切りの語 / `character` = 空白以外の文字）と
+   `max_speech_units_per_second`。1 シーンの上限は `floor(duration_ms × rate / 1000)`（`narration_budget`）
+   - en-US: **1.9 語/秒**。重なり判定は厳密（前の音声の終わり ≤ 次の音声の始まり）なので、平均（約 2.5）ではなく
+     最も遅い実測 1.97 を約 5% 下回る値にした。2.3 だと s3 の速度で 8 秒のシーンに 18 語 → 約 9.1 秒で再び溢れる
+   - ja-JP: **9 字/秒**。日本語の音声は未整備で実測が無い。速めの日本語ナレーション（約 8 字/秒）より緩く置き、
+     既存の日本語台本・fixture を新たに落とさないことを優先した（実測が取れたら見直す）
+2. **prompt はデータとして予算を受け取る**: en-US テンプレート（version 2）は
+   `{{max_speech_units_per_second}}` と `{{narration_budget_table}}`（`prompts.script.narration_budget_table`、
+   代表的な尺ごとの上限）を埋めるだけで数値を持たない。ja-JP テンプレートは変えていない（version 1 のまま）
+3. **台本 activity はスキーマ検証の後に決定論的に検査する**。超過シーンがあれば
+   `ScriptNarrationOverBudgetError`（`ScriptSchemaViolationError` の下位 = retryable、ADR-0014）。
+   修復（語の削除・尺の延長）はしない。同じ違反が続けば既存の昇格規則で `needs_input`
+4. **描画側の規則は緩めない**。`place_voices` の重なり判定と最終シーンの `max_freeze_ms` はそのまま。
+   余裕は台本側の予算（1.9 < 1.97）が持つ。予算は保証ではない（句読点の間で速度が変わる）ので、
+   それでも溢れたら従来どおり描画で `VoiceTimelineOverflowError`（needs_input）になる
+
+### Consequences
+
+- 良い: 尺に収まらない英語台本は課金 1 回分の再生成で直り、音声・描画まで進んでから blocked にならない
+- en-US テンプレートの version が上がったので、既存の en-US 台本は input_hash が変わり、再実行で 1 回再生成する
+  （blocked の `87bbf7de` はこれで新しい台本になる）
+- **負債**: rate は `script_input_hash` に入れていない（ja の既存 Artifact を無効化しないため）。rate を変えたら
+  en-US は prompt が変わるのでテンプレートの version を上げる
+- **負債**: rate は voice 1 つ（kristin-medium）の実測。locale → voice の対応表ができたら voice ごとに持つべき
+

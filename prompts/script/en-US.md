@@ -44,6 +44,12 @@ If you include them they are discarded on ingestion.
 # Content requirements
 
 - Total length is {{duration_min_seconds}} to {{duration_max_seconds}} seconds. The sum of every scene's `duration_ms` must fall in this range.
+- **Narration must fit its scene.** Each scene's narration is read aloud at about
+  {{max_speech_units_per_second}} words per second, and it must finish before the next scene starts.
+  A scene's `narration` may have at most `floor(duration_ms / 1000 × {{max_speech_units_per_second}})` words
+  (words are separated by spaces). For example:
+{{narration_budget_table}}
+  If you need more words, make the scene longer (within the total length) or cut words. Scripts over this budget are rejected.
 - Lead with the strongest hook. In the first seconds the viewer must know what this is about and why it is worth watching.
 - One clear idea. Do not cram in several claims.
 - Short, punchy sentences that sound natural when read aloud and are easy to read as subtitles.

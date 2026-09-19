@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from contracts.artifacts import ScriptArtifact, parse_script_artifact
-from contracts.states import ArtifactType
+from contracts.states import ArtifactType, FailureClass
 from contracts.topic_planning import (
     CONTENT_PROFILES,
     DEFAULT_CONTENT_PROFILE_ID,
@@ -27,9 +27,15 @@ from contracts.topic_planning import (
     STRATEGY_PROFILES,
     AnalyticsMode,
     DuplicateLevel,
+    SpeechUnit,
     StrategyProfile,
 )
-from domain.errors import PromptContractError
+from domain.errors import (
+    PromptContractError,
+    ScriptNarrationOverBudgetError,
+    ScriptSchemaViolationError,
+    classify_failure,
+)
 from domain.script.brief import PLAN_FIELDS, legacy_brief, plan_brief
 from domain.script.identity import script_input_hash
 from infrastructure.db.repositories import (
@@ -42,6 +48,7 @@ from infrastructure.storage.memory_store import InMemoryArtifactStore
 from prompts import load_prompt_template
 from prompts.script import (
     SCRIPT_PROMPT_TEMPLATES,
+    narration_budget_table,
     render_localized_script_prompt,
     script_prompt_template,
 )
@@ -83,6 +90,8 @@ def _render(locale: str, content_profile_id: str, subject_matter: dict[str, str]
         duration_min_seconds=lo,
         duration_max_seconds=hi,
         schema_json='{"type": "object"}',
+        max_speech_units_per_second=SCRIPT_LOCALES[locale].max_speech_units_per_second,
+        narration_budget_table=narration_budget_table(SCRIPT_LOCALES[locale]),
     )
 
 
@@ -342,3 +351,97 @@ async def test_rerun_with_the_same_locale_reuses_the_artifact(session_factory) -
     result, _ = await _generate(session_factory, en_id, again)
     assert result.reused
     assert again.calls == 0
+
+
+# ------------------------------------------------------------- 読み上げ速度の予算（ADR-0026）
+
+#: 本番の初 en-US Episode（87bbf7de）の s1。7 秒のシーンに 26 語 → Piper で 10,147 ms
+_INCIDENT_NARRATION = (
+    "Forget the black pajamas for a second. In Japan's Sengoku period, a long age of civil "
+    "war, ninja were often valuable because they could get information."
+)
+
+
+def _en_script(narrations: tuple[str, ...], duration_ms: int = 10_000) -> str:
+    return json.dumps(
+        {
+            "title": "Ninja",
+            "hook": "Spies, not assassins",
+            "scenes": [
+                {"id": f"s{i}", "narration": n, "visual": "map", "duration_ms": duration_ms}
+                for i, n in enumerate(narrations, 1)
+            ],
+        }
+    )
+
+
+def test_every_locale_declares_a_speech_rate_budget() -> None:
+    en, ja = SCRIPT_LOCALES["en-US"], SCRIPT_LOCALES["ja-JP"]
+    assert en.speech_unit is SpeechUnit.WORD
+    assert ja.speech_unit is SpeechUnit.CHARACTER
+    # 実測（Piper en_US-kristin-medium）の最も遅い 1.97 語/秒を下回る
+    assert en.max_speech_units_per_second < 1.97
+    assert en.narration_budget(7_000) == 13
+    assert en.count_speech_units(_INCIDENT_NARRATION) == 26
+    assert ja.count_speech_units("武士は 刀を二本差した。") == 11
+
+
+def test_ja_fixtures_fit_the_ja_budget() -> None:
+    """既存の日本語台本（fixture）を新たに落とさない。"""
+    from tests.support.storyboard import SCRIPT_SCENES as storyboard_scenes
+
+    ja = SCRIPT_LOCALES["ja-JP"]
+    fixture = json.loads(_script_json("ja"))["scenes"]
+    for scene in [*fixture, *storyboard_scenes]:
+        assert ja.count_speech_units(scene["narration"]) <= ja.narration_budget(
+            scene["duration_ms"]
+        )
+
+
+def test_en_us_prompt_states_the_per_scene_word_budget() -> None:
+    en = SCRIPT_LOCALES["en-US"]
+    text = _render("en-US", "shorts", {"topic": "T"})
+    assert f"{en.max_speech_units_per_second:g} words per second" in text
+    assert f"8 s: at most {en.narration_budget(8_000)} words" in text
+    # 数値はデータとして埋める。テンプレートに直書きしない
+    template = load_prompt_template(script_prompt_template("en-US").template_name)
+    assert "{{max_speech_units_per_second}}" in template
+    assert "{{narration_budget_table}}" in template
+    assert not re.search(r"\d+(\.\d+)? words per second", template)
+
+
+async def test_en_narration_over_budget_is_a_retryable_defect_and_next_round_passes(
+    session_factory,
+) -> None:
+    episode_id, _ = await _episode(session_factory, with_plan=True)
+    fine = ("Ninja were spies first.", "They gathered information.")
+    # 10 秒のシーンの予算は 19 語。26 語の s1 は超過
+    over = _en_script((_INCIDENT_NARRATION, *fine))
+    fits = _en_script(("Forget the black pajamas.", *fine))
+    generator = FakeStoryGenerator(output=lambda _r: over if generator.calls == 1 else fits)
+    store = InMemoryArtifactStore()
+    activities = ScriptActivities(
+        session_factory=session_factory,
+        store=store,
+        generator=generator,
+        bucket="artifacts",
+        generator_id="fake",
+        model="fake-model",
+        timeout_seconds=5,
+    )
+    job_id = await activities.create_script_job(
+        CreateJobRequest(episode_id=episode_id, max_attempts=3)
+    )
+    with pytest.raises(ScriptNarrationOverBudgetError, match="s1") as caught:
+        await activities.generate_script(
+            GenerateScriptRequest(episode_id=episode_id, job_id=job_id, round=1)
+        )
+    # 修復しない・retryable（ADR-0014）。次ラウンドで新しい生成を呼ぶ
+    assert classify_failure(caught.value) is FailureClass.RETRYABLE
+    assert isinstance(caught.value, ScriptSchemaViolationError)
+    result = await activities.generate_script(
+        GenerateScriptRequest(episode_id=episode_id, job_id=job_id, round=2)
+    )
+    assert generator.calls == 2
+    artifact = parse_script_artifact(await store.get_json(result.object_key))
+    assert artifact.scenes[0].narration == "Forget the black pajamas."

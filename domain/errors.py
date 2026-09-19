@@ -40,6 +40,14 @@ class ScriptSchemaViolationError(RetryableError):
     """パースはできたがスキーマ違反（ADR-0014）。"""
 
 
+class ScriptNarrationOverBudgetError(ScriptSchemaViolationError):
+    """シーンのナレーションが locale の読み上げ速度の予算（尺 × 上限速度）を超える（ADR-0026）。
+
+    音声がシーン尺を超えると描画で ``VoiceTimelineOverflowError`` になる。台本の段階で
+    決定論的に検出し、LLM 出力の欠陥として次ラウンドで作り直す（ADR-0014）。修復はしない。
+    """
+
+
 class PromptContractError(NeedsInputError):
     """同じ入力で規定ラウンド連続して同種の違反。
 

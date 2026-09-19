@@ -28,6 +28,7 @@
 |---|---|
 | 出力が invalid JSON（截断・前置き混入） | `retryable` |
 | パースできたがスキーマ違反 | `retryable` |
+| ナレーションがシーン尺の読み上げ予算を超える（`ScriptNarrationOverBudgetError`、ADR-0026 追補） | `retryable` |
 | 同じ `input_hash` で規定ラウンド連続して同種の違反 | `needs_input`（プロンプトとスキーマの不整合。人間が直す） |
 | 入力Artifactが存在しない / 未知の schema_version | `permanent` |
 
