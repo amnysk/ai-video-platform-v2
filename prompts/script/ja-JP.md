@@ -43,6 +43,11 @@
 # 内容の要件
 
 - 全体の尺は {{duration_min_seconds}}〜{{duration_max_seconds}}秒。各シーンの `duration_ms` の合計がこれに収まること。
+- **ナレーションはシーンの尺に収める。** 各シーンの `narration` は1秒あたり約{{max_speech_units_per_second}}字で
+  読み上げられ、次のシーンが始まる前に読み終わる必要がある。1シーンの `narration` は
+  `floor(duration_ms × {{max_speech_units_per_second}} / 1000)` 字まで（空白以外の文字を句読点も含めて数える）。例:
+{{narration_budget_table}}
+  字数が足りなければシーンを長くする（全体の尺の範囲内で）か、文を削る。予算を超える台本は拒否される。
 - 最初の3秒で、視聴者が「何の話か」と「なぜ見る価値があるか」を掴めること。
 - 伝えたいことはひとつ。複数の主張を詰め込まない。
 - 各シーンは、読み上げる `narration` と、映像として何を映すかの `visual` を持つ。

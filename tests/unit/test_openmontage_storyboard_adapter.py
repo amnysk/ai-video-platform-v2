@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from contracts.artifacts import ScriptArtifact, StoryboardVisualKind, build_storyboard_artifact
+from contracts.topic_planning import SCRIPT_LOCALES
 from domain.errors import (
     GenerationSpecUnavailableError,
     ProviderTimeoutError,
@@ -613,7 +614,7 @@ def test_interpret_never_touches_the_filesystem(tmp_path, monkeypatch) -> None:
 
 def test_storyboard_template_constants_and_rules() -> None:
     assert STORYBOARD_PROMPT_TEMPLATE_ID == "storyboard_ja"
-    assert STORYBOARD_PROMPT_TEMPLATE_VERSION == "1"
+    assert STORYBOARD_PROMPT_TEMPLATE_VERSION == "2"
     assert PROMPT_TEMPLATE_ID == "script_ja"
     template = load_prompt_template(STORYBOARD_PROMPT_TEMPLATE_ID)
     for token in ("script_section_id", "コードフェンス", "Web 検索", "承認", "チェックポイント"):
@@ -688,3 +689,17 @@ async def test_generate_with_the_pinned_spec(tmp_path, pinned_spec) -> None:
     result = await generator.generate(_request())
     assert result.text == _plan()
     assert "Scene Director" in llm.requests[0].prompt
+
+
+async def test_storyboard_prompt_gives_each_script_section_its_duration_as_data(tmp_path) -> None:
+    """区間がナレーションより短い storyboard は拒否される（ADR-0026 追補2）。尺を LLM に渡す。"""
+    llm = FakeStoryGenerator(output="RAW")
+    generator = _generator(tmp_path, llm)
+    await generator.generate(_request())
+    prompt = llm.requests[0].prompt
+    ja = SCRIPT_LOCALES["ja-JP"]
+    for scene in _script().scenes:
+        required = ja.required_speech_ms(scene.narration)
+        assert f"- {scene.id}: {scene.duration_ms} ms（ナレーションに最低 {required} ms）" in prompt
+    template = load_prompt_template(STORYBOARD_PROMPT_TEMPLATE_ID)
+    assert "{{script_section_durations}}" in template

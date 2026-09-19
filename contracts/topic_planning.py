@@ -18,6 +18,8 @@ DB は採用時点の id と version を記録する。
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -112,7 +114,7 @@ class TopicAngle(StrEnum):
 class SpeechUnit(StrEnum):
     """ナレーションの長さを数える単位（ADR-0026 §読み上げ速度の予算）。"""
 
-    #: 空白で区切った語（英語など）
+    #: 話し言葉の語の見積もり（英語など。``estimate_spoken_words``）
     WORD = "word"
     #: 空白以外の文字（句読点を含む。日本語など分かち書きしない言語）
     CHARACTER = "character"
@@ -139,12 +141,30 @@ class ScriptLocale(BaseModel):
 
     def count_speech_units(self, narration: str) -> int:
         if self.speech_unit is SpeechUnit.WORD:
-            return len(narration.split())
+            return estimate_spoken_words(narration)
         return sum(1 for ch in narration if not ch.isspace())
 
     def narration_budget(self, duration_ms: int) -> int:
-        """``duration_ms`` のシーンに収めてよいナレーションの単位数（切り捨て）。"""
+        """``duration_ms`` のシーンに収めてよいナレーションの単位数（切り捨て）。
+
+        式は ``floor(duration_ms × max_speech_units_per_second / 1000)``（prompt と同じ文言）。
+        """
         return round(duration_ms * self.max_speech_units_per_second) // 1000
+
+    def required_speech_ms(self, narration: str) -> int:
+        """``narration`` が予算に収まる最短の尺（ms）。
+
+        ``ceil(units / max_speech_units_per_second × 1000)`` を、``narration_budget`` と
+        **同じ判定**になるように丸める: ``span_ms >= required_speech_ms(n)`` ⇔
+        ``count_speech_units(n) <= narration_budget(span_ms)``。storyboard の区間検査が使う。
+        """
+        units = self.count_speech_units(narration)
+        required = math.ceil(units * 1000 / self.max_speech_units_per_second)
+        while self.narration_budget(required) < units:
+            required += 1
+        while required > 0 and self.narration_budget(required - 1) >= units:
+            required -= 1
+        return required
 
 
 #: **台本 locale の唯一の宣言元**。prompt の registry（``prompts.script``）はこの鍵と一致する
@@ -170,6 +190,100 @@ SCRIPT_LOCALES: dict[str, ScriptLocale] = {
         ),
     )
 }
+
+
+def script_locale_for_language(artifact_language: str) -> ScriptLocale:
+    """``ScriptArtifact.language``（ISO 639-1）→ ``ScriptLocale``。未登録なら ``ValueError``。
+
+    台本より下流（storyboard の区間検査など）は台本 Artifact の ``language`` しか知らない。
+    """
+    matches = [loc for loc in SCRIPT_LOCALES.values() if loc.artifact_language == artifact_language]
+    if len(matches) != 1:
+        raise ValueError(f"no unique script locale for artifact language {artifact_language!r}")
+    return matches[0]
+
+
+# ----------------------------------------------------- 英語の話し言葉の語数の見積もり
+
+#: 単独で立つ句読点・ダッシュ（読まない）。語の中のハイフン・ダッシュ・スラッシュは語の区切り
+_WORD_SPLIT_RE = re.compile(r"[\s\-\u2010-\u2015/]+")
+#: 数字の塊（``1,200`` / ``5.2`` / ``1847``）。前後の記号・接尾辞は別に数える
+_NUMBER_RE = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
+#: 数の直後で1語として読まれる接尾辞（``5B`` = five billion、``40%`` = forty percent）
+_SCALE_SUFFIXES = frozenset({"k", "m", "b", "bn", "t", "%"})
+#: 数の前で1語として読まれる通貨記号（``$5`` = five dollars）
+_CURRENCY_SYMBOLS = frozenset("$€£¥")
+
+
+def _group_words(group: int) -> int:
+    """0〜999 を読む語数（``two hundred forty seven`` = 4。十の位と一の位は別語に数える）。"""
+    hundreds, rest = divmod(group, 100)
+    tens, units = divmod(rest, 10)
+    words = 2 if hundreds else 0
+    if rest:
+        words += 2 if tens >= 2 and units else 1
+    return words
+
+
+def _integer_words(digits: str) -> int:
+    """桁区切りを除いた整数を読む語数。3桁ごとの組 + 組ごとの位の語（thousand / million …）。"""
+    value = int(digits)
+    if value == 0:
+        return 1
+    groups: list[int] = []
+    while value:
+        value, group = divmod(value, 1000)
+        groups.append(group)
+    return sum(_group_words(g) + (1 if i and g else 0) for i, g in enumerate(groups))
+
+
+def _number_words(number: str) -> int:
+    integer, _, decimals = number.replace(",", "").partition(".")
+    # 桁区切りの無い 4 桁の 1100〜2099 は年として読む（eighteen forty seven = 3 語と見積もる）
+    if "," not in number and not decimals and len(integer) == 4 and 1100 <= int(integer) <= 2099:
+        return 3
+    words = _integer_words(integer)
+    if decimals:
+        words += 1 + len(decimals)  # point + 1 桁 1 語
+    return words
+
+
+def _part_words(part: str) -> int:
+    words = 0
+    rest = part
+    while (match := _NUMBER_RE.search(rest)) is not None:
+        prefix, suffix = rest[: match.start()], rest[match.end() :]
+        words += sum(1 for ch in prefix if ch in _CURRENCY_SYMBOLS)
+        if any(ch.isalpha() for ch in prefix):
+            words += 1
+        words += _number_words(match.group())
+        head = re.match(r"[A-Za-z%]+", suffix)
+        if head is not None and head.group().lower() in _SCALE_SUFFIXES:
+            words += 1
+            suffix = suffix[head.end() :]
+        elif head is not None and head.group().lower() in {"st", "nd", "rd", "th", "s"}:
+            suffix = suffix[head.end() :]  # 序数・複数（3rd / 1990s）は数の語に含める
+        rest = suffix
+    if any(ch.isalnum() for ch in rest):
+        words += 1
+    return words
+
+
+def estimate_spoken_words(narration: str) -> int:
+    """英語のナレーションを読み上げたときの語数の**保守的な**見積もり（ADR-0026 追補）。
+
+    - 空白・ハイフン・ダッシュ・スラッシュで区切る（``30-year-old`` = 3 語）。
+      単独で立つ句読点・ダッシュ（``—`` / ``--`` / ``...``）は 0 語
+    - 英数字を含まない断片は 0 語、文字だけの断片は 1 語
+    - 数字は読み方で数える: 4 桁の年（1100〜2099）= 3 語、それ以外は 3 桁の組ごとに
+      百の位 2 語 + 十・一の位 1〜2 語 + 位の語 1 語（``1,200`` = 4 語）、
+      小数は ``point`` + 1 桁 1 語。
+      通貨記号・``%``・``K/M/B/T`` は 1 語を足す（``$5.2B`` = 5 語）。序数の接尾辞は足さない
+
+    過大に数える方向に倒す（予算を超えると再生成になるだけで、音声は溢れない）。
+    """
+    return sum(_part_words(part) for part in _WORD_SPLIT_RE.split(narration) if part)
+
 
 #: TopicPlan を持たない Episode（手動 API・ADR-0025 以前）の locale。従来どおり日本語
 DEFAULT_SCRIPT_LOCALE = "ja-JP"

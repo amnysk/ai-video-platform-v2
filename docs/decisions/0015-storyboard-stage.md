@@ -50,6 +50,8 @@ downgrade 語彙だけ（0002 と同じ構造）。
    - `source_script`（artifact_id / sha256 / schema_version）で入力台本を固定する
    - `total_duration_ms` は保存し、台本の総尺と一致しなければならない（ドメイン検査
      `domain/storyboard/coverage.py::check_storyboard_covers_script`）
+   - 各台本シーンの区間（描画が音声を置く区間）はナレーションの読み上げ予算以上でなければならない
+     （`domain/storyboard/coverage.py::check_storyboard_fits_narration`、ADR-0026 追補2）
 5. `input_hash`（ADR-0012）の構成要素は `domain/storyboard/identity.py::storyboard_input_hash` に1つだけ置く:
    episode_id / artifact_type / 目標 schema_version / **入力台本の sha256** / プロンプトテンプレートIDと版 /
    generator_id / generation_spec_id。ラウンド・試行・job_id・時刻・run id は含めない。

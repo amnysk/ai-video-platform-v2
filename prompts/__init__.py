@@ -15,7 +15,7 @@ from pathlib import Path
 PROMPT_TEMPLATE_ID = "script_ja"
 PROMPT_TEMPLATE_VERSION = "1"
 STORYBOARD_PROMPT_TEMPLATE_ID = "storyboard_ja"
-STORYBOARD_PROMPT_TEMPLATE_VERSION = "1"
+STORYBOARD_PROMPT_TEMPLATE_VERSION = "2"
 TOPIC_PROMPT_TEMPLATE_ID = "topic_en"
 TOPIC_PROMPT_TEMPLATE_VERSION = "2"
 #: topic_plans.prompt_version に記録する値
@@ -65,6 +65,7 @@ def render_storyboard_prompt(
     output_schema_json: str,
     script_json: str,
     total_duration_seconds: str,
+    script_section_durations: str,
     language: str = "ja",
     template_name: str = STORYBOARD_PROMPT_TEMPLATE_ID,
 ) -> str:
@@ -74,6 +75,7 @@ def render_storyboard_prompt(
         "output_schema_json": output_schema_json,
         "script_json": script_json,
         "total_duration_seconds": total_duration_seconds,
+        "script_section_durations": script_section_durations,
         "language": language,
     }
     return _render(template_name, values)

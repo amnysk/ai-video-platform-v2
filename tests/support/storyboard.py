@@ -85,6 +85,23 @@ UNCOVERED_STORYBOARD = json.dumps(
     }
 )
 
+#: 総尺は台本どおりだが、s1（13 字 → ja 9 字/秒で 1,445 ms 必要）の区間を 1,000 ms に縮める
+#: （ADR-0026 追補: 区間がナレーションに足りない → retryable）。
+SQUEEZED_STORYBOARD = json.dumps(
+    {
+        "scenes": [
+            {
+                "script_scene_id": sid,
+                "start_ms": start,
+                "duration_ms": duration,
+                "visual_kind": "broll",
+                "visual_description": sid,
+            }
+            for sid, start, duration in (("s1", 0, 1000), ("s2", 1000, 16000), ("s3", 17000, 8000))
+        ]
+    }
+)
+
 
 async def record_script(
     session_factory: async_sessionmaker[AsyncSession],

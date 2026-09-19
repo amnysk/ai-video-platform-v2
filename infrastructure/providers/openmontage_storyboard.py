@@ -39,6 +39,7 @@ from domain.storyboard.ports import StoryboardRawResult, StoryboardRequest, Stor
 from infrastructure.providers.process import ProcessRunner, ProcessTimeout
 from infrastructure.workdir import WorkDirectory
 from prompts import render_storyboard_prompt
+from prompts.storyboard import storyboard_section_durations
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,7 @@ class OpenMontageGuidedStoryboardGenerator:
             output_schema_json=schema_json,
             script_json=script_json,
             total_duration_seconds=str(converted["total_duration_seconds"]),
+            script_section_durations=storyboard_section_durations(request.script),
             language=request.script.language,
         )
         result = await self._llm.generate(

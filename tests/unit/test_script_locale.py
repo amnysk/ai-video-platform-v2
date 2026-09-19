@@ -445,3 +445,46 @@ async def test_en_narration_over_budget_is_a_retryable_defect_and_next_round_pas
     assert generator.calls == 2
     artifact = parse_script_artifact(await store.get_json(result.object_key))
     assert artifact.scenes[0].narration == "Forget the black pajamas."
+
+
+@pytest.mark.parametrize(
+    ("narration", "words"),
+    [
+        pytest.param("Ninja were spies.", 3, id="plain"),
+        pytest.param("a 30-year-old samurai", 5, id="hyphenated-compound"),
+        pytest.param("war — and peace", 3, id="standalone-em-dash"),
+        pytest.param("war - and -- peace", 3, id="standalone-hyphens"),
+        pytest.param("war—and peace", 3, id="attached-em-dash"),
+        pytest.param("In 1847 it fell.", 6, id="year"),  # eighteen forty seven
+        pytest.param("1,200 men", 5, id="thousands-separator"),  # one thousand two hundred
+        pytest.param("In 1990, the", 5, id="year-followed-by-comma"),  # in nineteen ninety the
+        pytest.param("$5.2B", 5, id="currency-decimal-scale"),  # five point two billion dollars
+        pytest.param("40% died", 3, id="percent"),
+        pytest.param("the 3rd shogun", 3, id="ordinal"),
+        pytest.param("7", 1, id="single-digit"),
+        pytest.param("...", 0, id="punctuation-only"),
+    ],
+)
+def test_en_speech_units_estimate_spoken_words(narration: str, words: int) -> None:
+    assert SCRIPT_LOCALES["en-US"].count_speech_units(narration) == words
+
+
+def test_ja_prompt_states_the_per_scene_character_budget() -> None:
+    ja = SCRIPT_LOCALES["ja-JP"]
+    text = _render("ja-JP", "shorts", {"topic": "T"})
+    assert f"1秒あたり約{ja.max_speech_units_per_second:g}字" in text
+    assert f"8 秒: {ja.narration_budget(8_000)} 字まで" in text
+    template = load_prompt_template(script_prompt_template("ja-JP").template_name)
+    assert "{{max_speech_units_per_second}}" in template
+    assert "{{narration_budget_table}}" in template
+    assert script_prompt_template("ja-JP").version == "2"
+
+
+def test_prompt_budget_formula_matches_the_code_formula() -> None:
+    """prompt と ``ScriptLocale`` の docstring が同じ式を書く（ADR-0026 追補2）。"""
+    from contracts.topic_planning import ScriptLocale
+
+    assert "floor(duration_ms × max_speech_units_per_second / 1000)" in (ScriptLocale.__doc__ or "")
+    for locale in SCRIPT_LOCALES:
+        template = load_prompt_template(script_prompt_template(locale).template_name)
+        assert "floor(duration_ms × {{max_speech_units_per_second}} / 1000)" in template

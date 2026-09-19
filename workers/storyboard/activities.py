@@ -32,6 +32,7 @@ from contracts.states import (
     ProviderCall,
     ReservationStatus,
 )
+from contracts.topic_planning import script_locale_for_language
 from domain.artifact.entities import ArtifactMetadata
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key
@@ -46,7 +47,10 @@ from domain.errors import (
     classify_failure,
 )
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
-from domain.storyboard.coverage import check_storyboard_covers_script
+from domain.storyboard.coverage import (
+    check_storyboard_covers_script,
+    check_storyboard_fits_narration,
+)
 from domain.storyboard.identity import idempotency_key, storyboard_input_hash
 from domain.storyboard.normalize import assign_scene_identity, normalize_timeline
 from domain.storyboard.ports import StoryboardGenerator, StoryboardRequest
@@ -593,7 +597,13 @@ class StoryboardActivities:
             )
         except Exception as exc:  # pydantic ValidationError を含む
             raise StoryboardSchemaViolationError(str(exc)[:1000]) from exc
-        check_storyboard_covers_script(parse_storyboard_artifact(artifact), script)
+        storyboard = parse_storyboard_artifact(artifact)
+        check_storyboard_covers_script(storyboard, script)
+        # 描画と同じ区間で、台本シーンのナレーションが収まること（ADR-0026 追補）。
+        # 制作（有料）へ進む前に、LLM 出力の欠陥として次ラウンドで作り直す
+        check_storyboard_fits_narration(
+            storyboard, script, script_locale_for_language(script.language)
+        )
         return artifact
 
     # ------------------------------------------------------------------ 失敗

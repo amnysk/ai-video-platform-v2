@@ -27,6 +27,7 @@ from domain.errors import (
     ArtifactConflictError,
     StoryboardInputInvalidError,
     StoryboardInputMissingError,
+    StoryboardNarrationSpanTooShortError,
     StoryboardOutputUnparseableError,
     StoryboardSchemaViolationError,
     UnreconciledReservationError,
@@ -49,6 +50,7 @@ from tests.support.storyboard import (
     BUCKET,
     PROMPT_ID,
     PROMPT_VERSION,
+    SQUEEZED_STORYBOARD,
     UNCOVERED_STORYBOARD,
     artifact_rows,
     create_episode_at_script_ready,
@@ -330,6 +332,28 @@ async def test_invalid_output_is_retryable_and_the_next_round_uses_a_new_key(
     assert r1 is not None and r1.status is ReservationStatus.SPENT and r1.raw_output_key
     assert r1.outcome_artifact_id is None
     assert r2 is not None and r2.outcome_artifact_id == result.artifact_id
+
+
+async def test_span_too_short_for_the_narration_is_retryable_before_production(
+    session_factory, artifact_store
+) -> None:
+    """区間がナレーションに足りない storyboard は保存せず retryable（ADR-0026 追補）。"""
+    episode_id = await create_episode_at_script_ready(session_factory, artifact_store)
+    outputs = iter([SQUEEZED_STORYBOARD, good_storyboard()])
+    generator = FakeStoryboardGenerator(output=lambda _r: next(outputs))
+    activities = make_activities(session_factory, artifact_store, generator)
+    job_id = await admitted_job(activities, episode_id)
+
+    with pytest.raises(StoryboardNarrationSpanTooShortError, match="s1") as caught:
+        await activities.generate_storyboard(
+            GenerateStoryboardRequest(episode_id=episode_id, job_id=job_id, round=1)
+        )
+    assert classify_failure(caught.value) is FailureClass.RETRYABLE
+    assert await job_status(session_factory, job_id) is JobStatus.RETRYABLE_FAILED
+    result = await activities.generate_storyboard(
+        GenerateStoryboardRequest(episode_id=episode_id, job_id=job_id, round=2)
+    )
+    assert generator.calls == 2 and result.reused is False
 
 
 async def test_unparseable_output_is_retryable(session_factory, artifact_store) -> None:

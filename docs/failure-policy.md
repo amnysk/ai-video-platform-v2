@@ -28,11 +28,16 @@
 |---|---|
 | 出力が invalid JSON（截断・前置き混入） | `retryable` |
 | パースできたがスキーマ違反 | `retryable` |
-| ナレーションがシーン尺の読み上げ予算を超える（`ScriptNarrationOverBudgetError`、ADR-0026 追補） | `retryable` |
+| ナレーションがシーン尺の読み上げ予算を超える（`ScriptNarrationOverBudgetError`、ADR-0026 追補） | `retryable`（次ラウンドで再生成。`max_attempts` を使い切ったら Job は失敗し、Episode は `RETRY_BUDGET_EXHAUSTED` で `blocked`。下の `needs_input` への昇格は**未実装**） |
 | 同じ `input_hash` で規定ラウンド連続して同種の違反 | `needs_input`（プロンプトとスキーマの不整合。人間が直す） |
 | 入力Artifactが存在しない / 未知の schema_version | `permanent` |
 
 **出力の修復（截断JSONの補完など）はしない。** 推測して読まない（artifact.md）。
+
+**実装との差（既知の負債、ADR-0026 追補）**: 「同種の違反が続いたら `needs_input`」の昇格は台本・storyboard
+工程とも実装されていない。現実の挙動は、ラウンドを `max_attempts` まで使い切ると `RETRY_BUDGET_EXHAUSTED`
+で Episode が `blocked` になる（`workers/planning/activities.py` / `workers/storyboard/activities.py` の
+`record_failure`）。
 
 ### Storyboard 工程（ADR-0015 / ADR-0016）
 
@@ -40,6 +45,7 @@
 |---|---|---|
 | `StoryboardOutputUnparseableError` | `retryable` | 生成出力が JSON として読めない |
 | `StoryboardSchemaViolationError` | `retryable` | 固定 schema 違反 / 時間軸が正規化の許容を超える / 台本のカバレッジ不足 |
+| `StoryboardNarrationSpanTooShortError` | `retryable` | 台本シーンに割り当てた区間がナレーションの読み上げ予算に足りない（ADR-0026 追補。`StoryboardSchemaViolationError` の下位） |
 | `StoryboardInputMissingError` | `needs_input` | 現行の台本 Artifact が無い |
 | `StoryboardInputInvalidError` | `needs_input` | 保存された台本が読めない / sha256 不一致 |
 | `GenerationSpecUnavailableError` | `needs_input` | 固定した OpenMontage commit / blob が読めない |

@@ -37,8 +37,8 @@ class ScriptPromptTemplate:
 SCRIPT_PROMPT_TEMPLATES: dict[str, ScriptPromptTemplate] = {
     t.locale: t
     for t in (
-        ScriptPromptTemplate(locale="ja-JP", version="1"),
-        ScriptPromptTemplate(locale="en-US", version="2"),
+        ScriptPromptTemplate(locale="ja-JP", version="2"),
+        ScriptPromptTemplate(locale="en-US", version="3"),
     )
 }
 
@@ -79,13 +79,21 @@ def render_localized_script_prompt(
 def narration_budget_table(locale: ScriptLocale) -> str:
     """シーン尺ごとのナレーション上限（``ScriptLocale.narration_budget``）を prompt 用に並べる。
 
-    単位名は英語（``words`` / ``characters``）。数値はすべて ``ScriptLocale`` から導く。
+    行の文言は locale のテンプレートの言語に合わせる（``_BUDGET_LINE_FORMATS``）。
+    数値はすべて ``ScriptLocale`` から導く。
     """
-    unit = f"{locale.speech_unit.value}s"
+    line = _BUDGET_LINE_FORMATS[locale.locale]
     return "\n".join(
-        f"- {sec} s: at most {locale.narration_budget(sec * 1000)} {unit}"
+        line.format(seconds=sec, budget=locale.narration_budget(sec * 1000))
         for sec in NARRATION_BUDGET_EXAMPLE_SECONDS
     )
+
+
+#: 予算表の1行（locale のテンプレートと同じ言語）。鍵は ``SCRIPT_PROMPT_TEMPLATES`` と一致する
+_BUDGET_LINE_FORMATS: dict[str, str] = {
+    "ja-JP": "- {seconds} 秒: {budget} 字まで",
+    "en-US": "- {seconds} s: at most {budget} words",
+}
 
 
 __all__ = [

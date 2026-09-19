@@ -83,6 +83,15 @@ class StoryboardSchemaViolationError(RetryableError):
     """storyboard の出力が schema・時間軸・台本カバレッジの検査に落ちた（ADR-0014）。"""
 
 
+class StoryboardNarrationSpanTooShortError(StoryboardSchemaViolationError):
+    """台本シーンに割り当てた storyboard の区間がナレーションの読み上げに足りない（ADR-0026）。
+
+    描画は台本シーンの音声をその最初の storyboard シーンの開始に置くので、区間が足りないと
+    ``VoiceTimelineOverflowError`` になる。制作（有料）の前に LLM 出力の欠陥として作り直す。
+    修復はしない。
+    """
+
+
 class StoryboardInputMissingError(NeedsInputError):
     """現行の台本 Artifact が無い。台本工程の再実行（人間の判断）で回復する。"""
 

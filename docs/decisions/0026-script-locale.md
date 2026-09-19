@@ -96,10 +96,10 @@ after voice s2 starts at 7000 ms` になり blocked した。LLM は尺と語数
      既存の日本語台本・fixture を新たに落とさないことを優先した（実測が取れたら見直す）
 2. **prompt はデータとして予算を受け取る**: en-US テンプレート（version 2）は
    `{{max_speech_units_per_second}}` と `{{narration_budget_table}}`（`prompts.script.narration_budget_table`、
-   代表的な尺ごとの上限）を埋めるだけで数値を持たない。ja-JP テンプレートは変えていない（version 1 のまま）
+   代表的な尺ごとの上限）を埋めるだけで数値を持たない。ja-JP テンプレートは変えていない（version 1 のまま。→ 追補2 で version 2）
 3. **台本 activity はスキーマ検証の後に決定論的に検査する**。超過シーンがあれば
    `ScriptNarrationOverBudgetError`（`ScriptSchemaViolationError` の下位 = retryable、ADR-0014）。
-   修復（語の削除・尺の延長）はしない。同じ違反が続けば既存の昇格規則で `needs_input`
+   修復（語の削除・尺の延長）はしない。同じ違反が続いた場合の挙動は追補2（`needs_input` への昇格は未実装）
 4. **描画側の規則は緩めない**。`place_voices` の重なり判定と最終シーンの `max_freeze_ms` はそのまま。
    余裕は台本側の予算（1.9 < 1.97）が持つ。予算は保証ではない（句読点の間で速度が変わる）ので、
    それでも溢れたら従来どおり描画で `VoiceTimelineOverflowError`（needs_input）になる
@@ -112,4 +112,51 @@ after voice s2 starts at 7000 ms` になり blocked した。LLM は尺と語数
 - **負債**: rate は `script_input_hash` に入れていない（ja の既存 Artifact を無効化しないため）。rate を変えたら
   en-US は prompt が変わるのでテンプレートの version を上げる
 - **負債**: rate は voice 1 つ（kristin-medium）の実測。locale → voice の対応表ができたら voice ごとに持つべき
+
+## 追補2: storyboard の区間・日本語テンプレート・語数の見積もり（2026-09-19、レビュー指摘）
+
+### Context
+
+追補の保証は「台本シーンの `duration_ms` にナレーションが収まる」だった。しかし描画
+（`domain/render/timeline.py::place_voices`）は台本シーンの音声を**その最初の storyboard シーンの開始**に置き、
+次の台本シーンの最初の storyboard シーンの開始と重なりを判定する。storyboard の LLM は総尺しか受け取らず
+（`prompts/storyboard_ja.md`）、`check_storyboard_covers_script` は総尺しか見ず、正規化は ±500 / 1,000 ms 寄せる。
+したがって storyboard が台本シーンの区間を縮めると、台本の検査を通っても描画で溢れうる（有料の制作の後）。
+また ja-JP テンプレートは予算を書かないまま検査だけが 9 字/秒を課し、英語の語数は `str.split` で
+数字・ハイフン語（`30-year-old` / `1,200` / `$5.2B`）を過少に数えていた。
+
+### Decision
+
+1. **storyboard でも同じ予算を決定論的に検査する**（`domain/storyboard/coverage.py`）。
+   `script_scene_spans` は描画と同じ区間（台本シーンの最初の storyboard シーンの開始 → 次の台本シーンの
+   最初の storyboard シーンの開始、最後は終端。描画の freeze 延長は余裕に数えない）を返し、
+   `check_storyboard_fits_narration` は台本と**同じ式**
+   `count_speech_units(narration) <= narration_budget(span_ms)`（⇔ `span_ms >= required_speech_ms`）で判定する。
+   違反は `StoryboardNarrationSpanTooShortError`（`StoryboardSchemaViolationError` の下位 = retryable、ADR-0014）。
+   修復しない。storyboard activity はカバレッジ検査の直後、Artifact 保存の前（= 制作の前）に呼ぶ。
+   locale は台本 Artifact の `language` から `contracts.topic_planning.script_locale_for_language` で引く
+2. **storyboard prompt に台本シーンごとの尺と最短区間をデータとして渡す**
+   （`{{script_section_durations}}`、`prompts.storyboard.storyboard_section_durations`）。`storyboard_ja` は version 2。
+   version は `storyboard_input_hash` に入るので、既存の storyboard は再実行で 1 回再生成される
+3. **ja-JP テンプレート（version 2）にも予算を書く**。en-US と同じ `{{max_speech_units_per_second}}` /
+   `{{narration_budget_table}}`（表の行は locale の言語、`prompts.script._BUDGET_LINE_FORMATS`）。
+   ハッシュへの影響: ja-JP のテンプレートを使うのは TopicPlan を持たない Episode（`DEFAULT_SCRIPT_LOCALE`、
+   手動 API・ADR-0025 以前）だけ。その Episode の台本は再実行で input_hash が変わり 1 回再生成される
+4. **式の文言を 1 つにする**: `floor(duration_ms × max_speech_units_per_second / 1000)`
+   （`ScriptLocale` の docstring とすべてのテンプレート。`test_prompt_budget_formula_matches_the_code_formula`）。
+   en-US テンプレートはこの文言と語の数え方の説明を変えたので version 3
+5. **英語の語数は話し言葉の見積もり**（`contracts.topic_planning.estimate_spoken_words`、SSoT のまま）:
+   空白・ハイフン・ダッシュ・スラッシュで区切り、単独の句読点・ダッシュは 0 語。4 桁の年（1100〜2099）は 3 語、
+   その他の数は 3 桁の組ごとに読みを数え（`1,200` = 4 語）、小数は `point` + 1 桁 1 語、通貨記号・`%`・
+   `K/M/B/T` は +1 語（`$5.2B` = 5 語）。過大に数える方向に倒す（超過は再生成になるだけで音声は溢れない）
+
+### Consequences
+
+- 良い: 台本の予算が描画の区間まで保たれ、区間の不足は有料の制作の前に storyboard の再生成で直る
+- storyboard の再生成が増えうる（区間を縮める LLM 出力を拒否するため）。prompt に最短区間を渡して抑える
+- **既知の負債（実装と文書の差）**: ADR-0014 / failure-policy の「同じ input_hash で規定ラウンド連続して同種の違反
+  → `needs_input`（`PromptContractError`）」は台本・storyboard 工程で実装されていない。予算違反が続くと
+  `max_attempts` を使い切り、`RETRY_BUDGET_EXHAUSTED` で Episode は `blocked` になる。昇格は実装しない
+  （failure-policy の表は現実の挙動に合わせて書き直した）
+- **負債**: 見積もりは規則ベースで、略語（`WWII`）・ローマ数字・記号の読みは 1 語として数える
 
