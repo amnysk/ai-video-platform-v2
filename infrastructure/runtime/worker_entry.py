@@ -41,6 +41,10 @@ def run(
     min_uptime = _float_env(env, "AVP_WORKER_MIN_UPTIME_SECONDS", DEFAULT_MIN_UPTIME_SECONDS)
     backoff = _float_env(env, "AVP_WORKER_FAILURE_BACKOFF_SECONDS", DEFAULT_FAILURE_BACKOFF_SECONDS)
     started = clock()
+    # どの版のコードかをログから辿れる（イメージの ENV AVP_GIT_REVISION。workers.md §10）
+    logger.info(
+        "worker %s starting revision=%s", module_name, env.get("AVP_GIT_REVISION") or "unknown"
+    )
     try:
         module = importlib.import_module(module_name)
         asyncio.run(module.main())

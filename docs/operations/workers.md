@@ -69,9 +69,11 @@ poll したことを Temporal に問い合わせる。
 
 ## 3. 起動・状態確認・ログ
 
+コード更新の反映は §10 の `make deploy-workers` だけで行う（個別の `build` / `up -d <service>` で一部だけ作り直さない）。
+
 ```bash
 make check-docker-uid              # rootful Docker で AVP_UID=0 を使っていないか
-docker compose build               # イメージ（初回・コード更新時）
+make deploy-workers                # イメージ（初回・コード更新時）。全サービスを同じ版で作り直す（§10）
 docker compose up -d               # 起動（infra + api + 全 worker）
 docker compose ps                  # 状態。worker は healthy になるまで 30〜60 秒
 docker compose logs -f --tail=100 render-worker          # 1つの worker のログ
@@ -90,7 +92,7 @@ make workers-logs                  # 全 worker のログ
 
 ```bash
 docker compose restart render-worker     # 再起動（実行中の Activity は最大 100 秒待ってから止める）
-docker compose up -d render-worker       # .env / compose を変えたとき（コンテナを作り直す）
+docker compose up -d render-worker       # .env / compose の設定だけを変えたとき（コンテナを作り直す。コード更新はしない: §10）
 ```
 
 - `docker kill` は Docker にとって手動停止なので `restart: unless-stopped` でも再起動しない
@@ -162,3 +164,45 @@ docker compose exec temporal temporal schedule list --address temporal:7233   # 
   `python scripts/ensure-daily-schedule.py`（dry-run）→ `--apply` / `--pause` / `--unpause`
 - **catchup window は 1 時間**。06:00 の実行時刻から 1 時間以上 Docker / Temporal が止まっていた日は、
   その日の分は実行されない（必要なら復旧後に `temporal schedule trigger` で手動実行。上限は日次枠が守る）
+
+## 10. デプロイ（コード更新の反映）と版の確認
+
+2026-09-20 に、稼働中の worker が3つの git commit のコードで混在して動いていた
+（render / upload / production* は `5a1a0cd`、pipeline / production-image / production-video は `f38835c`、
+script / storyboard は `e29c7e8`）。共通イメージは1枚なのに、サービスごとの `build` / `up -d <service>` を
+繰り返し、作り直されなかったコンテナが古い image id のまま動き続けた。手順を1つにし、版を確認できるようにした
+（ADR-0024 追補、根拠と各テストの意図は `docs/testing/worker-versions.md`）。
+
+```bash
+git status                       # dirty だと deploy は拒否される（ALLOW_DIRTY=1 で revision に -dirty を付けて許す）
+make deploy-workers              # = scripts/deploy-workers.sh
+make workers-versions            # いつでも: 各コンテナの image id / revision / 古いイメージか。混在なら exit 1
+```
+
+`deploy-workers.sh` の手順（どこかで失敗したら非0終了）:
+
+1. dirty なら拒否 → infra（postgres / temporal / minio）が healthy か確認（作り直さない）
+2. `PRE_DEPLOY_CMD`（フック。中身はこのスクリプトが知らない。失敗したら**何も変えずに**中止）
+3. 共通イメージ（`avp2-app` / `avp2-worker`）を1回ずつ `GIT_REVISION` つきでビルド
+4. `migrate` を新イメージで実行し exit 0 を待つ → 残りの全アプリサービスを `up -d --no-deps --no-build`
+5. 全サービスが healthy になるまで待つ（`HEALTH_TIMEOUT` 秒、既定 300）→ `workers-versions.sh`（`EXPECTED_REVISION` つき）
+6. `POST_DEPLOY_CMD`（フック。**成否にかかわらず必ず**最後に実行。`DEPLOY_RESULT=success|failure`、
+   `DEPLOY_STAGE`、`DEPLOY_REVISION` を渡す。Ctrl-C / SIGTERM でも走る。POST が失敗したら全体を失敗にする）
+
+```bash
+# 例: デプロイ中だけ定期実行を止め、最後に必ず戻す（フックの中身は運用側が決める）
+PRE_DEPLOY_CMD='...' POST_DEPLOY_CMD='...' make deploy-workers
+```
+
+- 対象は compose.yaml で `build:` を持つ全サービス（スクリプト内の `APP_SERVICES`）。`tests/contract/test_deploy_workers.py`
+  が一致を検査する。**worker を足したら `APP_SERVICES` にも足す**（足さないとテストが落ちる）
+- `--no-deps` を使うのは、別 worktree からの `up` で postgres の相対 bind mount が変わり infra が
+  再作成されるのを避けるため。その代わり全サービスを列挙している
+- 版はイメージの label `org.opencontainers.image.revision`（Dockerfile の `ARG GIT_REVISION`。`app` と `worker`
+  の最終 stage）。worker は起動ログに `starting revision=<sha>` を出す（`docker compose logs <service> | head`）。
+  素の `docker compose build` でビルドすると `unknown` になり、`workers-versions.sh` が NO-REVISION で落ちる
+- `workers-versions.sh` の `STALE` = そのコンテナの image id が現在のタグと違う（作り直されていない）。
+  `make deploy-workers` をもう一度実行する
+- 設定不足で healthy にならない worker（§3）があると、ゲートが失敗して deploy は非0で終わる（意図どおり）
+- 別の worktree から実行するとき: compose は project 名 `avp2` 固定。`.env`（gitignore、秘密を含む）は
+  compose のあるディレクトリから読まれるので、その worktree に `.env` を置く（symlink 可）

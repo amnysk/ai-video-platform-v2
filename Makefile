@@ -1,4 +1,4 @@
-.PHONY: help up down logs check-docker-uid worker-dirs worker-build workers-up workers-ps workers-logs migrate smoke smoke-script script-worker lint fmt types test test-unit test-integration test-live check
+.PHONY: deploy-workers workers-versions help up down logs check-docker-uid worker-dirs worker-build workers-up workers-ps workers-logs migrate smoke smoke-script script-worker lint fmt types test test-unit test-integration test-live check
 
 help:
 	@grep -E '^[a-z-]+:' Makefile | cut -d: -f1 | tail -n +2
@@ -27,6 +27,12 @@ worker-build:   ## 常駐 Worker 共通イメージ（Dockerfile の worker targ
 
 workers-up: check-docker-uid worker-dirs  ## core サービスと常駐 Worker を起動し healthy まで待つ
 	docker compose --profile core up -d --wait
+
+deploy-workers: check-docker-uid worker-dirs  ## 共通イメージを1回ビルドし、全アプリサービスを同じ版で作り直す（PRE_DEPLOY_CMD / POST_DEPLOY_CMD フック可）
+	./scripts/deploy-workers.sh
+
+workers-versions:  ## 稼働中の全アプリコンテナの image id と git revision。混在・古いイメージなら exit 1
+	./scripts/workers-versions.sh
 
 workers-ps:
 	docker compose --profile core ps
