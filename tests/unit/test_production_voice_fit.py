@@ -38,6 +38,32 @@ class SpeedAdjustableFake(FakeVoiceGenerator):
         await dest.write(make_wav(base * 1000 // speed_permille))
 
 
+class MeasuredModelFake(FakeVoiceGenerator):
+    """実測に基づく尺のモデル: 尺 = 固定の間 + 可変部 / 倍率、合成ごとにゆらぎ（±）が乗る。
+
+    9/19 の実 Piper では、尺の約 2 割が話速で縮まない固定の間で、同じ入力でも ±4% ゆらいだ。
+    """
+
+    def __init__(self, *, natural_ms: int, fixed_fraction: float = 0.2, jitter=(0.0,)) -> None:
+        super().__init__()
+        self.fixed = natural_ms * fixed_fraction
+        self.variable = natural_ms * (1 - fixed_fraction)
+        self.jitter = jitter
+        self.speeds: list[int] = []
+
+    def _duration(self, speed_permille: int) -> int:
+        noise = self.jitter[self.calls % len(self.jitter)]
+        self.calls += 1
+        return round((self.fixed + self.variable * 1000 / speed_permille) * (1 + noise))
+
+    async def synthesize(self, text, language, dest) -> None:
+        await dest.write(make_wav(self._duration(1000)))
+
+    async def synthesize_at_speed(self, text, language, dest, *, speed_permille: int) -> None:
+        self.speeds.append(speed_permille)
+        await dest.write(make_wav(self._duration(speed_permille)))
+
+
 class StubbornFake(SpeedAdjustableFake):
     """話速を上げても尺が縮まない（引数を無視する壊れた生成器）。"""
 
@@ -180,6 +206,68 @@ async def test_last_scene_is_held_to_the_storyboard_end_too(
 
     artifact = parse_scene_voice_artifact(await store.get_json(result.object_key))
     assert artifact.duration_ms <= 8000 and len(generator.speeds) == 1
+
+
+S2_SPAN_MS = 9000  # STORYBOARD_LAYOUT: s2 は 8,000〜17,000 ms
+
+
+async def test_real_data_case_fits_at_the_cap_speed_where_a_linear_search_gave_up(
+    session_factory, store, workdir
+) -> None:
+    """9/19 s2 の実測型（区間 9,000 ms、等速 10,658 ms、固定の間 2 割、ゆらぎ）。
+
+    線形の見積もりを 2 回だけ繰り返す方式は 9,067 ms で VoiceExceedsSceneSpanError にしたが、
+    上限（1250‰）の速さでは 8,975 ms で収まった。失敗を宣言する前に上限で実測する。
+    """
+    generator = MeasuredModelFake(natural_ms=10658, jitter=(0.0, 0.03, 0.0, 0.0))
+    _, activities, request = await _run(session_factory, store, workdir, generator, "x", scene="s2")
+
+    result = await activities.generate_voice(request)
+
+    artifact = parse_scene_voice_artifact(await store.get_json(result.object_key))
+    assert artifact.duration_ms <= S2_SPAN_MS
+    assert generator.speeds[-1] == MAX_VOICE_SPEEDUP_PERMILLE
+    assert generator.calls <= 1 + VOICE_FIT_MAX_RESYNTHESES
+    assert artifact.generator.generation_profile_id.endswith(f"+fit{MAX_VOICE_SPEEDUP_PERMILLE}")
+
+
+async def test_a_mild_overrun_is_fitted_at_a_speed_below_the_cap(
+    session_factory, store, workdir
+) -> None:
+    """収まる最も遅い速さを採る。上限へ飛ばして聞こえ方を必要以上に変えない。"""
+    generator = MeasuredModelFake(natural_ms=9600)  # 区間 9,000 ms へ
+    _, activities, request = await _run(session_factory, store, workdir, generator, "x", scene="s2")
+
+    result = await activities.generate_voice(request)
+
+    artifact = parse_scene_voice_artifact(await store.get_json(result.object_key))
+    assert artifact.duration_ms <= S2_SPAN_MS
+    assert 1000 < generator.speeds[-1] < MAX_VOICE_SPEEDUP_PERMILLE
+    assert generator.calls == 2
+
+
+async def test_failure_is_declared_only_after_the_cap_speed_was_measured(
+    session_factory, store, workdir
+) -> None:
+    """失敗 = 上限の速さで実際に合成してなお区間を超えた。外挿だけで諦めない。合成は有限回。"""
+    generator = MeasuredModelFake(natural_ms=14000, jitter=(0.04, -0.04))
+    episode, activities, request = await _run(
+        session_factory, store, workdir, generator, "x", scene="s2"
+    )
+
+    with pytest.raises(ApplicationError) as info:
+        await activities.generate_voice(request)
+
+    assert info.value.type == "VoiceExceedsSceneSpanError" and info.value.non_retryable is True
+    assert generator.speeds[-1] == MAX_VOICE_SPEEDUP_PERMILLE
+    assert generator.calls <= 1 + VOICE_FIT_MAX_RESYNTHESES
+    assert "s2" in str(info.value) and str(MAX_VOICE_SPEEDUP_PERMILLE) in str(info.value)
+    [job] = [
+        j
+        for j in await _list_jobs(session_factory, episode)
+        if j.type is JobType.PRODUCE_SCENE_VOICE
+    ]
+    assert job.failure_class is FailureClass.NEEDS_INPUT
 
 
 async def _list_jobs(session_factory, episode_id):
