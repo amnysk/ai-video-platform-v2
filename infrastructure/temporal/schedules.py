@@ -9,8 +9,8 @@ INV-2: スケジューラは **Temporal の Schedule / workflow start だけ**�
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
-from datetime import timedelta
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from temporalio.client import (
@@ -25,6 +25,7 @@ from temporalio.client import (
     ScheduleUpdate,
     ScheduleUpdateInput,
 )
+from temporalio.service import RPCError, RPCStatusCode
 
 from contracts.pipeline import (
     DAILY_EPISODE_WORKFLOW,
@@ -33,6 +34,12 @@ from contracts.pipeline import (
     DailyEpisodeInput,
     PipelineOptions,
     ProductionParameters,
+)
+from contracts.schedule_guard import (
+    WATCHDOG_SCHEDULE_ID,
+    WATCHDOG_WORKFLOW,
+    WATCHDOG_WORKFLOW_ID_PREFIX,
+    WatchdogRequest,
 )
 from infrastructure.config import Settings
 
@@ -121,11 +128,24 @@ async def ensure_daily_episode_schedule(
     except ScheduleAlreadyRunningError:
         pass
 
-    def _replace(_current: ScheduleUpdateInput) -> ScheduleUpdate:
+    def _replace(current: ScheduleUpdateInput) -> ScheduleUpdate:
+        _keep_pause_state(schedule, current, requested_paused=paused)
         return ScheduleUpdate(schedule=schedule)
 
     await client.get_schedule_handle(schedule_id).update(_replace)
     return "updated"
+
+
+def _keep_pause_state(
+    schedule: Schedule, current: ScheduleUpdateInput, *, requested_paused: bool
+) -> None:
+    """定義の更新で、いまの pause（note を含む）を黙って外さない（ADR-0027）。
+
+    ``--apply`` が emergency pause を解除してしまう事故を防ぐ。paused での登録を明示したときだけ
+    新しい state を使う。
+    """
+    if not requested_paused:
+        schedule.state = current.description.schedule.state
 
 
 def describe_daily_schedule_spec(
@@ -155,3 +175,101 @@ def describe_daily_schedule_spec(
         ensure_ascii=False,
         indent=2,
     )
+
+
+# --------------------------------------------------------------------- 状態の読み書き（ADR-0027）
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleSnapshot:
+    """Schedule の状態のうちガードが見るもの。"""
+
+    exists: bool
+    paused: bool = False
+    note: str | None = None
+    #: 次回実行（UTC）。paused のときは Temporal が返さないので ``None``
+    next_run: datetime | None = None
+
+
+class TemporalScheduleControl:
+    """Schedule の describe / pause / unpause。Schedule を触る API はここに閉じる（INV-2）。"""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    async def describe(self, schedule_id: str) -> ScheduleSnapshot:
+        try:
+            description = await self._client.get_schedule_handle(schedule_id).describe()
+        except RPCError as exc:
+            if exc.status == RPCStatusCode.NOT_FOUND:
+                return ScheduleSnapshot(exists=False)
+            raise
+        state = description.schedule.state
+        upcoming = description.info.next_action_times
+        return ScheduleSnapshot(
+            exists=True,
+            paused=state.paused,
+            note=state.note,
+            next_run=upcoming[0] if upcoming else None,
+        )
+
+    async def pause(self, schedule_id: str, note: str) -> None:
+        await self._client.get_schedule_handle(schedule_id).pause(note=note)
+
+    async def unpause(self, schedule_id: str, note: str) -> None:
+        await self._client.get_schedule_handle(schedule_id).unpause(note=note)
+
+
+# --------------------------------------------------------------------- watchdog Schedule
+
+
+def build_watchdog_schedule(
+    *,
+    cron: str,
+    timezone: str,
+    request: WatchdogRequest,
+    task_queue: str | None = None,
+) -> Schedule:
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(f"unknown timezone: {timezone!r}") from exc
+    workflow_name, default_queue = WATCHDOG_WORKFLOW
+    return Schedule(
+        action=ScheduleActionStartWorkflow(
+            workflow_name,
+            request,
+            id=WATCHDOG_WORKFLOW_ID_PREFIX,
+            task_queue=task_queue or default_queue,
+            execution_timeout=timedelta(minutes=30),
+        ),
+        spec=ScheduleSpec(cron_expressions=[cron], time_zone_name=timezone),
+        policy=SchedulePolicy(
+            overlap=ScheduleOverlapPolicy.SKIP, catchup_window=timedelta(minutes=30)
+        ),
+        state=ScheduleState(note="avp: daily watchdog (ADR-0027)", paused=False),
+    )
+
+
+async def ensure_watchdog_schedule(
+    client: Client,
+    *,
+    cron: str,
+    timezone: str,
+    request: WatchdogRequest,
+    schedule_id: str = WATCHDOG_SCHEDULE_ID,
+) -> str:
+    """watchdog の Schedule を create-or-update する。``"created"`` / ``"updated"``。"""
+    schedule = build_watchdog_schedule(cron=cron, timezone=timezone, request=request)
+    try:
+        await client.create_schedule(schedule_id, schedule)
+        return "created"
+    except ScheduleAlreadyRunningError:
+        pass
+
+    def _replace(current: ScheduleUpdateInput) -> ScheduleUpdate:
+        _keep_pause_state(schedule, current, requested_paused=False)
+        return ScheduleUpdate(schedule=schedule)
+
+    await client.get_schedule_handle(schedule_id).update(_replace)
+    return "updated"

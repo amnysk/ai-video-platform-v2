@@ -12,6 +12,7 @@ from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
+from temporalio.client import Client
 
 from contracts.operations import OperationalSwitch
 from contracts.pipeline import (
@@ -25,6 +26,7 @@ from contracts.pipeline import (
     UploadGateRequest,
     UploadGateResult,
 )
+from contracts.schedule_guard import WATCHDOG_CHECK_ACTIVITY, WatchdogCheckRequest, WatchdogResult
 from contracts.states import ArtifactType, EpisodeStatus, ProviderCall, ReservationStatus
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
@@ -33,6 +35,9 @@ from infrastructure.db.repositories import (
     OperationalSwitchRepository,
     ProviderReservationRepository,
 )
+from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
+from infrastructure.temporal.schedules import TemporalScheduleControl
+from infrastructure.temporal.watchdog import TemporalWorkflowStartCounter, run_daily_watchdog
 
 
 class PipelineActivities:
@@ -42,13 +47,35 @@ class PipelineActivities:
         session_factory: async_sessionmaker[AsyncSession],
         paused_env: bool,
         uploads_paused_env: bool,
+        temporal_client: Client | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._paused_env = paused_env
         self._uploads_paused_env = uploads_paused_env
+        self._temporal_client = temporal_client
 
     def activities(self) -> Sequence[Callable[..., object]]:
-        return [self.check_paused, self.claim_daily_slot, self.upload_gate]
+        acts: list[Callable[..., object]] = [
+            self.check_paused,
+            self.claim_daily_slot,
+            self.upload_gate,
+        ]
+        if self._temporal_client is not None:
+            # watchdog は Temporal を読む（Schedule / visibility）ので client がある worker だけ持つ
+            acts.append(self.watchdog_check)
+        return acts
+
+    @activity.defn(name=WATCHDOG_CHECK_ACTIVITY)
+    async def watchdog_check(self, request: WatchdogCheckRequest) -> WatchdogResult:
+        """Daily の起動と Schedule の状態を検査し、異常を記録する（ADR-0027）。"""
+        assert self._temporal_client is not None
+        return await run_daily_watchdog(
+            control=TemporalScheduleControl(self._temporal_client),
+            session_factory=self._session_factory,
+            workflow_counter=TemporalWorkflowStartCounter(self._temporal_client),
+            notifier=LoggingAnomalyNotifier(),
+            request=request,
+        )
 
     async def _paused_reason(self, session: AsyncSession, *, include_uploads: bool) -> str | None:
         switches = OperationalSwitchRepository(session)
