@@ -67,6 +67,8 @@ from domain.errors import (
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
 from domain.production.manifest import ArtifactRef, build_manifest, check_manifest_coverage
 from domain.production.planning import plan_production
+from domain.production.voice_fit import check_voices_fit_spans
+from domain.storyboard.coverage import script_scene_spans
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -320,13 +322,23 @@ class ProductionActivities:
             None,
             image_media=image_media,
         )
+        voice_durations: dict[str, int] = {}
         voices = await self._collect(
             request.episode_id,
             ArtifactType.SCENE_VOICE,
             script_ids,
             storyboard_loaded,
             script_loaded,
+            voice_durations=voice_durations,
         )
+        # 描画（place_voices）が音声を置く区間と同じ窓に、実尺が収まること（ADR-0027）
+        try:
+            spans = script_scene_spans(storyboard, script)
+        except KeyError as exc:  # 台本シーンの一部が storyboard に無い（区間が定まらない）
+            raise ProductionInputInvalidError(
+                f"storyboard {storyboard_loaded.meta.id} does not cover script scene {exc}"
+            ) from exc
+        check_voices_fit_spans(spans, voice_durations)
         videos = await self._collect(
             request.episode_id,
             ArtifactType.SCENE_VIDEO,
@@ -410,6 +422,7 @@ class ProductionActivities:
         *,
         images: dict[str, ArtifactRef] | None = None,
         image_media: dict[str, str] | None = None,
+        voice_durations: dict[str, int] | None = None,
     ) -> dict[str, ArtifactRef]:
         """期待するシーンの現行 Artifact を読み、入力の固定（storyboard / 台本 / 画像）を照合する。
 
@@ -455,6 +468,8 @@ class ProductionActivities:
                 else:
                     voice = parse_scene_voice_artifact(loaded.payload)
                     scene_key, source_sb = voice.script_scene_id, voice.source_storyboard
+                    if voice_durations is not None:
+                        voice_durations[voice.script_scene_id] = voice.duration_ms
                     assert script is not None
                     if voice.source_script.sha256 != script.meta.sha256:
                         raise ProductionInputInvalidError(
