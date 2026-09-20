@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import date
 
 from contracts.operations import ClaimOutcome, OperationalSwitch
-
 from contracts.states import EpisodeStatus
 from domain.episode.transitions import EpisodeEvent
 from infrastructure.db.repositories import (
