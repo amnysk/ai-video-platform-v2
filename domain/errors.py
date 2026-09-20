@@ -192,6 +192,15 @@ class VoiceTimelineOverflowError(NeedsInputError):
     """ナレーション音声が次の音声と重なる、または総尺を許容以上にはみ出す（ADR-0019 §4）。"""
 
 
+class VoiceExceedsSceneSpanError(VoiceTimelineOverflowError):
+    """合成した音声の実尺が、描画がその音声に使える区間（台本シーンの窓）を超える（ADR-0028）。
+
+    制作工程の音声（有料の画像・動画の前）と、マニフェスト組み立て（描画の直前）で同じ検査が出す。
+    上限までの話速調整でも収まらない、または調整できない生成器。再実行しても同じ結果になるので
+    台本 / storyboard を作り直す（人間の判断）。
+    """
+
+
 class RenderEngineFailedError(RetryableError):
     """描画エンジンが非zero終了・シグナルで落ちた。上限付きで再実行する（ADR-0019 §11）。"""
 

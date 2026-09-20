@@ -51,3 +51,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0025](./0025-topic-planner.md) | Topic Planner（TopicPlan を確定してから Episode を作る） | Accepted |
 | [0026](./0026-script-locale.md) | 台本の locale は Strategy profile が決め、Topic Plan の題材を明示的に渡す | Accepted |
 | [0027](./0027-daily-schedule-guard-and-watchdog.md) | Daily Schedule の望ましい状態・maintenance pause・watchdog | Accepted |
+| [0028](./0028-voice-fit-before-render.md) | 音声の実尺を描画の前に区間へ合わせる | Accepted |

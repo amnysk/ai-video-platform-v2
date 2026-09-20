@@ -230,41 +230,62 @@ class PiperVoiceGenerator:
         return language == self._profile.language_family
 
     async def synthesize(self, text: str, language: str, dest: MediaDestination) -> None:
+        await self._synthesize(text, language, dest, self._profile.length_scale)
+
+    async def synthesize_at_speed(
+        self, text: str, language: str, dest: MediaDestination, *, speed_permille: int
+    ) -> None:
+        """話速を上げて合成する（``SpeedAdjustableVoiceGenerator``、ADR-0028）。
+
+        ``speed_permille`` は音声モデルの既定の話速を 1000 とした倍率。Piper の ``length_scale``
+        （小さいほど速い）は既定値を倍率で割る。声質（noise）と基の profile は変えない。
+        遅くする指定（1000 未満）は受けない。
+        """
+        if speed_permille < 1000:
+            raise ValueError(f"speed_permille must be >= 1000, got {speed_permille}")
+        length_scale = self._profile.length_scale * 1000 / speed_permille
+        await self._synthesize(text, language, dest, length_scale)
+
+    async def _synthesize(
+        self, text: str, language: str, dest: MediaDestination, length_scale: float
+    ) -> None:
         if not self.supports_language(language):
             raise VoiceLanguageUnsupportedError(
                 f"voice {self.voice_id} speaks {self._profile.language_family!r}, not {language!r}"
             )
         if isinstance(dest, FileMediaDestination):
-            await self._run(text, dest.path)
+            await self._run(text, dest.path, length_scale)
             return
         with tempfile.TemporaryDirectory(prefix="piper-") as tmp:
             out = Path(tmp) / "voice.wav"
-            await self._run(text, out)
+            await self._run(text, out, length_scale)
             await dest.write(out.read_bytes())
 
     def build_argv(self) -> list[str]:
         return [str(self._python), str(self._script)]
 
-    def build_stdin(self, text: str, output_path: Path) -> str:
+    def build_stdin(self, text: str, output_path: Path, length_scale: float | None = None) -> str:
         return json.dumps(
             {
                 "model_path": str(self._model_path),
                 "config_path": str(self._config_path),
                 "text": text,
                 "output_path": str(output_path),
-                "length_scale": self._profile.length_scale,
+                "length_scale": (
+                    self._profile.length_scale if length_scale is None else length_scale
+                ),
                 "noise_scale": self._profile.noise_scale,
                 "noise_w_scale": self._profile.noise_w_scale,
             },
             ensure_ascii=False,
         )
 
-    async def _run(self, text: str, output_path: Path) -> None:
+    async def _run(self, text: str, output_path: Path, length_scale: float | None = None) -> None:
         output_path.unlink(missing_ok=True)
         try:
             result = await self._runner.run(
                 self.build_argv(),
-                stdin=self.build_stdin(text, output_path),
+                stdin=self.build_stdin(text, output_path, length_scale),
                 env=_child_env(),
                 timeout_seconds=self._timeout_seconds,
             )

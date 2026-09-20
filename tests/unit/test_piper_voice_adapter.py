@@ -235,3 +235,49 @@ async def test_interpreter_without_piper_is_unavailable(voice_files) -> None:
             timeout_seconds=20,
             script=SYNTHESIZE_SCRIPT,
         )
+
+
+# --------------------------------------------------------------------------- 話速指定（ADR-0028）
+# 音声が区間を超えたときだけ、上限つきで話速を上げて合成し直す。話速は Piper の length_scale
+# （小さいほど速い）へ変換して子プロセスへ渡す。基の profile は変えない。
+
+
+async def test_piper_can_synthesize_at_a_given_speed(voice_files) -> None:
+    """Activity は isinstance で調整可否を決める。外れると本番で黙って調整が効かなくなる。"""
+    from domain.production.ports import SpeedAdjustableVoiceGenerator
+
+    assert isinstance(await _load(voice_files), SpeedAdjustableVoiceGenerator)
+
+
+async def test_speed_is_applied_relative_to_the_voice_default_length_scale(
+    voice_files, tmp_path
+) -> None:
+    """等速 1000 = 音声モデルの既定 length_scale。1250 ならその 1/1.25。声質は変えない。"""
+    generator = await _load(voice_files, length_scale=1.1)
+    out = tmp_path / "fast.wav"
+    await generator.synthesize_at_speed(
+        "Hello there.", "en", FileMediaDestination(out), speed_permille=1250
+    )
+    sent = json.loads((tmp_path / "fast.wav.args.json").read_text())
+    assert sent["length_scale"] == pytest.approx(1.1 / 1.25)
+    assert (sent["noise_scale"], sent["noise_w_scale"]) == (0.667, 0.8)
+
+
+async def test_speed_adjustment_does_not_change_the_base_profile(voice_files, tmp_path) -> None:
+    """input_hash の材料（profile）が呼び出しごとに変わらない（INV-17）。"""
+    generator = await _load(voice_files)
+    before = generator.generation_profile_id
+    await generator.synthesize_at_speed(
+        "Hello.", "en", FileMediaDestination(tmp_path / "a.wav"), speed_permille=1200
+    )
+    assert generator.generation_profile_id == before
+    assert generator.speed_permille == 1000
+
+
+async def test_speed_below_neutral_is_refused(voice_files, tmp_path) -> None:
+    """遅くする用途は無い。上限つきの「速くする」調整だけを受ける。"""
+    generator = await _load(voice_files)
+    with pytest.raises(ValueError):
+        await generator.synthesize_at_speed(
+            "Hello.", "en", FileMediaDestination(tmp_path / "a.wav"), speed_permille=900
+        )
