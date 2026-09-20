@@ -5,8 +5,9 @@
 構造::
 
     admit → plan →
-      並行 { 音声: 台本シーンごとに VOICE_GENERATE（Temporal retry 最大3回）
-             シーン: storyboard シーンごとに
+      音声: 台本シーンごとに VOICE_GENERATE（Temporal retry 最大3回）。**全部成功してから**次へ
+            （実尺が区間に収まるかを非課金のうちに判定する。ADR-0027）
+      並行 { シーン: storyboard シーンごとに
                      画像ラウンド [IMAGE_SUBMIT(1回) → 再利用でなければ IMAGE_AWAIT(retry 5回)
                                    → 状態不明の失敗なら同じ予約で再 await（上限つき）]
                      → 動画ラウンド [VIDEO_SUBMIT(1回) → VIDEO_AWAIT(同上)] }
@@ -106,6 +107,8 @@ ASSEMBLE_ACTIVITY_TIMEOUT = timedelta(minutes=5)
 SUBMIT_ACTIVITY_TIMEOUT = timedelta(minutes=5)
 #: ローカル TTS 1シーン分。
 VOICE_ACTIVITY_TIMEOUT = timedelta(minutes=10)
+#: 音声を有料メディアより先に済ませる（ADR-0027）。既存の実行履歴の再生を壊さないための patch id
+VOICE_GATE_PATCH_ID = "voice-before-paid-media"
 
 #: 状態系 Activity（admit / plan / assemble / mark_ready / record_failure）は Episode を
 #: ``in_progress`` から出す唯一の経路なので、DB の一時障害で諦めない: 回数無制限・backoff 上限1分・
@@ -388,6 +391,13 @@ class ProductionWorkflow:
 
         for voice in plan.voices:
             self._spawn(lambda v=voice: self._voice(request, plan, v, voice_slots, result))
+        if workflow.patched(VOICE_GATE_PATCH_ID):
+            # 音声はローカル・非課金で、合成の実尺が区間に収まるかをここで判定する（ADR-0027）。
+            # 溢れる音声があるまま有料の画像・動画を回して描画で落とさないよう、音声の枝が
+            # すべて成功してから画像・動画を起動する。
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+            if self._failures:
+                return
         for image in plan.images:
             video = videos[image.scene_id]
             self._spawn(

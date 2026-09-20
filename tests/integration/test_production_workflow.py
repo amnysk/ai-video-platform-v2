@@ -191,6 +191,9 @@ class Mocks:
                 return SubmitResult(
                     reservation_id="", artifact=_artifact(f"img-{req.scene_id}", reused=True)
                 )
+            if isinstance(behavior, tuple):  # (遅延秒, 例外): 兄弟の await が走り出してから失敗する
+                await asyncio.sleep(behavior[0])
+                raise behavior[1]
             if isinstance(behavior, BaseException):
                 raise behavior
             self._enter("image")
@@ -484,7 +487,10 @@ async def test_workflow_side_concurrency_is_bounded(env, image, video, voice) ->
 async def test_terminal_failure_cancels_in_flight_awaits(env) -> None:
     mocks = Mocks(
         hang_image_await={"sb1"},
-        voice_errors={"s2": [_error(ProductionInputMissingError, "no script scene")]},
+        # 音声は画像・動画より先に済む（ADR-0027）ので、兄弟の cancel は別シーンの画像の失敗で起こす
+        image_submit_behavior={
+            ("sb2", 1): (1.0, _error(ProductionInputMissingError, "no script scene"))
+        },
         delay_seconds=0.3,
     )
     result = await _run(env, mocks, image_concurrency=4)
