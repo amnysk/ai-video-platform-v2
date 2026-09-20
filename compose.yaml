@@ -124,8 +124,8 @@ services:
     ports: ["8233:8080"]
 
   migrate:
-    # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は base を明示する
-    build: {context: ., target: base}
+    # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は app を明示する（revision label つき）
+    build: {context: ., target: app}
     image: avp2-app:local
     profiles: [core]
     depends_on:
@@ -136,8 +136,8 @@ services:
     restart: "no"
 
   api:
-    # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は base を明示する
-    build: {context: ., target: base}
+    # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は app を明示する（revision label つき）
+    build: {context: ., target: app}
     image: avp2-app:local
     profiles: [core]
     depends_on:
@@ -153,9 +153,9 @@ services:
       ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   dummy-worker:
-    # 骨組み worker は既存の base イメージのまま（worker イメージの依存を要しない）
-    # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は base を明示する
-    build: {context: ., target: base}
+    # 骨組み worker は既存の app（base + revision label）イメージのまま（worker イメージの依存を要しない）
+    # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は app を明示する（revision label つき）
+    build: {context: ., target: app}
     image: avp2-app:local
     profiles: [core]
     init: true

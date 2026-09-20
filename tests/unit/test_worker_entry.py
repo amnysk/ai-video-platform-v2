@@ -129,3 +129,21 @@ def test_sigterm_handler_forwards_sigint(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(signal, "raise_signal", raised.append)
     worker_entry._on_sigterm(signal.SIGTERM, None)
     assert raised == [signal.SIGINT]
+
+
+def test_start_log_reports_image_revision(make_module, caplog: pytest.LogCaptureFixture) -> None:
+    """稼働中 worker がどの版のコードかをログから辿れる（docs/testing/worker-versions.md）。"""
+    caplog.set_level(logging.INFO, logger="worker_entry")
+    run(
+        make_module("return None\n"),
+        clock=_clock(0, 1),
+        sleep=Sleeps(),
+        env={"AVP_GIT_REVISION": "abc123"},
+    )
+    assert any("revision=abc123" in r.getMessage() for r in caplog.records)
+
+
+def test_start_log_marks_unknown_revision(make_module, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="worker_entry")
+    run(make_module("return None\n"), clock=_clock(0, 1), sleep=Sleeps(), env={})
+    assert any("revision=unknown" in r.getMessage() for r in caplog.records)
