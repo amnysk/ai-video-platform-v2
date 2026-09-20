@@ -17,6 +17,7 @@ from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.temporal.connect import connect_with_retry
 from workers.pipeline.activities import PipelineActivities
+from workers.pipeline.watchdog import DailyWatchdogWorkflow
 from workers.pipeline.workflows import DailyEpisodeWorkflow, EpisodePipelineWorkflow
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ def build_worker(
     return Worker(
         client,
         task_queue=task_queue,
-        workflows=[DailyEpisodeWorkflow, EpisodePipelineWorkflow],
+        workflows=[DailyEpisodeWorkflow, EpisodePipelineWorkflow, DailyWatchdogWorkflow],
         activities=activities.activities(),
     )
 
@@ -41,6 +42,7 @@ async def main() -> None:
         session_factory=session_factory_from_settings(settings),
         paused_env=settings.paused,
         uploads_paused_env=settings.uploads_paused,
+        temporal_client=client,
     )
     worker = build_worker(client, activities)
     logger.info(
