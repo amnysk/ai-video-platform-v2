@@ -33,6 +33,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from contracts.operations import OperationalSwitch
+from contracts.schedule_guard import AnomalyKind
 from contracts.states import (
     ArtifactType,
     EpisodeStatus,
@@ -301,6 +302,27 @@ class DailyEpisodeSlotRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class OperationalAnomalyRow(Base):
+    """運用異常（ADR-0027）。``(kind, anomaly_date)`` で1日1行。通知先は将来ここから読む。"""
+
+    __tablename__ = "operational_anomalies"
+    __table_args__ = (
+        _check("kind", AnomalyKind, "ck_operational_anomalies_kind"),
+        UniqueConstraint("kind", "anomaly_date", name="uq_operational_anomalies_kind_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    anomaly_date: Mapped[date] = mapped_column(Date, nullable=False)
+    #: 人が読む状況（secret を入れない。INV-20）
+    detail: Mapped[dict] = mapped_column(JSON, nullable=False)
+    first_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    occurrences: Mapped[int] = mapped_column(Integer, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AnalyticsSnapshotRow(Base):
