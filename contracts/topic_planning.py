@@ -570,8 +570,13 @@ class AnalyticsSummary:
     #: 0..1。データ量に応じた信頼度。0 なら analytics_fit は採点に効かない
     confidence: float = 0.0
     features: list[FeaturePerformance] = field(default_factory=list)
-    #: 窓（"7d" / "28d" / "90d"）ごとのチャンネル合計（views など）。prompt 用の要約
+    #: 窓（"7d" / "28d" / "90d"）ごとのチャンネル合計（views など）。prompt 用の要約。
+    #: 窓だけを鍵にする（視聴者構成を混ぜない。型注釈と実際の形が食い違うと復号できない: ADR-0029）
     totals: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: チャンネル視聴者の構成比（0..1）。``"summary"``（country_us など単一の比率）と、
+    #: 内訳ごと（``age_groups`` / ``genders`` / ``countries`` / ``content_types``。鍵は API の値）。
+    #: 取れなかった項目は含めない
+    audience: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass

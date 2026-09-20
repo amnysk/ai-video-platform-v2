@@ -19,13 +19,14 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import date, datetime
 from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
+from temporalio.converter import DataConverter
 
 from contracts.artifacts import extract_json_object
 from contracts.topic_planning import (
@@ -108,6 +109,15 @@ def report_from_payload(payload: dict[str, Any]) -> AnalyticsReport:
     )
 
 
+def _load_report(payload: dict[str, Any]) -> AnalyticsReport | None:
+    """保存済み payload を読む。読めない形（別版の項目など）なら None（best-effort）。"""
+    try:
+        return report_from_payload(payload)
+    except (TypeError, ValueError, KeyError, AttributeError) as exc:
+        logger.warning("saved analytics snapshot unreadable (%s); ignoring it", type(exc).__name__)
+        return None
+
+
 def _totals(report: AnalyticsReport) -> dict[str, dict[str, float]]:
     totals: dict[str, dict[str, float]] = {}
     for window, videos in sorted(report.videos_by_window.items()):
@@ -119,10 +129,59 @@ def _totals(report: AnalyticsReport) -> dict[str, dict[str, float]]:
             "shares": sum(v.shares for v in videos),
             "subscribers_gained": sum(v.subscribers_gained for v in videos),
         }
-    audience = {k: v for k, v in asdict(report.audience).items() if v is not None}
-    if audience:
-        totals["audience"] = audience
     return totals
+
+
+def _audience(shares: AudienceShares) -> dict[str, dict[str, float]]:
+    """``AudienceShares`` → ``AnalyticsSummary.audience``。
+
+    項目名は ``AudienceShares`` のフィールドから導く（ここに列挙し直さない）。単一の比率は
+    ``summary`` へ、dict の内訳はフィールド名の下へ。None・空は含めない。
+    """
+    summary: dict[str, float] = {}
+    breakdowns: dict[str, dict[str, float]] = {}
+    for f in fields(shares):
+        value = getattr(shares, f.name)
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            if value:
+                breakdowns[f.name] = {str(k): float(v) for k, v in value.items()}
+        else:
+            summary[f.name] = float(value)
+    return {**({"summary": summary} if summary else {}), **breakdowns}
+
+
+def _roundtrip(value: object) -> None:
+    """workflow が Activity の結果を復号する経路（既定 converter・型注釈で復号）と同じ往復。"""
+    converter = DataConverter.default.payload_converter
+    converter.from_payload(converter.to_payload(value), type(value))
+
+
+def ensure_decodable(context: PlanningContext) -> PlanningContext:
+    """workflow が復号できない ``PlanningContext`` を返さない（ADR-0029）。
+
+    復号の失敗は Activity の失敗ではなく workflow task の失敗になり、Temporal は成功するまで
+    無限に再試行する（Activity の例外だけを見る fallback の梯子には届かない）。Analytics は
+    best-effort なので、復号できない形なら analytics を捨てて ``no_analytics`` に劣化させる。
+    Content Memory 側の問題は握りつぶさない（劣化しても復号できなければ例外のまま）。
+    """
+    try:
+        _roundtrip(context)
+    except Exception as exc:  # noqa: BLE001 - 型だけ書く。値・例外文は写さない（INV-20）
+        logger.warning(
+            "planning context is undecodable (%s); dropping analytics (no_analytics)",
+            type(exc).__name__,
+        )
+    else:
+        return context
+    degraded = PlanningContext(
+        request=context.request,
+        analytics=AnalyticsSummary(mode=AnalyticsMode.NO_ANALYTICS.value),
+        memory=context.memory,
+    )
+    _roundtrip(degraded)
+    return degraded
 
 
 def _plan_as_memory(plan: TopicPlan) -> MemoryItem:
@@ -207,7 +266,8 @@ class TopicPlannerActivities:
                     report, {vid: _plan_as_memory(p) for vid, p in by_video.items()}, window
                 )
                 summary.totals = _totals(report)
-        return PlanningContext(request=request, analytics=summary, memory=memory)
+                summary.audience = _audience(report.audience)
+        return ensure_decodable(PlanningContext(request=request, analytics=summary, memory=memory))
 
     async def _analytics_report(
         self,
@@ -227,12 +287,15 @@ class TopicPlannerActivities:
                     )
                     await session.commit()
                 # 当日の snapshot が既にあれば save は既存を返す。id が指す payload で採点する
-                return report_from_payload(snapshot.payload), AnalyticsMode.NORMAL, snapshot.id
+                loaded = _load_report(snapshot.payload)
+                if loaded is not None:
+                    return loaded, AnalyticsMode.NORMAL, snapshot.id
         async with self._session_factory() as session:
             latest = await AnalyticsSnapshotRepository(session).latest(self._analytics_provider_id)
-        if latest is None:
+        loaded = _load_report(latest.payload) if latest is not None else None
+        if latest is None or loaded is None:
             return None, AnalyticsMode.NO_ANALYTICS, None
-        return report_from_payload(latest.payload), AnalyticsMode.STALE_ANALYTICS, latest.id
+        return loaded, AnalyticsMode.STALE_ANALYTICS, latest.id
 
     # ------------------------------------------------------------------ generate
 

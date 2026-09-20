@@ -6,6 +6,7 @@ time-skipping テストサーバ + 本物の ``TopicPlannerWorkflow`` + 本物�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import Callable, Sequence
@@ -443,6 +444,34 @@ async def test_live_analytics_is_saved_as_todays_snapshot(wf_env, session_factor
     assert plan.analytics_confidence == pytest.approx(0.5)
     prompt = h.generator.requests[0].prompt
     assert '"confidence": 0.5' in prompt
+
+
+@pytest.mark.asyncio
+async def test_real_shaped_audience_breakdown_reaches_the_prompt_through_the_worker(
+    wf_env, session_factory
+) -> None:
+    """2026-09-20 の E2E: 実 Analytics の内訳(dict)を含む結果を workflow が復号できず、
+    workflow task が失敗し続けた。worker と同じ converter 経由で最後まで通ることを固定する。"""
+    report = AnalyticsReport(
+        videos_by_window=_report().videos_by_window,
+        audience=AudienceShares(
+            country_us=0.4,
+            age_18_24=0.3,
+            age_groups={"age18-24": 0.3, "age25-34": 0.4},
+            genders={"female": 0.25, "male": 0.75},
+            countries={"US": 0.4},
+            content_types={"SHORTS": 0.95},
+        ),
+    )
+    h = harness(wf_env, session_factory, batch(cand("sumo_salt")), analytics=FakeAnalytics(report))
+    async with h.worker():
+        # 復号失敗は workflow task の再試行になり、待っても終わらない。ここで打ち切って失敗にする
+        result = await asyncio.wait_for(h.run(), timeout=30)
+    assert result["analytics_mode"] == AnalyticsMode.NORMAL
+    prompt = h.generator.requests[0].prompt
+    assert '"age_groups"' in prompt
+    assert '"age25-34": 0.4' in prompt
+    assert '"content_types"' in prompt
 
 
 # ------------------------------------------------------------ Test7 LLM 出力の契約違反（INV-23）
