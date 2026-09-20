@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -40,12 +41,21 @@ from domain.errors import (
     ProductionInputInvalidError,
     ProductionInputMissingError,
     TransientError,
+    VoiceExceedsSceneSpanError,
     classify_failure,
 )
 from domain.job.transitions import job_event_for_failure
 from domain.production.identity import narration_sha256, voice_input_hash
-from domain.production.media import MediaProbe, validate_voice
-from domain.production.ports import VoiceGenerator
+from domain.production.media import AudioInfo, MediaProbe, validate_voice
+from domain.production.ports import SpeedAdjustableVoiceGenerator, VoiceGenerator
+from domain.production.voice_fit import (
+    NEUTRAL_SPEED_PERMILLE,
+    VOICE_FIT_MAX_RESYNTHESES,
+    check_voices_fit_spans,
+    fitted_profile_id,
+    next_speedup_permille,
+)
+from domain.storyboard.coverage import script_scene_spans
 from infrastructure.db.repositories import ArtifactMetadataRepository, JobRepository
 from infrastructure.media.destination import FileMediaDestination
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
@@ -169,6 +179,13 @@ class VoiceActivities:
                 f"request says {list(request.storyboard_scene_ids)}"
             )
 
+        try:
+            span_ms = script_scene_spans(storyboard, script)[scene.id]
+        except KeyError as exc:  # 台本シーンの一部が storyboard に無い（区間が定まらない）
+            raise ProductionInputInvalidError(
+                f"storyboard {storyboard_loaded.meta.id} does not cover script scene {exc}"
+            ) from exc
+
         input_hash = compute_voice_input_hash(
             episode_id=request.episode_id,
             script_sha256=script_loaded.meta.sha256,
@@ -216,6 +233,7 @@ class VoiceActivities:
                 narration=scene.narration,
                 language=script.language,
                 input_hash=input_hash,
+                span_ms=span_ms,
             )
         except Exception as exc:
             await self._mark_job_failed(job_id, exc)
@@ -234,15 +252,14 @@ class VoiceActivities:
         narration: str,
         language: str,
         input_hash: str,
+        span_ms: int,
     ) -> ArtifactMetadata:
         work = self._workdir.create(request.episode_id, job_id)
         try:
             out = work.output / f"voice.{VOICE_EXTENSION}"
-            out.unlink(missing_ok=True)  # retry で前の試行の残りに追記しない
-            await self._generator.synthesize(narration, language, FileMediaDestination(out))
-            data = out.read_bytes() if out.is_file() else b""
-            info = self._probe.probe_audio(data)
-            validate_voice(info, len(data))
+            data, info, speed_permille = await self._synthesize_fitting(
+                out, script_scene_id, narration, language, span_ms
+            )
 
             media_sha = sha256_hex(data)
             media_key = media_object_key(
@@ -280,7 +297,9 @@ class VoiceActivities:
                 generator={
                     "generator": self._generator.generator_id,
                     "generator_model": self._generator.voice_id,
-                    "generation_profile_id": self._generator.generation_profile_id,
+                    "generation_profile_id": fitted_profile_id(
+                        self._generator.generation_profile_id, speed_permille
+                    ),
                 },
             )
             digest = sha256_hex(canonical_json_bytes(artifact))
@@ -323,6 +342,50 @@ class VoiceActivities:
                 self._workdir.cleanup(request.episode_id, job_id)
             except DomainError:
                 logger.warning("voice work directory cleanup failed job=%s", job_id, exc_info=True)
+
+    async def _synthesize_once(
+        self, out: Path, narration: str, language: str, speed_permille: int
+    ) -> tuple[bytes, AudioInfo]:
+        out.unlink(missing_ok=True)  # retry・再合成で前の試行の残りに追記しない
+        destination = FileMediaDestination(out)
+        if speed_permille == NEUTRAL_SPEED_PERMILLE:
+            await self._generator.synthesize(narration, language, destination)
+        else:
+            assert isinstance(self._generator, SpeedAdjustableVoiceGenerator)
+            await self._generator.synthesize_at_speed(
+                narration, language, destination, speed_permille=speed_permille
+            )
+        data = out.read_bytes() if out.is_file() else b""
+        info = self._probe.probe_audio(data)
+        validate_voice(info, len(data))
+        return data, info
+
+    async def _synthesize_fitting(
+        self, out: Path, script_scene_id: str, narration: str, language: str, span_ms: int
+    ) -> tuple[bytes, AudioInfo, int]:
+        """合成し、実尺が区間（``span_ms``）を超えたら話速を上げて合成し直す（ADR-0027）。
+
+        再合成は ``VOICE_FIT_MAX_RESYNTHESES`` 回まで、話速は ``MAX_VOICE_SPEEDUP_PERMILLE`` まで。
+        収まらなければ ``VoiceExceedsSceneSpanError``（有料の画像・動画の前に止まる）。
+        返す話速は実際に使ったもの（等速 = 1000）。
+        """
+        speed = NEUTRAL_SPEED_PERMILLE
+        data, info = await self._synthesize_once(out, narration, language, speed)
+        for _ in range(VOICE_FIT_MAX_RESYNTHESES):
+            faster = next_speedup_permille(
+                measured_ms=info.duration_ms, span_ms=span_ms, current_permille=speed
+            )
+            if faster is None:
+                break
+            if not isinstance(self._generator, SpeedAdjustableVoiceGenerator):
+                raise VoiceExceedsSceneSpanError(
+                    f"{script_scene_id}: voice {info.duration_ms} ms > span {span_ms} ms and "
+                    f"generator {self._generator.generator_id} cannot change speed"
+                )
+            speed = faster
+            data, info = await self._synthesize_once(out, narration, language, speed)
+        check_voices_fit_spans({script_scene_id: span_ms}, {script_scene_id: info.duration_ms})
+        return data, info, speed
 
     # ------------------------------------------------------------------ 補助
 
