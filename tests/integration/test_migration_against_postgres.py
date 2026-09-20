@@ -12,6 +12,7 @@ import pathlib
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
@@ -39,6 +40,11 @@ def _config(url: str) -> Config:
     config.set_main_option("sqlalchemy.url", url)
     config.attributes["configure_logger"] = False
     return config
+
+
+def _head(config: Config) -> str | None:
+    """migration の head。テストに版番号を書き写さない（migration を足すたびに壊れる）。"""
+    return ScriptDirectory.from_config(config).get_current_head()
 
 
 PROBE_DATABASE = "avp_alembic_probe_test"
@@ -230,12 +236,14 @@ def test_production_vocabulary_and_scene_keys_on_postgres(probe_url) -> None:
     engine.dispose()
 
     # Phase 4 の行が残っていれば downgrade は失敗し、スキーマは head のまま
-    # （downgrade は1トランザクション。head は 0009。ADR-0025）
+    # （downgrade は1トランザクション）
     with pytest.raises(IntegrityError):
         command.downgrade(config, "0003")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0009"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head(
+            config
+        )
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 
@@ -413,7 +421,9 @@ def test_upload_vocabulary_and_result_ref_on_postgres(probe_url) -> None:
         command.downgrade(config, "0005")
     engine = create_engine(probe_url)
     with engine.begin() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0009"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == _head(
+            config
+        )
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
 
