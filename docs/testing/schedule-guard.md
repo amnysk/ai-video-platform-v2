@@ -21,3 +21,10 @@
 `deploy-workers.sh` ではなく `with-maintenance-pause.sh`（EXIT trap で unpause + describe 確認）経由であること、
 guard を動かす python を `PYTHON=` で差し替えられること。wrapper 単体は正しくても、Makefile が
 それを通さなければ「pause したまま deploy が落ちる」経路が残る（2026-09-19 の事故の形）ため、配線そのものを固定する。
+
+## 既知の課題（この変更では直していない）
+
+- `tests/integration/test_pipeline_schedule.py` は Temporal を `localhost:7233`（本番の `default` namespace）へ直書きしており、
+  実行すると本番 Temporal に接続する。integration テスト全体の namespace 隔離（`TEST_TEMPORAL_NAMESPACE` 等）は
+  別ブランチ（`claude/topic-planner` の作業ツリーにある未コミットの WIP）が扱っている。この統合の検証では、
+  Temporal / Postgres / MinIO を別ポートに立てた使い捨て環境で実行した。

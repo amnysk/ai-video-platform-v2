@@ -97,3 +97,15 @@ Slack / メール等は同じ Protocol を実装して `workers/pipeline/activit
 で `scripts/deploy-workers.sh` を包む。成功・失敗・Ctrl-C のどれでも EXIT trap が `maintenance end`
 （unpause → `paused=false` と次回実行が未来であることを describe で確認）を実行する。
 Schedule が**運用者の pause（印なし）**のときは deploy だけ実行し、解除はしない（緊急停止を deploy が外さない）。
+
+## 2026-09-20 の事故と、本番での確認記録
+
+- 事故: 2026-09-19 04:21 頃、topic-planner の deploy のため `avp-daily-episode` を pause し、解除しないまま
+  9/20 06:00 を迎えて Episode が作られなかった（pause は印なし = 運用者の pause 扱い）。
+- 対策後の本番確認（2026-09-20）:
+  - `make deploy-workers` を運用者 pause 中に実行 → 「運用者の pause。解除しない」で deploy だけ実行され、pause は維持された（緊急停止を外さない）
+  - 検証完了後に `ensure-daily-schedule.py --unpause` → `Paused=false`、次回 2026-09-21 06:00 JST（= 2026-09-20T21:00Z）。
+    catchup で 9/20 分は起動していない（`ActionCounts.Total` が 3 のまま）
+  - `with-maintenance-pause.sh` の往復（pause+印 → `maintenance_in_progress` → 終了で unpause）を本番 Schedule で確認
+  - `avp-daily-watchdog` を登録・trigger → 9/20 分に `DAILY_AUTOMATION_NOT_STARTED` を記録（事故の検知そのもの）。
+    9/20 は Episode を作らない判断なので、運用者が `resolved_at` を手で入れた（記録は残す）
