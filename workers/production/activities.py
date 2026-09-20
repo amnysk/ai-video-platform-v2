@@ -331,7 +331,7 @@ class ProductionActivities:
             script_loaded,
             voice_durations=voice_durations,
         )
-        # 描画（place_voices）が音声を置く区間と同じ窓に、実尺が収まること（ADR-0027）
+        # 描画（place_voices）が音声を置く区間と同じ窓に、実尺が収まること（ADR-0028）
         try:
             spans = script_scene_spans(storyboard, script)
         except KeyError as exc:  # 台本シーンの一部が storyboard に無い（区間が定まらない）

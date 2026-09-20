@@ -193,7 +193,7 @@ class VoiceTimelineOverflowError(NeedsInputError):
 
 
 class VoiceExceedsSceneSpanError(VoiceTimelineOverflowError):
-    """合成した音声の実尺が、描画がその音声に使える区間（台本シーンの窓）を超える（ADR-0027）。
+    """合成した音声の実尺が、描画がその音声に使える区間（台本シーンの窓）を超える（ADR-0028）。
 
     制作工程の音声（有料の画像・動画の前）と、マニフェスト組み立て（描画の直前）で同じ検査が出す。
     上限までの話速調整でも収まらない、または調整できない生成器。再実行しても同じ結果になるので

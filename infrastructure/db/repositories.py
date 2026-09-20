@@ -19,6 +19,7 @@ from contracts.operations import (
     DailySlotClaim,
     OperationalSwitch,
 )
+from contracts.schedule_guard import AnomalyKind
 from contracts.states import (
     DEFAULT_MAX_ATTEMPTS,
     JOB_TERMINAL_STATUSES,
@@ -49,6 +50,7 @@ from infrastructure.db.models import (
     DailyEpisodeSlotRow,
     EpisodeRow,
     JobRow,
+    OperationalAnomalyRow,
     OperationalSwitchRow,
     ProviderReservationRow,
     TopicCandidateRow,
@@ -994,6 +996,140 @@ class OperationalSwitchRepository:
             row.reason = reason
             row.updated_at = _now()
         await self._session.flush()
+
+
+@dataclass(frozen=True, slots=True)
+class AnomalyRecord:
+    """``OperationalAnomalyRepository.record`` の結果。``is_new`` は新規か再発。"""
+
+    id: uuid.UUID
+    kind: str
+    anomaly_date: date
+    occurrences: int
+    is_new: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalAnomaly:
+    id: uuid.UUID
+    kind: str
+    anomaly_date: date
+    detail: dict[str, Any]
+    first_detected_at: datetime
+    last_detected_at: datetime
+    occurrences: int
+    resolved_at: datetime | None
+    notified_at: datetime | None
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    """SQLite は tz を落として返す。DB 由来の時刻は UTC として扱う。"""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+class OperationalAnomalyRepository:
+    """運用異常（ADR-0027）。同じ日の同じ種類は1行に畳み、通知は行ごとに1回。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _find(self, kind: AnomalyKind, anomaly_date: date) -> OperationalAnomalyRow | None:
+        result = await self._session.execute(
+            select(OperationalAnomalyRow)
+            .where(
+                OperationalAnomalyRow.kind == kind.value,
+                OperationalAnomalyRow.anomaly_date == anomaly_date,
+            )
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _entity(row: OperationalAnomalyRow) -> OperationalAnomaly:
+        return OperationalAnomaly(
+            id=row.id,
+            kind=row.kind,
+            anomaly_date=row.anomaly_date,
+            detail=dict(row.detail),
+            first_detected_at=_aware(row.first_detected_at) or row.first_detected_at,
+            last_detected_at=_aware(row.last_detected_at) or row.last_detected_at,
+            occurrences=row.occurrences,
+            resolved_at=_aware(row.resolved_at),
+            notified_at=_aware(row.notified_at),
+        )
+
+    async def record(
+        self, kind: AnomalyKind, anomaly_date: date, detail: dict[str, Any], *, now: datetime
+    ) -> AnomalyRecord:
+        for _ in range(2):
+            row = await self._find(kind, anomaly_date)
+            if row is not None:
+                reopened = row.resolved_at is not None
+                row.occurrences += 1
+                row.last_detected_at = now
+                row.detail = detail
+                if reopened:
+                    row.resolved_at = None
+                    row.notified_at = None
+                await self._session.flush()
+                return AnomalyRecord(row.id, kind.value, anomaly_date, row.occurrences, reopened)
+            try:
+                async with self._session.begin_nested():
+                    row = OperationalAnomalyRow(
+                        kind=kind.value,
+                        anomaly_date=anomaly_date,
+                        detail=detail,
+                        first_detected_at=now,
+                        last_detected_at=now,
+                        occurrences=1,
+                    )
+                    self._session.add(row)
+                    await self._session.flush()
+            except IntegrityError:
+                continue  # 別の検査が先に作った。読み直して数える
+            return AnomalyRecord(row.id, kind.value, anomaly_date, 1, True)
+        raise RuntimeError("could not record the anomaly")  # 2回とも衝突は起きない前提
+
+    async def resolve(self, kind: AnomalyKind, anomaly_date: date, *, now: datetime) -> bool:
+        row = await self._find(kind, anomaly_date)
+        if row is None or row.resolved_at is not None:
+            return False
+        row.resolved_at = now
+        await self._session.flush()
+        return True
+
+    async def resolve_open(self, kinds: Sequence[AnomalyKind], *, now: datetime) -> int:
+        result = await self._session.execute(
+            select(OperationalAnomalyRow).where(
+                OperationalAnomalyRow.kind.in_([k.value for k in kinds]),
+                OperationalAnomalyRow.resolved_at.is_(None),
+            )
+        )
+        rows = list(result.scalars())
+        for row in rows:
+            row.resolved_at = now
+        await self._session.flush()
+        return len(rows)
+
+    async def mark_notified(self, anomaly_id: uuid.UUID, *, now: datetime) -> None:
+        row = await self._session.get(OperationalAnomalyRow, anomaly_id)
+        if row is not None:
+            row.notified_at = now
+            await self._session.flush()
+
+    async def list_open(self) -> list[OperationalAnomaly]:
+        result = await self._session.execute(
+            select(OperationalAnomalyRow)
+            .where(OperationalAnomalyRow.resolved_at.is_(None))
+            .order_by(OperationalAnomalyRow.anomaly_date, OperationalAnomalyRow.kind)
+            .execution_options(populate_existing=True)
+        )
+        return [self._entity(r) for r in result.scalars()]
+
+    async def pending_notifications(self) -> list[OperationalAnomaly]:
+        return [r for r in await self.list_open() if r.notified_at is None]
 
 
 class DailyEpisodeSlotRepository:

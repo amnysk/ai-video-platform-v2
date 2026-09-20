@@ -68,7 +68,7 @@
 | `ProductionInputMissingError` | `needs_input` | 現行の storyboard / 台本 / シーン画像が無い |
 | `ProductionInputInvalidError` | `needs_input` | 入力 Artifact が読めない・sha256 不一致・相互に食い違う |
 | `VoiceLanguageUnsupportedError` | `needs_input` | 設定した音声モデルが台本の言語を話せない（音声モデルか台本の言語を人間が直す） |
-| `VoiceExceedsSceneSpanError` | `needs_input` | 合成した音声の実尺が台本シーンの区間を超え、上限までの話速調整でも収まらない（音声 Activity。マニフェスト組み立てでも同じ検査。ADR-0027）。`VoiceTimelineOverflowError` の下位型 |
+| `VoiceExceedsSceneSpanError` | `needs_input` | 合成した音声の実尺が台本シーンの区間を超え、上限までの話速調整でも収まらない（音声 Activity。マニフェスト組み立てでも同じ検査。ADR-0028）。`VoiceTimelineOverflowError` の下位型 |
 
 有料の submit Activity は `maximum_attempts=1`、await Activity は provider job 参照に対して冪等なので
 retry してよい（最大5回）。ただし await で**ラウンドが確定済み**の失敗（`ProviderJobFailedError` /
@@ -108,7 +108,7 @@ Activity 境界の写像（画像・音声・動画共通、`infrastructure/prod
 | `RenderInputIntegrityError` | `permanent` | 入力 Artifact の sha256 不一致・契約違反 |
 | `RenderSourceMediaError` | `needs_input` | 素材メディアが読めない・未対応形式・尺の食い違い |
 | `DurationReconciliationError` | `needs_input` | シーン動画の尺を storyboard の尺へ合わせられない（凍結の上限超過） |
-| `VoiceTimelineOverflowError` | `needs_input` | ナレーション音声が次の音声と重なる / 総尺を許容以上に超える（制作の音声検査・マニフェスト検査を通っていれば起きない最後の砦。ADR-0027） |
+| `VoiceTimelineOverflowError` | `needs_input` | ナレーション音声が次の音声と重なる / 総尺を許容以上に超える（制作の音声検査・マニフェスト検査を通っていれば起きない最後の砦。ADR-0028） |
 | `RenderEngineFailedError` | `retryable` | 描画エンジンの非zero終了・シグナル終了 |
 | `RenderEngineTimeoutError` | `retryable` | 描画エンジンの時間切れ（`RenderEngineFailedError` の下位型） |
 | `RenderWorkspaceFullError` | `retryable` | 作業領域の空き不足（事前検査 / ENOSPC）。自動削除しない |

@@ -235,7 +235,7 @@ class PiperVoiceGenerator:
     async def synthesize_at_speed(
         self, text: str, language: str, dest: MediaDestination, *, speed_permille: int
     ) -> None:
-        """話速を上げて合成する（``SpeedAdjustableVoiceGenerator``、ADR-0027）。
+        """話速を上げて合成する（``SpeedAdjustableVoiceGenerator``、ADR-0028）。
 
         ``speed_permille`` は音声モデルの既定の話速を 1000 とした倍率。Piper の ``length_scale``
         （小さいほど速い）は既定値を倍率で割る。声質（noise）と基の profile は変えない。

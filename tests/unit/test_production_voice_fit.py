@@ -1,4 +1,4 @@
-"""VoiceActivities が、合成後の実尺を台本シーンの区間へ合わせる（ADR-0027）。
+"""VoiceActivities が、合成後の実尺を台本シーンの区間へ合わせる（ADR-0028）。
 
 台本シーン s1 の区間は 8,000 ms（tests.support.voice.STORYBOARD_LAYOUT）。Temporal を介さず
 直接呼ぶ。SQLite + InMemoryArtifactStore + 尺を文字数で決める Fake（INV-18）。

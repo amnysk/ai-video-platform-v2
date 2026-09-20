@@ -1,4 +1,4 @@
-# api / dummy-worker / migrate の共通イメージ。起動コマンドだけ compose 側で切り替える。
+# api / dummy-worker / migrate の共通の土台（最終形は app stage）。起動コマンドだけ compose 側で切り替える。
 FROM python:3.13-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
@@ -26,6 +26,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 ENV PYTHONPATH=/app
 
 CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ---------------------------------------------------------------------------
+# api / migrate / dummy-worker が使う最終イメージ（compose の target: app）。
+# ビルド元の git revision（scripts/deploy-workers.sh が渡す。docs/operations/workers.md §10）を label に持つ。
+# revision を base に置かないのは、base の設定が変わると worker stage の apt / npm / piper の層が
+# 毎回作り直されるため（実測 2026-09-20: base に LABEL を置くと revision ごとに約 1 分の再ビルド）。
+FROM base AS app
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"
 
 # ---------------------------------------------------------------------------
 # 常駐 Worker 共通イメージ（ADR-0024）。script / storyboard / production* / render / upload / pipeline
@@ -69,5 +78,11 @@ ENV HOME=/home/avp \
     PIPER_PYTHON=/opt/piper/venv/bin/python \
     CODEX_BINARY=/usr/local/bin/codex
 USER 1000:1000
+
+# revision は最後に置く（重い apt / npm / piper の層より後ろ）。
+# ENV は worker_entry が起動ログに出す（api / migrate は worker_entry を使わないので base には置かない）。
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"
+ENV AVP_GIT_REVISION="${GIT_REVISION}"
 
 CMD ["python", "-m", "infrastructure.runtime.worker_entry", "workers.dummy.run_worker"]

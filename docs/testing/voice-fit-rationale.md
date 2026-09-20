@@ -1,4 +1,4 @@
-# テスト設計の根拠: 音声の実尺を描画の前に区間へ合わせる（ADR-0027）
+# テスト設計の根拠: 音声の実尺を描画の前に区間へ合わせる（ADR-0028）
 
 各テストが**なぜテストになったか**を残す。事故は 2026-09-19 の Episode `87bbf7de`
 （実尺 10,147 ms の音声が 7,000 ms の区間を超え、描画で `VoiceTimelineOverflowError`、
@@ -51,7 +51,7 @@
 | `test_media_starts_only_after_every_voice_succeeded` | 順序の契約（音声 → 画像・動画）。正常系が並行に戻る退行を検出 |
 
 補足: 既存 `tests/integration/test_production_workflow.py::test_terminal_failure_cancels_in_flight_awaits` は
-「音声の失敗で進行中の画像 await が cancel される」を検査していたが、音声が先に済む設計（ADR-0027）では
+「音声の失敗で進行中の画像 await が cancel される」を検査していたが、音声が先に済む設計（ADR-0028）では
 成立しない。検査の意図（兄弟の終端的な失敗で進行中の await が cancel される）は変えず、失敗を
 別シーンの画像 submit に移した（コミットメッセージに理由）。
 

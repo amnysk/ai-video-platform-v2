@@ -487,7 +487,7 @@ async def test_workflow_side_concurrency_is_bounded(env, image, video, voice) ->
 async def test_terminal_failure_cancels_in_flight_awaits(env) -> None:
     mocks = Mocks(
         hang_image_await={"sb1"},
-        # 音声は画像・動画より先に済む（ADR-0027）ので、兄弟の cancel は別シーンの画像の失敗で起こす
+        # 音声は画像・動画より先に済む（ADR-0028）ので、兄弟の cancel は別シーンの画像の失敗で起こす
         image_submit_behavior={
             ("sb2", 1): (1.0, _error(ProductionInputMissingError, "no script scene"))
         },

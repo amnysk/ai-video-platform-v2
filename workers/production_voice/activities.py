@@ -363,7 +363,7 @@ class VoiceActivities:
     async def _synthesize_fitting(
         self, out: Path, script_scene_id: str, narration: str, language: str, span_ms: int
     ) -> tuple[bytes, AudioInfo, int]:
-        """合成し、実尺が区間（``span_ms``）を超えたら話速を上げて合成し直す（ADR-0027）。
+        """合成し、実尺が区間（``span_ms``）を超えたら話速を上げて合成し直す（ADR-0028）。
 
         再合成は ``VOICE_FIT_MAX_RESYNTHESES`` 回まで、話速は ``MAX_VOICE_SPEEDUP_PERMILLE`` まで。
         収まらなければ ``VoiceExceedsSceneSpanError``（有料の画像・動画の前に止まる）。
