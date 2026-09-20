@@ -136,6 +136,9 @@ submit の失敗の扱い（`infrastructure/production/paid_job.py`）:
 - ADR-0015 の heartbeat / cancel の負債は **await Activity に限って実装する**。submit と
   他工程の Activity は短時間で終わるので対象外のまま
 - 並行数は task queue ごとに設定（既定 image 2 / voice 1 / video 1、`infrastructure/config.py`）
+- **追補（ADR-0027、2026-09-20）**: 音声は画像・動画と並行ではなく、**先に全部済ませる**。音声 Activity は
+  合成後の実尺を台本シーンの区間へ合わせ（上限つきの話速調整）、収まらなければ有料工程の前に
+  `VoiceExceedsSceneSpanError`（needs_input）で止める。マニフェスト組み立ても同じ検査をかける
 - seed は provider へ送らない。再現性は `input_hash` による Artifact の再利用で、
   バリエーションはラウンドで得る
 
