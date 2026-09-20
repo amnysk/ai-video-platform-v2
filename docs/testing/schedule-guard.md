@@ -14,3 +14,10 @@
 | `tests/architecture/test_schedule_guard_boundaries.py` | `unpause` を呼べる場所をガード・Schedule 実装・運用者の CLI に限定する（emergency pause を外す経路を増やさない） |
 | `tests/integration/test_schedule_guard_temporal.py` | fake では言い切れない実 Temporal の挙動（pause note が describe に出る・update が pause を保つ・begin/end/reconcile が emergency を触らない）。本番 namespace では動かさない |
 | `tests/contract/test_migration_matches_models.py`（既存） | migration 0010 とモデルの一致 |
+
+## 追加: deploy の配線（tests/contract/test_deploy_workers.py）
+
+`test_makefile_wraps_the_deploy_in_a_maintenance_pause`: `make deploy-workers` が素の
+`deploy-workers.sh` ではなく `with-maintenance-pause.sh`（EXIT trap で unpause + describe 確認）経由であること、
+guard を動かす python を `PYTHON=` で差し替えられること。wrapper 単体は正しくても、Makefile が
+それを通さなければ「pause したまま deploy が落ちる」経路が残る（2026-09-19 の事故の形）ため、配線そのものを固定する。

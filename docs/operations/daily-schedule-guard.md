@@ -90,3 +90,10 @@ Slack / メール等は同じ Protocol を実装して `workers/pipeline/activit
   呼ぶと別系統の監視になる
 - watchdog が判定できる daily の cron は `M H * * *` の形だけ。それ以外は `unsupported_cron` で判定しない
 - 検査は毎時 :35（JST）。始まらなかった日の検知は最長で予定 + 猶予 + 1 時間
+
+## `make deploy-workers` との配線
+
+`make deploy-workers [PYTHON=.venv/bin/python]` は `scripts/with-maintenance-pause.sh --reason deploy-workers --ttl 45m`
+で `scripts/deploy-workers.sh` を包む。成功・失敗・Ctrl-C のどれでも EXIT trap が `maintenance end`
+（unpause → `paused=false` と次回実行が未来であることを describe で確認）を実行する。
+Schedule が**運用者の pause（印なし）**のときは deploy だけ実行し、解除はしない（緊急停止を deploy が外さない）。

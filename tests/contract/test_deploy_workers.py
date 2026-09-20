@@ -68,6 +68,23 @@ def test_makefile_deploys_only_through_the_script() -> None:
     assert re.search(r"^workers-versions:.*\n\t.*scripts/workers-versions\.sh", makefile, re.M)
 
 
+def test_makefile_wraps_the_deploy_in_a_maintenance_pause() -> None:
+    """deploy 中の pause を「解除まで1つの処理」にする（ADR-0027）。
+
+    ``deploy-workers`` が素の ``deploy-workers.sh`` を直接呼ぶと、pause しても
+    解除を保証する trap が無い。wrapper 経由であることと、guard に使う python を
+    上書きできること（host に venv があるとは限らない）を固定する。
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    recipe = re.search(r"^deploy-workers:.*\n((?:\t.*\n)+)", makefile, re.M)
+    assert recipe, "deploy-workers target not found"
+    body = recipe.group(1)
+    assert "scripts/with-maintenance-pause.sh" in body
+    assert "--reason deploy-workers" in body
+    assert re.search(r"--\s+\./scripts/deploy-workers\.sh", body)
+    assert re.search(r"^PYTHON \?=", makefile, re.M)
+
+
 def _stage(dockerfile: str, name: str) -> str:
     """``FROM ... AS <name>`` から次の ``FROM`` の手前まで。"""
     body = re.split(rf"^FROM\s+\S+\s+AS\s+{name}\s*$", dockerfile, flags=re.M | re.I)[1]
