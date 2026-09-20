@@ -50,10 +50,10 @@ from domain.production.media import AudioInfo, MediaProbe, validate_voice
 from domain.production.ports import SpeedAdjustableVoiceGenerator, VoiceGenerator
 from domain.production.voice_fit import (
     NEUTRAL_SPEED_PERMILLE,
-    VOICE_FIT_MAX_RESYNTHESES,
+    VoiceTake,
     check_voices_fit_spans,
     fitted_profile_id,
-    next_speedup_permille,
+    next_speed_permille,
 )
 from domain.storyboard.coverage import script_scene_spans
 from infrastructure.db.repositories import ArtifactMetadataRepository, JobRepository
@@ -365,16 +365,20 @@ class VoiceActivities:
     ) -> tuple[bytes, AudioInfo, int]:
         """合成し、実尺が区間（``span_ms``）を超えたら話速を上げて合成し直す（ADR-0028）。
 
-        再合成は ``VOICE_FIT_MAX_RESYNTHESES`` 回まで、話速は ``MAX_VOICE_SPEEDUP_PERMILLE`` まで。
-        収まらなければ ``VoiceExceedsSceneSpanError``（有料の画像・動画の前に止まる）。
+        尺は話速に反比例しない（固定の間・ゆらぎ）ので、実測を積んで次の話速を決める
+        （``domain.production.voice_fit.next_speed_permille``）。合成は最大
+        ``1 + VOICE_FIT_MAX_RESYNTHESES`` 回、最後の 1 回は必ず上限の話速。上限の話速で実測して
+        なお収まらなければ ``VoiceExceedsSceneSpanError``（有料の画像・動画の前に止まる）。
         返す話速は実際に使ったもの（等速 = 1000）。
         """
         speed = NEUTRAL_SPEED_PERMILLE
         data, info = await self._synthesize_once(out, narration, language, speed)
-        for _ in range(VOICE_FIT_MAX_RESYNTHESES):
-            faster = next_speedup_permille(
-                measured_ms=info.duration_ms, span_ms=span_ms, current_permille=speed
-            )
+        takes = [VoiceTake(speed, info.duration_ms)]
+        while True:
+            try:
+                faster = next_speed_permille(span_ms=span_ms, takes=takes)
+            except VoiceExceedsSceneSpanError as exc:
+                raise VoiceExceedsSceneSpanError(f"{script_scene_id}: {exc}") from exc
             if faster is None:
                 break
             if not isinstance(self._generator, SpeedAdjustableVoiceGenerator):
@@ -384,6 +388,7 @@ class VoiceActivities:
                 )
             speed = faster
             data, info = await self._synthesize_once(out, narration, language, speed)
+            takes.append(VoiceTake(speed, info.duration_ms))
         check_voices_fit_spans({script_scene_id: span_ms}, {script_scene_id: info.duration_ms})
         return data, info, speed
 

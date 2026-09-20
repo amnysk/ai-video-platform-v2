@@ -8,14 +8,22 @@
 ## `tests/unit/test_voice_fit.py`（純粋関数、domain）
 
 区間との適合と話速の決め方は I/O を持たない規則なので、最下層（unit）で全分岐を固定する。
+2026-09-20 の追補（実データ: 尺は話速に線形でない）で、探索を「線形の見積もり」から「実測を積む探索」
+（`next_speed_permille(takes=...)`）に改めた。テストは尺を `固定 + 可変/倍率` にゆらぎを乗せたモデルで作る。
 
 | テスト | なぜ必要か / 落ちたら何が起きているか |
 |---|---|
 | `test_no_adjustment_when_voice_already_fits` | 収まる音声を触らない。ja の既存台本・短い英語を新しい経路へ巻き込まない |
-| `test_speedup_targets_a_little_inside_the_span` | 区間ぴったりを狙うと丸め・句読点の間で再び溢れる。余裕を残す規則が消えたことを検出 |
-| `test_speedup_is_relative_to_the_speed_already_applied` | 再合成の 2 回目は、1 回目の話速を土台にする（絶対値で計算すると効かない） |
-| `test_speedup_beyond_the_bound_is_refused_not_clamped` | 9/19 の実測（10,147 / 7,000 ms）は上限内で収まらない。丸めて通すと聞き取れない音声になる。失敗として返す |
-| `test_bound_is_a_parameter_so_profiles_can_differ` | 上限を 1 つの定数に縛らない（locale・profile が違っても同じ関数で使える。Shorts 固有値のハードコード禁止） |
+| `test_first_estimate_targets_a_little_inside_the_span` | 区間ぴったりを狙うと丸め・ゆらぎで再び溢れる。余裕を残す規則が消えたことを検出 |
+| `test_estimate_beyond_the_cap_goes_straight_to_the_cap_not_to_failure` | **追補の核**。線形の見積もりが上限を超えても実測前に諦めない（固定の間があるので外挿は楽観的にも外れる）。失敗は上限で実測してから |
+| `test_two_measurements_give_a_secant_estimate_for_a_fixed_plus_variable_model` | 2 点から固定の間を推定する。線形のままだと 9/19 s2 型で足りない |
+| `test_prefers_the_slowest_speed_that_fits` | 上限へ飛ばない。収まる速さが上限より遅いなら、そこで止まる（聞こえ方を必要以上に変えない） |
+| `test_real_data_case_fits_at_the_cap_where_a_linear_search_gave_up` | 9/19 s2 の実測型（区間 9,000 ms、等速 10,658 ms、上限で 8,975 ms）。旧方式は 9,067 ms で失敗した |
+| `test_the_last_permitted_resynthesis_is_always_at_the_cap` | 途中の外挿が上限より遅くても、失敗を宣言する前に必ず上限で実測する（これを外すと上限で収まる入力を取りこぼす） |
+| `test_failure_means_the_cap_speed_measured_too_long` | 失敗の根拠は「上限で実測して超えた」だけ。メッセージに全実測の数値を含める |
+| `test_non_monotonic_measurements_fall_back_to_the_cap` | ゆらぎ・縮まない生成器で 2 点が右下がりでない。壊れた外挿（ゼロ除算・負の傾き）をせず上限で確かめる |
+| `test_cap_is_a_parameter_so_profiles_can_differ` | 上限を 1 つの定数に縛らない（Shorts 固有値のハードコード禁止） |
+| `test_search_invariants_over_fixed_pause_ratio_and_jitter` | 超過率 7 × 固定の間 5 × ゆらぎ 4 = 140 通りの性質検査: 合成は最大 4 回・話速は単調増加で上限以下・成功なら収まる・失敗なら上限で実測して溢れた・上限で（ゆらぎ込みで）収まる入力は必ず成功。個別の数値例が見落とす境界を機械的に探す |
 | `test_check_voices_fit_spans_accepts_exact_fit_and_shorter` | 区間ちょうどは収まる（描画の判定は `終わり > 次の開始` だけを拒む）。境界を 1ms ずらす退行を検出 |
 | `test_check_voices_fit_spans_reports_every_offender` | 9/19 は 5/5 が溢れた。最初の 1 件だけ直して再実行を繰り返す運用にしない |
 | `test_check_voices_fit_spans_ignores_scenes_without_a_voice_yet` | 欠けは manifest の coverage 検査の責務。責務を混ぜない |
@@ -32,6 +40,9 @@
 | `test_voice_beyond_the_speed_bound_fails_as_needs_input_before_render` | 上限超は needs_input・non_retryable・job に needs_input を記録・溢れる音声を現行にしない |
 | `test_generator_without_speed_control_fails_instead_of_overflowing_later` | 調整できない生成器は即失敗（黙って通して描画で落とさない）。無駄に再合成しない |
 | `test_resynthesis_is_bounded_when_speed_does_not_shorten_the_voice` | 尺が縮まない壊れた生成器で無限に合成し直さない（上限つき） |
+| `test_real_data_case_fits_at_the_cap_speed_where_a_linear_search_gave_up` | 追補の実データ（9/19 s2）を Activity 経由で: 固定の間・ゆらぎのある Fake（`MeasuredModelFake`）で、旧方式が失敗した入力が上限の話速で収まり、話速が来歴に残る |
+| `test_a_mild_overrun_is_fitted_at_a_speed_below_the_cap` | 軽い超過は 2 回の合成・上限未満の話速で済む（上限へ飛ばさない） |
+| `test_failure_is_declared_only_after_the_cap_speed_was_measured` | 上限でも収まらない入力: needs_input・non_retryable・job に needs_input・合成は最大 4 回・最後は上限の話速・メッセージにシーンと上限 |
 | `test_last_scene_is_held_to_the_storyboard_end_too` | 最後の台本シーンの区間（storyboard の終端まで）も同じ規則。区間の計算が最後だけ別になる退行を検出 |
 
 ## `tests/unit/test_piper_voice_adapter.py` の話速指定（Piper adapter。architecture テストが adapter を import してよい module を限っているので既存ファイルに置く）

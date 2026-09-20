@@ -121,7 +121,7 @@ class VoiceGenerator(Protocol):
 
 @runtime_checkable
 class SpeedAdjustableVoiceGenerator(VoiceGenerator, Protocol):
-    """話速を指定して合成できる生成器（ADR-0027）。``speed_permille`` は等速 = 1000。
+    """話速を指定して合成できる生成器（ADR-0028）。``speed_permille`` は等速 = 1000。
 
     合成した音声が台本シーンの区間を超えたときだけ、上限つきで話速を上げて合成し直すのに使う。
     持たない生成器は、超過をそのまま ``VoiceExceedsSceneSpanError`` にする。
