@@ -26,6 +26,7 @@ from contracts.render import (
     DEFAULT_RENDER_PROFILE_ID,
     DEFAULT_RENDER_TIMEOUT_SECONDS,
 )
+from contracts.schedule_guard import DEFAULT_WATCHDOG_CRON, DEFAULT_WATCHDOG_GRACE_SECONDS
 from contracts.topic_planning import (
     CONTENT_PROFILES,
     DEFAULT_CONTENT_PROFILE_ID,
@@ -139,6 +140,9 @@ class Settings(BaseSettings):
     daily_schedule_cron: str = DEFAULT_DAILY_SCHEDULE_CRON
     schedule_timezone: str = DEFAULT_SCHEDULE_TIMEZONE
     daily_schedule_id: str = DAILY_SCHEDULE_ID
+    #: daily watchdog（ADR-0027）。別の Schedule で毎時。猶予は予定時刻からの秒数
+    watchdog_cron: str = DEFAULT_WATCHDOG_CRON
+    watchdog_grace_seconds: int = DEFAULT_WATCHDOG_GRACE_SECONDS
     #: 自動 pipeline が Render に渡す出力 profile（Shorts 前提にしない）
     pipeline_render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
     #: ``PAUSED=true`` なら Daily の起動と投稿ゲートを止める（DB の switch と OR）
