@@ -142,3 +142,10 @@ ADR-0023 の `DailyEpisodeWorkflow` は Episode を作るが、Schedule の入�
   （`CreateEpisodeRequest`）・`episodes.topic` 列がこれに従う。列は migration 0009 で `String(500)` → `String(200)`
   （本番の最大長は 24 字で、切り詰めは起きない。200 超の行があれば ALTER が失敗して止まる）
 
+
+## 追補（2026-09-20、ADR-0029）
+
+実 Analytics の視聴者内訳が `PlanningContext` の復号を壊した（`totals` に dict が入った）。`totals` は窓だけにし、
+視聴者構成は `AnalyticsSummary.audience` へ分けた。`gather_context` は返す直前に往復を検査し、復号できなければ
+`no_analytics` へ劣化する。読めない保存済み snapshot も無視して次の段へ進む。詳細は
+[ADR-0029](./0029-topic-planner-activity-payload-shape.md)。
