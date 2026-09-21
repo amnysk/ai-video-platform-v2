@@ -13,7 +13,7 @@ from __future__ import annotations
 import ast
 import pathlib
 
-from tests.architecture.test_no_live_calls import FAL_TOKENS, YOUTUBE_TOKENS
+from tests.architecture.test_no_live_calls import FORBIDDEN_TOKENS
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 DOMAIN_RESEARCH = REPO / "domain" / "research"
@@ -99,7 +99,7 @@ def test_the_fakes_have_no_way_to_reach_the_network() -> None:
 
 
 def test_research_code_has_no_provider_endpoint_strings() -> None:
-    tokens = {*YOUTUBE_TOKENS, *FAL_TOKENS, "googleapis.com", "api.openai.com", "api.anthropic.com"}
+    tokens = {*FORBIDDEN_TOKENS, "googleapis.com"}  # 定義は test_no_live_calls.py の 1 か所
     violations: list[str] = []
     for directory in (DOMAIN_RESEARCH, INFRA_RESEARCH):
         for path in _files(directory):
