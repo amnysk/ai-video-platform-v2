@@ -325,6 +325,33 @@ class OperationalAnomalyRow(Base):
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ProviderAuthIncidentRow(Base):
+    """provider の認可拒否（401/403）の記録（ADR-0030）。
+
+    ``operational_anomalies``（1日1行）とは粒度が違う: こちらは数分単位のバースト検出に使うので
+    1件ずつ行を持つ。``PaidJobRunner.submit`` が予約を作る**前**に、同じ provider の直近の
+    未解決件数を読んで新規 submit を止めるかどうかを決める。
+    """
+
+    __tablename__ = "provider_auth_incidents"
+    __table_args__ = (
+        _check("provider", ProviderCall, "ck_provider_auth_incidents_provider"),
+        Index("ix_provider_auth_incidents_provider_occurred", "provider", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: HTTP 由来の拒否だけ埋まる（domain.errors.ProviderUnavailableError.http_status）。
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    episode_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="SET NULL"), nullable=True
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AnalyticsSnapshotRow(Base):
     """Analytics の取得結果（ADR-0025）。live 取得に失敗したときの stale fallback 元。"""
 
@@ -473,6 +500,7 @@ __all__ = [
     "EpisodeRow",
     "FailureClass",
     "JobRow",
+    "ProviderAuthIncidentRow",
     "ProviderReservationRow",
     "TopicCandidateRow",
     "TopicPlanRow",

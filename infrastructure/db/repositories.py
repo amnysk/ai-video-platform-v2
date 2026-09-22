@@ -52,6 +52,7 @@ from infrastructure.db.models import (
     JobRow,
     OperationalAnomalyRow,
     OperationalSwitchRow,
+    ProviderAuthIncidentRow,
     ProviderReservationRow,
     TopicCandidateRow,
     TopicPlanRow,
@@ -973,6 +974,58 @@ class ProviderReservationRepository:
         row.error_summary = (error_summary or "")[:2000] or None
         await self._session.flush()
         return _to_reservation(row)
+
+
+class ProviderAuthIncidentRepository:
+    """provider の認可拒否（401/403）の記録と、共有障害の抑止判定（ADR-0030）。
+
+    ``operational_anomalies``（1日1行）とは別テーブル。数分単位のウィンドウで数えるため。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(
+        self,
+        *,
+        provider: ProviderCall,
+        http_status: int | None,
+        episode_id: uuid.UUID | str | None,
+        now: datetime,
+    ) -> None:
+        row = ProviderAuthIncidentRow(
+            provider=provider.value,
+            http_status=http_status,
+            episode_id=_as_uuid(episode_id) if episode_id is not None else None,
+            occurred_at=now,
+        )
+        self._session.add(row)
+        await self._session.flush()
+
+    async def count_unresolved_within_window(
+        self, provider: ProviderCall, *, since: datetime
+    ) -> int:
+        result = await self._session.execute(
+            select(func.count(ProviderAuthIncidentRow.id)).where(
+                ProviderAuthIncidentRow.provider == provider.value,
+                ProviderAuthIncidentRow.resolved_at.is_(None),
+                ProviderAuthIncidentRow.occurred_at >= since,
+            )
+        )
+        return int(result.scalar_one())
+
+    async def resolve_open_for_provider(self, provider: ProviderCall, *, now: datetime) -> int:
+        result = await self._session.execute(
+            select(ProviderAuthIncidentRow).where(
+                ProviderAuthIncidentRow.provider == provider.value,
+                ProviderAuthIncidentRow.resolved_at.is_(None),
+            )
+        )
+        rows = list(result.scalars())
+        for row in rows:
+            row.resolved_at = now
+        await self._session.flush()
+        return len(rows)
 
 
 class OperationalSwitchRepository:

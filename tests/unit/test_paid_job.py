@@ -5,23 +5,28 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
+from contracts.production_activities import AUTH_INCIDENT_SUPPRESSION_THRESHOLD
 from contracts.states import ArtifactType, FailureClass, ProviderCall, ReservationStatus
 from domain.errors import (
     MediaValidationError,
+    ProviderCredentialSuspectedOutageError,
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
     ProviderSubmitAmbiguousError,
+    ProviderUnavailableError,
     UnreconciledReservationError,
 )
 from domain.production.ports import ImageRequest, JobFailed, JobPending, ProviderJobRef
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
+    ProviderAuthIncidentRepository,
     ProviderReservation,
     ProviderReservationRepository,
 )
@@ -542,3 +547,124 @@ async def test_concurrent_insert_of_the_same_round_resumes_instead_of_resubmitti
     assert isinstance(again, Submitted) and not again.newly_submitted
     assert again.reservation_id == first.reservation_id
     assert gen.submit_calls == 1 and calls["n"] >= 2
+
+
+# --------------------------------------------------------------- ADR-0030: provider auth incidents
+
+
+async def test_prepare_auth_failure_records_incident_and_creates_no_reservation(
+    runner, session_factory
+) -> None:
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+    with pytest.raises(ProviderUnavailableError):
+        await runner.submit(spec, gen, REQUEST)
+    assert gen.submit_calls == 0
+    async with session_factory() as session:
+        latest = await ProviderReservationRepository(session).find_latest_for_input(
+            spec.episode_id, spec.provider, spec.scene_id, spec.input_hash
+        )
+        assert latest is None  # 予約は一切作られない（非課金の準備は予約の前）
+        count = await ProviderAuthIncidentRepository(session).count_unresolved_within_window(
+            spec.provider, since=datetime.min.replace(tzinfo=UTC)
+        )
+        assert count == 1
+
+
+async def test_repeated_auth_incidents_suppress_new_submits_for_same_provider(
+    runner, session_factory
+) -> None:
+    for scene in ("sb1", "sb2", "sb3")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
+        spec = await _spec(session_factory, scene=scene)
+        gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+        with pytest.raises(ProviderUnavailableError):
+            await runner.submit(spec, gen, REQUEST)
+
+    blocked_spec = await _spec(session_factory, scene="sb4")
+    blocked_gen = FakeImageGenerator()
+    with pytest.raises(ProviderCredentialSuspectedOutageError):
+        await runner.submit(blocked_spec, blocked_gen, REQUEST)
+    assert blocked_gen.prepare_calls == 0  # 準備すら呼ばない
+    assert blocked_gen.submit_calls == 0
+    async with session_factory() as session:
+        latest = await ProviderReservationRepository(session).find_latest_for_input(
+            blocked_spec.episode_id,
+            blocked_spec.provider,
+            blocked_spec.scene_id,
+            blocked_spec.input_hash,
+        )
+        assert latest is None
+
+
+async def test_auth_outage_gate_is_scoped_to_one_provider(runner, session_factory) -> None:
+    for scene in ("sb1", "sb2", "sb3")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
+        spec = await _spec(session_factory, scene=scene)
+        gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+        with pytest.raises(ProviderUnavailableError):
+            await runner.submit(spec, gen, REQUEST)
+
+    video_spec = PaidJobSpec(
+        episode_id=(await _spec(session_factory, scene="sb9")).episode_id,
+        scene_id="sb9",
+        provider=ProviderCall.FAL_VIDEO,
+        artifact_type=ArtifactType.SCENE_VIDEO,
+        input_hash="v" * 64,
+        round=1,
+    )
+    from tests.support.production import FakeVideoGenerator
+
+    video_gen = FakeVideoGenerator(pending_polls=0)
+    outcome = await runner.submit(video_spec, video_gen, REQUEST)
+    assert isinstance(outcome, Submitted) and outcome.newly_submitted
+
+
+async def test_successful_prepare_resolves_open_incidents(runner, session_factory) -> None:
+    spec = await _spec(session_factory)
+    failing = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+    with pytest.raises(ProviderUnavailableError):
+        await runner.submit(spec, failing, REQUEST)
+
+    recovered_spec = await _spec(session_factory, scene="sb2")
+    healthy = FakeImageGenerator(pending_polls=0)
+    outcome = await runner.submit(recovered_spec, healthy, REQUEST)
+    assert isinstance(outcome, Submitted)
+
+    async with session_factory() as session:
+        count = await ProviderAuthIncidentRepository(session).count_unresolved_within_window(
+            spec.provider, since=datetime.min.replace(tzinfo=UTC)
+        )
+        assert count == 0
+
+
+async def test_auth_outage_gate_does_not_block_resuming_already_produced_scenes(
+    runner, session_factory
+) -> None:
+    """sb1〜sb5 のように既に Artifact がある scene は、抑止期間中でも再開できる（ADR-0030）。
+
+    ゲートは Reused / Submitted の早期returnより後（実際に provider I/O が要る場面）でだけ
+    評価する。抑止中に済んだ工程の再開まで止めると failure-policy.md §4
+    「済んだ工程は課金を伴わずに素通りする」が壊れる。
+    """
+    done_spec = await _spec(session_factory, scene="sb1")
+    async with session_factory() as session:
+        await ArtifactMetadataRepository(session).record(
+            episode_id=done_spec.episode_id,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            schema_version="1.0",
+            bucket="b",
+            object_key="k",
+            sha256="1" * 64,
+            input_hash=done_spec.input_hash,
+            scene_id="sb1",
+        )
+        await session.commit()
+
+    for scene in ("sb2", "sb3", "sb4")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
+        spec = await _spec(session_factory, scene=scene)
+        gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+        with pytest.raises(ProviderUnavailableError):
+            await runner.submit(spec, gen, REQUEST)
+
+    # 同じ provider が抑止中でも、既に成果物がある sb1 は provider を一切呼ばずに再利用できる
+    resumed = await runner.submit(done_spec, FakeImageGenerator(), REQUEST)
+    assert isinstance(resumed, Reused)

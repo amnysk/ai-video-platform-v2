@@ -198,3 +198,23 @@ DailyEpisodeWorkflow も無ければ `DAILY_AUTOMATION_NOT_STARTED` を `operati
 / `tests/unit/test_daily_watchdog.py::test_a_paused_schedule_is_detected_and_never_unpaused`
 / `tests/unit/test_daily_watchdog.py::test_slot_present_after_grace_is_healthy_with_no_anomaly`
 / `tests/unit/test_daily_watchdog.py::test_the_anomaly_is_recorded_and_notified_once_per_day`。
+
+## H. 共有障害の抑止（ADR-0030）
+
+### INV-27 確認された provider 資格情報障害は同じ provider への新規課金を止める
+直近のウィンドウ内で同一 provider に対する認可拒否（401/403）が閾値を超えたら、新しい予約を
+作らず `needs_input` で止める。閾値・ウィンドウは `contracts/production_activities.py` の
+単一宣言元を持つ。無関係な provider・Episode の処理は継続する（INV-13 と同じ粒度の思想）。
+済んだ工程の再開（Artifact 再利用・Submitted の引き継ぎ）はこのゲートの対象外
+（provider I/O が要らないため）。
+**機械検査**: `tests/unit/test_paid_job.py::test_prepare_auth_failure_records_incident_and_creates_no_reservation`
+/ `::test_repeated_auth_incidents_suppress_new_submits_for_same_provider`
+/ `::test_auth_outage_gate_is_scoped_to_one_provider`
+/ `::test_successful_prepare_resolves_open_incidents`
+/ `::test_auth_outage_gate_does_not_block_resuming_already_produced_scenes`
+
+### INV-28 provider 呼び出し失敗の診断情報は secret を含まず構造化して残す
+操作種別・HTTP status・provider request id・worker識別子・設定版・発生時刻をログに残す。
+Authorization ヘッダ・token・生の応答本文は出さない（INV-20 の具体化）。
+**機械検査**: `tests/unit/test_fal_storage.py`（`PROVIDER_AUTH_FAILURE` / `PROVIDER_TRANSIENT_FAILURE`
+/ `PROVIDER_REJECTED` の診断フィールドと secret 非漏洩を検査するテスト群）

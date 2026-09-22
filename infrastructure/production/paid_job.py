@@ -47,6 +47,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Protocol
@@ -54,11 +55,16 @@ from typing import Any, Protocol
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from contracts.production_activities import (
+    AUTH_INCIDENT_SUPPRESSION_THRESHOLD,
+    AUTH_INCIDENT_WINDOW_MINUTES,
+)
 from contracts.states import ArtifactType, ProviderCall, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
 from domain.errors import (
     InvalidTransitionError,
     MediaValidationError,
+    ProviderCredentialSuspectedOutageError,
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
@@ -71,6 +77,7 @@ from domain.production.identity import idempotency_key
 from domain.production.ports import JobFailed, JobPending, JobStatus, ProviderJobRef
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
+    ProviderAuthIncidentRepository,
     ProviderReservation,
     ProviderReservationRepository,
 )
@@ -253,11 +260,21 @@ class PaidJobRunner:
                         f"{spec.provider.value} call for scene {spec.scene_id}"
                     )
                 # 非課金の準備（例: 元画像のアップロード）は予約の**前**。
-                # 失敗しても台帳に何も残らない
+                # 失敗しても台帳に何も残らない。
+                # 認可障害ゲート（ADR-0030）もここで初めて評価する: Reused / Submitted /
+                # stale-unreconciled の早期returnより後なので、provider I/O が要らない
+                # 済んだ工程の再開（sb1〜sb5 の再利用等）を抑止期間中でも止めない
                 if not prepared:
+                    await self._check_auth_outage_gate(spec.provider)
                     prepare = getattr(generator, "prepare", None)
                     if prepare is not None:
-                        request = await prepare(request)
+                        try:
+                            request = await prepare(request)
+                        except ProviderUnavailableError as exc:
+                            await self._record_auth_incident(spec, exc)
+                            raise
+                        else:
+                            await self._resolve_auth_incidents(spec.provider)
                     prepared = True
                 if candidate is None:
                     try:
@@ -560,6 +577,45 @@ class PaidJobRunner:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+    # ---------------------------------------------------- provider 認可障害の抑止（ADR-0030）
+
+    async def _check_auth_outage_gate(self, provider: ProviderCall) -> None:
+        """同じ provider の未解決 incident が閾値を超えていれば、予約を作らずに止める。"""
+        since = datetime.now(UTC) - timedelta(minutes=AUTH_INCIDENT_WINDOW_MINUTES)
+        async with self._session_factory() as session:
+            count = await ProviderAuthIncidentRepository(session).count_unresolved_within_window(
+                provider, since=since
+            )
+        if count >= AUTH_INCIDENT_SUPPRESSION_THRESHOLD:
+            raise ProviderCredentialSuspectedOutageError(
+                f"{provider.value}: {count} unresolved auth incidents in the last "
+                f"{AUTH_INCIDENT_WINDOW_MINUTES} minutes; suppressing new submits until "
+                "a call succeeds or the incidents are resolved"
+            )
+
+    async def _record_auth_incident(self, spec: PaidJobSpec, exc: ProviderUnavailableError) -> None:
+        async with self._session_factory() as session:
+            await ProviderAuthIncidentRepository(session).record(
+                provider=spec.provider,
+                http_status=getattr(exc, "http_status", None),
+                episode_id=spec.episode_id,
+                now=datetime.now(UTC),
+            )
+            await session.commit()
+
+    async def _resolve_auth_incidents(self, provider: ProviderCall) -> None:
+        async with self._session_factory() as session:
+            resolved = await ProviderAuthIncidentRepository(session).resolve_open_for_provider(
+                provider, now=datetime.now(UTC)
+            )
+            await session.commit()
+        if resolved:
+            logger.info(
+                "resolved %s open auth incident(s) for provider=%s after a successful call",
+                resolved,
+                provider.value,
+            )
 
     async def _spend_conservatively(self, reservation_id: str, exc: BaseException) -> None:
         async with self._session_factory() as session:

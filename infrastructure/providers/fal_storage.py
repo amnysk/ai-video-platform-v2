@@ -10,16 +10,31 @@
 
 課金されないので、失敗は予約台帳の意味論と無関係（呼び出し側は予約**前**に実行する）:
 
-- 認証（401/403）→ ``ProviderUnavailableError``（needs_input）
+- 認証（401/403）→ ``ProviderUnavailableError``（needs_input）。**HTTP status だけを根拠にし、
+  応答本文から「原因」を断定しない**（ADR-0030）。401/403 は fal の応答本文を検査しても
+  原因（失効・レート制限・IP拒否等）を機械的に確定できる保証が無いため
 - 通信失敗 / 429 / 5xx / 応答の形が不正 → ``ProviderInvocationError``（retryable）
 - その他の 4xx（サイズ超過など）→ ``ProviderRejectedError``（needs_input）
 
-API キーと一時トークンはログ・例外メッセージに出さない。
+**診断（ADR-0030）**: 非2xx応答・通信失敗のたびに1行の構造化 ERROR ログを出す
+（``fal_operation`` / ``http_status`` / ``provider_request_id`` / ``provider_error_type`` /
+``worker_id`` / ``config_version`` / ``occurred_at``）。``provider_request_id`` は fal 公式
+SDK（``fal-client`` 1.0.1 ``client.py`` の ``_raise_for_status`` / ``_is_ingress_error``）が
+実際に読んでいる応答ヘッダ ``x-fal-request-id`` から取る。``provider_error_type`` も同SDKが
+使う ``x-fal-error-type`` ヘッダ（無ければ JSON body の ``error_type``）から取る。
+どちらも無ければ ``None`` のまま記録する（捏造しない）。
+
+API キーと一時トークン、Authorization ヘッダ値、生の応答本文はログ・例外メッセージに出さない
+（INV-20）。
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
+import socket
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -36,15 +51,75 @@ CDN_UPLOAD_URL = "https://v3.fal.media/files/upload"
 #: 生成の submit 直前に上げるので 1 日で足りる（provider は受理時に取得する）。
 DEFAULT_LIFECYCLE_SECONDS = 24 * 60 * 60
 
+logger = logging.getLogger(__name__)
+
+
+def _worker_id() -> str:
+    """コンテナ hostname（compose の各サービスに固有）。専用の識別子は増やさない。"""
+    return os.environ.get("HOSTNAME") or socket.gethostname()
+
+
+def _config_version() -> str:
+    """``AVP_GIT_REVISION``（``docs/testing/worker-versions.md`` / ADR-0024 追補と同じ宣言元）。"""
+    return os.environ.get("AVP_GIT_REVISION") or "unknown"
+
+
+def _error_type_from_body(response: httpx.Response) -> str | None:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if isinstance(body, dict):
+        value = body.get("error_type")
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _log_http_failure(response: httpx.Response, *, what: str, tag: str) -> None:
+    request_id = response.headers.get("x-fal-request-id")
+    error_type = response.headers.get("x-fal-error-type") or _error_type_from_body(response)
+    logger.error(
+        "%s fal_operation=%s http_status=%s provider_request_id=%s provider_error_type=%s "
+        "worker_id=%s config_version=%s occurred_at=%s",
+        tag,
+        what,
+        response.status_code,
+        request_id,
+        error_type,
+        _worker_id(),
+        _config_version(),
+        datetime.now(UTC).isoformat(),
+    )
+
+
+def _log_transport_failure(exc: httpx.TransportError, *, what: str) -> None:
+    logger.error(
+        "PROVIDER_TRANSIENT_FAILURE fal_operation=%s http_status=None provider_request_id=None "
+        "provider_error_type=%s worker_id=%s config_version=%s occurred_at=%s",
+        what,
+        type(exc).__name__,
+        _worker_id(),
+        _config_version(),
+        datetime.now(UTC).isoformat(),
+    )
+
 
 def _raise_for_status(response: httpx.Response, *, what: str) -> None:
     status = response.status_code
     if status < 400:
         return
     if status in (401, 403):
-        raise ProviderUnavailableError(f"fal storage {what} refused: HTTP {status} (credentials)")
+        _log_http_failure(response, what=what, tag="PROVIDER_AUTH_FAILURE")
+        raise ProviderUnavailableError(
+            f"fal storage {what} refused: HTTP {status}. Cause unconfirmed — see the "
+            "PROVIDER_AUTH_FAILURE diagnostic log line for this request.",
+            http_status=status,
+        )
     if status == 429 or status >= 500:
+        _log_http_failure(response, what=what, tag="PROVIDER_TRANSIENT_FAILURE")
         raise ProviderInvocationError(f"fal storage {what} failed: HTTP {status}")
+    _log_http_failure(response, what=what, tag="PROVIDER_REJECTED")
     raise ProviderRejectedError(f"fal storage {what} rejected: HTTP {status}")
 
 
@@ -125,6 +200,7 @@ class FalStorageClient:
         try:
             return await self._http.post(url, **kwargs)
         except httpx.TransportError as exc:
+            _log_transport_failure(exc, what=what)
             raise ProviderInvocationError(
                 f"fal storage {what} request failed: {type(exc).__name__}"
             ) from exc

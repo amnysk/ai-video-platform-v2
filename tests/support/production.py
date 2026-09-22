@@ -163,11 +163,15 @@ class _FakeAsyncJobGenerator:
         fail_with: JobFailed | None = None,
         ambiguous_submit: bool = False,
         cost_usd: float = 0.05,
+        prepare_error: Exception | None = None,
     ) -> None:
         self.pending_polls = pending_polls
         self.fail_with = fail_with
         self.ambiguous_submit = ambiguous_submit
         self.cost_usd = cost_usd
+        #: ADR-0030: prepare()（非課金の準備。予約の前）が投げる例外を注入できる。
+        self.prepare_error = prepare_error
+        self.prepare_calls = 0
         self.submit_calls = 0
         self.poll_calls = 0
         self.download_calls = 0
@@ -176,6 +180,12 @@ class _FakeAsyncJobGenerator:
 
     def estimate_cost_usd(self, request: Any) -> float:
         return self.cost_usd
+
+    async def prepare(self, request: Any) -> Any:
+        self.prepare_calls += 1
+        if self.prepare_error is not None:
+            raise self.prepare_error
+        return request
 
     async def submit(self, request: Any) -> ProviderJobRef:
         self.submit_calls += 1
