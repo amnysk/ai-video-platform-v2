@@ -26,7 +26,13 @@ from contracts.render import (
     DEFAULT_RENDER_PROFILE_ID,
     DEFAULT_RENDER_TIMEOUT_SECONDS,
 )
-from contracts.schedule_guard import DEFAULT_WATCHDOG_CRON, DEFAULT_WATCHDOG_GRACE_SECONDS
+from contracts.schedule_guard import (
+    DEFAULT_COMPLETION_DEADLINE_HOURS,
+    DEFAULT_STAGE_STALL_GRACE_MINUTES,
+    DEFAULT_UPLOAD_DEADLINE_HOURS,
+    DEFAULT_WATCHDOG_CRON,
+    DEFAULT_WATCHDOG_GRACE_SECONDS,
+)
 from contracts.topic_planning import (
     CONTENT_PROFILES,
     DEFAULT_CONTENT_PROFILE_ID,
@@ -143,6 +149,10 @@ class Settings(BaseSettings):
     #: daily watchdog（ADR-0027）。別の Schedule で毎時。猶予は予定時刻からの秒数
     watchdog_cron: str = DEFAULT_WATCHDOG_CRON
     watchdog_grace_seconds: int = DEFAULT_WATCHDOG_GRACE_SECONDS
+    #: Episode 進行・完成・投稿の監視（ADR-0031）。工程・尺に固有の値をここ以外に埋め込まない
+    stage_stall_grace_minutes: int = DEFAULT_STAGE_STALL_GRACE_MINUTES
+    completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
+    upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
     #: 自動 pipeline が Render に渡す出力 profile（Shorts 前提にしない）
     pipeline_render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
     #: ``PAUSED=true`` なら Daily の起動と投稿ゲートを止める（DB の switch と OR）

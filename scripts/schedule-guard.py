@@ -68,10 +68,15 @@ async def _watchdog_line(control: TemporalScheduleControl) -> str:
 
 
 async def _status(settings: Settings, control: TemporalScheduleControl, as_json: bool) -> int:
+    from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
     from infrastructure.temporal.schedule_guard import classify_snapshot
+    from workers.pipeline.activities import PipelineActivities
 
     now = datetime.now(UTC)
     report: dict[str, object] = {"now": now.isoformat()}
+    # ADR-0031 §3: ログのみが唯一の通知経路であることを診断で明示する（新フラグは増やさない）
+    is_log_only = PipelineActivities.notifier_factory is LoggingAnomalyNotifier
+    report["notifier"] = "log_only" if is_log_only else "configured"
     exit_code = EXIT_OK
     for key, schedule_id in (
         ("daily", settings.daily_schedule_id),
@@ -117,7 +122,12 @@ async def _status(settings: Settings, control: TemporalScheduleControl, as_json:
             }
             open_rows = await OperationalAnomalyRepository(session).list_open()
             report["open_anomalies"] = [
-                {"kind": r.kind, "date": r.anomaly_date.isoformat(), "occurrences": r.occurrences}
+                {
+                    "kind": r.kind,
+                    "date": r.anomaly_date.isoformat(),
+                    "occurrences": r.occurrences,
+                    "episode_id": str(r.episode_id) if r.episode_id else None,
+                }
                 for r in open_rows
             ]
             if open_rows:

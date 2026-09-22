@@ -305,17 +305,47 @@ class DailyEpisodeSlotRow(Base):
 
 
 class OperationalAnomalyRow(Base):
-    """運用異常（ADR-0027）。``(kind, anomaly_date)`` で1日1行。通知先は将来ここから読む。"""
+    """運用異常（ADR-0027 / ADR-0031）。
+
+    Schedule 系（``episode_id IS NULL``）は ``(kind, anomaly_date)`` で1日1行。
+    Episode 単位の異常（``episode_id IS NOT NULL``）は ``(kind, anomaly_date, episode_id)`` で
+    Episode ごとに1日1行（ADR-0031: 同日に複数 Episode が問題を起こしても取りこぼさない）。
+    通知先は将来ここから読む。
+    """
 
     __tablename__ = "operational_anomalies"
     __table_args__ = (
         _check("kind", AnomalyKind, "ck_operational_anomalies_kind"),
-        UniqueConstraint("kind", "anomaly_date", name="uq_operational_anomalies_kind_date"),
+        # sqlite_where も渡すのは、単体テストが sqlite の create_all で同じ部分インデックス制約を
+        # 検査するため（SQLite も部分インデックスをサポートする）。postgresql_where と揃えておく。
+        Index(
+            "uq_operational_anomalies_kind_date_schedule",
+            "kind",
+            "anomaly_date",
+            unique=True,
+            postgresql_where=text("episode_id IS NULL"),
+            sqlite_where=text("episode_id IS NULL"),
+        ),
+        Index(
+            "uq_operational_anomalies_kind_date_episode",
+            "kind",
+            "anomaly_date",
+            "episode_id",
+            unique=True,
+            postgresql_where=text("episode_id IS NOT NULL"),
+            sqlite_where=text("episode_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     anomaly_date: Mapped[date] = mapped_column(Date, nullable=False)
+    #: Episode 単位の異常だけ埋まる（ADR-0031）。Schedule 系は NULL のまま
+    episode_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(),
+        ForeignKey("episodes.id", ondelete="SET NULL", name="fk_operational_anomalies_episode_id"),
+        nullable=True,
+    )
     #: 人が読む状況（secret を入れない。INV-20）
     detail: Mapped[dict] = mapped_column(JSON, nullable=False)
     first_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

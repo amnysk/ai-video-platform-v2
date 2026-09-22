@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -195,6 +195,24 @@ class EpisodeRepository:
         if row is not None:
             row.workflow_id = workflow_id
             await self._session.flush()
+
+    async def list_progress_snapshots(
+        self, statuses: Sequence[EpisodeStatus]
+    ) -> list[EpisodeProgressSnapshot]:
+        """watchdog（ADR-0031）が進行・完成・投稿を判定するための最小限の読み取り専用ビュー。"""
+        result = await self._session.execute(
+            select(EpisodeRow).where(EpisodeRow.status.in_([s.value for s in statuses]))
+        )
+        return [
+            EpisodeProgressSnapshot(
+                id=row.id,
+                status=row.status,
+                status_changed_at=_aware(row.status_changed_at) or row.status_changed_at,
+                created_at=_aware(row.created_at) or row.created_at,
+                blocked_reason=row.blocked_reason,
+            )
+            for row in result.scalars()
+        ]
 
 
 class JobRepository:
@@ -1052,6 +1070,17 @@ class OperationalSwitchRepository:
 
 
 @dataclass(frozen=True, slots=True)
+class EpisodeProgressSnapshot:
+    """watchdog（ADR-0031）用の最小限の読み取り専用ビュー。domain の ``Episode`` は変更しない。"""
+
+    id: uuid.UUID
+    status: str
+    status_changed_at: datetime
+    created_at: datetime
+    blocked_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AnomalyRecord:
     """``OperationalAnomalyRepository.record`` の結果。``is_new`` は新規か再発。"""
 
@@ -1060,6 +1089,7 @@ class AnomalyRecord:
     anomaly_date: date
     occurrences: int
     is_new: bool
+    episode_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1073,6 +1103,7 @@ class OperationalAnomaly:
     occurrences: int
     resolved_at: datetime | None
     notified_at: datetime | None
+    episode_id: uuid.UUID | None = None
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -1088,12 +1119,15 @@ class OperationalAnomalyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def _find(self, kind: AnomalyKind, anomaly_date: date) -> OperationalAnomalyRow | None:
+    async def _find(
+        self, kind: AnomalyKind, anomaly_date: date, episode_id: uuid.UUID | None
+    ) -> OperationalAnomalyRow | None:
         result = await self._session.execute(
             select(OperationalAnomalyRow)
             .where(
                 OperationalAnomalyRow.kind == kind.value,
                 OperationalAnomalyRow.anomaly_date == anomaly_date,
+                OperationalAnomalyRow.episode_id == episode_id,
             )
             .execution_options(populate_existing=True)
         )
@@ -1111,13 +1145,25 @@ class OperationalAnomalyRepository:
             occurrences=row.occurrences,
             resolved_at=_aware(row.resolved_at),
             notified_at=_aware(row.notified_at),
+            episode_id=row.episode_id,
         )
 
     async def record(
-        self, kind: AnomalyKind, anomaly_date: date, detail: dict[str, Any], *, now: datetime
+        self,
+        kind: AnomalyKind,
+        anomaly_date: date,
+        detail: dict[str, Any],
+        *,
+        now: datetime,
+        episode_id: uuid.UUID | str | None = None,
     ) -> AnomalyRecord:
+        """スケジュール系（``episode_id=None``）は1日1行。Episode系は Episode ごとに1日1行。
+
+        ADR-0031。
+        """
+        eid = _as_uuid(episode_id) if episode_id is not None else None
         for _ in range(2):
-            row = await self._find(kind, anomaly_date)
+            row = await self._find(kind, anomaly_date, eid)
             if row is not None:
                 reopened = row.resolved_at is not None
                 row.occurrences += 1
@@ -1127,12 +1173,15 @@ class OperationalAnomalyRepository:
                     row.resolved_at = None
                     row.notified_at = None
                 await self._session.flush()
-                return AnomalyRecord(row.id, kind.value, anomaly_date, row.occurrences, reopened)
+                return AnomalyRecord(
+                    row.id, kind.value, anomaly_date, row.occurrences, reopened, eid
+                )
             try:
                 async with self._session.begin_nested():
                     row = OperationalAnomalyRow(
                         kind=kind.value,
                         anomaly_date=anomaly_date,
+                        episode_id=eid,
                         detail=detail,
                         first_detected_at=now,
                         last_detected_at=now,
@@ -1142,24 +1191,51 @@ class OperationalAnomalyRepository:
                     await self._session.flush()
             except IntegrityError:
                 continue  # 別の検査が先に作った。読み直して数える
-            return AnomalyRecord(row.id, kind.value, anomaly_date, 1, True)
+            return AnomalyRecord(row.id, kind.value, anomaly_date, 1, True, eid)
         raise RuntimeError("could not record the anomaly")  # 2回とも衝突は起きない前提
 
-    async def resolve(self, kind: AnomalyKind, anomaly_date: date, *, now: datetime) -> bool:
-        row = await self._find(kind, anomaly_date)
+    async def resolve(
+        self,
+        kind: AnomalyKind,
+        anomaly_date: date,
+        *,
+        now: datetime,
+        episode_id: uuid.UUID | str | None = None,
+    ) -> bool:
+        eid = _as_uuid(episode_id) if episode_id is not None else None
+        row = await self._find(kind, anomaly_date, eid)
         if row is None or row.resolved_at is not None:
             return False
         row.resolved_at = now
         await self._session.flush()
         return True
 
-    async def resolve_open(self, kinds: Sequence[AnomalyKind], *, now: datetime) -> int:
-        result = await self._session.execute(
-            select(OperationalAnomalyRow).where(
-                OperationalAnomalyRow.kind.in_([k.value for k in kinds]),
-                OperationalAnomalyRow.resolved_at.is_(None),
+    async def resolve_open(
+        self,
+        kinds: Sequence[AnomalyKind],
+        *,
+        now: datetime,
+        episode_id: uuid.UUID | str | None = None,
+        episode_ids: Sequence[uuid.UUID | str] | None = None,
+    ) -> int:
+        """``episode_id``: そのEpisodeの行だけ。``episode_ids``: 列挙したEpisodeの行だけ。
+
+        どちらも省略した場合はスケジュール系（``episode_id IS NULL``）の行だけを対象にする
+        （Episode系の行を誤って一括解決しないため）。
+        """
+        conditions: list[ColumnElement[bool]] = [
+            OperationalAnomalyRow.kind.in_([k.value for k in kinds]),
+            OperationalAnomalyRow.resolved_at.is_(None),
+        ]
+        if episode_id is not None:
+            conditions.append(OperationalAnomalyRow.episode_id == _as_uuid(episode_id))
+        elif episode_ids is not None:
+            conditions.append(
+                OperationalAnomalyRow.episode_id.in_([_as_uuid(e) for e in episode_ids])
             )
-        )
+        else:
+            conditions.append(OperationalAnomalyRow.episode_id.is_(None))
+        result = await self._session.execute(select(OperationalAnomalyRow).where(*conditions))
         rows = list(result.scalars())
         for row in rows:
             row.resolved_at = now
@@ -1172,13 +1248,14 @@ class OperationalAnomalyRepository:
             row.notified_at = now
             await self._session.flush()
 
-    async def list_open(self) -> list[OperationalAnomaly]:
-        result = await self._session.execute(
-            select(OperationalAnomalyRow)
-            .where(OperationalAnomalyRow.resolved_at.is_(None))
-            .order_by(OperationalAnomalyRow.anomaly_date, OperationalAnomalyRow.kind)
-            .execution_options(populate_existing=True)
-        )
+    async def list_open(
+        self, kinds: Sequence[AnomalyKind] | None = None
+    ) -> list[OperationalAnomaly]:
+        stmt = select(OperationalAnomalyRow).where(OperationalAnomalyRow.resolved_at.is_(None))
+        if kinds is not None:
+            stmt = stmt.where(OperationalAnomalyRow.kind.in_([k.value for k in kinds]))
+        stmt = stmt.order_by(OperationalAnomalyRow.anomaly_date, OperationalAnomalyRow.kind)
+        result = await self._session.execute(stmt.execution_options(populate_existing=True))
         return [self._entity(r) for r in result.scalars()]
 
     async def pending_notifications(self) -> list[OperationalAnomaly]:

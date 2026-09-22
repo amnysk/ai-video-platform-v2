@@ -66,7 +66,9 @@ Schedule の再登録（`--apply`）は冪等で、現在の pause を保つ。
 
 ## 5. 異常の読み方
 
-`operational_anomalies`（1日1行）と ERROR ログ `OPERATIONAL_ANOMALY anomaly=<KIND> date=...`。
+`operational_anomalies` — Schedule 系（下表の上5件）は1日1行、Episode 系（下表の残り4件、
+ADR-0031）は **Episode ごとに1日1行**（`episode_id` 列で区別。部分インデックス2本で強制）。
+ログは ERROR `OPERATIONAL_ANOMALY anomaly=<KIND> date=...`。
 
 | kind | 意味 | 対処 |
 |---|---|---|
@@ -75,14 +77,25 @@ Schedule の再登録（`--apply`）は冪等で、現在の pause を保つ。
 | `SCHEDULE_MAINTENANCE_OVERRUN` | maintenance pause が期限を過ぎ、ガードが解除した | deploy が `end` を呼べなかった。deploy 手順を確認 |
 | `SCHEDULE_MISSING` | Schedule が存在しない | `ensure-daily-schedule.py --apply` |
 | `SCHEDULE_NEXT_RUN_INVALID` | 動いているが次回実行が無い・遠い | describe を確認（cron・タイムゾーン） |
+| `EPISODE_STAGE_STALLED`（ADR-0031） | Episode が `blocked` / `needs_work` のまま停滞猶予（既定 `stage_stall_grace_minutes`）を超えた | `detail.reason` / `detail.resumable` を見て、再開可能なら該当工程の POST で再開 |
+| `EPISODE_NOT_COMPLETED_BY_DEADLINE`（ADR-0031） | 作成から完成期限（既定 `completion_deadline_hours`）を超えても `render_ready` 以降に達していない | 停滞中の工程を確認（多くは `EPISODE_STAGE_STALLED` と併発する） |
+| `EPISODE_NOT_UPLOADED_BY_DEADLINE`（ADR-0031） | `render_ready`/`approved` 到達から投稿期限（既定 `upload_deadline_hours`）を超えても `uploaded` に届かない | `UPLOADS_PAUSED` なら意図した停止（このkindは記録されない）。そうでなければ upload worker を確認 |
+| `PIPELINE_OUTCOME_MISMATCH`（ADR-0031） | `EpisodePipelineWorkflow` が Temporal 上は `completed` なのに型付き結果が `outcome=stopped` で、他のどの検査にも映らない | `detail.stopped_stage` / `detail.reason` を見て該当工程を確認。他の episode 系 kind と重複しないよう二重報告は避ける設計 |
 
 ```sql
-select kind, anomaly_date, occurrences, first_detected_at, resolved_at, notified_at
+select kind, anomaly_date, episode_id, occurrences, first_detected_at, resolved_at, notified_at
 from operational_anomalies order by anomaly_date desc, kind;
 ```
 
+`stage_stall_grace_minutes` / `completion_deadline_hours` / `upload_deadline_hours` の既定値は
+`contracts/schedule_guard.py` の単一宣言元（`infrastructure/config.py` の Settings で上書き可能）。
+Shorts 等の尺に固有の値をここ以外に埋め込まない。
+
 通知は `AnomalyNotifier`（`infrastructure/observability/anomaly_notifier.py`）。既定はログのみ。
-Slack / メール等は同じ Protocol を実装して `workers/pipeline/activities.py` で差し替える。
+Slack / メール等は同じ Protocol を実装し、`workers/pipeline/activities.py` の
+`PipelineActivities.notifier_factory` を差し替える（この1箇所が唯一の宣言元）。
+`schedule-guard.py status --json` の `"notifier"` フィールドが `"log_only"` のままなら、
+ログ以外の通知経路が無いことを意味する（`"configured"` になれば差し替え済み）。
 
 ## 6. 制限
 
@@ -90,6 +103,8 @@ Slack / メール等は同じ Protocol を実装して `workers/pipeline/activit
   呼ぶと別系統の監視になる
 - watchdog が判定できる daily の cron は `M H * * *` の形だけ。それ以外は `unsupported_cron` で判定しない
 - 検査は毎時 :35（JST）。始まらなかった日の検知は最長で予定 + 猶予 + 1 時間
+- `EPISODE_STAGE_STALLED` 等の `resumable` は暫定判定（ADR-0031 §4）。ADR-0032（統一再開エントリポイント）の
+  dry-run 判定に置き換わるまでの間だけ、既存の admit 表に基づく簡易判定を使う
 
 ## `make deploy-workers` との配線
 

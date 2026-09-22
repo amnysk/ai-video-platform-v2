@@ -218,3 +218,12 @@ DailyEpisodeWorkflow も無ければ `DAILY_AUTOMATION_NOT_STARTED` を `operati
 Authorization ヘッダ・token・生の応答本文は出さない（INV-20 の具体化）。
 **機械検査**: `tests/unit/test_fal_storage.py`（`PROVIDER_AUTH_FAILURE` / `PROVIDER_TRANSIENT_FAILURE`
 / `PROVIDER_REJECTED` の診断フィールドと secret 非漏洩を検査するテスト群）
+
+## I. 自動運転の完走監視（ADR-0031）
+
+### INV-29 watchdog は起動だけでなく進行・完成・投稿を判定する
+`blocked` / `needs_work` からの長期停滞、完成期限超過、投稿期限超過（意図した `UPLOADS_PAUSED`
+を除く）をそれぞれ検出する。Temporal の workflow 実行が `completed` であることを、Episode の
+ドメイン状態と照合せずに成功とみなさない（`PIPELINE_OUTCOME_MISMATCH`）。同日に複数の Episode が
+それぞれ問題を起こしても取りこぼさない（`operational_anomalies` の episode 単位インデックス）。
+**機械検査**: `tests/unit/test_daily_watchdog.py` / `tests/contract/test_operational_anomalies_episode_scope.py`

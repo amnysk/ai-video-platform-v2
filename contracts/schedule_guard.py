@@ -39,6 +39,17 @@ DAILY_NEXT_RUN_MAX_GAP_SECONDS = 25 * 60 * 60
 
 WATCHDOG_CHECK_ACTIVITY = "pipeline_watchdog_check"
 
+# --------------------------------------------------------- Episode 進行監視（ADR-0031、単一宣言元）
+
+#: blocked / needs_work のまま、この分数を超えたら停滞とみなす。工程非依存の単一値から開始する
+#: （将来 Shorts 以外の尺・工程が増えたら工程別に分ける）。
+DEFAULT_STAGE_STALL_GRACE_MINUTES = 60
+#: Episode 作成からこの時間を超えても render_ready 以降に達していなければ完成期限超過。
+DEFAULT_COMPLETION_DEADLINE_HOURS = 8.0
+#: render_ready / approved 到達からこの時間を超えても uploaded に達していなければ投稿期限超過
+#: （ただし UPLOADS_PAUSED が有効な間は意図した停止として anomaly にしない）。
+DEFAULT_UPLOAD_DEADLINE_HOURS = 2.0
+
 
 class ScheduleHealth(StrEnum):
     """``avp-daily-episode`` の分類。"""
@@ -70,6 +81,15 @@ class AnomalyKind(StrEnum):
     SCHEDULE_MISSING = "SCHEDULE_MISSING"
     #: 動いているが次回実行が妥当でない
     SCHEDULE_NEXT_RUN_INVALID = "SCHEDULE_NEXT_RUN_INVALID"
+    #: Episode が blocked / needs_work のまま停滞猶予を超えた（ADR-0031、episode_id 付き）
+    EPISODE_STAGE_STALLED = "EPISODE_STAGE_STALLED"
+    #: Episode が完成期限を超えても render_ready 以降に達していない（ADR-0031、episode_id 付き）
+    EPISODE_NOT_COMPLETED_BY_DEADLINE = "EPISODE_NOT_COMPLETED_BY_DEADLINE"
+    #: Episode が投稿期限を超えても uploaded に達していない（ADR-0031、episode_id 付き）
+    EPISODE_NOT_UPLOADED_BY_DEADLINE = "EPISODE_NOT_UPLOADED_BY_DEADLINE"
+    #: pipeline workflow が Temporal 上は completed なのに outcome=stopped で、
+    #: DB 側の他のどの検査にも引っかからない食い違い（ADR-0031、episode_id 付き）
+    PIPELINE_OUTCOME_MISMATCH = "PIPELINE_OUTCOME_MISMATCH"
 
 
 #: ``ScheduleHealth`` → 記録する異常（無ければ異常ではない）
@@ -117,6 +137,10 @@ class WatchdogRequest:
     timezone: str = "Asia/Tokyo"
     grace_seconds: int = DEFAULT_WATCHDOG_GRACE_SECONDS
     workflow_type: str = "DailyEpisodeWorkflow"
+    pipeline_workflow_type: str = "EpisodePipelineWorkflow"
+    stage_stall_grace_minutes: int = DEFAULT_STAGE_STALL_GRACE_MINUTES
+    completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
+    upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
 
 
 @dataclass
@@ -129,6 +153,10 @@ class WatchdogCheckRequest:
     timezone: str = "Asia/Tokyo"
     grace_seconds: int = DEFAULT_WATCHDOG_GRACE_SECONDS
     workflow_type: str = "DailyEpisodeWorkflow"
+    pipeline_workflow_type: str = "EpisodePipelineWorkflow"
+    stage_stall_grace_minutes: int = DEFAULT_STAGE_STALL_GRACE_MINUTES
+    completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
+    upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
 
 
 @dataclass
@@ -140,3 +168,5 @@ class WatchdogResult:
     #: 今回、ガードが maintenance pause を解除した
     released_maintenance: bool = False
     slot_date: str = ""
+    #: 今回検査した Episode 進行・完成・投稿の異常件数（起動系と別集計。監視の可視化用）
+    episode_anomaly_count: int = 0

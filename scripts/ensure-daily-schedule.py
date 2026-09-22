@@ -93,6 +93,9 @@ async def _watchdog(settings: Settings, *, apply: bool) -> int:
         cron=settings.daily_schedule_cron,
         timezone=settings.schedule_timezone,
         grace_seconds=settings.watchdog_grace_seconds,
+        stage_stall_grace_minutes=settings.stage_stall_grace_minutes,
+        completion_deadline_hours=settings.completion_deadline_hours,
+        upload_deadline_hours=settings.upload_deadline_hours,
     )
     schedule = build_watchdog_schedule(
         cron=settings.watchdog_cron, timezone=settings.schedule_timezone, request=request

@@ -1,20 +1,26 @@
-"""Daily watchdog（ADR-0027）: 「今日の自動運転は始まったか」を Schedule とは別に確かめる。
+"""Daily watchdog（ADR-0027 / ADR-0031）: 「今日の自動運転は始まったか」に加え、Episode の
+進行・完成・投稿・Temporal結果とDB状態の整合性を Schedule とは別に確かめる。
 
 Test D（pause のままなら検知・slot が無ければ DAILY_AUTOMATION_NOT_STARTED・slot があれば健全）と、
-1日1回の通知・再発・通知失敗の再送・emergency pause を解除しないこと。
+1日1回の通知・再発・通知失敗の再送・emergency pause を解除しないこと、
+2026-09-22 事故型（completed + outcome=stopped が翌朝レポートを待たず検出されること）。
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, date, datetime, timedelta
 
 from contracts.operations import OperationalSwitch
+from contracts.pipeline import EpisodePipelineResult, PipelineOutcome
 from contracts.schedule_guard import (
     AnomalyKind,
     DailyStartStatus,
     ScheduleHealth,
     WatchdogCheckRequest,
 )
+from contracts.states import EpisodeStatus
+from infrastructure.db.models import EpisodeRow
 from infrastructure.db.repositories import (
     DailyEpisodeSlotRepository,
     OperationalAnomalyRepository,
@@ -57,18 +63,40 @@ class FakeCounter:
         return self.count
 
 
-def _request(now: datetime) -> WatchdogCheckRequest:
-    return WatchdogCheckRequest(now=now.isoformat())
+class FakeOutcomeChecker:
+    """``PipelineOutcomeChecker`` の fake。あらかじめ与えた stopped 実行だけを返す。"""
+
+    def __init__(
+        self, stopped: list[EpisodePipelineResult] | None = None, *, error: bool = False
+    ) -> None:
+        self.stopped = stopped or []
+        self.error = error
+        self.queries: list[tuple[str, datetime]] = []
+
+    async def list_stopped_since(
+        self, workflow_type: str, since: datetime
+    ) -> list[EpisodePipelineResult]:
+        self.queries.append((workflow_type, since))
+        if self.error:
+            raise RuntimeError("visibility unavailable")
+        return self.stopped
 
 
-async def _run(session_factory, control, now, *, counter=None, notifier=None):  # type: ignore[no-untyped-def]
+def _request(now: datetime, **overrides) -> WatchdogCheckRequest:  # type: ignore[no-untyped-def]
+    return WatchdogCheckRequest(now=now.isoformat(), **overrides)
+
+
+async def _run(  # type: ignore[no-untyped-def]
+    session_factory, control, now, *, counter=None, notifier=None, outcome_checker=None, **overrides
+):
     notifier = notifier or RecordingNotifier()
     result = await run_daily_watchdog(
         control=control,
         session_factory=session_factory,
         workflow_counter=counter or FakeCounter(),
         notifier=notifier,
-        request=_request(now),
+        request=_request(now, **overrides),
+        pipeline_outcome_checker=outcome_checker or FakeOutcomeChecker(),
     )
     return result, notifier
 
@@ -77,9 +105,9 @@ def _control(now: datetime, **kwargs) -> FakeScheduleControl:  # type: ignore[no
     return FakeScheduleControl(clock=[now], **kwargs)
 
 
-async def _open(session_factory):  # type: ignore[no-untyped-def]
+async def _open(session_factory, *, kinds=None):  # type: ignore[no-untyped-def]
     async with session_factory() as session:
-        return await OperationalAnomalyRepository(session).list_open()
+        return await OperationalAnomalyRepository(session).list_open(kinds)
 
 
 async def _add_slot(session_factory, trigger: str = "daily-episode-x") -> None:  # type: ignore[no-untyped-def]
@@ -88,6 +116,32 @@ async def _add_slot(session_factory, trigger: str = "daily-episode-x") -> None: 
             slot_date=SLOT_DATE, trigger_id=trigger, daily_limit=1, topic="t"
         )
         await session.commit()
+
+
+async def _add_episode(  # type: ignore[no-untyped-def]
+    session_factory,
+    *,
+    status: EpisodeStatus,
+    status_changed_at: datetime,
+    created_at: datetime | None = None,
+    blocked_reason: str | None = None,
+) -> uuid.UUID:
+    """テスト用に任意の状態・時刻の Episode を直接作る（遷移表は経由しない。fixture 専用）。"""
+    episode_id = uuid.uuid4()
+    async with session_factory() as session:
+        session.add(
+            EpisodeRow(
+                id=episode_id,
+                status=status.value,
+                topic="t",
+                created_at=created_at or status_changed_at,
+                updated_at=status_changed_at,
+                status_changed_at=status_changed_at,
+                blocked_reason=blocked_reason,
+            )
+        )
+        await session.commit()
+    return episode_id
 
 
 async def test_slot_present_after_grace_is_healthy_with_no_anomaly(session_factory) -> None:
@@ -255,6 +309,247 @@ async def test_a_cron_that_is_not_plain_daily_is_reported_but_not_judged(session
         workflow_counter=FakeCounter(),
         notifier=RecordingNotifier(),
         request=request,
+        pipeline_outcome_checker=FakeOutcomeChecker(),
     )
     assert result.daily_start == DailyStartStatus.UNSUPPORTED_CRON.value
     assert await _open(session_factory) == []
+
+
+# ------------------------------------------------------------------------------ ADR-0031: 進行
+
+
+async def test_a_blocked_episode_past_the_stall_grace_is_flagged_and_resolves_on_recovery(
+    session_factory,
+) -> None:
+    await _add_slot(session_factory)
+    episode_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.BLOCKED,
+        status_changed_at=AFTER_GRACE - timedelta(minutes=90),
+        blocked_reason="fal storage token refused: HTTP 403",
+    )
+    result, notifier = await _run(
+        session_factory, _control(AFTER_GRACE), AFTER_GRACE, stage_stall_grace_minutes=60
+    )
+    assert AnomalyKind.EPISODE_STAGE_STALLED.value in result.anomalies
+    assert result.episode_anomaly_count == 1
+    (row,) = await _open(session_factory, kinds=[AnomalyKind.EPISODE_STAGE_STALLED])
+    assert row.episode_id == episode_id
+    assert row.detail["episode_id"] == str(episode_id)
+    assert row.detail["reason"] == "fal storage token refused: HTTP 403"
+    assert row.detail["resumable"] is True
+    assert {n.kind for n in notifier.notices} >= {AnomalyKind.EPISODE_STAGE_STALLED}
+
+    # 回復（再開して in_progress に進んだ）→ 次の検査で自動的に閉じる
+    async with session_factory() as session:
+        row_db = await session.get(EpisodeRow, episode_id)
+        row_db.status = EpisodeStatus.IN_PROGRESS.value
+        row_db.status_changed_at = AFTER_GRACE
+        await session.commit()
+    later = AFTER_GRACE + timedelta(minutes=5)
+    await _run(session_factory, _control(later), later, stage_stall_grace_minutes=60)
+    assert await _open(session_factory, kinds=[AnomalyKind.EPISODE_STAGE_STALLED]) == []
+
+
+async def test_a_stall_inside_the_grace_period_is_not_flagged(session_factory) -> None:
+    await _add_slot(session_factory)
+    await _add_episode(
+        session_factory,
+        status=EpisodeStatus.BLOCKED,
+        status_changed_at=AFTER_GRACE - timedelta(minutes=10),
+    )
+    result, _ = await _run(
+        session_factory, _control(AFTER_GRACE), AFTER_GRACE, stage_stall_grace_minutes=60
+    )
+    assert AnomalyKind.EPISODE_STAGE_STALLED.value not in result.anomalies
+
+
+async def test_two_different_episodes_stalled_the_same_day_both_get_their_own_row(
+    session_factory,
+) -> None:
+    """operational_anomalies の部分インデックス（ADR-0031）: 同日でも Episode ごとに1行。"""
+    await _add_slot(session_factory)
+    old = AFTER_GRACE - timedelta(hours=3)
+    ep1 = await _add_episode(session_factory, status=EpisodeStatus.BLOCKED, status_changed_at=old)
+    ep2 = await _add_episode(
+        session_factory, status=EpisodeStatus.NEEDS_WORK, status_changed_at=old
+    )
+    await _run(session_factory, _control(AFTER_GRACE), AFTER_GRACE, stage_stall_grace_minutes=60)
+    rows = await _open(session_factory, kinds=[AnomalyKind.EPISODE_STAGE_STALLED])
+    assert {r.episode_id for r in rows} == {ep1, ep2}
+
+
+# ------------------------------------------------------------------------------ ADR-0031: 完成
+
+
+async def test_an_episode_past_the_completion_deadline_is_flagged(session_factory) -> None:
+    await _add_slot(session_factory)
+    episode_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.IN_PROGRESS,
+        status_changed_at=AFTER_GRACE - timedelta(hours=10),
+        created_at=AFTER_GRACE - timedelta(hours=10),
+    )
+    result, _ = await _run(
+        session_factory, _control(AFTER_GRACE), AFTER_GRACE, completion_deadline_hours=8.0
+    )
+    assert AnomalyKind.EPISODE_NOT_COMPLETED_BY_DEADLINE.value in result.anomalies
+    (row,) = await _open(session_factory, kinds=[AnomalyKind.EPISODE_NOT_COMPLETED_BY_DEADLINE])
+    assert row.episode_id == episode_id
+
+
+async def test_render_ready_counts_as_completed_and_is_never_flagged(session_factory) -> None:
+    await _add_slot(session_factory)
+    await _add_episode(
+        session_factory,
+        status=EpisodeStatus.RENDER_READY,
+        status_changed_at=AFTER_GRACE - timedelta(hours=10),
+        created_at=AFTER_GRACE - timedelta(hours=10),
+    )
+    result, _ = await _run(
+        session_factory, _control(AFTER_GRACE), AFTER_GRACE, completion_deadline_hours=8.0
+    )
+    assert AnomalyKind.EPISODE_NOT_COMPLETED_BY_DEADLINE.value not in result.anomalies
+
+
+# ------------------------------------------------------------------------------ ADR-0031: 投稿
+
+
+async def test_an_episode_past_the_upload_deadline_is_flagged(session_factory) -> None:
+    await _add_slot(session_factory)
+    episode_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.RENDER_READY,
+        status_changed_at=AFTER_GRACE - timedelta(hours=3),
+    )
+    result, _ = await _run(
+        session_factory, _control(AFTER_GRACE), AFTER_GRACE, upload_deadline_hours=2.0
+    )
+    assert AnomalyKind.EPISODE_NOT_UPLOADED_BY_DEADLINE.value in result.anomalies
+    (row,) = await _open(session_factory, kinds=[AnomalyKind.EPISODE_NOT_UPLOADED_BY_DEADLINE])
+    assert row.episode_id == episode_id
+
+
+async def test_uploads_paused_suppresses_new_flags_and_resolves_existing_ones(
+    session_factory,
+) -> None:
+    await _add_slot(session_factory)
+    await _add_episode(
+        session_factory,
+        status=EpisodeStatus.RENDER_READY,
+        status_changed_at=AFTER_GRACE - timedelta(hours=3),
+    )
+    result, _ = await _run(
+        session_factory, _control(AFTER_GRACE), AFTER_GRACE, upload_deadline_hours=2.0
+    )
+    assert AnomalyKind.EPISODE_NOT_UPLOADED_BY_DEADLINE.value in result.anomalies
+
+    async with session_factory() as session:
+        await OperationalSwitchRepository(session).set(OperationalSwitch.UPLOADS_PAUSED, True)
+        await session.commit()
+    later = AFTER_GRACE + timedelta(minutes=5)
+    result2, _ = await _run(session_factory, _control(later), later, upload_deadline_hours=2.0)
+    assert AnomalyKind.EPISODE_NOT_UPLOADED_BY_DEADLINE.value not in result2.anomalies
+    assert await _open(session_factory, kinds=[AnomalyKind.EPISODE_NOT_UPLOADED_BY_DEADLINE]) == []
+
+
+# ---------------------------------------------------------------------------- ADR-0031: 整合性
+
+
+def _stopped_result(episode_id: uuid.UUID, *, stage: str = "production") -> EpisodePipelineResult:
+    return EpisodePipelineResult(
+        episode_id=str(episode_id),
+        outcome=PipelineOutcome.STOPPED.value,
+        status="blocked",
+        stopped_stage=stage,
+        reason=f"{stage} returned 'blocked', expected 'assets_ready'",
+    )
+
+
+async def test_completed_pipeline_with_outcome_stopped_is_flagged_when_uncovered(
+    session_factory,
+) -> None:
+    """2026-09-22 型の事故: Temporal は completed でも outcome=stopped で他の検査に映らない。"""
+    await _add_slot(session_factory)
+    episode_id = uuid.uuid4()
+    checker = FakeOutcomeChecker([_stopped_result(episode_id)])
+    result, notifier = await _run(
+        session_factory, _control(AFTER_GRACE), AFTER_GRACE, outcome_checker=checker
+    )
+    assert AnomalyKind.PIPELINE_OUTCOME_MISMATCH.value in result.anomalies
+    (row,) = await _open(session_factory, kinds=[AnomalyKind.PIPELINE_OUTCOME_MISMATCH])
+    assert row.episode_id == episode_id
+    assert row.detail["stopped_stage"] == "production"
+    assert {n.kind for n in notifier.notices} >= {AnomalyKind.PIPELINE_OUTCOME_MISMATCH}
+
+
+async def test_a_stopped_pipeline_already_covered_by_the_stall_check_is_not_double_reported(
+    session_factory,
+) -> None:
+    await _add_slot(session_factory)
+    episode_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.BLOCKED,
+        status_changed_at=AFTER_GRACE - timedelta(minutes=90),
+    )
+    checker = FakeOutcomeChecker([_stopped_result(episode_id)])
+    result, _ = await _run(
+        session_factory,
+        _control(AFTER_GRACE),
+        AFTER_GRACE,
+        stage_stall_grace_minutes=60,
+        outcome_checker=checker,
+    )
+    assert AnomalyKind.EPISODE_STAGE_STALLED.value in result.anomalies
+    assert AnomalyKind.PIPELINE_OUTCOME_MISMATCH.value not in result.anomalies
+
+
+async def test_an_outcome_checker_failure_does_not_crash_the_whole_watchdog_run(
+    session_factory,
+) -> None:
+    await _add_slot(session_factory)
+    result, _ = await _run(
+        session_factory,
+        _control(AFTER_GRACE),
+        AFTER_GRACE,
+        outcome_checker=FakeOutcomeChecker(error=True),
+    )
+    assert result.schedule_health == ScheduleHealth.HEALTHY.value
+    assert AnomalyKind.PIPELINE_OUTCOME_MISMATCH.value not in result.anomalies
+
+
+async def test_an_uncovered_outcome_mismatch_resolves_once_the_episode_completes(
+    session_factory,
+) -> None:
+    """独立レビューが見つけた欠落: PIPELINE_OUTCOME_MISMATCH は他の3種と違い開いたままだった。
+
+    「今日 close した実行」だけを見る検出範囲は同じ行を再検出できないので、回復は
+    Episode の現在状態（完成状態に達したか）で判定する（実装コメント参照）。
+    """
+    await _add_slot(session_factory)
+    episode_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.IN_PROGRESS,
+        status_changed_at=AFTER_GRACE - timedelta(minutes=5),
+    )
+    checker = FakeOutcomeChecker([_stopped_result(episode_id)])
+    result, _ = await _run(
+        session_factory, _control(AFTER_GRACE), AFTER_GRACE, outcome_checker=checker
+    )
+    assert AnomalyKind.PIPELINE_OUTCOME_MISMATCH.value in result.anomalies
+    assert len(await _open(session_factory, kinds=[AnomalyKind.PIPELINE_OUTCOME_MISMATCH])) == 1
+
+    # 回復（人間が再開し、最終的に uploaded に到達した）→ 次の検査で自動的に閉じる
+    async with session_factory() as session:
+        row_db = await session.get(EpisodeRow, episode_id)
+        row_db.status = EpisodeStatus.UPLOADED.value
+        row_db.status_changed_at = AFTER_GRACE
+        await session.commit()
+    later = AFTER_GRACE + timedelta(minutes=5)
+    await _run(
+        session_factory,
+        _control(later),
+        later,
+        outcome_checker=FakeOutcomeChecker(),  # 今日はもう stopped な実行が無い
+    )
+    assert await _open(session_factory, kinds=[AnomalyKind.PIPELINE_OUTCOME_MISMATCH]) == []
