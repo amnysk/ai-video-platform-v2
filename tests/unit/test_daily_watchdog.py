@@ -351,17 +351,43 @@ async def test_a_blocked_episode_past_the_stall_grace_is_flagged_and_resolves_on
     assert await _open(session_factory, kinds=[AnomalyKind.EPISODE_STAGE_STALLED]) == []
 
 
-async def test_a_stall_inside_the_grace_period_is_not_flagged(session_factory) -> None:
+async def test_a_needs_work_stall_inside_the_grace_period_is_not_flagged(session_factory) -> None:
+    """needs_work（retryable）は自動retryで自己解決しうるので猶予を置く。"""
     await _add_slot(session_factory)
     await _add_episode(
         session_factory,
-        status=EpisodeStatus.BLOCKED,
+        status=EpisodeStatus.NEEDS_WORK,
         status_changed_at=AFTER_GRACE - timedelta(minutes=10),
     )
     result, _ = await _run(
         session_factory, _control(AFTER_GRACE), AFTER_GRACE, stage_stall_grace_minutes=60
     )
     assert AnomalyKind.EPISODE_STAGE_STALLED.value not in result.anomalies
+
+
+async def test_a_blocked_episode_is_flagged_almost_immediately_regardless_of_needs_work_grace(
+    session_factory,
+) -> None:
+    """blocked（needs_input、自動修復経路が無い）は needs_work の猶予を共有しない（既定0分）。
+
+    独立レビュー相当の監査で判明: 従来は blocked / needs_work が同じ
+    ``stage_stall_grace_minutes`` を共有しており、needs_work 向けの正当な猶予
+    （自動retryで自己解決しうる）が blocked（人間のsignal待ち、
+    docs/domain/state-transitions.md）にも誤って適用されていた。
+    """
+    await _add_slot(session_factory)
+    await _add_episode(
+        session_factory,
+        status=EpisodeStatus.BLOCKED,
+        status_changed_at=AFTER_GRACE - timedelta(minutes=1),
+    )
+    result, _ = await _run(
+        session_factory,
+        _control(AFTER_GRACE),
+        AFTER_GRACE,
+        stage_stall_grace_minutes=60,  # needs_work 用の猶予。blocked には効かないことを検査する
+    )
+    assert AnomalyKind.EPISODE_STAGE_STALLED.value in result.anomalies
 
 
 async def test_two_different_episodes_stalled_the_same_day_both_get_their_own_row(

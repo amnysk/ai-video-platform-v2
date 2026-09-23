@@ -94,6 +94,7 @@ async def _watchdog(settings: Settings, *, apply: bool) -> int:
         timezone=settings.schedule_timezone,
         grace_seconds=settings.watchdog_grace_seconds,
         stage_stall_grace_minutes=settings.stage_stall_grace_minutes,
+        blocked_grace_minutes=settings.blocked_grace_minutes,
         completion_deadline_hours=settings.completion_deadline_hours,
         upload_deadline_hours=settings.upload_deadline_hours,
     )
