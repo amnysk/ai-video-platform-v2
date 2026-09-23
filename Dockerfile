@@ -16,6 +16,11 @@ COPY infrastructure ./infrastructure
 COPY workers ./workers
 COPY apps/__init__.py ./apps/__init__.py
 COPY apps/api ./apps/api
+# script / storyboard worker が読むプロンプト雛形。api 自体は使わないが、workers/ の import
+# チェーン（workers.planning.activities 等）が実行時に require するため base から持つ
+# （CI の「base だけで workers.*.workflows が import できるか」チェックが base を対象にするため。
+# worker stage は base を継承するのでここに置けば worker 側の COPY は不要）。
+COPY prompts ./prompts
 
 # 版の固定は constraints.txt（宣言と固定の役割を分ける）。
 # cache mount を効かせるため PIP_NO_CACHE_DIR / --no-cache-dir は使わない。
@@ -47,9 +52,6 @@ FROM base AS worker
 ARG CODEX_VERSION=0.154.0
 # scripts/setup-piper.sh と同じ版であること（tests/contract/test_compose_workers.py が検査）。
 ARG PIPER_TTS_VERSION=1.8.0
-
-# script / storyboard が読むプロンプト雛形（base は api 用に持たない）。
-COPY prompts ./prompts
 
 # git: storyboard が OpenMontage checkout（ro mount）から固定 commit の blob を読む。
 # nodejs/npm: Codex CLI の実行環境。

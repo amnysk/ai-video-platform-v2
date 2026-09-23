@@ -75,9 +75,24 @@ jobs:
       - run: pip install -e ".[dev]"
       - name: Prepare MinIO data directory
         run: sudo mkdir -p /mnt/minio-hdd/minio-data && sudo chmod 777 /mnt/minio-hdd/minio-data
+      # api / migrate / dummy-worker は image: avp2-app:local を build: から作る（registry には無い）。
+      # このジョブは Docker build ジョブとは別 VM なのでそちらの成果物を引き継げない。
+      # ここで明示的に build しないと `up` がローカルに無い image を pull しようとして
+      # "pull access denied for avp2-app" になる（2026-09-23 CI失敗の直接原因）。
+      - name: Log in to Docker Hub (raises the anonymous pull rate limit)
+        # secrets が無ければ何もしない。無い場合、匿名 pull の rate limit に当たることがある
+        # （minio/minio のような非公式 namespace の image で起きやすい。DOCKERHUB_USERNAME /
+        # DOCKERHUB_TOKEN を repo secrets に追加すると有効になる。追加は本ワークフローの範囲外）
+        if: ${{ vars.DOCKERHUB_USERNAME != '' || secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build the app image
+        run: docker compose --profile core build api dummy-worker migrate
       - name: Start core services
         # 常駐 Worker は host の ffmpeg / Codex 認証 / OAuth を要するので CI では起動しない（ADR-0024）
-        run: docker compose --profile core up -d --wait postgres minio temporal temporal-ui migrate api dummy-worker
+        run: docker compose --profile core up -d --wait --no-build postgres minio temporal temporal-ui migrate api dummy-worker
       - name: Assert the migration container succeeded
         # --wait の依存条件に頼らず、ワンショットの migrate が 0 で終わったことを直接見る
         run: |
