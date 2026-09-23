@@ -105,6 +105,7 @@ def _to_artifact(row: ArtifactMetadataRow) -> ArtifactMetadata:
         created_at=row.created_at,
         scene_id=row.scene_id,
         version=row.version,
+        size_bytes=row.size_bytes,
     )
 
 

@@ -238,3 +238,15 @@ read-onlyのdry-run（`GET /episodes/{id}/resume/plan`）はProvider呼び出し
 一切行わない（`WorkflowStarter` を依存に注入しない構造で保証する）。
 **機械検査**: `tests/unit/test_resume_plan.py` / `tests/unit/test_resume_api.py`
 / `tests/unit/test_pipeline_workflows.py` / `tests/integration/test_episode_resume.py`
+
+## K. Artifact再利用の完全性（ADR-0033）
+
+### INV-31 Artifactの再利用は実体を検証してから行う
+DB行の存在だけで再利用しない。MinIO実体の存在・size・sha256、schema検証可能な型は読み戻し、
+生成設定版（image/video の固定 provider profile id、render の `RENDER_PROFILES`）の互換性を
+確認する。欠落・破損・版不一致は「現行が無い」として扱い、新しいラウンド（regenerate）へ進む。
+検証で破損を検出しても、既存の MinIO object・`artifact_metadata` 行・`provider_reservations` 行を
+自動で削除・変更しない。通常パイプライン（production/render/upload の各Activity）は同じ唯一の
+関数（`infrastructure.artifact.verify.find_and_verify_current`）を経由し、判定を二重化しない。
+**機械検査**: `tests/unit/test_artifact_verification.py` / `tests/unit/test_artifact_verify_io.py`
+/ `tests/unit/test_paid_job.py::test_corrupt_artifact_does_not_bypass_the_unreconciled_reservation_block`

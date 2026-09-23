@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -84,6 +85,99 @@ async def _await(runner, rid, gen, **kw):
     return await runner.await_output(rid, gen, **kw)
 
 
+async def _record_reusable_scene_image(
+    session_factory, artifact_store, *, episode_id, scene_id, input_hash
+):
+    """ADR-0033: 再利用判定は実体も検証するので、DB行だけでなく store にも本物を置く。"""
+    media_body = b"png-bytes"
+    media_key = f"artifacts/{episode_id}/scene_image/{scene_id}.png"
+    await artifact_store.put_bytes(media_key, media_body, "image/png")
+    payload = {
+        "episode_id": str(episode_id),
+        "type": "scene_image",
+        "schema_version": "1.0",
+        "source_storyboard": {
+            "artifact_id": str(uuid.uuid4()),
+            "sha256": "a" * 64,
+            "schema_version": "1.0",
+        },
+        "scene_id": scene_id,
+        "media": {
+            "object_key": media_key,
+            "sha256": hashlib.sha256(media_body).hexdigest(),
+            "bytes": len(media_body),
+            "mime": "image/png",
+        },
+        "width": 1080,
+        "height": 1920,
+        "generator": {
+            "generator": "fal",
+            "generator_model": "seedream-4.5",
+            # FakeImageGenerator().generation_profile_id と一致させる
+            # （tests/support/production.py。ADR-0033: fal の固定定数ではなく、今まさに
+            # 構成されている generator が報告する値と比較する）
+            "generation_profile_id": "fake-image-profile-v1",
+        },
+    }
+    descriptor_key = f"artifacts/{episode_id}/scene_image/{scene_id}.json"
+    put = await artifact_store.put_json(descriptor_key, payload)
+    async with session_factory() as session:
+        await ArtifactMetadataRepository(session).record(
+            episode_id=episode_id,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            schema_version="1.0",
+            bucket="b",
+            object_key=descriptor_key,
+            sha256=put.sha256,
+            input_hash=input_hash,
+            scene_id=scene_id,
+            size_bytes=put.size,
+        )
+        await session.commit()
+
+
+async def test_corrupt_artifact_does_not_bypass_the_unreconciled_reservation_block(
+    runner, session_factory, artifact_store
+) -> None:
+    """ADR-0033 §4: 破損検出は「現行が無い」に倒すだけで、未照合予約のブロックを迂回しない。
+
+    DB行はあるが実体（store）が無い＝破損として扱われる。それでも同じ Episode+provider+scene に
+    evidence の無い reserved が残っていれば、通常どおり ``UnreconciledReservationError`` で止まる
+    （ADR-0013 は変更しない。破損の有無に関わらず同じ判定を通す）。
+    """
+    spec = await _spec(session_factory)
+    async with session_factory() as session:
+        # DB行はあるが object を store に置かない（欠落 = MISSING 相当）
+        await ArtifactMetadataRepository(session).record(
+            episode_id=spec.episode_id,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            schema_version="1.0",
+            bucket="b",
+            object_key="artifacts/missing/sb1.json",
+            sha256="1" * 64,
+            input_hash=spec.input_hash,
+            scene_id="sb1",
+        )
+        repo = ProviderReservationRepository(session)
+        row = await repo.reserve(
+            episode_id=spec.episode_id,
+            provider=spec.provider,
+            idempotency_key=spec.idempotency_key,
+            input_hash=spec.input_hash,
+            round=1,
+            scene_id="sb1",
+        )
+        await repo.mark_dispatched(row.id)
+        await session.commit()
+
+    gen = FakeImageGenerator()
+    with pytest.raises(UnreconciledReservationError):
+        await runner.submit(spec, gen, REQUEST)
+    assert gen.submit_calls == 0
+    # 破損検出そのものが新しい予約や外部呼び出しを一切起こさない
+    assert not await artifact_store.exists("artifacts/missing/sb1.json")
+
+
 async def test_happy_path_writes_ledger_in_order(runner, session_factory, artifact_store) -> None:
     spec = await _spec(session_factory)
     gen = FakeImageGenerator(pending_polls=2, cost_usd=0.04)
@@ -106,20 +200,18 @@ async def test_happy_path_writes_ledger_in_order(runner, session_factory, artifa
     assert await artifact_store.get_bytes(output.raw_output_key) == output.data
 
 
-async def test_existing_artifact_is_reused_without_reserving(runner, session_factory) -> None:
+async def test_existing_artifact_is_reused_without_reserving(
+    runner, session_factory, artifact_store
+) -> None:
     spec = await _spec(session_factory)
-    async with session_factory() as session:
-        await ArtifactMetadataRepository(session).record(
-            episode_id=spec.episode_id,
-            artifact_type=ArtifactType.SCENE_IMAGE,
-            schema_version="1.0",
-            bucket="b",
-            object_key="k",
-            sha256="1" * 64,
-            input_hash=spec.input_hash,
-            scene_id="sb1",
-        )
-        await session.commit()
+    # ADR-0033: 再利用は実体も検証するので、DB行だけでなく store にも本物を置く
+    await _record_reusable_scene_image(
+        session_factory,
+        artifact_store,
+        episode_id=spec.episode_id,
+        scene_id="sb1",
+        input_hash=spec.input_hash,
+    )
     gen = FakeImageGenerator()
     assert isinstance(await runner.submit(spec, gen, REQUEST), Reused)
     other_scene = replace(spec, scene_id="sb2")
@@ -637,7 +729,7 @@ async def test_successful_prepare_resolves_open_incidents(runner, session_factor
 
 
 async def test_auth_outage_gate_does_not_block_resuming_already_produced_scenes(
-    runner, session_factory
+    runner, session_factory, artifact_store
 ) -> None:
     """sb1〜sb5 のように既に Artifact がある scene は、抑止期間中でも再開できる（ADR-0030）。
 
@@ -646,18 +738,14 @@ async def test_auth_outage_gate_does_not_block_resuming_already_produced_scenes(
     「済んだ工程は課金を伴わずに素通りする」が壊れる。
     """
     done_spec = await _spec(session_factory, scene="sb1")
-    async with session_factory() as session:
-        await ArtifactMetadataRepository(session).record(
-            episode_id=done_spec.episode_id,
-            artifact_type=ArtifactType.SCENE_IMAGE,
-            schema_version="1.0",
-            bucket="b",
-            object_key="k",
-            sha256="1" * 64,
-            input_hash=done_spec.input_hash,
-            scene_id="sb1",
-        )
-        await session.commit()
+    # ADR-0033: 再利用は実体も検証するので、DB行だけでなく store にも本物を置く
+    await _record_reusable_scene_image(
+        session_factory,
+        artifact_store,
+        episode_id=done_spec.episode_id,
+        scene_id="sb1",
+        input_hash=done_spec.input_hash,
+    )
 
     for scene in ("sb2", "sb3", "sb4")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
         spec = await _spec(session_factory, scene=scene)

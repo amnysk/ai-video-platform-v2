@@ -132,6 +132,7 @@ class ImageProductionActivities:
                 input_hash=input_hash,
                 round=request.round,
                 job_id=job_id,
+                current_generation_profile_id=self._generator.generation_profile_id,
             )
             # 再利用なら job を skipped にするので、start は再利用判定の後
             async with self._session_factory() as session:

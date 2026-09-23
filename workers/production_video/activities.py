@@ -147,6 +147,7 @@ class VideoProductionActivities:
                 input_hash=input_hash,
                 round=request.round,
                 job_id=job_id,
+                current_generation_profile_id=self._generation_profile_id,
             )
             async with self._session_factory() as session:
                 existing = await ArtifactMetadataRepository(session).find_current(
