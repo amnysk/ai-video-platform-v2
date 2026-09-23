@@ -75,7 +75,7 @@ from domain.errors import (
 )
 from domain.production.identity import idempotency_key
 from domain.production.ports import JobFailed, JobPending, JobStatus, ProviderJobRef
-from infrastructure.artifact.verify import find_and_verify_current
+from infrastructure.artifact.verify import ArtifactVerdict, find_and_verify_current, verify_artifact
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     ProviderAuthIncidentRepository,
@@ -383,12 +383,11 @@ class PaidJobRunner:
         raw_key = raw_output_key(reservation.episode_id, reservation.id)
 
         if reservation.outcome_artifact_id is not None:
-            async with self._session_factory() as session:
-                meta = await ArtifactMetadataRepository(session).get(
-                    reservation.outcome_artifact_id
-                )
+            meta = await self._verified_outcome_artifact(reservation.outcome_artifact_id)
             if meta is not None:
                 return PaidOutput(reservation, b"", reservation.raw_output_key or raw_key, meta)
+            # 紐づいた Artifact が壊れている/欠落している（ADR-0033）。「紐づいて完了済み」を
+            # 信じて素通りせず、下の evidence（生の取得物）から検証をやり直す経路へ落ちる。
 
         if reservation.status is ReservationStatus.SPENT:
             if reservation.raw_output_key is None:
@@ -557,13 +556,28 @@ class PaidJobRunner:
     ) -> PaidOutput:
         reservation = await self._load(reservation_id)
         if reservation.outcome_artifact_id is not None:
-            async with self._session_factory() as session:
-                meta = await ArtifactMetadataRepository(session).get(
-                    reservation.outcome_artifact_id
-                )
+            meta = await self._verified_outcome_artifact(reservation.outcome_artifact_id)
             if meta is not None:
                 return PaidOutput(reservation, b"", raw_key, meta)
         return PaidOutput(reservation, data, raw_key)
+
+    async def _verified_outcome_artifact(self, artifact_id: str) -> ArtifactMetadata | None:
+        """紐づいた Artifact を実体まで検証してから返す（ADR-0033）。
+
+        ``reservation.outcome_artifact_id`` が指す行は「この予約はもう完了している」という
+        DB 上の主張でしかない。実体（MinIO）が欠落・破損していれば、それを「完了済み」として
+        黙って返さない ── ``find_and_verify_current`` が予約の**前**でやっていることと同じ検査を、
+        予約の**後**（await での再開）でも必ず通す。検証に落ちても行・object は削除・変更しない
+        （呼び出し側が evidence から再検証する経路へ落ちるだけ）。
+        """
+        async with self._session_factory() as session:
+            meta = await ArtifactMetadataRepository(session).get(artifact_id)
+        if meta is None:
+            return None
+        result = await verify_artifact(self._store, meta)
+        if result.verdict is not ArtifactVerdict.REUSABLE:
+            return None
+        return meta
 
     @contextlib.asynccontextmanager
     async def _keepalive(

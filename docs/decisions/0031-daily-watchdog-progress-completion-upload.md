@@ -83,6 +83,25 @@ Production の子 workflow が `assets_ready` ではなく `blocked` 相当の�
 
 watchdog は検出・記録するだけで、Episode の状態を変更しない（既存方針の継続。ADR-0027 §4末尾と同じ）。
 
+**(5) 整合性チェック自身も1件の食い違いで全体を落とさない（実装時に発見・修正、ADR-0033 側の
+一続きの故障再現シナリオが暴いた）。** `_check_outcome_mismatch` が「今日 close した
+`EpisodePipelineWorkflow`」を Temporal の visibility から列挙すると、その Episode が
+（何らかの理由で）DB にもう存在しない実行が混ざりうる（例: Episode 行が削除された、
+または——ローカル検証環境に固有の事情として——Temporal の実行履歴は保持期間中ずっと残るのに
+対し PostgreSQL 側のテスト用スキーマはテストごとに作り捨てられるため、無関係な過去の実行が
+視野に入る）。`operational_anomalies.episode_id` は外部キーなので、存在しない Episode を
+指す記録は `IntegrityError` になる。修正前はこの1件が `RuntimeError` として watchdog 全体を
+落とし、**同じ回に検出できたはずの他のあらゆる異常も一緒に握りつぶしていた**。これは
+INV-13（1つの失敗が他を止めない）を watchdog 自身が破っている状態であり、放置すれば
+「検出できるはずの障害が、無関係な1件のせいで丸ごと見えなくなる」という、本ADR全体が
+閉じようとしている問題の入れ子になる。
+
+修正: 記録の前に `episodes.get(episode_uuid)` で存在を確認し、無ければ警告ログを出して
+その1件だけを飛ばす。また `record()` 自体の呼び出しも例外を捕まえ、失敗しても残りの
+バッチの処理を続ける。Episode が存在しないという事実そのものは、次回以降 Temporal の
+visibility に残り続ける限り繰り返し警告されるので、運用者から見えなくなるわけではない
+（記録できないだけで、検知の兆候はログに残る）。
+
 ## Alternatives
 
 **(a) Episode ごとに別の watchdog 種別を新設する** — 「既存の watchdog を拡張する」という
@@ -116,11 +135,20 @@ DB側の見落としに対する二重の安全網として残す。採用（却
   （独立レビューが「消さずに戻すと CHECK 違反で downgrade 自体が失敗し、スキーマが壊れたまま
   残る」ことを実際に再現して発見・修正）。episode 単位の異常履歴は downgrade で失われる
   （監視の記録であり業務データではないため許容する）
+- `_check_outcome_mismatch` が存在しない Episode を指す実行を検出しても、その1件を記録
+  できないという事実自体は誰にも通知されない（ログの警告のみ。ERROR ログを監視していなければ
+  気づかれない）。§Decision(5) の修正は「1件の失敗で他を巻き込まない」ことを保証するもので、
+  「存在しない Episode を指す実行がある」こと自体を能動的に通知する新しい経路ではない
 
 ## 機械検査
 
 - `tests/unit/test_daily_watchdog.py`（新規: 4段階それぞれの検出条件・UPLOADS_PAUSED除外・
   同日複数Episodeの取りこぼし無し・PIPELINE_OUTCOME_MISMATCH）
+- `tests/unit/test_daily_watchdog.py::test_a_stopped_execution_for_a_nonexistent_episode_does_not_crash_the_whole_run`
+  （§Decision(5)、新規: 存在しない Episode を指す実行があっても watchdog 全体は落ちず、
+  他の正当な異常は正常に記録・通知される）
 - `tests/integration/test_pipeline_schedule.py`（新規: completed+outcome=stopped が healthy と
   判定されないこと）
 - `tests/contract/test_operational_anomalies_episode_scope.py`（新規: 部分インデックス2本の制約）
+- `tests/integration/test_incident_recovery_e2e.py::test_watchdog_flags_stopped_pipeline_before_resume_then_resume_recovers`
+  （§Decision(5) の発見元。本物の Temporal + 実DBに対する統合検査）

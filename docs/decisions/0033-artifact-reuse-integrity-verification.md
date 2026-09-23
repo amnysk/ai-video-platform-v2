@@ -160,6 +160,45 @@ Artifact を受け取り、video_id が一致するかという業務判定だ�
 （呼ばずに返す）、それ以外（input_hash不一致、または検証不通過）なら regenerate
 （新しいラウンドで呼ぶ）。
 
+### 3.1 実装後に発見した第2のゲート: `await_output` の `outcome_artifact_id` 早道（実装時の訂正）
+
+一続きの故障再現シナリオ（`tests/integration/test_incident_recovery_e2e.py`）を組んだところ、
+§3 で配線した `find_and_verify_current`（submit 時の「既存を再利用してよいか」判定）だけでは
+不十分なことが分かった。`PaidJobRunner.await_output`（および内部で呼ぶ
+`_output_after_spent`）には、予約に `outcome_artifact_id` が**既に**紐づいている場合の
+早道があり、そこは `ArtifactMetadataRepository.get(...)` で行を取得するだけで
+`find_and_verify_current` を経由していなかった。
+
+具体的な事故筋書き: シーンの動画が一度成功して `outcome_artifact_id` が紐づいた後、
+その実体（MinIO）だけが外部から破損する → 同じラウンドの `await_output` が再実行される
+（Activity 再試行・workflow 再開のいずれでも起こりうる）→ 予約はもう「完了済み」なので
+`find_and_verify_current` の対象にすらならず、破損した Artifact をそのまま「検証済みの
+成功」として返していた。これは本ADRが閉じようとしていた問題そのものが、別の入口から
+すり抜けていたことを意味する。
+
+**修正**: `await_output` と `_output_after_spent` の両方に `_verified_outcome_artifact(...)`
+（内部で `verify_artifact` を呼ぶ）を追加した。`outcome_artifact_id` が指す Artifact は、
+返す**前**に必ず実体まで検証する。検証に落ちたら「紐づいていない」のと同じに扱い、
+下段の evidence（`raw_output_key` の生の取得物）から検証をやり直す経路へ自然に落ちる
+（新しい分岐を増やさない。既存の「spent と Artifact 記録の間で落ちた」経路の再利用）。
+
+**この経路での破損検出後の実際の着地点**: evidence（生の取得物）は無傷でも、書き込み先の
+content-addressed キーには既に（破損した）別内容が入っているため、immutability（INV-11）が
+黙った上書きを禁じ、`ArtifactConflictError`（needs_input）で安全に止まる。「壊れたら黙って
+直す」よりもこちらの方が安全である: 破損の自動修復は「検出しても自動で削除・変更しない」
+という §Decision(4) の方針と本質的に衝突するため、正しい着地点は
+「needs_input で人に見せる」である（自動修復ではない）。これは
+`tests/integration/test_incident_recovery_e2e.py::test_corrupt_artifact_is_never_silently_reused_or_silently_overwritten`
+で実際に検査している。
+
+`infrastructure/production/paid_job.py` は元々 ADR-0030 の一部として既にレビュー済み・
+統合済みだったファイルである。今回の変更はその既存コードへの追加のバグ修正であり、
+ADR-0030 の決定を覆すものではない。`tests/unit/test_paid_job.py` に
+`test_await_output_does_not_return_a_corrupted_linked_artifact_silently`（この経路が
+壊れた Artifact を黙って返さないことの直接証明）と
+`test_await_output_still_returns_a_valid_linked_artifact_fast`（非退行: 実体が無傷なら
+従来どおり高速path のまま）を追加した。
+
 ### 4. 破損の扱い（削除しない・無条件再送しない）
 
 - 検証で `MISSING`/`CORRUPT_*` になっても、既存の MinIO object・`artifact_metadata` 行・
@@ -184,10 +223,11 @@ Artifact を受け取り、video_id が一致するかという業務判定だ�
 「Artifact 単位の精密な diff は本ADRのスコープ外」と自ら明記していた、既存の意図的な
 スコープ限定と整合する）。
 
-したがって実際の設計は次の通りになる: **`find_and_verify_current` は dry-run からも
-POST からも呼ばれない。** 呼ばれるのは、実際にどこかの工程（production / render / upload）の
-Activity が「この Artifact を再利用してよいか」を**決める、まさにその瞬間**だけ
-（§3 で配線した3箇所）。dry-run の `GET .../resume/plan` も実行の `POST .../resume` も、
+したがって実際の設計は次の通りになる: **`find_and_verify_current`（および §3.1 の
+`_verified_outcome_artifact`）は dry-run からも POST からも呼ばれない。** 呼ばれるのは、
+実際にどこかの工程（production / render / upload）の Activity が「この Artifact を
+再利用してよいか」を**決める、まさにその瞬間**だけ（§3 の submit 時の3箇所 + §3.1 の
+await 時の2箇所）。dry-run の `GET .../resume/plan` も実行の `POST .../resume` も、
 この判定より**前**の工程レベルの計画段階にとどまる。
 
 これは当初案より弱い保証ではない: 「事前に検証してキャッシュし、後で信用する」窓が
@@ -276,3 +316,12 @@ DB行から読み取るだけ。**NULL のとき**（本ADR以前に書かれた
 - `tests/unit/test_artifact_store.py` / `tests/unit/test_repositories.py`（拡張: `size_bytes`
   がドメイン実体 `ArtifactMetadata` まで読み取れること。migrationは無いので
   `test_migration_matches_models.py` に変更は無い）
+- `tests/unit/test_paid_job.py::test_await_output_does_not_return_a_corrupted_linked_artifact_silently`
+  / `::test_await_output_still_returns_a_valid_linked_artifact_fast`（§3.1、新規: 第2のゲート）
+- `tests/unit/test_render_activities.py::test_final_video_with_a_retired_render_profile_is_version_mismatch`
+  （独立レビュー指摘: `FINAL_VIDEO`/`RENDER_PROFILES` の版失効分岐、当時無検査だった）
+- `tests/integration/test_incident_recovery_e2e.py`（一続きの故障再現シナリオ。§3.1 の発見元。
+  `test_sb6_403_blocks_then_recovery_resumes_only_sb6_without_recharging` /
+  `test_corrupt_artifact_is_never_silently_reused_or_silently_overwritten` /
+  `test_auth_incident_threshold_suppresses_new_submits_for_same_provider_only` /
+  `test_watchdog_flags_stopped_pipeline_before_resume_then_resume_recovers`）
