@@ -73,3 +73,17 @@ async def test_secret_value_never_appears_in_check_output() -> None:
     checks = await check_fal_credentials(_settings("super-secret-value"), env={})
     for check in checks:
         assert "super-secret-value" not in check.detail
+
+
+async def test_every_check_declares_whether_it_left_the_local_process() -> None:
+    """運用者が出力を見て「どれが実ネットワーク呼び出しか」を一目で区別できること。"""
+    # FAL_KEY確認・UNVERIFIED判定とも外部通信なし
+    local_only = await check_fal_credentials(_settings("secret"), env={})
+    assert [c.scope for c in local_only] == ["local", "local"]
+
+    with_call = await check_fal_credentials(
+        _settings("secret"),
+        client_factory=_FakeStorageClient,
+        env={CONFIRMED_NONBILLING_ENV: "1"},
+    )
+    assert [c.scope for c in with_call] == ["local", "network"]

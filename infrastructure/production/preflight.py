@@ -35,6 +35,9 @@ class PreflightCheck:
     #: "OK" / "FAIL" / "UNVERIFIED"
     status: str
     detail: str
+    #: "local"（プロセス外に一切出ない）/ "network"（実際に外部へ到達する）。
+    #: 運用者が出力を見て「どれが実際に fal へ届くか」を一目で区別できるようにする。
+    scope: str = "local"
 
     @property
     def is_failure(self) -> bool:
@@ -73,10 +76,15 @@ async def check_fal_credentials(
             PreflightCheck(
                 "fal storage token endpoint reachable with these credentials",
                 "UNVERIFIED",
-                "could not confirm from fal's official docs that POST "
-                "/storage/auth/token is non-billing; not making a live call. "
-                f"Set {CONFIRMED_NONBILLING_ENV}=1 after confirming with fal directly "
+                "fal's official docs do not explicitly state whether POST "
+                "/storage/auth/token is billed. The pricing page scopes billing to "
+                '"the output you generate" via Model APIs; the file-storage/CDN docs '
+                "say nothing about cost either way. Not conclusive, so not making a "
+                "live call by default (AGENTS.md §9). See docs/operations/"
+                "production-preflight.md for the full evidence trail. Set "
+                f"{CONFIRMED_NONBILLING_ENV}=1 after confirming with fal directly "
                 "to enable this live check.",
+                scope="local",
             )
         )
         return checks
@@ -89,7 +97,12 @@ async def check_fal_credentials(
         await client._token()  # noqa: SLF001 - worker と同じ内部呼び出しを使う
     except Exception as exc:  # ここは診断であって分類ではない。何であれ報告する
         checks.append(
-            PreflightCheck("fal storage token endpoint", "FAIL", f"{type(exc).__name__}: {exc}")
+            PreflightCheck(
+                "fal storage token endpoint",
+                "FAIL",
+                f"{type(exc).__name__}: {exc}",
+                scope="network",
+            )
         )
     else:
         checks.append(
@@ -97,6 +110,7 @@ async def check_fal_credentials(
                 "fal storage token endpoint",
                 "OK",
                 "acquired a token with the configured FAL_KEY",
+                scope="network",
             )
         )
     finally:
