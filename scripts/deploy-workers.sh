@@ -6,11 +6,15 @@
 # 手順（どこかで失敗したら非0終了。POST_DEPLOY_CMD は成否にかかわらず必ず最後に走る）:
 #   0. 作業ツリーが dirty なら拒否（ALLOW_DIRTY=1 で revision に -dirty を付けて許す）
 #   1. infra（postgres / temporal / minio）が healthy か確認（作り直さない）
-#   2. PRE_DEPLOY_CMD            ← フック（例: 定期実行の一時停止）
-#   3. イメージをビルド（GIT_REVISION を label に焼く）  4. migrate を新イメージで実行し成功を待つ
-#   5. 残りの全サービスを作り直す  6. 全サービスが healthy になるまで待つ（HEALTH_TIMEOUT 秒）
-#   7. scripts/workers-versions.sh で版の揃いを確認
-#   8. POST_DEPLOY_CMD           ← フック（trap で必ず実行。DEPLOY_RESULT=success|failure を渡す）
+#   2. rollback用に変更前の稼働状態を deploy-state/ へ記録
+#   3. PRE_DEPLOY_CMD            ← フック（例: 定期実行の一時停止）
+#   4. イメージをビルド（GIT_REVISION を label に焼く）  5. migrate を新イメージで実行し成功を待つ
+#   6. 残りの全サービスを作り直す  7. 全サービスが healthy になるまで待つ（HEALTH_TIMEOUT 秒）
+#   8. scripts/workers-versions.sh で版の揃いを確認
+#   9. POST_DEPLOY_CMD           ← フック（trap で必ず実行。DEPLOY_RESULT=success|failure を渡す）
+#
+# make deploy-workers はこのスクリプトを with-maintenance-pause.sh で包む（ADR-0027）。
+# 成功したときだけ maintenance pause を解除する。失敗・中断では自動生成を再開しない。
 #
 # フックは `bash -c` で実行する。環境変数: DEPLOY_REVISION, DEPLOY_RESULT（POST のみ）, DEPLOY_STAGE。
 # このスクリプトはフックの中身を知らない。PRE が失敗したら何も変えずに中止し、POST は走る。
@@ -84,6 +88,16 @@ for svc in "${INFRA_SERVICES[@]}"; do
   read -r _ status health _ <<<"$(container_state "$cid")"
   { [ "$status" = "running" ] && [ "$health" = "healthy" ]; } || die "infra $svc が healthy でない ($status/$health)"
 done
+
+# rollback用: 変更前の稼働状態（image id・revision）をタイムスタンプ付きで残す。
+# 「前のcommitのつもり」ではなく、実際にこの deploy の直前に動いていたものを記録する。
+mkdir -p deploy-state
+snapshot_file="deploy-state/$(date -u +%Y%m%dT%H%M%SZ)-pre-${revision}.txt"
+{
+  echo "# pre-deploy snapshot: $(date -u +%FT%TZ), about to deploy revision=$revision"
+  "$(dirname "$0")/workers-versions.sh" || true
+} >"$snapshot_file" 2>&1 || true
+echo "== pre-deploy snapshot: $snapshot_file"
 
 post_hook() {
   local rc=$?
