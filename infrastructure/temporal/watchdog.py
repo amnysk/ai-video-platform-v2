@@ -169,13 +169,25 @@ async def _check_stalled_episodes(
     now: datetime,
     local_today: date,
     grace_minutes: int,
+    blocked_grace_minutes: int,
 ) -> tuple[list[AnomalyRecord], set[uuid.UUID]]:
-    """進行（ADR-0031）: blocked / needs_work のまま停滞猶予を超えた Episode。"""
-    threshold = now - timedelta(minutes=grace_minutes)
+    """進行（ADR-0031）: blocked / needs_work のまま停滞猶予を超えた Episode。
+
+    ``blocked``（needs_input、自動修復経路が無い）と ``needs_work``（retryable、自動retryで
+    自己解決しうる）は猶予が違う。``blocked`` は既定0分（ほぼ即時）、``needs_work`` は既存の
+    ``grace_minutes`` のまま（誤報を避ける）。
+    """
+    needs_work_threshold = now - timedelta(minutes=grace_minutes)
+    blocked_threshold = now - timedelta(minutes=blocked_grace_minutes)
+    thresholds = {
+        EpisodeStatus.NEEDS_WORK: needs_work_threshold,
+        EpisodeStatus.BLOCKED: blocked_threshold,
+    }
     snapshots = await episodes.list_progress_snapshots(_STALL_STATUSES)
     stalled_ids: set[uuid.UUID] = set()
     records: list[AnomalyRecord] = []
     for snap in snapshots:
+        threshold = thresholds[EpisodeStatus(snap.status)]
         if snap.status_changed_at > threshold:
             continue
         stalled_ids.add(snap.id)
@@ -485,6 +497,7 @@ async def run_daily_watchdog(
             now=now,
             local_today=local_today,
             grace_minutes=request.stage_stall_grace_minutes,
+            blocked_grace_minutes=request.blocked_grace_minutes,
         )
         completion_records, overdue_completion_ids = await _check_completion_deadline(
             episodes,

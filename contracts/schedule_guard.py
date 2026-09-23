@@ -41,9 +41,15 @@ WATCHDOG_CHECK_ACTIVITY = "pipeline_watchdog_check"
 
 # --------------------------------------------------------- Episode 進行監視（ADR-0031、単一宣言元）
 
-#: blocked / needs_work のまま、この分数を超えたら停滞とみなす。工程非依存の単一値から開始する
-#: （将来 Shorts 以外の尺・工程が増えたら工程別に分ける）。
+#: needs_work のまま、この分数を超えたら停滞とみなす。工程非依存の単一値から開始する
+#: （将来 Shorts 以外の尺・工程が増えたら工程別に分ける）。needs_work は failure-policy.md の
+#: retryable 分類であり、自動retryラウンドで自己解決しうるため、猶予を置いて誤報を避ける。
 DEFAULT_STAGE_STALL_GRACE_MINUTES = 60
+#: blocked のまま、この分数を超えたら停滞とみなす。既定は0（ほぼ即時 = 次回watchdog検査で必ず
+#: 拾う）。blocked は failure-policy.md の needs_input 分類であり、自動修復経路が無く
+#: 人間のsignal待ちである（docs/domain/state-transitions.md「blocked → 人間のsignal（通報される。
+#: 放置されない）」）。needs_work と違い「自動retryで自己解決するかもしれない」猶予は不要。
+DEFAULT_BLOCKED_GRACE_MINUTES = 0
 #: Episode 作成からこの時間を超えても render_ready 以降に達していなければ完成期限超過。
 DEFAULT_COMPLETION_DEADLINE_HOURS = 8.0
 #: render_ready / approved 到達からこの時間を超えても uploaded に達していなければ投稿期限超過
@@ -139,6 +145,7 @@ class WatchdogRequest:
     workflow_type: str = "DailyEpisodeWorkflow"
     pipeline_workflow_type: str = "EpisodePipelineWorkflow"
     stage_stall_grace_minutes: int = DEFAULT_STAGE_STALL_GRACE_MINUTES
+    blocked_grace_minutes: int = DEFAULT_BLOCKED_GRACE_MINUTES
     completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
     upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
 
@@ -155,6 +162,7 @@ class WatchdogCheckRequest:
     workflow_type: str = "DailyEpisodeWorkflow"
     pipeline_workflow_type: str = "EpisodePipelineWorkflow"
     stage_stall_grace_minutes: int = DEFAULT_STAGE_STALL_GRACE_MINUTES
+    blocked_grace_minutes: int = DEFAULT_BLOCKED_GRACE_MINUTES
     completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
     upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
 

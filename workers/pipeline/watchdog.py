@@ -42,6 +42,7 @@ class DailyWatchdogWorkflow:
                 workflow_type=request.workflow_type,
                 pipeline_workflow_type=request.pipeline_workflow_type,
                 stage_stall_grace_minutes=request.stage_stall_grace_minutes,
+                blocked_grace_minutes=request.blocked_grace_minutes,
                 completion_deadline_hours=request.completion_deadline_hours,
                 upload_deadline_hours=request.upload_deadline_hours,
             ),

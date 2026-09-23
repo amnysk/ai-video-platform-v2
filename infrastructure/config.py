@@ -27,6 +27,7 @@ from contracts.render import (
     DEFAULT_RENDER_TIMEOUT_SECONDS,
 )
 from contracts.schedule_guard import (
+    DEFAULT_BLOCKED_GRACE_MINUTES,
     DEFAULT_COMPLETION_DEADLINE_HOURS,
     DEFAULT_STAGE_STALL_GRACE_MINUTES,
     DEFAULT_UPLOAD_DEADLINE_HOURS,
@@ -151,6 +152,7 @@ class Settings(BaseSettings):
     watchdog_grace_seconds: int = DEFAULT_WATCHDOG_GRACE_SECONDS
     #: Episode 進行・完成・投稿の監視（ADR-0031）。工程・尺に固有の値をここ以外に埋め込まない
     stage_stall_grace_minutes: int = DEFAULT_STAGE_STALL_GRACE_MINUTES
+    blocked_grace_minutes: int = DEFAULT_BLOCKED_GRACE_MINUTES
     completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
     upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
     #: 自動 pipeline が Render に渡す出力 profile（Shorts 前提にしない）
