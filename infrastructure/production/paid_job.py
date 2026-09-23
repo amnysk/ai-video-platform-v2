@@ -75,6 +75,7 @@ from domain.errors import (
 )
 from domain.production.identity import idempotency_key
 from domain.production.ports import JobFailed, JobPending, JobStatus, ProviderJobRef
+from infrastructure.artifact.verify import find_and_verify_current
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     ProviderAuthIncidentRepository,
@@ -128,6 +129,12 @@ class PaidJobSpec:
     #: workflow の run ごとの試行番号（ログ用）。**台帳のラウンドではない**（台帳から導く）
     round: int
     job_id: str | None = None
+    #: 再利用の完全性検証（ADR-0033）が「現在有効な生成設定版」として使う値。
+    #: ``generator.generation_profile_id`` そのままとは限らない ── video のように
+    #: generator + 付随パラメータ（motion profile 等）を合成した値を Activity 側が持つ場合は、
+    #: その合成済みの値をここへ渡す（``PaidJobRunner`` は provider 固有の合成方法を知らない）。
+    #: 省略時はこの型のチェックを行わない。
+    current_generation_profile_id: str | None = None
 
     def key_for_round(self, ledger_round: int) -> str:
         return idempotency_key(
@@ -220,11 +227,18 @@ class PaidJobRunner:
         prepared = False
         for _ in range(_RESERVE_ATTEMPTS):
             async with self._session_factory() as session:
-                existing = await ArtifactMetadataRepository(session).find_current(
+                # 再利用の唯一のゲート（ADR-0033）: DB行だけでなく実体（MinIO）も検証する。
+                # 欠落・破損・版不一致は「現行が無い」のと同じに倒し、新ラウンドへ進む
+                existing = await find_and_verify_current(
+                    repo=ArtifactMetadataRepository(session),
+                    store=self._store,
                     episode_id=spec.episode_id,
                     artifact_type=spec.artifact_type,
                     input_hash=spec.input_hash,
                     scene_id=spec.scene_id,
+                    # 「現在有効な生成設定版」は呼び出し元（Activity）が spec に渡した値
+                    # （fal の固定定数をここへ直接埋め込まない。fake/real どちらでも同じ形で効く）
+                    current_generation_profile_id=spec.current_generation_profile_id,
                 )
                 if existing is not None:
                     return Reused(artifact=existing)
