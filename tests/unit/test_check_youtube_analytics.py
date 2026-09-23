@@ -5,11 +5,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import pathlib
-import sys
 from datetime import date
-from types import ModuleType
 from typing import Any
 
 import httpx
@@ -25,6 +22,7 @@ from infrastructure.analytics.youtube_analytics import (
 from infrastructure.config import Settings
 from infrastructure.db.repositories import AnalyticsSnapshotRepository
 from infrastructure.youtube.oauth import TOKEN_ENDPOINT, TOKENINFO_ENDPOINT
+from tests.support.script_loader import load_script_module
 from workers.planning.topic_activities import report_from_payload, report_to_payload
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "scripts/check-youtube-analytics.py"
@@ -34,22 +32,9 @@ ACCESS = "ya29.access-token-value-xyz"
 SECRETS = (CLIENT_SECRET, REFRESH, ACCESS)
 TODAY = date(2026, 9, 19)
 
-
-def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("check_youtube_analytics", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    # scripts/ に .pyc を残さない（architecture test が scripts/ を全走査する）
-    previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.dont_write_bytecode = previous
-    return module
-
-
-check = _load()
+# scripts/ に .pyc を残さない。ロード中のガードだけでなく、ロード後に
+# sys.modules へ残さないことも重要（tests/support/script_loader.py 参照）。
+check = load_script_module("check_youtube_analytics", SCRIPT)
 
 
 def _settings(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, **env: str) -> Settings:
