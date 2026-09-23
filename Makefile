@@ -1,7 +1,7 @@
 # schedule-guard.py を動かす python（temporalio 入りの venv）。例: make deploy-workers PYTHON=.venv/bin/python
 PYTHON ?= python
 
-.PHONY: deploy-workers workers-versions help up down logs check-docker-uid worker-dirs worker-build workers-up workers-ps workers-logs migrate smoke smoke-script script-worker lint fmt types test test-unit test-integration test-live check
+.PHONY: deploy-workers workers-versions temporal-test-namespace help up down logs check-docker-uid worker-dirs worker-build workers-up workers-ps workers-logs migrate smoke smoke-script script-worker lint fmt types test test-unit test-integration test-live check
 
 help:
 	@grep -E '^[a-z-]+:' Makefile | cut -d: -f1 | tail -n +2
@@ -67,7 +67,14 @@ types:
 test-unit:
 	pytest tests/unit tests/contract tests/architecture
 
-test-integration:  ## TEST_DATABASE_URL（*_test のローカルDB）が必要。DATABASE_URL は読まない（ADR-0021）
+temporal-test-namespace:  ## integration テスト専用の Temporal namespace（既定 avp-test）を冪等に作る（ADR-0021 追補）
+	@ns="$${TEST_TEMPORAL_NAMESPACE:-avp-test}"; \
+	test "$$ns" != default || { echo "TEST_TEMPORAL_NAMESPACE に default は使えない" >&2; exit 1; }; \
+	docker compose exec -T temporal sh -c 'A=$$(hostname -i):7233; \
+	  temporal operator namespace describe --namespace "$$0" --address $$A >/dev/null 2>&1 \
+	  || temporal operator namespace create --namespace "$$0" --retention 72h --address $$A' "$$ns"
+
+test-integration: temporal-test-namespace  ## TEST_DATABASE_URL（*_test）と Temporal namespace TEST_TEMPORAL_NAMESPACE（既定 avp-test、default 不可）で走る（ADR-0021）
 	@test -n "$$TEST_DATABASE_URL" || { echo "TEST_DATABASE_URL (*_test) is required"; exit 1; }
 	pytest tests/integration -m integration
 

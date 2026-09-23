@@ -86,10 +86,10 @@ async def schema():
 
 @pytest_asyncio.fixture
 async def client() -> Client:
+    from tests.support.temporal import connect_test_client
+
     try:
-        return await asyncio.wait_for(
-            Client.connect(TEMPORAL_ADDRESS or "", namespace="default"), timeout=5
-        )
+        return await asyncio.wait_for(connect_test_client(TEMPORAL_ADDRESS), timeout=5)
     except Exception as exc:  # noqa: BLE001 - 到達不能なら skip
         pytest.skip(f"Temporal not reachable: {type(exc).__name__}")
 
@@ -291,12 +291,10 @@ UPLOAD_PAYLOAD = bytes(range(256))[: TEST_CHUNK_BYTES * 24 + 5]
 async def test_upload_resumes_after_worker_sigkill_without_second_video(
     schema, client, tmp_path, procs
 ) -> None:
-    from infrastructure.config import Settings
-    from infrastructure.storage.minio_store import MinioArtifactStore
+    from tests.support.minio import connect_test_artifact_store
 
     name, factory = schema
-    store = MinioArtifactStore.from_settings(Settings())
-    await store.ensure_bucket()
+    store = await connect_test_artifact_store()
     episode_id = await seed_render_ready(factory, store, tmp_path, payload=UPLOAD_PAYLOAD)
 
     queue = f"durability-upload-{uuid.uuid4().hex[:10]}"

@@ -59,8 +59,10 @@ NEVER_CRON = "0 0 30 2 *"
 
 
 async def _connect() -> Client:
+    from tests.support.temporal import connect_test_client
+
     try:
-        return await asyncio.wait_for(Client.connect(TEMPORAL_ADDRESS), timeout=5)
+        return await asyncio.wait_for(connect_test_client(TEMPORAL_ADDRESS), timeout=5)
     except Exception as exc:  # noqa: BLE001 - 到達不能なら skip
         pytest.skip(f"Temporal not reachable at {TEMPORAL_ADDRESS}: {exc}")
 

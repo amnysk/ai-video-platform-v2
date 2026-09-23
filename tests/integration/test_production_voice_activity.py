@@ -20,7 +20,6 @@ from infrastructure.db.models import Base
 from infrastructure.db.repositories import ArtifactMetadataRepository, JobRepository
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.storage.artifact_store import readback_sha256
-from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.workdir import WorkDirectory
 from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.production import FakeVoiceGenerator
@@ -59,11 +58,9 @@ async def pg_session_factory():
 
 @pytest_asyncio.fixture
 async def minio_store():
-    from infrastructure.config import Settings
+    from tests.support.minio import connect_test_artifact_store
 
-    store = MinioArtifactStore.from_settings(Settings())
-    await store.ensure_bucket()
-    return store
+    return await connect_test_artifact_store()
 
 
 def _activities(factory, store, tmp_path, generator) -> VoiceActivities:

@@ -197,11 +197,9 @@ async def test_scene_jobs_and_reservations_on_postgres(pg_session_factory) -> No
 
 @pytest.mark.skipif(not os.environ.get("MINIO_ENDPOINT"), reason="MINIO_ENDPOINT must be set")
 async def test_media_bytes_roundtrip_through_minio() -> None:
-    from infrastructure.config import Settings
-    from infrastructure.storage.minio_store import MinioArtifactStore
+    from tests.support.minio import connect_test_artifact_store
 
-    store = MinioArtifactStore.from_settings(Settings())
-    await store.ensure_bucket()
+    store = await connect_test_artifact_store()
     episode = str(uuid.uuid4())
     for data, mime, ext, probe in (
         (make_png(1080, 1920), "image/png", "png", "probe_image"),

@@ -204,17 +204,16 @@ async def factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
 
 @pytest_asyncio.fixture
 async def store():
-    from infrastructure.config import Settings
-    from infrastructure.storage.minio_store import MinioArtifactStore
+    from tests.support.minio import connect_test_artifact_store
 
-    s = MinioArtifactStore.from_settings(Settings())
-    await s.ensure_bucket()
-    return s
+    return await connect_test_artifact_store()
 
 
 @pytest_asyncio.fixture
 async def client() -> Client:
-    return await Client.connect(TEMPORAL_ADDRESS or "", namespace="default")
+    from tests.support.temporal import connect_test_client
+
+    return await connect_test_client(TEMPORAL_ADDRESS)
 
 
 async def _seed(factory, store) -> str:

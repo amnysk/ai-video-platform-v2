@@ -26,7 +26,6 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
 )
-from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.workdir import WorkDirectory
 from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.fake_render_engine import FakeFinalVideoProbe, FakeRenderEngine
@@ -68,11 +67,9 @@ async def pg_session_factory():
 
 @pytest_asyncio.fixture
 async def minio_store():
-    from infrastructure.config import Settings
+    from tests.support.minio import connect_test_artifact_store
 
-    store = MinioArtifactStore.from_settings(Settings())
-    await store.ensure_bucket()
-    return store
+    return await connect_test_artifact_store()
 
 
 class Stack:
@@ -132,7 +129,9 @@ class Stack:
 
 @pytest_asyncio.fixture
 async def stack(pg_session_factory, minio_store, tmp_path) -> Stack:
-    client = await Client.connect(TEMPORAL_ADDRESS or "", namespace="default")
+    from tests.support.temporal import connect_test_client
+
+    client = await connect_test_client(TEMPORAL_ADDRESS)
     return Stack(pg_session_factory, minio_store, client, tmp_path)
 
 

@@ -84,12 +84,9 @@ async def factory():
 
 @pytest_asyncio.fixture
 async def store():
-    from infrastructure.config import Settings
-    from infrastructure.storage.minio_store import MinioArtifactStore
+    from tests.support.minio import connect_test_artifact_store
 
-    s = MinioArtifactStore.from_settings(Settings())
-    await s.ensure_bucket()
-    return s
+    return await connect_test_artifact_store()
 
 
 class FakeInspector:

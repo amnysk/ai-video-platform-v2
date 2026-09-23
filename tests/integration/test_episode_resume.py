@@ -103,10 +103,10 @@ async def pg_session_factory():
 
 @pytest_asyncio.fixture
 async def client() -> Client:
+    from tests.support.temporal import connect_test_client
+
     try:
-        return await asyncio.wait_for(
-            Client.connect(TEMPORAL_ADDRESS or "", namespace="default"), timeout=5
-        )
+        return await asyncio.wait_for(connect_test_client(TEMPORAL_ADDRESS), timeout=5)
     except Exception as exc:  # noqa: BLE001 - 到達不能なら skip
         pytest.skip(f"Temporal not reachable: {type(exc).__name__}")
 
