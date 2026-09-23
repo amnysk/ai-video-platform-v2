@@ -12,6 +12,8 @@
     EpisodePipelineWorkflow
         Script → Storyboard → Production → Render → upload_gate → Upload
         子が駐機点以外を返す・失敗する・同じ id がすでに走っている → そこで止まって結果を返す
+        ``EpisodePipelineInput.start_stage`` より前の工程はスキップする（統一再開、ADR-0032）。
+        既定は ``SCRIPT``（最初から）
 
 子 workflow は**名前と task queue**で起動する（``contracts.pipeline``）。
 実装を import しない（INV-3）。
@@ -272,7 +274,14 @@ class EpisodePipelineWorkflow:
     async def run(self, request: EpisodePipelineInput) -> EpisodePipelineResult:
         ep = request.episode_id
         result = EpisodePipelineResult(episode_id=ep, outcome=PipelineOutcome.COMPLETED, status="")
-        for stage in PipelineStage:
+        stages = list(PipelineStage)
+        start_index = stages.index(PipelineStage(request.start_stage))
+        for index, stage in enumerate(stages):
+            if index < start_index:
+                # 統一再開（ADR-0032）: 途中入場より前の工程は完了済みとして扱う。
+                # 子 workflow を起動しない（再課金しない / INV-17）
+                result.completed_stages.append(stage.value)
+                continue
             if stage is PipelineStage.UPLOAD:
                 gate: UploadGateResult = await _state_activity(
                     PIPELINE_UPLOAD_GATE, UploadGateRequest(episode_id=ep), UploadGateResult

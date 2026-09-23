@@ -34,6 +34,7 @@ from contracts.states import (
     UPLOAD_WORKFLOW,
     EpisodeStatus,
     Pipeline,
+    ProviderCall,
 )
 from contracts.topic_planning import (
     DEFAULT_CONTENT_PROFILE_ID,
@@ -103,6 +104,19 @@ STAGE_PARKING_STATUS: dict[PipelineStage, EpisodeStatus] = {
     PipelineStage.PRODUCTION: EpisodeStatus.ASSETS_READY,
     PipelineStage.RENDER: EpisodeStatus.RENDER_READY,
     PipelineStage.UPLOAD: EpisodeStatus.UPLOADED,
+}
+
+#: 工程ごとに関わる有料 provider（ADR-0013 の予約台帳）。render は外部呼び出しが無い
+#: （docs/architecture/components.md の worker 表のとおり）。単一宣言元（ADR-0032）。
+#: ``domain/`` はここから import して使う: provider の名前を ``domain/`` に直接書くと
+#: ``tests/architecture/test_layering.py::test_domain_does_not_name_media_providers_or_tools``
+#: に触れる（ADR-0017、domain は provider の名前を知らない）。
+STAGE_PROVIDERS: dict[PipelineStage, tuple[ProviderCall, ...]] = {
+    PipelineStage.SCRIPT: (ProviderCall.CODEX_SCRIPT,),
+    PipelineStage.STORYBOARD: (ProviderCall.CODEX_STORYBOARD,),
+    PipelineStage.PRODUCTION: (ProviderCall.FAL_IMAGE, ProviderCall.FAL_VIDEO),
+    PipelineStage.RENDER: (),
+    PipelineStage.UPLOAD: (ProviderCall.YOUTUBE_UPLOAD,),
 }
 
 
@@ -222,6 +236,9 @@ class DailyEpisodeResult:
 class EpisodePipelineInput:
     episode_id: str
     options: PipelineOptions = field(default_factory=PipelineOptions)
+    #: 途中入場の開始工程（ADR-0032、統一再開エントリポイント）。既定は最初から（SCRIPT）。
+    #: これより前の工程は子 workflow を起動せず、既に完了しているものとして扱う（再課金しない）。
+    start_stage: str = PipelineStage.SCRIPT.value
 
 
 @dataclass

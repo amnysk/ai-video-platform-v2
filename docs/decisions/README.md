@@ -55,3 +55,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0029](./0029-topic-planner-activity-payload-shape.md) | Topic Planner の Activity 境界は型注釈どおりの形だけを返す | Accepted |
 | [0030](./0030-provider-auth-failure-diagnostics-and-suppression.md) | provider 準備呼び出しの失敗診断・分類の是正と共有障害の抑止 | Accepted |
 | [0031](./0031-daily-watchdog-progress-completion-upload.md) | Daily Watchdog を起動・進行・完成・投稿の4段階で判定する | Accepted |
+| [0032](./0032-unified-episode-resume-entrypoint.md) | Episode の統一再開エントリポイント | Accepted |

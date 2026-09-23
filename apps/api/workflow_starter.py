@@ -9,6 +9,7 @@ from typing import Protocol
 
 from temporalio.client import Client
 
+from contracts.pipeline import EPISODE_PIPELINE_WORKFLOW, pipeline_workflow_id
 from contracts.production_activities import (
     DEFAULT_AWAIT_REEXECUTIONS,
     DEFAULT_IMAGE_MAX_ROUNDS,
@@ -47,6 +48,14 @@ class WorkflowStarter(Protocol):
 
     async def start_upload_workflow(self, *, episode_id: str) -> str:
         """既存 Episode に対して UploadWorkflow を起動する（ADR-0020）。"""
+        ...
+
+    async def start_pipeline_workflow(self, *, episode_id: str, start_stage: str) -> str:
+        """既存 Episode の統一再開（ADR-0032）。``EpisodePipelineWorkflow`` を途中入場で起動する。
+
+        id は Episode 作成時の pipeline と同じ規約（``pipeline_workflow_id``）。実行中の同じ id は
+        Temporal が拒否する（``WorkflowAlreadyStartedError``。二重再開の防止はここに依存する）。
+        """
         ...
 
 
@@ -145,6 +154,26 @@ class TemporalWorkflowStarter:
         await self._client.start_workflow(
             workflow_name,
             {"episode_id": episode_id},
+            id=workflow_id,
+            task_queue=task_queue,
+        )
+        return workflow_id
+
+    async def start_pipeline_workflow(self, *, episode_id: str, start_stage: str) -> str:
+        workflow_name, task_queue = EPISODE_PIPELINE_WORKFLOW
+        workflow_id = pipeline_workflow_id(episode_id)
+        # 入力は EpisodePipelineInput と同じ形の dict（worker の型を import しない / INV-3）。
+        # options は渡さない: EpisodePipelineInput.options の default_factory が
+        # PipelineOptions() を補う（並行数・render profile 等は各工程の既存 admit/Activity が
+        # 個別 POST と同じく既定値・設定から解決する。並べ替えない、AGENTS §8）。
+        # id_reuse_policy は既定の ALLOW_DUPLICATE のまま: 元の pipeline 実行は Temporal 上
+        # COMPLETED（アプリの outcome=stopped）で終わっているため、ALLOW_DUPLICATE_FAILED_ONLY
+        # （DailyEpisodeWorkflow が子を起動するときに使う設定）だと再開を拒否してしまう。
+        # 実行中の同じ id は ALLOW_DUPLICATE でも Temporal が構造的に拒否する
+        # （二重再開の防止はここに依存する。ADR-0032 §Decision(2)）。
+        await self._client.start_workflow(
+            workflow_name,
+            {"episode_id": episode_id, "start_stage": start_stage},
             id=workflow_id,
             task_queue=task_queue,
         )

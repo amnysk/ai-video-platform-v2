@@ -227,3 +227,14 @@ Authorization ヘッダ・token・生の応答本文は出さない（INV-20 の
 ドメイン状態と照合せずに成功とみなさない（`PIPELINE_OUTCOME_MISMATCH`）。同日に複数の Episode が
 それぞれ問題を起こしても取りこぼさない（`operational_anomalies` の episode 単位インデックス）。
 **機械検査**: `tests/unit/test_daily_watchdog.py` / `tests/contract/test_operational_anomalies_episode_scope.py`
+
+## J. 途中再開（ADR-0032）
+
+### INV-30 Episodeの統一再開は日次枠を再消費せず、同一Episodeの二重実行を作らない
+再開は `daily_episode_slots` を消費しない（`claim_daily_slot` を呼ばない）。同じ Episode に対する
+二重の再開要求は、決定論的な workflow id（`pipeline_workflow_id`）への Temporal の
+`WorkflowAlreadyStartedError` が構造的に防ぐ（実行と課金が重複しない）。
+read-onlyのdry-run（`GET /episodes/{id}/resume/plan`）はProvider呼び出し・予約作成・workflow起動を
+一切行わない（`WorkflowStarter` を依存に注入しない構造で保証する）。
+**機械検査**: `tests/unit/test_resume_plan.py` / `tests/unit/test_resume_api.py`
+/ `tests/unit/test_pipeline_workflows.py` / `tests/integration/test_episode_resume.py`
