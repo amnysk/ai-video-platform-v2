@@ -269,6 +269,8 @@ FAL_ADAPTER_IMPORTERS = frozenset(
         "tests/unit/test_fal_storage.py",
         "tests/unit/test_fal_seedance_video.py",
         "tests/live/test_fal_video_live.py",
+        #: 本番と同じクライアント構築を preflight で使い回す（設定の再実装を避ける。ADR-0030）
+        "infrastructure/production/preflight.py",
     }
 )
 

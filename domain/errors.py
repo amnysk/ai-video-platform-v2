@@ -65,7 +65,24 @@ class ProviderInvocationError(RetryableError):
 
 
 class ProviderUnavailableError(NeedsInputError):
-    """CLI不在・未認証・権限拒否。再実行しても同じだが人間が直せば回復する。"""
+    """CLI不在・未認証・権限拒否。再実行しても同じだが人間が直せば回復する。
+
+    ``http_status`` は HTTP 由来の拒否のときだけ埋める（ADR-0030の診断記録に使う）。
+    CLI不在など HTTP を経由しない場合は ``None`` のままでよい。
+    """
+
+    def __init__(self, message: str, *, http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+
+
+class ProviderCredentialSuspectedOutageError(NeedsInputError):
+    """同じ provider への認可拒否がウィンドウ内で閾値を超えた（ADR-0030）。
+
+    個々の 401/403（``ProviderUnavailableError``）とは別に、共有障害の疑いがある間は
+    その provider への新規 submit 自体を止める（予約 INSERT の前）。人間が確認し
+    provider が回復すれば、次の成功で自動的に解消する。
+    """
 
 
 class UnreconciledReservationError(NeedsInputError):

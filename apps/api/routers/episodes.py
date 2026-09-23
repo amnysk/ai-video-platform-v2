@@ -20,6 +20,8 @@ from apps.api.schemas import (
     CreateEpisodeResponse,
     EpisodeView,
     JobView,
+    ResumePlanResponse,
+    ResumeResponse,
     StartProductionResponse,
     StartRenderRequest,
     StartRenderResponse,
@@ -33,11 +35,14 @@ from contracts.states import (
     RENDER_ADMISSIBLE_STATUSES,
     UPLOAD_ADMISSIBLE_STATUSES,
     EpisodeStatus,
+    ProviderCall,
 )
+from domain.pipeline.resume_plan import ReservationSummary, ResumePlan, build_resume_plan
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
     JobRepository,
+    ProviderReservationRepository,
 )
 
 router = APIRouter(prefix="/episodes", tags=["episodes"])
@@ -274,6 +279,127 @@ async def start_upload(
         ) from exc
     return StartUploadResponse(
         episode_id=episode.id, status=episode.status, workflow_id=workflow_id
+    )
+
+
+async def _load_resume_plan(
+    episode_id: uuid.UUID, session_factory: SessionFactory
+) -> tuple[EpisodeStatus, ResumePlan] | None:
+    """再開計画を読み取り専用で組み立てる（ADR-0032 §Decision(1)/(2)）。
+
+    GET の dry-run と POST の再検証が**同じ関数**を呼ぶ（TOCTOU を避ける）。ここは読み取りだけ
+    （``session.commit()`` を呼ばない）。provider 呼び出し・予約 INSERT・workflow start は
+    ``domain.pipeline.resume_plan`` 同様ここでも一切行わない。
+
+    未照合予約は対象工程の provider に絞らず、Episode の全 provider について読む
+    （ADR-0013 §Decision が「同じ Episode + provider」を単位に未照合を確認するのと同じ粒度。
+    対象工程の絞り込みは `determine_target_stage` 自体が「決められない」ケースを持つため、
+    工程を先に決めてから provider を絞るより、Episode 全体を毎回見るほうが単純で安全側に倒れる。
+    `build_resume_plan` 自身が `ReservationStatus.RESERVED` かつ `raw_output_key is None` の行
+    だけを未照合として使うので、余分な行を渡しても判定は変わらない）。
+    """
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+        if episode is None:
+            return None
+        owner_workflow_id = await EpisodeRepository(session).get_workflow_id(episode.id)
+        reservation_repo = ProviderReservationRepository(session)
+        reservations: list[ReservationSummary] = []
+        for provider in ProviderCall:
+            for row in await reservation_repo.list_for_episode_provider(episode.id, provider):
+                reservations.append(
+                    ReservationSummary(
+                        id=row.id,
+                        provider=row.provider,
+                        status=row.status,
+                        raw_output_key=row.raw_output_key,
+                    )
+                )
+
+    plan = build_resume_plan(
+        episode_id=str(episode.id),
+        status=episode.status,
+        owner_workflow_id=owner_workflow_id,
+        unreconciled_reservations=reservations,
+    )
+    return episode.status, plan
+
+
+def _resume_plan_response(episode_id: uuid.UUID, plan: ResumePlan) -> ResumePlanResponse:
+    return ResumePlanResponse(
+        episode_id=str(episode_id),
+        resumable=plan.resumable,
+        target_stage=plan.target_stage,
+        stages_to_run=list(plan.stages_to_run),
+        unresolved_blockers=list(plan.unresolved_blockers),
+        unreconciled_reservation_ids=[r.id for r in plan.unreconciled_reservations],
+        possible_new_charges=list(plan.possible_new_charges),
+        reason=plan.reason,
+    )
+
+
+@router.get("/{episode_id}/resume/plan", response_model=ResumePlanResponse)
+async def get_resume_plan(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+) -> ResumePlanResponse:
+    """統一再開の dry-run（INV-16 / ADR-0032 §Decision(1)）。
+
+    ``WorkflowStarter`` を依存に注入しない: これにより workflow を起動する経路がこのハンドラに
+    構造的に存在しない（コードレビューで機械的に確認できる。ADR-0032 §Decision(1)）。
+    """
+    loaded = await _load_resume_plan(episode_id, session_factory)
+    if loaded is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    _current_status, plan = loaded
+    return _resume_plan_response(episode_id, plan)
+
+
+@router.post(
+    "/{episode_id}/resume",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ResumeResponse,
+)
+async def resume_episode(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+) -> ResumeResponse:
+    """統一再開の実行（INV-16 / ADR-0032 §Decision(2)/(3)）。
+
+    dry-run と同じ ``_load_resume_plan`` を再度呼んでから判定する（クライアントがキャッシュした
+    古い plan を信用しない。TOCTOU を避ける）。``EpisodePipelineWorkflow`` を決定論的な
+    workflow id（``pipeline_workflow_id``）で起動する。実行中の同じ id は Temporal が拒否する
+    （``WorkflowAlreadyStartedError`` → 409。二重再開の防止も、通常実行との同時実行の防止も
+    ここに依存する。アプリ側でロックを自作しない）。
+    `claim_daily_slot` は呼ばない（``DailyEpisodeWorkflow`` を経由しない。日次枠を消費しない）。
+    """
+    loaded = await _load_resume_plan(episode_id, session_factory)
+    if loaded is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    current_status, plan = loaded
+    if not plan.resumable or plan.target_stage is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=plan.reason or f"episode {episode_id} is not resumable",
+        )
+
+    try:
+        workflow_id = await starter.start_pipeline_workflow(
+            episode_id=str(episode_id), start_stage=plan.target_stage
+        )
+    except WorkflowAlreadyStartedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"pipeline workflow already running for episode {episode_id}",
+        ) from exc
+
+    return ResumeResponse(
+        episode_id=str(episode_id),
+        status=current_status,
+        workflow_id=workflow_id,
+        target_stage=plan.target_stage,
+        stages_to_run=list(plan.stages_to_run),
     )
 
 

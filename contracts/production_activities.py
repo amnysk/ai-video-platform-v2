@@ -59,6 +59,13 @@ AWAIT_HEARTBEAT_TIMEOUT_SECONDS = 90
 #: ローカル非課金の音声合成（INV-15 の対象外。ADR-0017 の限定例外）。
 VOICE_MAX_ATTEMPTS = 3
 
+# ------------------------------------------------------------ provider 認可障害の抑止（ADR-0030）
+
+#: 同じ provider の未解決 ``provider_auth_incidents`` をこの分の過去だけ数える。
+AUTH_INCIDENT_WINDOW_MINUTES = 10
+#: ウィンドウ内でこの件数以上の未解決 incident があれば、新規 submit を止める（予約 INSERT の前）。
+AUTH_INCIDENT_SUPPRESSION_THRESHOLD = 3
+
 
 # --------------------------------------------------------------------------- 状態系
 
@@ -237,6 +244,8 @@ class VideoAwaitRequest:
 
 
 __all__ = [
+    "AUTH_INCIDENT_SUPPRESSION_THRESHOLD",
+    "AUTH_INCIDENT_WINDOW_MINUTES",
     "AWAIT_HEARTBEAT_TIMEOUT_SECONDS",
     "AWAIT_MAX_ATTEMPTS",
     "AWAIT_START_TO_CLOSE_SECONDS",

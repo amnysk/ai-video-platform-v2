@@ -3,25 +3,31 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
+from contracts.production_activities import AUTH_INCIDENT_SUPPRESSION_THRESHOLD
 from contracts.states import ArtifactType, FailureClass, ProviderCall, ReservationStatus
 from domain.errors import (
     MediaValidationError,
+    ProviderCredentialSuspectedOutageError,
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
     ProviderSubmitAmbiguousError,
+    ProviderUnavailableError,
     UnreconciledReservationError,
 )
 from domain.production.ports import ImageRequest, JobFailed, JobPending, ProviderJobRef
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
+    ProviderAuthIncidentRepository,
     ProviderReservation,
     ProviderReservationRepository,
 )
@@ -79,6 +85,99 @@ async def _await(runner, rid, gen, **kw):
     return await runner.await_output(rid, gen, **kw)
 
 
+async def _record_reusable_scene_image(
+    session_factory, artifact_store, *, episode_id, scene_id, input_hash
+):
+    """ADR-0033: 再利用判定は実体も検証するので、DB行だけでなく store にも本物を置く。"""
+    media_body = b"png-bytes"
+    media_key = f"artifacts/{episode_id}/scene_image/{scene_id}.png"
+    await artifact_store.put_bytes(media_key, media_body, "image/png")
+    payload = {
+        "episode_id": str(episode_id),
+        "type": "scene_image",
+        "schema_version": "1.0",
+        "source_storyboard": {
+            "artifact_id": str(uuid.uuid4()),
+            "sha256": "a" * 64,
+            "schema_version": "1.0",
+        },
+        "scene_id": scene_id,
+        "media": {
+            "object_key": media_key,
+            "sha256": hashlib.sha256(media_body).hexdigest(),
+            "bytes": len(media_body),
+            "mime": "image/png",
+        },
+        "width": 1080,
+        "height": 1920,
+        "generator": {
+            "generator": "fal",
+            "generator_model": "seedream-4.5",
+            # FakeImageGenerator().generation_profile_id と一致させる
+            # （tests/support/production.py。ADR-0033: fal の固定定数ではなく、今まさに
+            # 構成されている generator が報告する値と比較する）
+            "generation_profile_id": "fake-image-profile-v1",
+        },
+    }
+    descriptor_key = f"artifacts/{episode_id}/scene_image/{scene_id}.json"
+    put = await artifact_store.put_json(descriptor_key, payload)
+    async with session_factory() as session:
+        await ArtifactMetadataRepository(session).record(
+            episode_id=episode_id,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            schema_version="1.0",
+            bucket="b",
+            object_key=descriptor_key,
+            sha256=put.sha256,
+            input_hash=input_hash,
+            scene_id=scene_id,
+            size_bytes=put.size,
+        )
+        await session.commit()
+
+
+async def test_corrupt_artifact_does_not_bypass_the_unreconciled_reservation_block(
+    runner, session_factory, artifact_store
+) -> None:
+    """ADR-0033 §4: 破損検出は「現行が無い」に倒すだけで、未照合予約のブロックを迂回しない。
+
+    DB行はあるが実体（store）が無い＝破損として扱われる。それでも同じ Episode+provider+scene に
+    evidence の無い reserved が残っていれば、通常どおり ``UnreconciledReservationError`` で止まる
+    （ADR-0013 は変更しない。破損の有無に関わらず同じ判定を通す）。
+    """
+    spec = await _spec(session_factory)
+    async with session_factory() as session:
+        # DB行はあるが object を store に置かない（欠落 = MISSING 相当）
+        await ArtifactMetadataRepository(session).record(
+            episode_id=spec.episode_id,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            schema_version="1.0",
+            bucket="b",
+            object_key="artifacts/missing/sb1.json",
+            sha256="1" * 64,
+            input_hash=spec.input_hash,
+            scene_id="sb1",
+        )
+        repo = ProviderReservationRepository(session)
+        row = await repo.reserve(
+            episode_id=spec.episode_id,
+            provider=spec.provider,
+            idempotency_key=spec.idempotency_key,
+            input_hash=spec.input_hash,
+            round=1,
+            scene_id="sb1",
+        )
+        await repo.mark_dispatched(row.id)
+        await session.commit()
+
+    gen = FakeImageGenerator()
+    with pytest.raises(UnreconciledReservationError):
+        await runner.submit(spec, gen, REQUEST)
+    assert gen.submit_calls == 0
+    # 破損検出そのものが新しい予約や外部呼び出しを一切起こさない
+    assert not await artifact_store.exists("artifacts/missing/sb1.json")
+
+
 async def test_happy_path_writes_ledger_in_order(runner, session_factory, artifact_store) -> None:
     spec = await _spec(session_factory)
     gen = FakeImageGenerator(pending_polls=2, cost_usd=0.04)
@@ -101,20 +200,18 @@ async def test_happy_path_writes_ledger_in_order(runner, session_factory, artifa
     assert await artifact_store.get_bytes(output.raw_output_key) == output.data
 
 
-async def test_existing_artifact_is_reused_without_reserving(runner, session_factory) -> None:
+async def test_existing_artifact_is_reused_without_reserving(
+    runner, session_factory, artifact_store
+) -> None:
     spec = await _spec(session_factory)
-    async with session_factory() as session:
-        await ArtifactMetadataRepository(session).record(
-            episode_id=spec.episode_id,
-            artifact_type=ArtifactType.SCENE_IMAGE,
-            schema_version="1.0",
-            bucket="b",
-            object_key="k",
-            sha256="1" * 64,
-            input_hash=spec.input_hash,
-            scene_id="sb1",
-        )
-        await session.commit()
+    # ADR-0033: 再利用は実体も検証するので、DB行だけでなく store にも本物を置く
+    await _record_reusable_scene_image(
+        session_factory,
+        artifact_store,
+        episode_id=spec.episode_id,
+        scene_id="sb1",
+        input_hash=spec.input_hash,
+    )
     gen = FakeImageGenerator()
     assert isinstance(await runner.submit(spec, gen, REQUEST), Reused)
     other_scene = replace(spec, scene_id="sb2")
@@ -400,6 +497,37 @@ class _ConcurrentAttemptFinishes(FakeImageGenerator):
         key = raw_output_key(self.episode_id, self.reservation_id)
         # 同じジョブの取得物なので、並行試行の evidence は同じバイト列
         await self.store.put_bytes(key, b"".join(chunks), "application/octet-stream")
+        # ADR-0033: await_output は紐づいた Artifact を実体まで検証してから返すので、DB行だけ
+        # でなく本物のJSON記述子・メディアも置く（実際の Activity が常にそうしているのと同じ形）
+        media_body = b"png-bytes-concurrent"
+        media_key = f"artifacts/{self.episode_id}/scene_image/sb1-concurrent.png"
+        await self.store.put_bytes(media_key, media_body, "image/png")
+        descriptor_payload = {
+            "episode_id": str(self.episode_id),
+            "type": "scene_image",
+            "schema_version": "1.0",
+            "source_storyboard": {
+                "artifact_id": str(uuid.uuid4()),
+                "sha256": "a" * 64,
+                "schema_version": "1.0",
+            },
+            "scene_id": "sb1",
+            "media": {
+                "object_key": media_key,
+                "sha256": hashlib.sha256(media_body).hexdigest(),
+                "bytes": len(media_body),
+                "mime": "image/png",
+            },
+            "width": 1080,
+            "height": 1920,
+            "generator": {
+                "generator": "fal",
+                "generator_model": "seedream-4.5",
+                "generation_profile_id": "fake-image-profile-v1",
+            },
+        }
+        descriptor_key = f"artifacts/{self.episode_id}/scene_image/x.json"
+        put = await self.store.put_json(descriptor_key, descriptor_payload)
         async with self.session_factory() as session:
             await ProviderReservationRepository(session).mark_spent(
                 self.reservation_id, raw_output_key=key, reconciled_by="evidence"
@@ -407,11 +535,11 @@ class _ConcurrentAttemptFinishes(FakeImageGenerator):
             meta = await ArtifactMetadataRepository(session).record(
                 episode_id=self.episode_id,
                 artifact_type=ArtifactType.SCENE_IMAGE,
-                schema_version="1",
+                schema_version="1.0",
                 bucket="b",
-                object_key=f"artifacts/{self.episode_id}/x.json",
-                sha256="c" * 64,
-                size_bytes=1,
+                object_key=descriptor_key,
+                sha256=put.sha256,
+                size_bytes=put.size,
                 input_hash="h" * 64,
                 scene_id="sb1",
             )
@@ -542,3 +670,254 @@ async def test_concurrent_insert_of_the_same_round_resumes_instead_of_resubmitti
     assert isinstance(again, Submitted) and not again.newly_submitted
     assert again.reservation_id == first.reservation_id
     assert gen.submit_calls == 1 and calls["n"] >= 2
+
+
+# --------------------------------------------------------------- ADR-0030: provider auth incidents
+
+
+async def test_prepare_auth_failure_records_incident_and_creates_no_reservation(
+    runner, session_factory
+) -> None:
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+    with pytest.raises(ProviderUnavailableError):
+        await runner.submit(spec, gen, REQUEST)
+    assert gen.submit_calls == 0
+    async with session_factory() as session:
+        latest = await ProviderReservationRepository(session).find_latest_for_input(
+            spec.episode_id, spec.provider, spec.scene_id, spec.input_hash
+        )
+        assert latest is None  # 予約は一切作られない（非課金の準備は予約の前）
+        count = await ProviderAuthIncidentRepository(session).count_unresolved_within_window(
+            spec.provider, since=datetime.min.replace(tzinfo=UTC)
+        )
+        assert count == 1
+
+
+async def test_repeated_auth_incidents_suppress_new_submits_for_same_provider(
+    runner, session_factory
+) -> None:
+    for scene in ("sb1", "sb2", "sb3")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
+        spec = await _spec(session_factory, scene=scene)
+        gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+        with pytest.raises(ProviderUnavailableError):
+            await runner.submit(spec, gen, REQUEST)
+
+    blocked_spec = await _spec(session_factory, scene="sb4")
+    blocked_gen = FakeImageGenerator()
+    with pytest.raises(ProviderCredentialSuspectedOutageError):
+        await runner.submit(blocked_spec, blocked_gen, REQUEST)
+    assert blocked_gen.prepare_calls == 0  # 準備すら呼ばない
+    assert blocked_gen.submit_calls == 0
+    async with session_factory() as session:
+        latest = await ProviderReservationRepository(session).find_latest_for_input(
+            blocked_spec.episode_id,
+            blocked_spec.provider,
+            blocked_spec.scene_id,
+            blocked_spec.input_hash,
+        )
+        assert latest is None
+
+
+async def test_auth_outage_gate_is_scoped_to_one_provider(runner, session_factory) -> None:
+    for scene in ("sb1", "sb2", "sb3")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
+        spec = await _spec(session_factory, scene=scene)
+        gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+        with pytest.raises(ProviderUnavailableError):
+            await runner.submit(spec, gen, REQUEST)
+
+    video_spec = PaidJobSpec(
+        episode_id=(await _spec(session_factory, scene="sb9")).episode_id,
+        scene_id="sb9",
+        provider=ProviderCall.FAL_VIDEO,
+        artifact_type=ArtifactType.SCENE_VIDEO,
+        input_hash="v" * 64,
+        round=1,
+    )
+    from tests.support.production import FakeVideoGenerator
+
+    video_gen = FakeVideoGenerator(pending_polls=0)
+    outcome = await runner.submit(video_spec, video_gen, REQUEST)
+    assert isinstance(outcome, Submitted) and outcome.newly_submitted
+
+
+async def test_successful_prepare_resolves_open_incidents(runner, session_factory) -> None:
+    spec = await _spec(session_factory)
+    failing = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+    with pytest.raises(ProviderUnavailableError):
+        await runner.submit(spec, failing, REQUEST)
+
+    recovered_spec = await _spec(session_factory, scene="sb2")
+    healthy = FakeImageGenerator(pending_polls=0)
+    outcome = await runner.submit(recovered_spec, healthy, REQUEST)
+    assert isinstance(outcome, Submitted)
+
+    async with session_factory() as session:
+        count = await ProviderAuthIncidentRepository(session).count_unresolved_within_window(
+            spec.provider, since=datetime.min.replace(tzinfo=UTC)
+        )
+        assert count == 0
+
+
+async def test_auth_outage_gate_does_not_block_resuming_already_produced_scenes(
+    runner, session_factory, artifact_store
+) -> None:
+    """sb1〜sb5 のように既に Artifact がある scene は、抑止期間中でも再開できる（ADR-0030）。
+
+    ゲートは Reused / Submitted の早期returnより後（実際に provider I/O が要る場面）でだけ
+    評価する。抑止中に済んだ工程の再開まで止めると failure-policy.md §4
+    「済んだ工程は課金を伴わずに素通りする」が壊れる。
+    """
+    done_spec = await _spec(session_factory, scene="sb1")
+    # ADR-0033: 再利用は実体も検証するので、DB行だけでなく store にも本物を置く
+    await _record_reusable_scene_image(
+        session_factory,
+        artifact_store,
+        episode_id=done_spec.episode_id,
+        scene_id="sb1",
+        input_hash=done_spec.input_hash,
+    )
+
+    for scene in ("sb2", "sb3", "sb4")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
+        spec = await _spec(session_factory, scene=scene)
+        gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+        with pytest.raises(ProviderUnavailableError):
+            await runner.submit(spec, gen, REQUEST)
+
+    # 同じ provider が抑止中でも、既に成果物がある sb1 は provider を一切呼ばずに再利用できる
+    resumed = await runner.submit(done_spec, FakeImageGenerator(), REQUEST)
+    assert isinstance(resumed, Reused)
+
+
+# --------------------------------------------------------------- ADR-0033: await_output の検証
+
+
+async def test_await_output_does_not_return_a_corrupted_linked_artifact_silently(
+    runner, session_factory, artifact_store
+) -> None:
+    """独立の統合試験で発見: reservation.outcome_artifact_id への近道が検証をすり抜けていた。
+
+    予約に紐づいた Artifact（``outcome_artifact_id``）の実体が壊れていても、``await_output`` は
+    それを「完了済み」として黙って返してはいけない（``find_and_verify_current`` が予約の**前**で
+    行う検査と同じものを、予約の**後**（await の再開）でも通す）。evidence（生の取得物）が
+    無傷なら、それを ``.data`` として返す（呼び出し側が読み直せるように）。壊れた Artifact を
+    ``.artifact`` に入れて返さない。
+    """
+    spec = await _spec(session_factory)
+    media_body = b"png-bytes-original"
+    media_key = f"artifacts/{spec.episode_id}/scene_image/sb1.png"
+    await artifact_store.put_bytes(media_key, media_body, "image/png")
+    descriptor_payload = {
+        "episode_id": str(spec.episode_id),
+        "type": "scene_image",
+        "schema_version": "1.0",
+        "source_storyboard": {
+            "artifact_id": str(uuid.uuid4()),
+            "sha256": "a" * 64,
+            "schema_version": "1.0",
+        },
+        "scene_id": "sb1",
+        "media": {
+            "object_key": media_key,
+            "sha256": hashlib.sha256(media_body).hexdigest(),
+            "bytes": len(media_body),
+            "mime": "image/png",
+        },
+        "width": 1080,
+        "height": 1920,
+        "generator": {
+            "generator": "fal",
+            "generator_model": "seedream-4.5",
+            "generation_profile_id": "fake-image-profile-v1",
+        },
+    }
+    descriptor_key = f"artifacts/{spec.episode_id}/scene_image/sb1.json"
+    put = await artifact_store.put_json(descriptor_key, descriptor_payload)
+    async with session_factory() as session:
+        artifact = await ArtifactMetadataRepository(session).record(
+            episode_id=spec.episode_id,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            schema_version="1.0",
+            bucket="b",
+            object_key=descriptor_key,
+            sha256=put.sha256,
+            input_hash=spec.input_hash,
+            scene_id="sb1",
+            size_bytes=put.size,
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        reservations = ProviderReservationRepository(session)
+        reservation = await reservations.reserve(
+            episode_id=spec.episode_id,
+            provider=spec.provider,
+            idempotency_key=spec.idempotency_key,
+            input_hash=spec.input_hash,
+            round=1,
+            scene_id="sb1",
+        )
+        await reservations.mark_dispatched(reservation.id)
+        raw_key = raw_output_key(spec.episode_id, reservation.id)
+        await artifact_store.put_text(raw_key, "raw-evidence-untouched")
+        await reservations.mark_spent(reservation.id, raw_output_key=raw_key)
+        await reservations.attach_artifact(reservation.id, artifact.id)
+        await session.commit()
+
+    # 実体を壊す（DB行・予約は無傷のまま）。immutability ガードを迂回して直接書き換える
+    # （アプリの書き込み経路の外からの破損を模す）
+    artifact_store._objects[media_key] = b"corrupted-bytes"  # type: ignore[attr-defined]
+
+    gen = FakeImageGenerator()
+    output = await runner.await_output(reservation.id, gen, poll_interval_seconds=0)
+
+    # 壊れた Artifact を「完了済み」として黙って返していない
+    assert output.artifact is None
+    # evidence（生の取得物）は無傷なので、それを呼び出し側が読み直せるように返す
+    assert output.data == b"raw-evidence-untouched"
+    assert output.raw_output_key == raw_key
+    # 破損した実体・予約・DB行のいずれも自動で削除・変更されていない
+    async with session_factory() as session:
+        still_linked = await ArtifactMetadataRepository(session).get(artifact.id)
+    assert still_linked is not None and still_linked.id == artifact.id
+    assert await artifact_store.get_bytes(media_key) == b"corrupted-bytes"
+
+
+async def test_await_output_still_returns_a_valid_linked_artifact_fast(
+    runner, session_factory, artifact_store
+) -> None:
+    """非退行: 実体が無傷なら、従来どおり検証済みの既存 Artifact をそのまま返す（再検証で通る）。"""
+    spec = await _spec(session_factory)
+    await _record_reusable_scene_image(
+        session_factory,
+        artifact_store,
+        episode_id=spec.episode_id,
+        scene_id="sb1",
+        input_hash=spec.input_hash,
+    )
+    async with session_factory() as session:
+        current = await ArtifactMetadataRepository(session).find_current(
+            spec.episode_id, ArtifactType.SCENE_IMAGE, spec.input_hash, "sb1"
+        )
+        assert current is not None
+        reservations = ProviderReservationRepository(session)
+        reservation = await reservations.reserve(
+            episode_id=spec.episode_id,
+            provider=spec.provider,
+            idempotency_key=spec.idempotency_key,
+            input_hash=spec.input_hash,
+            round=1,
+            scene_id="sb1",
+        )
+        await reservations.mark_dispatched(reservation.id)
+        raw_key = raw_output_key(spec.episode_id, reservation.id)
+        await artifact_store.put_text(raw_key, "raw-evidence")
+        await reservations.mark_spent(reservation.id, raw_output_key=raw_key)
+        await reservations.attach_artifact(reservation.id, current.id)
+        await session.commit()
+
+    gen = FakeImageGenerator()
+    output = await runner.await_output(reservation.id, gen, poll_interval_seconds=0)
+
+    assert output.artifact is not None and output.artifact.id == current.id
+    assert output.data == b""

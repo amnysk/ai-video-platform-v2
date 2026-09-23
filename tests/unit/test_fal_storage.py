@@ -1,8 +1,12 @@
-"""fal CDN v3 アップロード（非課金の準備工程）の HTTP と失敗の写像（ADR-0017 Phase 4C）。"""
+"""fal CDN v3 アップロード（非課金の準備工程）の HTTP と失敗の写像。
+
+ADR-0017 Phase 4C / ADR-0030（診断ログ・失敗文言の是正）。
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -71,6 +75,89 @@ async def test_auth_failure_needs_input(status) -> None:
     with pytest.raises(ProviderUnavailableError) as info:
         await client.upload(b"PNG", "image/png", "a.png")
     assert "secret-key" not in str(info.value)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_auth_failure_does_not_assert_a_cause(status) -> None:
+    """ADR-0030: 403 を「credentials」と決め打たない。応答本文は評価に使えない（body なし）。"""
+    client, _ = _client({STORAGE_TOKEN_URL: httpx.Response(status)})
+    with pytest.raises(ProviderUnavailableError) as info:
+        await client.upload(b"PNG", "image/png", "a.png")
+    assert "credentials" not in str(info.value).lower()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_auth_failure_logs_structured_diagnostics_without_secrets(status, caplog) -> None:
+    client, _ = _client(
+        {
+            STORAGE_TOKEN_URL: httpx.Response(
+                status,
+                headers={
+                    "x-fal-request-id": "req-123",
+                    "x-fal-error-type": "invalid_key",
+                },
+            )
+        }
+    )
+    with (
+        caplog.at_level(logging.ERROR, logger="infrastructure.providers.fal_storage"),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await client.upload(b"PNG", "image/png", "a.png")
+    assert len(caplog.records) == 1
+    message = caplog.records[0].getMessage()
+    assert "PROVIDER_AUTH_FAILURE" in message
+    assert "fal_operation=token" in message
+    assert f"http_status={status}" in message
+    assert "provider_request_id=req-123" in message
+    assert "provider_error_type=invalid_key" in message
+    assert "worker_id=" in message
+    assert "config_version=" in message
+    assert "occurred_at=" in message
+    assert "secret-key" not in message
+    assert "Authorization" not in message
+
+
+async def test_auth_failure_without_request_id_logs_none(caplog) -> None:
+    client, _ = _client({STORAGE_TOKEN_URL: httpx.Response(403)})
+    with (
+        caplog.at_level(logging.ERROR, logger="infrastructure.providers.fal_storage"),
+        pytest.raises(ProviderUnavailableError),
+    ):
+        await client.upload(b"PNG", "image/png", "a.png")
+    message = caplog.records[0].getMessage()
+    assert "provider_request_id=None" in message
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_transient_failure_logs_diagnostics(status, caplog) -> None:
+    client, _ = _client(
+        {
+            STORAGE_TOKEN_URL: httpx.Response(200, json=TOKEN_OK.json()),
+            CDN_UPLOAD_URL: httpx.Response(status),
+        }
+    )
+    with (
+        caplog.at_level(logging.ERROR, logger="infrastructure.providers.fal_storage"),
+        pytest.raises(ProviderInvocationError),
+    ):
+        await client.upload(b"PNG", "image/png", "a.png")
+    message = caplog.records[0].getMessage()
+    assert "PROVIDER_TRANSIENT_FAILURE" in message
+    assert "fal_operation=upload" in message
+    assert f"http_status={status}" in message
+
+
+async def test_network_failure_logs_diagnostics_without_status(caplog) -> None:
+    client, _ = _client({STORAGE_TOKEN_URL: httpx.ConnectError("boom")})
+    with (
+        caplog.at_level(logging.ERROR, logger="infrastructure.providers.fal_storage"),
+        pytest.raises(ProviderInvocationError),
+    ):
+        await client.upload(b"PNG", "image/png", "a.png")
+    message = caplog.records[0].getMessage()
+    assert "PROVIDER_TRANSIENT_FAILURE" in message
+    assert "http_status=None" in message
 
 
 @pytest.mark.parametrize("status", [429, 500, 503])

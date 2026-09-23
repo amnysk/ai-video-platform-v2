@@ -47,6 +47,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Protocol
@@ -54,11 +55,16 @@ from typing import Any, Protocol
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from contracts.production_activities import (
+    AUTH_INCIDENT_SUPPRESSION_THRESHOLD,
+    AUTH_INCIDENT_WINDOW_MINUTES,
+)
 from contracts.states import ArtifactType, ProviderCall, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
 from domain.errors import (
     InvalidTransitionError,
     MediaValidationError,
+    ProviderCredentialSuspectedOutageError,
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
@@ -69,8 +75,10 @@ from domain.errors import (
 )
 from domain.production.identity import idempotency_key
 from domain.production.ports import JobFailed, JobPending, JobStatus, ProviderJobRef
+from infrastructure.artifact.verify import ArtifactVerdict, find_and_verify_current, verify_artifact
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
+    ProviderAuthIncidentRepository,
     ProviderReservation,
     ProviderReservationRepository,
 )
@@ -121,6 +129,12 @@ class PaidJobSpec:
     #: workflow の run ごとの試行番号（ログ用）。**台帳のラウンドではない**（台帳から導く）
     round: int
     job_id: str | None = None
+    #: 再利用の完全性検証（ADR-0033）が「現在有効な生成設定版」として使う値。
+    #: ``generator.generation_profile_id`` そのままとは限らない ── video のように
+    #: generator + 付随パラメータ（motion profile 等）を合成した値を Activity 側が持つ場合は、
+    #: その合成済みの値をここへ渡す（``PaidJobRunner`` は provider 固有の合成方法を知らない）。
+    #: 省略時はこの型のチェックを行わない。
+    current_generation_profile_id: str | None = None
 
     def key_for_round(self, ledger_round: int) -> str:
         return idempotency_key(
@@ -213,11 +227,18 @@ class PaidJobRunner:
         prepared = False
         for _ in range(_RESERVE_ATTEMPTS):
             async with self._session_factory() as session:
-                existing = await ArtifactMetadataRepository(session).find_current(
+                # 再利用の唯一のゲート（ADR-0033）: DB行だけでなく実体（MinIO）も検証する。
+                # 欠落・破損・版不一致は「現行が無い」のと同じに倒し、新ラウンドへ進む
+                existing = await find_and_verify_current(
+                    repo=ArtifactMetadataRepository(session),
+                    store=self._store,
                     episode_id=spec.episode_id,
                     artifact_type=spec.artifact_type,
                     input_hash=spec.input_hash,
                     scene_id=spec.scene_id,
+                    # 「現在有効な生成設定版」は呼び出し元（Activity）が spec に渡した値
+                    # （fal の固定定数をここへ直接埋め込まない。fake/real どちらでも同じ形で効く）
+                    current_generation_profile_id=spec.current_generation_profile_id,
                 )
                 if existing is not None:
                     return Reused(artifact=existing)
@@ -253,11 +274,21 @@ class PaidJobRunner:
                         f"{spec.provider.value} call for scene {spec.scene_id}"
                     )
                 # 非課金の準備（例: 元画像のアップロード）は予約の**前**。
-                # 失敗しても台帳に何も残らない
+                # 失敗しても台帳に何も残らない。
+                # 認可障害ゲート（ADR-0030）もここで初めて評価する: Reused / Submitted /
+                # stale-unreconciled の早期returnより後なので、provider I/O が要らない
+                # 済んだ工程の再開（sb1〜sb5 の再利用等）を抑止期間中でも止めない
                 if not prepared:
+                    await self._check_auth_outage_gate(spec.provider)
                     prepare = getattr(generator, "prepare", None)
                     if prepare is not None:
-                        request = await prepare(request)
+                        try:
+                            request = await prepare(request)
+                        except ProviderUnavailableError as exc:
+                            await self._record_auth_incident(spec, exc)
+                            raise
+                        else:
+                            await self._resolve_auth_incidents(spec.provider)
                     prepared = True
                 if candidate is None:
                     try:
@@ -352,12 +383,11 @@ class PaidJobRunner:
         raw_key = raw_output_key(reservation.episode_id, reservation.id)
 
         if reservation.outcome_artifact_id is not None:
-            async with self._session_factory() as session:
-                meta = await ArtifactMetadataRepository(session).get(
-                    reservation.outcome_artifact_id
-                )
+            meta = await self._verified_outcome_artifact(reservation.outcome_artifact_id)
             if meta is not None:
                 return PaidOutput(reservation, b"", reservation.raw_output_key or raw_key, meta)
+            # 紐づいた Artifact が壊れている/欠落している（ADR-0033）。「紐づいて完了済み」を
+            # 信じて素通りせず、下の evidence（生の取得物）から検証をやり直す経路へ落ちる。
 
         if reservation.status is ReservationStatus.SPENT:
             if reservation.raw_output_key is None:
@@ -526,13 +556,28 @@ class PaidJobRunner:
     ) -> PaidOutput:
         reservation = await self._load(reservation_id)
         if reservation.outcome_artifact_id is not None:
-            async with self._session_factory() as session:
-                meta = await ArtifactMetadataRepository(session).get(
-                    reservation.outcome_artifact_id
-                )
+            meta = await self._verified_outcome_artifact(reservation.outcome_artifact_id)
             if meta is not None:
                 return PaidOutput(reservation, b"", raw_key, meta)
         return PaidOutput(reservation, data, raw_key)
+
+    async def _verified_outcome_artifact(self, artifact_id: str) -> ArtifactMetadata | None:
+        """紐づいた Artifact を実体まで検証してから返す（ADR-0033）。
+
+        ``reservation.outcome_artifact_id`` が指す行は「この予約はもう完了している」という
+        DB 上の主張でしかない。実体（MinIO）が欠落・破損していれば、それを「完了済み」として
+        黙って返さない ── ``find_and_verify_current`` が予約の**前**でやっていることと同じ検査を、
+        予約の**後**（await での再開）でも必ず通す。検証に落ちても行・object は削除・変更しない
+        （呼び出し側が evidence から再検証する経路へ落ちるだけ）。
+        """
+        async with self._session_factory() as session:
+            meta = await ArtifactMetadataRepository(session).get(artifact_id)
+        if meta is None:
+            return None
+        result = await verify_artifact(self._store, meta)
+        if result.verdict is not ArtifactVerdict.REUSABLE:
+            return None
+        return meta
 
     @contextlib.asynccontextmanager
     async def _keepalive(
@@ -560,6 +605,45 @@ class PaidJobRunner:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+    # ---------------------------------------------------- provider 認可障害の抑止（ADR-0030）
+
+    async def _check_auth_outage_gate(self, provider: ProviderCall) -> None:
+        """同じ provider の未解決 incident が閾値を超えていれば、予約を作らずに止める。"""
+        since = datetime.now(UTC) - timedelta(minutes=AUTH_INCIDENT_WINDOW_MINUTES)
+        async with self._session_factory() as session:
+            count = await ProviderAuthIncidentRepository(session).count_unresolved_within_window(
+                provider, since=since
+            )
+        if count >= AUTH_INCIDENT_SUPPRESSION_THRESHOLD:
+            raise ProviderCredentialSuspectedOutageError(
+                f"{provider.value}: {count} unresolved auth incidents in the last "
+                f"{AUTH_INCIDENT_WINDOW_MINUTES} minutes; suppressing new submits until "
+                "a call succeeds or the incidents are resolved"
+            )
+
+    async def _record_auth_incident(self, spec: PaidJobSpec, exc: ProviderUnavailableError) -> None:
+        async with self._session_factory() as session:
+            await ProviderAuthIncidentRepository(session).record(
+                provider=spec.provider,
+                http_status=getattr(exc, "http_status", None),
+                episode_id=spec.episode_id,
+                now=datetime.now(UTC),
+            )
+            await session.commit()
+
+    async def _resolve_auth_incidents(self, provider: ProviderCall) -> None:
+        async with self._session_factory() as session:
+            resolved = await ProviderAuthIncidentRepository(session).resolve_open_for_provider(
+                provider, now=datetime.now(UTC)
+            )
+            await session.commit()
+        if resolved:
+            logger.info(
+                "resolved %s open auth incident(s) for provider=%s after a successful call",
+                resolved,
+                provider.value,
+            )
 
     async def _spend_conservatively(self, reservation_id: str, exc: BaseException) -> None:
         async with self._session_factory() as session:

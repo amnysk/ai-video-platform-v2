@@ -198,3 +198,55 @@ DailyEpisodeWorkflow も無ければ `DAILY_AUTOMATION_NOT_STARTED` を `operati
 / `tests/unit/test_daily_watchdog.py::test_a_paused_schedule_is_detected_and_never_unpaused`
 / `tests/unit/test_daily_watchdog.py::test_slot_present_after_grace_is_healthy_with_no_anomaly`
 / `tests/unit/test_daily_watchdog.py::test_the_anomaly_is_recorded_and_notified_once_per_day`。
+
+## H. 共有障害の抑止（ADR-0030）
+
+### INV-27 確認された provider 資格情報障害は同じ provider への新規課金を止める
+直近のウィンドウ内で同一 provider に対する認可拒否（401/403）が閾値を超えたら、新しい予約を
+作らず `needs_input` で止める。閾値・ウィンドウは `contracts/production_activities.py` の
+単一宣言元を持つ。無関係な provider・Episode の処理は継続する（INV-13 と同じ粒度の思想）。
+済んだ工程の再開（Artifact 再利用・Submitted の引き継ぎ）はこのゲートの対象外
+（provider I/O が要らないため）。
+**機械検査**: `tests/unit/test_paid_job.py::test_prepare_auth_failure_records_incident_and_creates_no_reservation`
+/ `::test_repeated_auth_incidents_suppress_new_submits_for_same_provider`
+/ `::test_auth_outage_gate_is_scoped_to_one_provider`
+/ `::test_successful_prepare_resolves_open_incidents`
+/ `::test_auth_outage_gate_does_not_block_resuming_already_produced_scenes`
+
+### INV-28 provider 呼び出し失敗の診断情報は secret を含まず構造化して残す
+操作種別・HTTP status・provider request id・worker識別子・設定版・発生時刻をログに残す。
+Authorization ヘッダ・token・生の応答本文は出さない（INV-20 の具体化）。
+**機械検査**: `tests/unit/test_fal_storage.py`（`PROVIDER_AUTH_FAILURE` / `PROVIDER_TRANSIENT_FAILURE`
+/ `PROVIDER_REJECTED` の診断フィールドと secret 非漏洩を検査するテスト群）
+
+## I. 自動運転の完走監視（ADR-0031）
+
+### INV-29 watchdog は起動だけでなく進行・完成・投稿を判定する
+`blocked` / `needs_work` からの長期停滞、完成期限超過、投稿期限超過（意図した `UPLOADS_PAUSED`
+を除く）をそれぞれ検出する。Temporal の workflow 実行が `completed` であることを、Episode の
+ドメイン状態と照合せずに成功とみなさない（`PIPELINE_OUTCOME_MISMATCH`）。同日に複数の Episode が
+それぞれ問題を起こしても取りこぼさない（`operational_anomalies` の episode 単位インデックス）。
+**機械検査**: `tests/unit/test_daily_watchdog.py` / `tests/contract/test_operational_anomalies_episode_scope.py`
+
+## J. 途中再開（ADR-0032）
+
+### INV-30 Episodeの統一再開は日次枠を再消費せず、同一Episodeの二重実行を作らない
+再開は `daily_episode_slots` を消費しない（`claim_daily_slot` を呼ばない）。同じ Episode に対する
+二重の再開要求は、決定論的な workflow id（`pipeline_workflow_id`）への Temporal の
+`WorkflowAlreadyStartedError` が構造的に防ぐ（実行と課金が重複しない）。
+read-onlyのdry-run（`GET /episodes/{id}/resume/plan`）はProvider呼び出し・予約作成・workflow起動を
+一切行わない（`WorkflowStarter` を依存に注入しない構造で保証する）。
+**機械検査**: `tests/unit/test_resume_plan.py` / `tests/unit/test_resume_api.py`
+/ `tests/unit/test_pipeline_workflows.py` / `tests/integration/test_episode_resume.py`
+
+## K. Artifact再利用の完全性（ADR-0033）
+
+### INV-31 Artifactの再利用は実体を検証してから行う
+DB行の存在だけで再利用しない。MinIO実体の存在・size・sha256、schema検証可能な型は読み戻し、
+生成設定版（image/video の固定 provider profile id、render の `RENDER_PROFILES`）の互換性を
+確認する。欠落・破損・版不一致は「現行が無い」として扱い、新しいラウンド（regenerate）へ進む。
+検証で破損を検出しても、既存の MinIO object・`artifact_metadata` 行・`provider_reservations` 行を
+自動で削除・変更しない。通常パイプライン（production/render/upload の各Activity）は同じ唯一の
+関数（`infrastructure.artifact.verify.find_and_verify_current`）を経由し、判定を二重化しない。
+**機械検査**: `tests/unit/test_artifact_verification.py` / `tests/unit/test_artifact_verify_io.py`
+/ `tests/unit/test_paid_job.py::test_corrupt_artifact_does_not_bypass_the_unreconciled_reservation_block`
