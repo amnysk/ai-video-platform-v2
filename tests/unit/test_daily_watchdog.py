@@ -495,9 +495,19 @@ def _stopped_result(episode_id: uuid.UUID, *, stage: str = "production") -> Epis
 async def test_completed_pipeline_with_outcome_stopped_is_flagged_when_uncovered(
     session_factory,
 ) -> None:
-    """2026-09-22 型の事故: Temporal は completed でも outcome=stopped で他の検査に映らない。"""
+    """2026-09-22 型の事故: Temporal は completed でも outcome=stopped で他の検査に映らない。
+
+    Episode は実在させる（``uuid.uuid4()`` の架空 id のままだと、独立の統合試験が発見した
+    「存在しない Episode を指す stopped 実行はこの watchdog 全体を落とさず静かにスキップする」
+    という安全策 [INV-13 と同じ「1つの失敗が他を止めない」思想] に、この検査ケース自体が
+    引っかかってしまう。実在する Episode の「まだどの検査にも引っかからない」状態を使う）。
+    """
     await _add_slot(session_factory)
-    episode_id = uuid.uuid4()
+    episode_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.IN_PROGRESS,
+        status_changed_at=AFTER_GRACE - timedelta(minutes=5),
+    )
     checker = FakeOutcomeChecker([_stopped_result(episode_id)])
     result, notifier = await _run(
         session_factory, _control(AFTER_GRACE), AFTER_GRACE, outcome_checker=checker
@@ -579,3 +589,35 @@ async def test_an_uncovered_outcome_mismatch_resolves_once_the_episode_completes
         outcome_checker=FakeOutcomeChecker(),  # 今日はもう stopped な実行が無い
     )
     assert await _open(session_factory, kinds=[AnomalyKind.PIPELINE_OUTCOME_MISMATCH]) == []
+
+
+async def test_a_stopped_execution_for_a_nonexistent_episode_does_not_crash_the_whole_run(
+    session_factory,
+) -> None:
+    """独立の統合試験で発見: 存在しない Episode を指す stopped 実行があっても watchdog は
+    落ちない（INV-13 と同じ「1つの失敗が他を止めない」思想を watchdog 自身にも適用する）。
+
+    Temporal の実行履歴（保持期間内）と DB の Episode 行は別のライフサイクルを持ちうる
+    （DB 側が先に消える経路が有り得る）。このケースは記録をスキップするだけで、他の
+    Episode の異常検出・通知は影響を受けない。
+    """
+    await _add_slot(session_factory)
+    real_episode_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.IN_PROGRESS,
+        status_changed_at=AFTER_GRACE - timedelta(minutes=5),
+    )
+    ghost_episode_id = uuid.uuid4()  # DB に行が無い（例: Temporal の履歴だけ残っている）
+    checker = FakeOutcomeChecker(
+        [_stopped_result(ghost_episode_id), _stopped_result(real_episode_id)]
+    )
+
+    result, notifier = await _run(
+        session_factory, _control(AFTER_GRACE), AFTER_GRACE, outcome_checker=checker
+    )
+
+    # 存在しない方は記録されない。実在する方は正常に記録される（クラッシュしない）
+    assert AnomalyKind.PIPELINE_OUTCOME_MISMATCH.value in result.anomalies
+    open_rows = await _open(session_factory, kinds=[AnomalyKind.PIPELINE_OUTCOME_MISMATCH])
+    assert [r.episode_id for r in open_rows] == [real_episode_id]
+    assert {n.kind for n in notifier.notices} >= {AnomalyKind.PIPELINE_OUTCOME_MISMATCH}

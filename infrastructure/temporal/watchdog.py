@@ -348,23 +348,42 @@ async def _check_outcome_mismatch(
             continue
         if episode_uuid in covered_episode_ids:
             continue
-        records.append(
-            await anomalies.record(
-                AnomalyKind.PIPELINE_OUTCOME_MISMATCH,
-                local_today,
-                {
-                    "episode_id": result.episode_id,
-                    "current_status": result.status,
-                    "stopped_stage": result.stopped_stage,
-                    "reason": result.reason
-                    or "pipeline workflow completed with outcome=stopped but no DB-side "
-                    "check flagged this episode",
-                    "resumable": _interim_resumable(result.status),
-                },
-                now=now,
-                episode_id=episode_uuid,
+        # Temporal の実行履歴（保持期間内）と DB の Episode 行は別のライフサイクルを持つ
+        # （DB 側が先に消える経路が有り得る）。存在しない Episode を指す古い実行は記録できない
+        # （episode_id は外部キー）。1件のこの食い違いで watchdog 全体を落とさない（INV-13 と
+        # 同じ「1つの失敗が他を止めない」思想を watchdog 自身にも適用する）
+        if await episodes.get(episode_uuid) is None:
+            logger.warning(
+                "watchdog: outcome=stopped execution references an episode that no longer "
+                "exists in the database (episode_id=%s); skipping this anomaly, not crashing "
+                "the run",
+                episode_uuid,
             )
-        )
+            continue
+        try:
+            records.append(
+                await anomalies.record(
+                    AnomalyKind.PIPELINE_OUTCOME_MISMATCH,
+                    local_today,
+                    {
+                        "episode_id": result.episode_id,
+                        "current_status": result.status,
+                        "stopped_stage": result.stopped_stage,
+                        "reason": result.reason
+                        or "pipeline workflow completed with outcome=stopped but no DB-side "
+                        "check flagged this episode",
+                        "resumable": _interim_resumable(result.status),
+                    },
+                    now=now,
+                    episode_id=episode_uuid,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "watchdog: could not record PIPELINE_OUTCOME_MISMATCH for episode_id=%s; "
+                "skipping this one, continuing with the rest of the batch",
+                episode_uuid,
+            )
 
     open_mismatches = await anomalies.list_open([AnomalyKind.PIPELINE_OUTCOME_MISMATCH])
     recovered: list[uuid.UUID] = []
