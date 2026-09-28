@@ -170,4 +170,6 @@ def test_video_prompt_builder() -> None:
     assert "camera: slow push in" in prompt and "opening: fade" in prompt
     assert "close-up" not in prompt  # 構図は元画像が持つ
     assert build_video_prompt(_scene(camera_movement=None, transition_in=None)) != prompt
-    assert DEFAULT_VIDEO_MOTION.motion_profile_id.endswith(":video-prompt-v1")
+    # v2（ADR-0034）: 共有の制約文を変更（実在人物の写実的な肖像判定を避ける）。
+    assert DEFAULT_VIDEO_MOTION.motion_profile_id.endswith(":video-prompt-v2")
+    assert "photorealistic likeness" in prompt

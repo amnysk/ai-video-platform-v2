@@ -55,13 +55,14 @@
 台本工程を人間が再実行すれば回復する（回復経路がある）ため。検査:
 `tests/unit/test_failure_class_registry.py::test_storyboard_exceptions_classify_by_their_base`。
 
-### Production 工程（ADR-0017）
+### Production 工程（ADR-0017 / ADR-0034）
 
 | 例外 | クラス | 事象 |
 |---|---|---|
 | `ProviderSubmitAmbiguousError` | `needs_input` | 有料ジョブの submit が戻らず provider job 参照を記録できなかった（呼んだか不明） |
 | `UnreconciledReservationError` | `needs_input` | `dispatched_at` ありで provider job 参照も evidence も無い予約が残っている |
 | `ProviderRejectedError` | `needs_input` | provider が依頼を拒否（コンテンツポリシー等）。人間がプロンプト・素材を直す |
+| `ProviderRejectedRetryBlockedError`（`ProviderRejectedError` の下位、ADR-0034） | `needs_input` | 同じ `input_hash` の予約が直前に provider から拒否されている。`infrastructure/production/paid_job.py::_plan_round` が新しいラウンドを作らずここで止める（同じ入力の自動再送・再課金を防ぐ）。回復は人間がプロンプト・素材を直して新しい `input_hash` を作ることだけ |
 | `ProviderJobFailedError` | `retryable` | provider 側ジョブの失敗。次ラウンド（新しい予約）で再生成 |
 | `ProviderPollDeadlineError` | `retryable` | 完了待ちの期限切れ。ジョブの状態は不明なので**同じ予約で再 await**（再送しない。上限を使い切ったら記録して止まる） |
 | `MediaValidationError` | `retryable` | 生成メディアが形式・解像度・尺の規則を満たさない |
@@ -84,6 +85,15 @@ workflow 側で await が失敗したとき（ADR-0017 §4）:
 | それ以外 | 失敗クラスのまま記録 |
 
 workflow の cancel は `needs_input`（`blocked`）として記録する。POST で再開できる（ADR-0017 §8）。
+
+**resume を跨いだ自動再送の防止（ADR-0034）**: 上の表は「1回の workflow 実行の中」の話。
+Episode を resume すると新しい workflow 実行が round=1 から数え直すため、台帳
+（`infrastructure/production/paid_job.py::_plan_round`）が同じ `input_hash` へ新しいラウンドを
+作ってよいかを決める。provider がその入力自体を拒否していた（`input_rejected_by_provider`）
+場合は、`_plan_round` が新しいラウンド・新しい provider 呼び出しを作らず
+`ProviderRejectedRetryBlockedError` を送出する。回復はプロンプト・素材を直して新しい
+`input_hash` を作ることだけ（`ProviderUnavailableError`＝401/403 はこの対象に含めない。
+ADR-0030 の時間窓ベースの抑止が別に扱う）。
 
 Activity 境界の写像（画像・音声・動画共通、`infrastructure/production/activity_errors.py`）:
 

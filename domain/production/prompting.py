@@ -1,8 +1,17 @@
-"""シーン静止画の生成プロンプト（ADR-0017）。純粋関数のみ。provider 中立。
+"""シーン静止画の生成プロンプト（ADR-0017 / ADR-0034）。純粋関数のみ。provider 中立。
 
 プロンプトの文面は ``input_hash`` に直接入れない。代わりに ``style_profile_id`` が
 「どの版の組み立て規則とスタイルか」を表す。**文面を変えたら版を上げる**こと
 （上げ忘れると古い画像が新しい規則の結果として再利用される）。
+
+ADR-0034（2026-09-26/27 の provider 422 ``content_policy_violation`` 事故。詳細は
+docs/decisions/0034-*.md。domain は provider 名を知らない / INV-6）: provider の拒否理由は
+「実在人物の肖像に見える可能性」だった。台本・storyboard は歴史上の実在人物を明示的に描写する
+設計を変えない（史実の正確さを保つ。実在人物を描いていないと偽る婉曲表現はしない）。その代わり、
+**写実的な肖像写真ではなく様式化した挿絵**として描かせることで、生成画像が「実在人物の顔の
+再現」と判定される可能性を下げる（provider の拒否理由そのものへの直接の対処）。これは provider
+の safety checker の内部実装を確認できないため**確証ではなく根拠のある緩和策**である。効果が
+無ければ ``ProviderRejectedError`` → ``needs_input`` のまま安全側に倒れ、人間の判断を待つ。
 """
 
 from __future__ import annotations
@@ -12,7 +21,8 @@ from dataclasses import dataclass
 from contracts.artifacts import StoryboardScene, StoryboardVisualKind
 
 #: 組み立て規則の版。文面・並び・kind の対応を変えたら上げる。
-IMAGE_PROMPT_BUILDER_VERSION = "1"
+#: v2（ADR-0034）: 実在人物の写実的な肖像判定を避けるため、スタイルと制約文を変更。
+IMAGE_PROMPT_BUILDER_VERSION = "2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,8 +39,9 @@ class ImageStyleProfile:
 DEFAULT_IMAGE_STYLE = ImageStyleProfile(
     name="vertical-short-cinematic-v1",
     style=(
-        "cinematic still frame, natural lighting, rich detail, "
-        "vertical 9:16 composition with the subject centered"
+        "cinematic editorial illustration, painterly brushwork, dramatic natural lighting, "
+        "rich detail, vertical 9:16 composition with the subject centered, "
+        "stylized artwork rather than a photographic portrait"
     ),
 )
 
@@ -47,7 +58,13 @@ _KIND_HINTS: dict[StoryboardVisualKind, str] = {
 }
 
 #: 文字は後工程で重ねる。生成画像に文字・透かしを焼き込ませない。
-_CONSTRAINTS = "no text, no letters, no captions, no watermark, no logo"
+#: 実在人物（歴史上の人物を含む）を写実的な顔の再現として描かせない（ADR-0034）。史実の描写
+#: そのものは止めない（鎧・旗指物・場面設定などの記号的表現で人物を示す）。
+_CONSTRAINTS = (
+    "no text, no letters, no captions, no watermark, no logo, "
+    "stylized illustration rather than a photorealistic likeness of any real "
+    "or historical person's face"
+)
 
 
 def build_image_prompt(
@@ -65,7 +82,8 @@ def build_image_prompt(
 # --------------------------------------------------------------------------- 動画（動き）
 
 #: 動画プロンプトの組み立て規則の版。文面・並びを変えたら上げる。
-VIDEO_PROMPT_BUILDER_VERSION = "1"
+#: v2（ADR-0034）: 共有の ``_CONSTRAINTS`` を変更（実在人物の写実的な肖像判定を避ける）。
+VIDEO_PROMPT_BUILDER_VERSION = "2"
 
 
 @dataclass(frozen=True, slots=True)

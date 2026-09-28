@@ -19,6 +19,7 @@ from domain.errors import (
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
+    ProviderRejectedRetryBlockedError,
     ProviderSubmitAmbiguousError,
     ProviderUnavailableError,
     UnreconciledReservationError,
@@ -352,6 +353,48 @@ async def test_job_failure_spends_conservatively(runner, session_factory, failur
     row = await _reservation(session_factory, outcome.reservation_id)
     assert row.status is ReservationStatus.SPENT and row.reconciled_by == "conservative"
     assert gen.download_calls == 0
+
+
+async def test_provider_rejected_input_blocks_the_next_round(runner, session_factory) -> None:
+    """ADR-0034: 2026-09-26/27 の fal 422 content_policy_violation 事故。
+
+    provider が入力そのものを拒否した（``ProviderRejectedError``）ときは、同じ input_hash
+    のまま次のラウンドへ自動で進まない。新しい予約も新しい provider 呼び出しも作らない
+    （そのまま再送しても同じ拒否を繰り返すだけで課金だけが増える）。
+    """
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(pending_polls=0, fail_with=JobFailed("policy", rejected=True))
+    outcome = await runner.submit(spec, gen, REQUEST)
+    with pytest.raises(ProviderRejectedError):
+        await _await(runner, outcome.reservation_id, gen)
+
+    row = await _reservation(session_factory, outcome.reservation_id)
+    assert row.status is ReservationStatus.SPENT
+    assert row.input_rejected_by_provider is True
+
+    with pytest.raises(ProviderRejectedRetryBlockedError):
+        await runner.submit(replace(spec, round=2), gen, REQUEST)
+
+    # 新しい予約は作らない（ラウンド1のまま）。provider へも再送しない。
+    assert await _rounds(session_factory, spec) == [(1, ReservationStatus.SPENT)]
+    assert gen.submit_calls == 1
+
+
+async def test_provider_rejected_input_does_not_block_a_different_input_hash(
+    runner, session_factory
+) -> None:
+    """プロンプト・素材を直して input_hash が変われば、新しいラウンド1として進める。"""
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(pending_polls=0, fail_with=JobFailed("policy", rejected=True))
+    outcome = await runner.submit(spec, gen, REQUEST)
+    with pytest.raises(ProviderRejectedError):
+        await _await(runner, outcome.reservation_id, gen)
+
+    fixed_spec = replace(spec, input_hash="f" * 64)
+    ok = FakeImageGenerator(pending_polls=0)
+    again = await runner.submit(fixed_spec, ok, REQUEST)
+    assert isinstance(again, Submitted) and again.newly_submitted and again.round == 1
+    assert ok.submit_calls == 1
 
 
 async def test_download_over_cap_is_spent_and_not_stored(

@@ -1,4 +1,4 @@
-"""非同期ジョブ型の有料呼び出しの INV-15 オーケストレーション（ADR-0013 / ADR-0017 §3）。
+"""非同期ジョブ型の有料呼び出しの INV-15 オーケストレーション（ADR-0013 / ADR-0017 §3 / ADR-0034）。
 
 画像・動画の worker が共有する（worker 間 import を避けるため infrastructure に置く / INV-3）。
 メディア固有の検証・正規化・Artifact 化は呼び出し側が行う。
@@ -8,13 +8,17 @@
 submit: 再利用確認 → 台帳からラウンドを決める → 未照合確認 → reserve **commit** →
         dispatched **commit** → submit → provider job 参照 **commit**
 
-台帳のラウンド（ADR-0017 §3）: ``PaidJobSpec.round`` は workflow の run ごとの試行番号にすぎず、
-冪等キーには使わない。同じ入力の最新の予約から導く:
+台帳のラウンド（ADR-0017 §3 / ADR-0034）: ``PaidJobSpec.round`` は workflow の run ごとの
+試行番号にすぎず、冪等キーには使わない。同じ入力の最新の予約から導く:
 
 - 無い → 1
 - ``reserved`` → その予約を再開
   （参照あり: await / dispatch 済み参照なし: 人手照合 / 未 dispatch: そのまま進む）
 - Artifact が紐づいている、または evidence があり失敗の記録が無い → その予約を await で再開
+- provider がこの入力自体を拒否していた（``input_rejected_by_provider``、ADR-0034）
+  → **新しいラウンドを作らず** ``ProviderRejectedRetryBlockedError`` を送出する
+  （同じ入力を再送しても同じ拒否を繰り返すだけで課金だけが増える。回復は人間が入力を
+  直して新しい input_hash を作ることだけ）
 - それ以外（取得物なしで spent・検証に落ちた evidence・abandoned）→ 最新ラウンド + 1
 
 同じラウンドの並行 INSERT は ``idempotency_key`` の一意制約で片方が落ちるので、読み直して再開する。
@@ -68,6 +72,7 @@ from domain.errors import (
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
+    ProviderRejectedRetryBlockedError,
     ProviderSubmitAmbiguousError,
     ProviderUnavailableError,
     UnreconciledReservationError,
@@ -653,16 +658,21 @@ class PaidJobRunner:
                 reconciled_by="conservative",
                 failure_class=classify_failure(exc),
                 error_summary=f"{type(exc).__name__}: {exc}",
+                # provider が入力そのものを拒否した（content policy 等）ことの機械判定
+                # （ADR-0034）。型で決める。文字列一致では決めない。
+                input_rejected_by_provider=isinstance(exc, ProviderRejectedError),
             )
             await session.commit()
 
 
 def _plan_round(latest: ProviderReservation | None) -> Submitted | ProviderReservation | int:
-    """同じ入力の最新の予約から次の動作を決める（ADR-0017 §3）。
+    """同じ入力の最新の予約から次の動作を決める（ADR-0017 §3 / ADR-0034 で1行追加）。
 
     - ``Submitted``: その予約を await で再開する（再 submit しない）
     - ``ProviderReservation``: ``reserved`` + 未 dispatch。この予約のまま dispatch へ進む
     - ``int``: 新しい台帳ラウンドの番号
+    - 例外: この入力へ新しいラウンドを作ってはいけない（``UnreconciledReservationError`` /
+      ``ProviderRejectedRetryBlockedError``）
     """
     if latest is None:
         return 1
@@ -684,7 +694,18 @@ def _plan_round(latest: ProviderReservation | None) -> Submitted | ProviderReser
     ):
         # spent と Artifact 記録の間で落ちた: 保存済みの取得物から検証を再開する
         return Submitted(reservation_id=latest.id, newly_submitted=False, round=latest.round)
-    # 取得物なしで spent（ジョブ失敗・受理されず）/ 検証に落ちた evidence / abandoned
+    if latest.status is ReservationStatus.SPENT and latest.input_rejected_by_provider:
+        # ADR-0034: provider がこの input_hash を拒否した（content policy 等）。
+        # そのまま新しいラウンドを作って再送しても同じ拒否を繰り返すだけで、課金だけが
+        # 増える。台帳は append-only（spent から自動では戻らない）。回復は人間がプロンプト・
+        # 素材を直して**新しい input_hash** を作ることだけ。この予約・Artifact・MinIO 実体は
+        # 変更しない。
+        raise ProviderRejectedRetryBlockedError(
+            f"reservation {latest.id} (round {latest.round}) was rejected by the provider "
+            "for this exact input; resubmitting the same input_hash would only repeat the "
+            "rejection. Fix the prompt/input to produce a new input_hash before retrying."
+        )
+    # 取得物なしで spent（受理されず・provider 拒否以外の理由）/ 検証に落ちた evidence / abandoned
     return latest.round + 1
 
 

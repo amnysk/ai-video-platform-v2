@@ -543,6 +543,8 @@ class ProviderReservation:
     estimated_cost_usd: Decimal | None = None
     #: 外部呼び出しの結果参照（YouTube video id、ADR-0020）
     provider_result_ref: str | None = None
+    #: provider が入力そのものを拒否したために spent したか（ADR-0034）。
+    input_rejected_by_provider: bool = False
 
 
 def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
@@ -567,6 +569,7 @@ def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
         provider_job_ref=row.provider_job_ref,
         estimated_cost_usd=row.estimated_cost_usd,
         provider_result_ref=row.provider_result_ref,
+        input_rejected_by_provider=bool(row.input_rejected_by_provider),
     )
 
 
@@ -927,6 +930,7 @@ class ProviderReservationRepository:
         reconciled_by: str = "evidence",
         failure_class: FailureClass | None = None,
         error_summary: str | None = None,
+        input_rejected_by_provider: bool = False,
     ) -> ProviderReservation:
         """「呼んだ」事実を確定する。**パース・検証より前**に commit すること。
 
@@ -940,6 +944,12 @@ class ProviderReservationRepository:
 
         Worker が落ちて**何も記録できなかった**場合はここへ到達しないので、
         予約は ``reserved`` のまま残り、次ラウンドは正しくブロックされる。
+
+        ``input_rejected_by_provider``: provider が入力そのものを拒否した（content
+        policy 等）ことを示す機械判定フラグ（ADR-0034）。true の予約は
+        ``infrastructure.production.paid_job._plan_round`` が次ラウンドへ自動で
+        進めない。呼び出し側は例外の型（``isinstance(exc, ProviderRejectedError)``）
+        だけで決める。文字列一致では決めない。
         """
         event = (
             ReservationEvent.EVIDENCE_RECONCILED
@@ -954,6 +964,8 @@ class ProviderReservationRepository:
             row.failure_class = failure_class.value
         if error_summary is not None:
             row.error_summary = error_summary[:2000]
+        if input_rejected_by_provider:
+            row.input_rejected_by_provider = True
         await self._session.flush()
         return _to_reservation(row)
 
