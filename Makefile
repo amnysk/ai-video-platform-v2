@@ -41,7 +41,7 @@ workers-ps:
 	docker compose --profile core ps
 
 workers-logs:
-	docker compose --profile core logs -f --tail=100 script-worker storyboard-worker production-worker production-image-worker production-voice-worker production-video-worker render-worker upload-worker pipeline-worker
+	docker compose --profile core logs -f --tail=100 script-worker storyboard-worker production-worker production-image-worker production-voice-worker production-video-worker render-worker upload-worker pipeline-worker scene-alternative-worker
 
 migrate:
 	docker compose --profile core run --rm migrate

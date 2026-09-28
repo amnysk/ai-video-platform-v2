@@ -11,6 +11,7 @@ from decimal import Decimal
 import pytest
 
 from contracts.artifacts import parse_scene_visual_override_artifact
+from contracts.production_activities import PlanSceneAlternativeRequest
 from contracts.states import ArtifactType, ProviderCall
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.errors import (
@@ -32,7 +33,6 @@ from tests.support.production import (
     sample_storyboard,
 )
 from workers.production.scene_recovery_activities import SceneAlternativeActivities
-from workers.production.scene_recovery_contract import PlanSceneAlternativeRequest
 
 
 async def _put(session_factory, store, episode_id, artifact_type, payload, scene_id=None):

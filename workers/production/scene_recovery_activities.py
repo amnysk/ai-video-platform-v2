@@ -33,6 +33,11 @@ from contracts.artifacts import (
     build_scene_visual_override_artifact,
     parse_scene_visual_override_artifact,
 )
+from contracts.production_activities import (
+    PLAN_SCENE_ALTERNATIVE,
+    PlanSceneAlternativeRequest,
+    SceneAlternativeOutcome,
+)
 from contracts.states import ArtifactType, ProviderCall, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
@@ -70,11 +75,6 @@ from infrastructure.db.repositories import (
     ProviderReservationRepository,
 )
 from infrastructure.storage.artifact_store import ArtifactStore
-from workers.production.scene_recovery_contract import (
-    PLAN_SCENE_ALTERNATIVE,
-    PlanSceneAlternativeRequest,
-    SceneAlternativeOutcome,
-)
 
 logger = logging.getLogger(__name__)
 

@@ -51,11 +51,14 @@ with workflow.unsafe.imports_passed_through():
         IMAGE_AWAIT,
         IMAGE_SUBMIT,
         MAX_SCENE_ALTERNATIVES_PER_SCENE,
+        PLAN_SCENE_ALTERNATIVE,
         PRODUCTION_ADMIT,
         PRODUCTION_ASSEMBLE_MANIFEST,
         PRODUCTION_MARK_READY,
         PRODUCTION_PLAN,
         PRODUCTION_RECORD_FAILURE,
+        SCENE_ALTERNATIVE_PATCH_ID,
+        SCENE_ALTERNATIVE_TASK_QUEUE,
         SUBMIT_MAX_ATTEMPTS,
         VIDEO_AWAIT,
         VIDEO_SUBMIT,
@@ -63,6 +66,7 @@ with workflow.unsafe.imports_passed_through():
         VOICE_MAX_ATTEMPTS,
         ImageAwaitRequest,
         ImageSubmitRequest,
+        PlanSceneAlternativeRequest,
         ProductionAdmitRequest,
         ProductionAdmitResult,
         ProductionAssembleRequest,
@@ -72,6 +76,7 @@ with workflow.unsafe.imports_passed_through():
         ProductionPlan,
         ProductionPlanRequest,
         ProductionRecordFailureRequest,
+        SceneAlternativeOutcome,
         SceneArtifactResult,
         SceneVideoWork,
         SceneVoiceWork,
@@ -99,13 +104,6 @@ with workflow.unsafe.imports_passed_through():
         ProviderRejectedRetryBlockedError,
         ProviderTimeoutError,
         failure_class_from_type_name,
-    )
-    from workers.production.scene_recovery_contract import (
-        PLAN_SCENE_ALTERNATIVE,
-        SCENE_ALTERNATIVE_PATCH_ID,
-        SCENE_ALTERNATIVE_TASK_QUEUE,
-        PlanSceneAlternativeRequest,
-        SceneAlternativeOutcome,
     )
 
 WORKFLOW_NAME, TASK_QUEUE = PRODUCTION_WORKFLOW

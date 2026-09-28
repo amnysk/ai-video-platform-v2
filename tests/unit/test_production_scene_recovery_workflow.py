@@ -22,6 +22,7 @@ from contracts.production_activities import (
     IMAGE_AWAIT,
     IMAGE_SUBMIT,
     MAX_SCENE_ALTERNATIVES_PER_SCENE,
+    PLAN_SCENE_ALTERNATIVE,
     PRODUCTION_ADMIT,
     PRODUCTION_ASSEMBLE_MANIFEST,
     PRODUCTION_MARK_READY,
@@ -32,6 +33,7 @@ from contracts.production_activities import (
     VOICE_GENERATE,
     ImageAwaitRequest,
     ImageSubmitRequest,
+    PlanSceneAlternativeRequest,
     ProductionAdmitRequest,
     ProductionAdmitResult,
     ProductionAssembleRequest,
@@ -41,6 +43,7 @@ from contracts.production_activities import (
     ProductionPlan,
     ProductionPlanRequest,
     ProductionRecordFailureRequest,
+    SceneAlternativeOutcome,
     SceneArtifactResult,
     SceneImageWork,
     SceneVideoWork,
@@ -51,11 +54,6 @@ from contracts.production_activities import (
     VoiceGenerateRequest,
 )
 from contracts.states import EpisodeStatus
-from workers.production.scene_recovery_contract import (
-    PLAN_SCENE_ALTERNATIVE,
-    PlanSceneAlternativeRequest,
-    SceneAlternativeOutcome,
-)
 from workers.production.workflows import ProductionWorkflow, ProductionWorkflowInput
 
 SCENES = ["sb1", "sb2", "sb3"]

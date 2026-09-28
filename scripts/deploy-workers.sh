@@ -29,7 +29,7 @@ cd "$(dirname "$0")/.."
 APP_SERVICES=(
   migrate api dummy-worker script-worker storyboard-worker production-worker
   production-image-worker production-voice-worker production-video-worker
-  render-worker upload-worker pipeline-worker
+  render-worker upload-worker pipeline-worker scene-alternative-worker
 )
 # 同じイメージタグを共有するサービスは1つだけビルドする（app = api、worker = script-worker）
 BUILD_SERVICES=(api script-worker)

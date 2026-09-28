@@ -113,6 +113,20 @@ provider が 422 を返さないことは保証できない。したがって目
 `provider_rejections`/`provider_reservations`/`artifact_metadata`/`episodes` から読み取り専用で
 集計する `scripts/production-metrics.py` を置く。
 
+### (6) planner の worker
+
+planner は Codex CLI を使うので、Codex を持たない production worker には載せない。workers は互いを
+import しない（INV-3）ので storyboard worker にも相乗りさせず、compose service
+`scene-alternative-worker`（queue `production-scene-alternative`）を足す。Codex の sandbox のため
+storyboard-worker と同じ seccomp / `SETFCAP` の例外を持つ（ADR-0024 の Codex worker が3つになる）。
+worker が止まっていれば計画 Activity は schedule_to_close で timeout し、そのシーンは `needs_input`
+で止まる（自動では進まない側）。Activity 名・入出力・queue は `contracts/production_activities.py`。
+
+既知の重複（今回は直さない・AGENTS.md §3）: Codex の既定モデルの来歴ラベル
+`"codex-config-default"` が `workers/planning/activities.py` と `workers/storyboard/activities.py` に
+literal で重複している。新しい worker は `contracts.production_activities.CODEX_DEFAULT_MODEL_LABEL`
+を参照する。既存2箇所の寄せは別タスク。
+
 ## Alternatives
 
 - **(a) 版を上げて全シーンを作り直す（ADR-0034 の状態）** — 実装は無いが、1シーンの拒否で

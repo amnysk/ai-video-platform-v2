@@ -118,6 +118,8 @@ APP = {
     "render-worker": "r1",
     "upload-worker": "u1",
     "pipeline-worker": "pl1",
+    # ADR-0035: 代替映像案の planner（deploy-workers.sh の APP_SERVICES と同じ集合）
+    "scene-alternative-worker": "sa1",
 }
 INFRA = {"postgres": "pg1", "temporal": "t1", "minio": "mn1"}
 

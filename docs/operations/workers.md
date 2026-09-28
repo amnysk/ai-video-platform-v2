@@ -24,6 +24,7 @@ host プロセス方式（`scripts/run-*-worker.sh`）はデバッグ用の代�
 | render-worker | `workers.render.run_worker` | render, render-media | render | ffmpeg ディレクトリ（ro）、フォント（ro）、作業領域 |
 | upload-worker | `workers.upload.run_worker` | upload, upload-media | upload | `YOUTUBE_*`、token ディレクトリ（ro）、作業領域 |
 | pipeline-worker | `workers.pipeline.run_worker` | pipeline | pipeline | `PAUSED` / `UPLOADS_PAUSED`（DB と Temporal だけ。MinIO の資格情報は渡さない） |
+| scene-alternative-worker | `workers.production.scene_alternative.run_worker` | production-scene-alternative | production-scene-alternative（max-age 25 分） | `~/.codex`（rw）、Codex sandbox 用の権限。provider に拒否されたシーンの代替映像案だけを計画する（ADR-0035。有料の画像・動画は呼ばない） |
 
 - イメージは1枚（`avp2-worker:local`、Dockerfile の `worker` target）: Codex CLI 0.154.0、
   `/opt/piper/venv` の piper-tts 1.8.0、git。api / migrate / dummy-worker は `base`（`avp2-app:local`）
