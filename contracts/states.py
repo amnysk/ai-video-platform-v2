@@ -95,6 +95,8 @@ class JobType(StrEnum):
     RENDER_FINAL_VIDEO = "render_final_video"
     #: ADR-0020: Upload（Episode 単位。scene_id は NULL）
     UPLOAD_FINAL_VIDEO = "upload_final_video"
+    #: ADR-0035: provider に拒否されたシーンの代替映像案を計画する（シーン単位）
+    PLAN_SCENE_ALTERNATIVE = "plan_scene_alternative"
 
 
 class ArtifactType(StrEnum):
@@ -112,6 +114,8 @@ class ArtifactType(StrEnum):
     FINAL_VIDEO = "final_video"
     #: ADR-0020: 投稿受領（Episode 単位。YouTube video id と送ったメタデータの snapshot）
     UPLOAD_RECEIPT = "upload_receipt"
+    #: ADR-0035: 拒否されたシーンの代替映像案（シーン単位。current は supersede で1本）
+    SCENE_VISUAL_OVERRIDE = "scene_visual_override"
 
 
 class Pipeline(StrEnum):
@@ -211,6 +215,8 @@ class ProviderCall(StrEnum):
     #: YouTube resumable upload（ADR-0020）。課金は無いが「1 回しか起こしてはならない外部副作用」
     #: なので台帳で重複を防ぐ。Episode 単位（scene_id は NULL）。
     YOUTUBE_UPLOAD = "youtube_upload"
+    #: ADR-0035: 拒否されたシーンの代替映像案を LLM に計画させる（シーン単位）
+    CODEX_SCENE_ALTERNATIVE = "codex_scene_alternative"
 
 
 class ReservationStatus(StrEnum):
@@ -223,6 +229,18 @@ class ReservationStatus(StrEnum):
     RESERVED = "reserved"
     SPENT = "spent"
     ABANDONED = "abandoned"
+
+
+class RejectedInput(StrEnum):
+    """provider が内容を拒否したとき、拒否の対象になった入力（ADR-0035）。
+
+    fal の 422 ``detail[].loc`` から決める（``body.image_url`` → ``image``、
+    ``body.prompt`` → ``prompt``）。判定できなければ ``unknown``。
+    """
+
+    IMAGE = "image"
+    PROMPT = "prompt"
+    UNKNOWN = "unknown"
 
 
 RESERVATION_TERMINAL_STATUSES: frozenset[ReservationStatus] = frozenset(

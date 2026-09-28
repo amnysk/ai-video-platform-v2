@@ -67,6 +67,18 @@ AUTH_INCIDENT_WINDOW_MINUTES = 10
 AUTH_INCIDENT_SUPPRESSION_THRESHOLD = 3
 
 
+# ------------------------------------------- provider の内容拒否からの復旧（ADR-0035, INV-34）
+
+#: 1シーンについて自動で計画してよい代替映像案の回数。超えたら needs_input で人の判断を待つ。
+MAX_SCENE_ALTERNATIVES_PER_SCENE = 2
+#: 1 Episode について自動で計画してよい代替映像案の合計回数。
+MAX_SCENE_ALTERNATIVES_PER_EPISODE = 3
+#: 1 Episode について、内容拒否からの復旧に使ってよい追加費用の上限（USD、見積り）。
+#: 拒否された spent 予約と、代替案で作り直した fal 予約の ``estimated_cost_usd`` の合計で判定する
+#: （拒否時の課金有無は provider が文書化していないので、拒否された試行も費用として数える）。
+MAX_RECOVERY_COST_USD_PER_EPISODE = 5.0
+
+
 # --------------------------------------------------------------------------- 状態系
 
 

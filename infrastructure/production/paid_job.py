@@ -140,6 +140,12 @@ class PaidJobSpec:
     #: その合成済みの値をここへ渡す（``PaidJobRunner`` は provider 固有の合成方法を知らない）。
     #: 省略時はこの型のチェックを行わない。
     current_generation_profile_id: str | None = None
+    #: ADR-0035: 生成レシピの版を除いた入力指紋（``artifact_metadata.content_fingerprint``）。
+    #: レシピの版だけが違う成功済み成果物を再利用する鍵。省略時はこの経路を使わない。
+    content_fingerprint: str | None = None
+    #: ADR-0035: 入力メディア（動画なら ``image_url`` に渡す画像）の sha256。provider に拒否された
+    #: 画像を、テキストを変えて再送しないための鍵（INV-32）。入力メディアが無ければ ``None``。
+    source_media_sha256: str | None = None
 
     def key_for_round(self, ledger_round: int) -> str:
         return idempotency_key(

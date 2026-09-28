@@ -42,6 +42,7 @@ from contracts.states import (
     JobStatus,
     JobType,
     ProviderCall,
+    RejectedInput,
     ReservationStatus,
 )
 from contracts.topic import TOPIC_MAX_CHARS
@@ -63,14 +64,20 @@ SCENE_ARTIFACT_TYPES: tuple[ArtifactType, ...] = (
     ArtifactType.SCENE_IMAGE,
     ArtifactType.SCENE_VIDEO,
     ArtifactType.SCENE_VOICE,
+    ArtifactType.SCENE_VISUAL_OVERRIDE,
 )
 SCENE_JOB_TYPES: tuple[JobType, ...] = (
     JobType.PRODUCE_SCENE_IMAGE,
     JobType.PRODUCE_SCENE_VIDEO,
     JobType.PRODUCE_SCENE_VOICE,
+    JobType.PLAN_SCENE_ALTERNATIVE,
 )
 #: シーン単位でしか呼ばない provider（scene_id 必須。他は任意）。
-SCENE_PROVIDER_CALLS: tuple[ProviderCall, ...] = (ProviderCall.FAL_IMAGE, ProviderCall.FAL_VIDEO)
+SCENE_PROVIDER_CALLS: tuple[ProviderCall, ...] = (
+    ProviderCall.FAL_IMAGE,
+    ProviderCall.FAL_VIDEO,
+    ProviderCall.CODEX_SCENE_ALTERNATIVE,
+)
 
 
 def _in_list(values: tuple[Enum, ...]) -> str:
@@ -183,6 +190,10 @@ class ArtifactMetadataRow(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     #: この成果物を作った**入力**の指紋（domain/script/identity.py）。
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: ADR-0035: 生成レシピの版（prompt 組み立て規則の版）を除いた入力指紋。レシピの版だけが
+    #: 変わったときに成功済みの成果物を作り直さないための再利用キー。旧行は NULL
+    #: （旧方式の hash を再計算して照合する）。
+    content_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: 同じ (episode_id, artifact_type) 内で単調増加する世代番号。
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     #: NULL なら現行世代。非NULLなら後続世代に降ろされた。
@@ -543,3 +554,42 @@ __all__ = [
     "TopicCandidateRow",
     "TopicPlanRow",
 ]
+
+
+class ProviderRejectionRow(Base):
+    """provider による内容の拒否（422 ``content_policy_violation`` 等）の記録（ADR-0035）。
+
+    1回の拒否につき1行（append-only）。``provider_reservations.error_summary`` の文字列から
+    推測せず、拒否の対象（``rejected_input``）と理由を構造化して残す。
+    ``source_media_sha256`` は拒否された入力画像（動画の ``image_url``）の sha256 で、
+    テキストを変えて同じ画像を再送する経路を塞ぐキーになる（INV-32）。
+    """
+
+    __tablename__ = "provider_rejections"
+    __table_args__ = (
+        _check("provider", ProviderCall, "ck_provider_rejections_provider"),
+        _check("rejected_input", RejectedInput, "ck_provider_rejections_rejected_input"),
+        Index("ix_provider_rejections_episode_scene", "episode_id", "scene_id"),
+        Index("ix_provider_rejections_source_media", "provider", "source_media_sha256"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+    )
+    scene_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    reservation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("provider_reservations.id", ondelete="SET NULL"), nullable=True
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    rejected_input: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_media_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: provider のエラー種別の JSON 配列（例: ``["content_policy_violation"]``）
+    types: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
