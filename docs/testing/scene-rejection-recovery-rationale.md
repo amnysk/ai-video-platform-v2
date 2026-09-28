@@ -86,3 +86,9 @@ Temporal の決定論の中で「どのシーンの何を呼び直すか」を�
 
 拒否率・再試行・代替案・完成率・1本あたり費用の定義を固定する（本番では SELECT だけ）。
 
+
+## 統合時に見つけた配線の穴（`tests/unit/test_production_video_activities.py`、unit）
+
+| テスト | 守るもの |
+|---|---|
+| `test_await_time_content_rejection_records_the_input_image_and_blocks_it` | 本番の 422 は submit ではなく **await（result 取得）** で返る。各担当の単体テストは submit 側と paid_job 単体で画像キーを検査していたが、動画 Activity が `await_output` に入力画像の sha256 を渡していなかったため、本番の経路では拒否行の `source_media_sha256` が NULL になり、INV-32 の画像ゲートが一度も効かない状態だった。Activity を通して「await で拒否 → 画像キーが残る → 文面を変えた同じ画像の submit が予約前に止まる（provider への submit は1回のまま）」を固定する。Activity と PaidJobRunner の境界の配線なので、両方を本物で通す unit にした |

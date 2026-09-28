@@ -308,3 +308,69 @@ async def test_video_round_consumed_await_is_final_and_outage_is_transient(
     with pytest.raises(ApplicationError) as info:
         await acts.submit(_submit(ep, sb, images["sb1"], round=2))
     assert info.value.type == "TransientError" and info.value.non_retryable is False
+
+
+async def test_await_time_content_rejection_records_the_input_image_and_blocks_it(
+    session_factory, artifact_store, tmp_path
+) -> None:
+    """ADR-0035 / INV-32: 実際の 422 は submit ではなく await（result 取得）で返る。
+
+    その経路でも拒否に入力画像の sha256 が残り、テキストを変えた同じ画像の再送が止まること。
+    Activity が ``await_output`` に画像の sha256 を渡し忘れると、拒否行の画像キーが NULL になり
+    画像ゲートが本番の経路で一度も効かない（統合時に見つけた配線の穴）。
+    """
+    from contracts.states import RejectedInput
+    from domain.errors import ProviderRejectedRetryBlockedError
+    from domain.production.ports import VideoRequest
+    from infrastructure.db.repositories import ProviderRejectionRepository
+    from infrastructure.production.paid_job import PaidJobSpec
+    from tests.support.production import ImageRejectingVideoGenerator
+
+    ep, sb, images = await seed(session_factory, artifact_store)
+    async with session_factory() as session:
+        image_meta = await ArtifactMetadataRepository(session).get(images["sb1"])
+    assert image_meta is not None
+    image_sha = (await artifact_store.get_json(image_meta.object_key))["media"]["sha256"]
+
+    gen = ImageRejectingVideoGenerator(pending_polls=0)
+    gen.reject_images = {image_sha}
+    activities = make_activities(session_factory, artifact_store, gen, tmp_path)
+    submitted = await activities.submit(_submit(ep, sb, images["sb1"]))
+    with pytest.raises(ApplicationError, match="^ProviderRejectedError"):
+        await activities.await_video(_await(ep, sb, images["sb1"], submitted.reservation_id))
+
+    async with session_factory() as session:
+        (rejection,) = await ProviderRejectionRepository(session).list_for_scene(ep, "sb1")
+    assert rejection.rejected_input is RejectedInput.IMAGE
+    assert rejection.source_media_sha256 == image_sha
+
+    runner = PaidJobRunner(
+        session_factory=session_factory,
+        store=artifact_store,
+        workdir=WorkDirectory(tmp_path / "work2", forbidden=()),
+    )
+    reworded = PaidJobSpec(
+        episode_id=ep,
+        scene_id="sb1",
+        provider=ProviderCall.FAL_VIDEO,
+        artifact_type=ArtifactType.SCENE_VIDEO,
+        input_hash="f" * 64,
+        round=1,
+        source_media_sha256=image_sha,
+    )
+    png = await artifact_store.get_bytes(
+        (await artifact_store.get_json(image_meta.object_key))["media"]["object_key"]
+    )
+    with pytest.raises(ProviderRejectedRetryBlockedError):
+        await runner.submit(
+            reworded,
+            gen,
+            VideoRequest(
+                prompt="entirely different wording",
+                source_image=png,
+                source_image_mime="image/png",
+                duration_ms=8000,
+                aspect="9:16",
+            ),
+        )
+    assert gen.submitted_images == [image_sha]

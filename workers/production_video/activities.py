@@ -233,6 +233,8 @@ class VideoProductionActivities:
             poll_interval_seconds=self._poll_interval_seconds,
             deadline_seconds=self._await_deadline_seconds,
             heartbeat=self._heartbeat or _activity_heartbeat,
+            # fal の内容拒否は await 側（result）で返る。拒否された画像のキーを残す（INV-32）
+            source_media_sha256=inputs.image.media.sha256,
         )
         if output.artifact is not None:
             await self._succeed_job(job_id)
