@@ -148,13 +148,62 @@ def _error_types_from_body(body: Any) -> list[str]:
     return types
 
 
+#: 例外メッセージ・error_summary に残す要約の上限。DB の error_summary は 2000 文字まで
+#: 許容するが（``jobs.error_summary`` / ``provider_reservations.error_summary``）、workflow
+#: 側の ``_summary()``（``workers/production/workflows.py``）がさらに 1000 文字で切る。
+#: そこに収まりながら、拒否理由（``msg`` / ``ctx.extra_info.reason``）を単語の途中で
+#: 切らないだけの余裕を持たせる（ADR-0034: 2026-09-26/27 の 422 事故は、旧 500 文字の
+#: 素朴な str()+slice が構造化 body を丸ごと文字列化してから切っていたため、実際に残った
+#: 拒否理由が584文字で単語途中に切れていた）。
+_SHORT_MAX_CHARS = 800
+
+
 def _short(body: Any) -> str:
-    """例外メッセージ用の要約。URL を含む巨大な body をそのまま載せない。"""
+    """例外メッセージ用の要約。URL を含む巨大な body をそのまま載せない。
+
+    fal の 422 は多くの場合 ``{"detail": [{"type": ..., "msg": ..., "loc": [...], "ctx": {...}}]}``
+    という pydantic 形式の validation error リストを返す。素朴に ``str(body["detail"])`` して
+    切ると、Python の repr 表現ごと途中の単語で切れ、拒否理由（``msg``）が読めなくなる
+    （実際に起きた事故）。構造化されていれば type/msg/loc/reason を人が読める形に整形してから
+    切る。整形できない形は今まで通り素朴に文字列化する。
+    """
     if isinstance(body, dict):
-        for key in ("error", "detail", "message"):
+        detail = body.get("detail")
+        if isinstance(detail, list) and detail:
+            formatted = "; ".join(_format_detail_item(item) for item in detail)
+            if formatted:
+                return formatted[:_SHORT_MAX_CHARS]
+        for key in ("error", "message", "detail"):
             if key in body:
-                return str(body[key])[:500]
-    return str(body)[:300]
+                return str(body[key])[:_SHORT_MAX_CHARS]
+    return str(body)[:_SHORT_MAX_CHARS]
+
+
+def _format_detail_item(item: Any) -> str:
+    """1件の validation error を ``type: msg (at loc) [reason]`` に整形する。"""
+    if not isinstance(item, dict):
+        return str(item)
+    type_ = item.get("type")
+    msg = item.get("msg")
+    piece = ": ".join(str(p) for p in (type_, msg) if p)
+    loc = item.get("loc")
+    if isinstance(loc, list) and loc:
+        location = ".".join(str(p) for p in loc)
+        piece = f"{piece} (at {location})" if piece else f"(at {location})"
+    reason = _extra_info_reason(item.get("ctx"))
+    if reason:
+        piece = f"{piece} [{reason}]" if piece else f"[{reason}]"
+    return piece or str(item)
+
+
+def _extra_info_reason(ctx: Any) -> str | None:
+    if not isinstance(ctx, dict):
+        return None
+    extra_info = ctx.get("extra_info")
+    if not isinstance(extra_info, dict):
+        return None
+    reason = extra_info.get("reason")
+    return reason if isinstance(reason, str) and reason else None
 
 
 def _json_or_none(response: httpx.Response) -> Any:

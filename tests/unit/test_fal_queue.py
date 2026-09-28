@@ -251,6 +251,35 @@ async def test_result_failures_are_classified(response, error) -> None:
         await _client(lambda request: response).result(_submission())
 
 
+async def test_content_policy_rejection_keeps_the_full_reason_without_cutting_mid_word() -> None:
+    """ADR-0034: 2026-09-26/27 の事故では、旧 500 文字の素朴な str()+slice が構造化 body を
+    丸ごと文字列化してから切っていたため、拒否理由（``msg``）が単語の途中で切れて584文字で
+    読めなくなった。実際に fal が返した形（pydantic validation error のリスト）を使って、
+    ``msg`` と ``ctx.extra_info.reason`` が省略されずに残ることを検査する。
+    """
+    body = {
+        "detail": [
+            {
+                "loc": ["body", "image_url"],
+                "msg": (
+                    "The images or videos provided may contain likenesses of real people "
+                    "or other private information that cannot be processed."
+                ),
+                "type": "content_policy_violation",
+                "ctx": {"extra_info": {"reason": "partner_validation_failed"}},
+            }
+        ]
+    }
+    response = httpx.Response(422, json=body)
+    with pytest.raises(ProviderRejectedError) as excinfo:
+        await _client(lambda request: response).result(_submission())
+    message = str(excinfo.value)
+    assert "likenesses of real people" in message
+    assert "cannot be processed." in message  # 文末まで切れていない
+    assert "partner_validation_failed" in message
+    assert "body.image_url" in message
+
+
 async def test_download_streams_without_api_key_and_enforces_cap() -> None:
     seen: list[httpx.Request] = []
 

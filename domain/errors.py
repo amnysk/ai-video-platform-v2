@@ -143,6 +143,18 @@ class ProviderRejectedError(NeedsInputError):
     """
 
 
+class ProviderRejectedRetryBlockedError(ProviderRejectedError):
+    """同じ input_hash の予約が直前に provider から拒否されている（ADR-0034）。
+
+    ``infrastructure.production.paid_job._plan_round`` は spent 済み予約の
+    ``input_rejected_by_provider`` が true なら、この例外を送出して新しいラウンド
+    （＝同じ入力での再送）を自動で作らない。そのまま再送しても同じ拒否を繰り返し
+    課金だけが増える。台帳は append-only なので予約・Artifact・MinIO 実体は変更しない
+    （INV-15 / ADR-0033 と同じ規律）。回復は人間がプロンプト・素材を直して**新しい
+    input_hash** を作ることだけ。
+    """
+
+
 class ProviderJobFailedError(RetryableError):
     """provider 側のジョブが失敗した。新しいラウンド（新しい予約）で再生成しうる。"""
 

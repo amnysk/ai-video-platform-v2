@@ -117,6 +117,7 @@ def test_storyboard_exceptions_classify_by_their_base(
     [
         (errors.ProviderSubmitAmbiguousError("x"), FailureClass.NEEDS_INPUT),
         (errors.ProviderRejectedError("x"), FailureClass.NEEDS_INPUT),
+        (errors.ProviderRejectedRetryBlockedError("x"), FailureClass.NEEDS_INPUT),
         (errors.ProviderJobFailedError("x"), FailureClass.RETRYABLE),
         (errors.ProviderPollDeadlineError("x"), FailureClass.RETRYABLE),
         (errors.MediaValidationError("x"), FailureClass.RETRYABLE),

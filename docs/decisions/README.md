@@ -57,3 +57,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0031](./0031-daily-watchdog-progress-completion-upload.md) | Daily Watchdog を起動・進行・完成・投稿の4段階で判定する | Accepted |
 | [0032](./0032-unified-episode-resume-entrypoint.md) | Episode の統一再開エントリポイント | Accepted |
 | [0033](./0033-artifact-reuse-integrity-verification.md) | Artifact 再利用の完全性検証 | Accepted |
+| [0034](./0034-provider-content-rejection-retry-and-prompt-mitigation.md) | provider のコンテンツ拒否は同じ入力で自動再送しない・拒否理由を全文残す・写実的な肖像を避ける | Accepted |

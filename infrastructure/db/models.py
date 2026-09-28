@@ -27,6 +27,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    false,
     func,
     text,
 )
@@ -248,6 +249,13 @@ class ProviderReservationRow(Base):
     )
     failure_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_summary: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    #: この予約が spent したのは provider が**入力そのものを拒否した**（例: content policy
+    #: violation）ためか（ADR-0034）。true なら同じ input_hash のまま次のラウンドへ自動で
+    #: 進まない（``infrastructure.production.paid_job._plan_round``）。回復は人間が入力を
+    #: 直して新しい input_hash を作ることだけ（台帳は append-only。この行は変更しない）。
+    input_rejected_by_provider: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     reserved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
