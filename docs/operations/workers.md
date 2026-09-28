@@ -179,15 +179,68 @@ make deploy-workers              # = scripts/deploy-workers.sh
 make workers-versions            # いつでも: 各コンテナの image id / revision / 古いイメージか。混在なら exit 1
 ```
 
-`deploy-workers.sh` の手順（どこかで失敗したら非0終了）:
+`deploy-workers.sh` の手順（migrationはこの手順の中の1ステップであり、別の手順ではない。
+どこかで失敗したら非0終了）:
 
 1. dirty なら拒否 → infra（postgres / temporal / minio）が healthy か確認（作り直さない）
-2. `PRE_DEPLOY_CMD`（フック。中身はこのスクリプトが知らない。失敗したら**何も変えずに**中止）
-3. 共通イメージ（`avp2-app` / `avp2-worker`）を1回ずつ `GIT_REVISION` つきでビルド
-4. `migrate` を新イメージで実行し exit 0 を待つ → 残りの全アプリサービスを `up -d --no-deps --no-build`
-5. 全サービスが healthy になるまで待つ（`HEALTH_TIMEOUT` 秒、既定 300）→ `workers-versions.sh`（`EXPECTED_REVISION` つき）
-6. `POST_DEPLOY_CMD`（フック。**成否にかかわらず必ず**最後に実行。`DEPLOY_RESULT=success|failure`、
+2. **変更前の稼働状態を `deploy-state/<timestamp>-pre-<revision>.txt` へ記録**（rollback の根拠。
+   「たぶんこのcommitが前だった」ではなく、実際にこの deploy の直前に動いていた image id / revision を残す。
+   gitignore 済み。記録自体が失敗してもdeployは止めない）
+3. `PRE_DEPLOY_CMD`（フック。中身はこのスクリプトが知らない。失敗したら**何も変えずに**中止）
+4. 共通イメージ（`avp2-app` / `avp2-worker`）を1回ずつ `GIT_REVISION` つきでビルド
+5. `migrate` を新イメージで実行し exit 0 を待つ → 残りの全アプリサービスを `up -d --no-deps --no-build`
+6. 全サービスが healthy になるまで待つ（`HEALTH_TIMEOUT` 秒、既定 300）→ `workers-versions.sh`（`EXPECTED_REVISION` つき）
+7. `POST_DEPLOY_CMD`（フック。**成否にかかわらず必ず**最後に実行。`DEPLOY_RESULT=success|failure`、
    `DEPLOY_STAGE`、`DEPLOY_REVISION` を渡す。Ctrl-C / SIGTERM でも走る。POST が失敗したら全体を失敗にする）
+
+### 失敗時に自動生成を再開しない（R3）
+
+`make deploy-workers` は `scripts/with-maintenance-pause.sh` で包まれ、`avp-daily-episode` を
+deploy の間だけ maintenance pause する（ADR-0027）。**以前はコマンドの成否に関わらず必ず
+unpause していたが、これは deploy 失敗時に壊れた状態のまま自動生成が再開してしまう実際の
+バグだった（修正済み）。** 現在は:
+
+- 上記1〜7が最後まで成功したときだけ unpause する
+- build・migrate・health待ちのどこで失敗しても、Ctrl-C / SIGTERM で中断しても、**pause は
+  印付きのまま残る**。自動生成は始まらない
+- TTL（既定45分）が切れても、それを「成功」の代わりに使って自動生成を再開する経路は無い。
+  TTL切れの解除は daily watchdog（`avp-daily-watchdog`、毎時）の役目で、`SCHEDULE_MAINTENANCE_OVERRUN`
+  として記録されるだけの別経路（ADR-0027 §4）
+- 失敗後の復旧: `python scripts/schedule-guard.py status` で状態を確認 → 原因を直す →
+  `python scripts/schedule-guard.py maintenance end`（または `reconcile`）で手動解除するか、
+  `make deploy-workers` を最初からやり直す（成功すれば自動で解除される）
+
+### デプロイ中の進行中Workflow・Activity・予約への影響
+
+Schedule の pause は**新規の** `DailyEpisodeWorkflow` 起動だけを止める。**既に走っている
+Workflowは止めない**（Temporalのtask queueは維持され、workerが戻れば進む）。ただし
+worker プロセス自体は `up -d --no-deps --no-build` で作り直されるため、その瞬間に
+Activity を実行中だった worker は再起動する:
+
+- Temporalは heartbeatが止まった Activity を `heartbeat_timeout` 経過後に再スケジュールする。
+  最も長時間の Activity（production の await、`AWAIT_HEARTBEAT_TIMEOUT_SECONDS`）でも
+  heartbeat timeout は **90秒**。再起動で起きる最大の停滞は「新しい worker が healthy になる
+  までの時間 + 最大90秒」であり、ハングではない（`AWAIT_MAX_ATTEMPTS=5` の範囲で再試行される）
+- provider予約が `dispatched_at` commit 後・実際のprovider呼び出し前で中断される「曖昧窓」は
+  ADR-0013で**既に文書化・許容**された既存のリスクであり、deployによる再起動固有のリスクでは
+  ない（workerクラッシュ全般と同じ確率・同じ対処: evidenceが無ければ`reserved`のまま残り、
+  自動では再送も解放もしない）
+- 結論: **进行中のWorkflowを理由にdeployを止める必要は無い**が、deploy中に新しくprovider呼び出しの
+  「曖昧窓」に入ったActivityがある可能性はゼロではない。deploy後に
+  `SELECT * FROM provider_reservations WHERE status='reserved' AND raw_output_key IS NULL`
+  で確認するのがよい（ADR-0013の既存の確認手順そのもの）
+
+### rollback（DBのdowngradeを既定にしない）
+
+`deploy-workers.sh` は `alembic downgrade` を一切呼ばない。migration（本ブランチでは0011, 0012）は
+additive のみ（新しい列・表の追加。既存列・表の変更/削除は無い）なので、**旧コードは新しい
+schemaの上でも単に新しい列・表を無視して動く**。したがって既定のrollback手順は:
+
+1. `deploy-state/` の直近スナップショットから、直前のrevisionを確認する
+2. そのrevisionのコミットへ `git checkout` してから `make deploy-workers` を実行する
+   （DBはdowngradeしない。additiveなschemaのまま旧コードを動かす）
+3. 旧コードへの切替を確認できた**後**でのみ、必要なら `alembic downgrade <revision>` を検討する
+   （個々のmigrationファイルに`downgrade()`があるかどうかを個別に確認すること。運用者の判断）
 
 ```bash
 # 例: デプロイ中だけ定期実行を止め、最後に必ず戻す（フックの中身は運用側が決める）
