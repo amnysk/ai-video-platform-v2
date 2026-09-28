@@ -250,3 +250,14 @@ DB行の存在だけで再利用しない。MinIO実体の存在・size・sha256
 関数（`infrastructure.artifact.verify.find_and_verify_current`）を経由し、判定を二重化しない。
 **機械検査**: `tests/unit/test_artifact_verification.py` / `tests/unit/test_artifact_verify_io.py`
 / `tests/unit/test_paid_job.py::test_corrupt_artifact_does_not_bypass_the_unreconciled_reservation_block`
+
+### INV-33 1シーンの映像の差し替えとレシピ版の変更は、そのシーンと依存成果物以外を再生成・再課金しない
+画像・動画の `input_hash`（方式2、ADR-0035 (4)）はそのシーンの**実効内容**（storyboard のシーン +
+現行の代替映像案 `scene_visual_override`）の指紋を材料にし、別シーンの内容を含まない。代替映像案は
+storyboard の世代を変えないので、差し替えていないシーンの hash は変わらない。prompt 組み立て規則の版
+（`IMAGE_PROMPT_BUILDER_VERSION` / `VIDEO_PROMPT_BUILDER_VERSION`）だけが変わった成功済みの成果物は
+`artifact_metadata.content_fingerprint` で再利用する（生成器・モデルの違いは再利用しない）。
+旧方式（`content_fingerprint` が NULL の本番行・予約）は旧方式の hash を版 1〜現在で再計算して照合し、
+hash の方式が変わっただけで進行中の課金ジョブへ二重 submit したり、provider に拒否された入力を
+再送したりしない。代替映像案のあるシーンでは旧方式の成果物（拒否された元の画像）を再利用しない。
+**機械検査**: `tests/unit/test_scene_identity_v2.py` / `tests/unit/test_scene_identity_reuse.py`

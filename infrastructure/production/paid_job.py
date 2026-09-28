@@ -146,6 +146,9 @@ class PaidJobSpec:
     #: ADR-0035: 入力メディア（動画なら ``image_url`` に渡す画像）の sha256。provider に拒否された
     #: 画像を、テキストを変えて再送しないための鍵（INV-32）。入力メディアが無ければ ``None``。
     source_media_sha256: str | None = None
+    #: ADR-0035 (4): 旧方式（4d96027 まで）で再計算した input_hash の候補。旧方式で作られた
+    #: 成果物の再利用と、旧方式の予約（進行中の課金ジョブ・拒否された入力）の照合に使う。
+    legacy_input_hashes: tuple[str, ...] = ()
 
     def key_for_round(self, ledger_round: int) -> str:
         return idempotency_key(
@@ -250,13 +253,21 @@ class PaidJobRunner:
                     # 「現在有効な生成設定版」は呼び出し元（Activity）が spec に渡した値
                     # （fal の固定定数をここへ直接埋め込まない。fake/real どちらでも同じ形で効く）
                     current_generation_profile_id=spec.current_generation_profile_id,
+                    # ADR-0035 (4): レシピの版だけが違う成功済み成果物・旧方式の成果物も再利用する
+                    content_fingerprint=spec.content_fingerprint,
+                    legacy_input_hashes=spec.legacy_input_hashes,
                 )
                 if existing is not None:
                     return Reused(artifact=existing)
 
                 reservations = ProviderReservationRepository(session)
-                latest = await reservations.find_latest_for_input(
-                    spec.episode_id, spec.provider, spec.scene_id, spec.input_hash
+                # hash の方式が変わっても、旧方式の予約（進行中の課金ジョブ・拒否された入力）を
+                # 見落とさない（ADR-0035 (4)）
+                latest = await reservations.find_latest_for_inputs(
+                    spec.episode_id,
+                    spec.provider,
+                    spec.scene_id,
+                    (spec.input_hash, *spec.legacy_input_hashes),
                 )
                 plan = _plan_round(latest)
                 if isinstance(plan, Submitted):

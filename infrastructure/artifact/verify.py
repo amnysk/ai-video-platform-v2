@@ -24,6 +24,7 @@ from domain.artifact.verification import (
     ArtifactVerificationFacts,
     decide_verdict,
 )
+from domain.production.identity import recipe_family
 from infrastructure.storage.artifact_store import ArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -51,8 +52,12 @@ async def verify_artifact(
     artifact: ArtifactMetadata,
     *,
     current_generation_profile_id: str | None = None,
+    tolerate_recipe_version: bool = False,
 ) -> ArtifactVerificationResult:
     """DB行が指す実体を検証し、verdictを返す。副作用（削除・変更）は一切起こさない。
+
+    ``tolerate_recipe_version``（ADR-0035 (4)）: 生成設定版の比較で prompt 組み立て規則の版
+    （末尾の ``prompt-v<N>``）の違いだけを許す。生成器・モデルの違いは許さない。
 
     ``current_generation_profile_id``: image/video の生成設定版チェックに使う「現在有効な値」。
     fal の固定定数をここへ埋め込まない ── **今まさに構成されている generator が報告する値**
@@ -92,7 +97,10 @@ async def verify_artifact(
     )
 
     profile_check_applicable, profile_id_valid = _check_profile(
-        artifact.artifact_type, parsed, current_generation_profile_id
+        artifact.artifact_type,
+        parsed,
+        current_generation_profile_id,
+        tolerate_recipe_version=tolerate_recipe_version,
     )
 
     facts = ArtifactVerificationFacts(
@@ -122,7 +130,11 @@ def _result(verdict: ArtifactVerdict, detail: str) -> ArtifactVerificationResult
 
 
 def _check_profile(
-    artifact_type: ArtifactType, parsed: object, current_generation_profile_id: str | None
+    artifact_type: ArtifactType,
+    parsed: object,
+    current_generation_profile_id: str | None,
+    *,
+    tolerate_recipe_version: bool = False,
 ) -> tuple[bool, bool]:
     """(profile_check_applicable, profile_id_valid) を返す。型に概念が無ければ (False, True)。"""
     if artifact_type in _GENERATOR_PROFILE_CHECKED_TYPES:
@@ -130,6 +142,8 @@ def _check_profile(
             return False, True  # 呼び出し側が現在値を知らない・使わない（未評価。推測しない）
         generator = getattr(parsed, "generator", None)
         profile_id = getattr(generator, "generation_profile_id", None)
+        if tolerate_recipe_version and isinstance(profile_id, str):
+            return True, recipe_family(profile_id) == recipe_family(current_generation_profile_id)
         return True, profile_id == current_generation_profile_id
     if artifact_type is ArtifactType.FINAL_VIDEO:
         render_profile = getattr(parsed, "render_profile", None)
@@ -147,29 +161,50 @@ async def find_and_verify_current(
     input_hash: str,
     scene_id: str | None = None,
     current_generation_profile_id: str | None = None,
+    content_fingerprint: str | None = None,
+    legacy_input_hashes: tuple[str, ...] = (),
 ) -> ArtifactMetadata | None:
-    """再利用の唯一のゲート（ADR-0033 §3）。
+    """再利用の唯一のゲート（ADR-0033 §3、ADR-0035 (4)）。
 
-    既存の ``ArtifactMetadataRepository.find_current`` を呼び、行が見つかれば検証する。
-    verdict が ``REUSABLE`` でなければ「現行が無い」のと同じ ``None`` を返す
-    （呼び出し側は既存の新ラウンド経路にそのまま進む。regenerate と retry を1つの述語に
-    集約する ── ADR-0033 §3）。
+    次の順に同じシーンの**現行世代**を探し、見つかった行を実体検証する。verdict が
+    ``REUSABLE`` でなければ「現行が無い」のと同じ ``None`` を返す（呼び出し側は既存の新ラウンド
+    経路にそのまま進む。regenerate と retry を1つの述語に集約する ── ADR-0033 §3）。
 
-    ``repo`` は ``infrastructure.db.repositories.ArtifactMetadataRepository`` 互換
-    （``find_current`` を持つ）。型を狭めないのは、このモジュールが repository の型を
-    import すると循環 import になりうるため（repositories.py がこちらを呼ぶ構成にする）。
+    1. ``input_hash`` 完全一致（生成設定版も完全一致で検証）
+    2. ``content_fingerprint`` 一致（レシピの版だけが違う成功済み成果物。生成器・モデルの違いは
+       許さない）。prompt 組み立て規則の版を上げても成功済みのシーンを作り直さない（INV-33）
+    3. ``legacy_input_hashes`` のどれかと一致する旧方式の行（``content_fingerprint`` が NULL）。
+       呼び出し側が旧方式（4d96027 まで）で再計算した hash を渡す
 
-    ``current_generation_profile_id`` は ``verify_artifact`` へそのまま渡す
-    （image/video の生成設定版チェック。渡さない呼び出し元ではその型のチェックを行わない）。
+    ``repo`` は ``infrastructure.db.repositories.ArtifactMetadataRepository`` 互換。型を
+    狭めないのは、このモジュールが repository の型を import すると循環 import になりうるため。
     """
     current = await repo.find_current(  # type: ignore[attr-defined]
         episode_id, artifact_type, input_hash, scene_id
     )
-    if current is None:
+    if current is not None:
+        result = await verify_artifact(
+            store, current, current_generation_profile_id=current_generation_profile_id
+        )
+        return current if result.verdict is ArtifactVerdict.REUSABLE else None
+
+    candidate = None
+    if content_fingerprint is not None:
+        candidate = await repo.find_current_by_content_fingerprint(  # type: ignore[attr-defined]
+            episode_id, artifact_type, content_fingerprint, scene_id
+        )
+    if candidate is None and legacy_input_hashes:
+        candidate = await repo.find_current_legacy(  # type: ignore[attr-defined]
+            episode_id, artifact_type, legacy_input_hashes, scene_id
+        )
+    if candidate is None:
         return None
     result = await verify_artifact(
-        store, current, current_generation_profile_id=current_generation_profile_id
+        store,
+        candidate,
+        current_generation_profile_id=current_generation_profile_id,
+        tolerate_recipe_version=True,
     )
     if result.verdict is not ArtifactVerdict.REUSABLE:
         return None
-    return current
+    return candidate

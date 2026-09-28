@@ -23,6 +23,7 @@ from temporalio import activity
 from contracts.artifacts import (
     PRODUCTION_ARTIFACT_SCHEMA_VERSION,
     SceneImageArtifact,
+    SceneVisualOverrideArtifact,
     StoryboardArtifact,
     StoryboardScene,
     build_scene_video_artifact,
@@ -49,7 +50,14 @@ from domain.errors import (
     classify_failure,
 )
 from domain.job.transitions import job_event_for_failure
-from domain.production.identity import video_input_hash
+from domain.production.effective_scene import scene_visual_fingerprint
+from domain.production.identity import (
+    recipe_version_candidates,
+    video_content_fingerprint,
+    video_generation_profile_id,
+    video_input_hash,
+    video_input_hash_v2,
+)
 from domain.production.media import MediaProbe, validate_video
 from domain.production.ports import VideoGenerator, VideoRequest
 from domain.production.prompting import (
@@ -67,6 +75,7 @@ from infrastructure.production.activity_errors import (
     raise_activity_error,
     translate_error,
 )
+from infrastructure.production.effective_scene_loader import load_effective_scene
 from infrastructure.production.paid_job import PaidJobRunner, PaidJobSpec, Reused
 from infrastructure.storage.artifact_store import ArtifactStore, readback_sha256
 
@@ -80,7 +89,11 @@ VIDEO_MIME = "video/mp4"
 class _Inputs:
     storyboard_meta: ArtifactMetadata
     storyboard: StoryboardArtifact
+    #: 実効シーン（storyboard のシーン + 現行の代替映像案。ADR-0035）
     scene: StoryboardScene
+    #: storyboard に書かれたままのシーン（旧方式の hash 再計算用）
+    original_scene: StoryboardScene
+    override: SceneVisualOverrideArtifact | None
     image_meta: ArtifactMetadata
     image: SceneImageArtifact
     image_bytes: bytes
@@ -148,6 +161,10 @@ class VideoProductionActivities:
                 round=request.round,
                 job_id=job_id,
                 current_generation_profile_id=self._generation_profile_id,
+                content_fingerprint=self._content_fingerprint(inputs),
+                # INV-32 の鍵（拒否された入力画像をテキストだけ変えて再送しない）
+                source_media_sha256=inputs.image.media.sha256,
+                legacy_input_hashes=self._legacy_input_hashes(inputs),
             )
             async with self._session_factory() as session:
                 existing = await ArtifactMetadataRepository(session).find_current(
@@ -203,7 +220,7 @@ class VideoProductionActivities:
         if (
             reservation.episode_id != request.episode_id
             or reservation.scene_id != request.scene_id
-            or reservation.input_hash != input_hash
+            or reservation.input_hash not in (input_hash, *self._legacy_input_hashes(inputs))
             or reservation.provider is not ProviderCall.FAL_VIDEO
         ):
             raise ProductionInputInvalidError(
@@ -298,6 +315,7 @@ class VideoProductionActivities:
                 produced_by_job_id=job_id,
                 input_hash=input_hash,
                 scene_id=request.scene_id,
+                content_fingerprint=self._content_fingerprint(inputs),
             )
             await ProviderReservationRepository(session).attach_artifact(
                 request.reservation_id, meta.id
@@ -373,10 +391,19 @@ class VideoProductionActivities:
             raise ProductionInputInvalidError(
                 f"scene image media sha256 mismatch at {image.media.object_key}"
             )
+        effective, override = await load_effective_scene(
+            self._session_factory,
+            self._store,
+            episode_id=episode_id,
+            scene=scene,
+            storyboard_meta=sb_meta,
+        )
         return _Inputs(
             storyboard_meta=sb_meta,
             storyboard=storyboard,
-            scene=scene,
+            scene=effective,
+            original_scene=scene,
+            override=override,
             image_meta=image_meta,
             image=image,
             image_bytes=image_bytes,
@@ -420,11 +447,50 @@ class VideoProductionActivities:
 
     @property
     def _generation_profile_id(self) -> str:
-        """生成器のプロファイルと動画プロンプト規則の版。どちらが変わっても再生成対象。"""
-        return f"{self._generator.generation_profile_id}+{self._motion.motion_profile_id}"
+        """生成器のプロファイルと動画プロンプト規則の版（成果物に記録する生成設定版）。"""
+        return video_generation_profile_id(
+            self._generator.generation_profile_id, self._motion.motion_profile_id
+        )
+
+    def _v2_fields(self, inputs: _Inputs) -> dict[str, Any]:
+        """方式2の材料（ADR-0035 (4)）。元画像の sha256 を含むので画像が変われば動画も変わる。"""
+        return {
+            "episode_id": inputs.storyboard.episode_id,
+            "artifact_type": ArtifactType.SCENE_VIDEO.value,
+            "schema_version": PRODUCTION_ARTIFACT_SCHEMA_VERSION,
+            "storyboard_sha256": inputs.storyboard_meta.sha256,
+            "scene_id": inputs.scene.scene_id,
+            "scene_fingerprint": scene_visual_fingerprint(inputs.scene),
+            "source_image_sha256": inputs.image.media.sha256,
+            "requested_duration_ms": inputs.requested_duration_ms,
+            "generator_id": self._generator.generator_id,
+            "generator_profile_id": self._generator.generation_profile_id,
+            "motion_profile_id": self._motion.motion_profile_id,
+        }
 
     def _input_hash(self, inputs: _Inputs) -> str:
-        scene = inputs.scene
+        return video_input_hash_v2(**self._v2_fields(inputs))
+
+    def _content_fingerprint(self, inputs: _Inputs) -> str:
+        return video_content_fingerprint(**self._v2_fields(inputs))
+
+    def _legacy_input_hashes(self, inputs: _Inputs) -> tuple[str, ...]:
+        """方式1（4d96027 まで）で作られた成果物・予約を照合する hash（動画プロンプト版 1〜現在）。
+
+        代替映像案があるシーンは対象外（映像の内容が変わった。拒否された入力を再利用しない）。
+        """
+        if inputs.override is not None:
+            return ()
+        return tuple(
+            self._legacy_input_hash(
+                inputs,
+                video_generation_profile_id(self._generator.generation_profile_id, motion),
+            )
+            for motion in recipe_version_candidates(self._motion.motion_profile_id)
+        )
+
+    def _legacy_input_hash(self, inputs: _Inputs, generation_profile_id: str) -> str:
+        scene = inputs.original_scene
         return video_input_hash(
             episode_id=inputs.storyboard.episode_id,
             artifact_type=ArtifactType.SCENE_VIDEO.value,
@@ -437,7 +503,7 @@ class VideoProductionActivities:
             transition_in=scene.transition_in,
             requested_duration_ms=inputs.requested_duration_ms,
             generator_id=self._generator.generator_id,
-            generation_profile_id=self._generation_profile_id,
+            generation_profile_id=generation_profile_id,
         )
 
     def _video_request(self, inputs: _Inputs) -> VideoRequest:
