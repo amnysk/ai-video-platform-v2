@@ -621,3 +621,126 @@ async def test_a_stopped_execution_for_a_nonexistent_episode_does_not_crash_the_
     open_rows = await _open(session_factory, kinds=[AnomalyKind.PIPELINE_OUTCOME_MISMATCH])
     assert [r.episode_id for r in open_rows] == [real_episode_id]
     assert {n.kind for n in notifier.notices} >= {AnomalyKind.PIPELINE_OUTCOME_MISMATCH}
+
+
+# --------------------------------------------------------------------- インシデント 8fb66fcb 再現
+#
+# 2026-09-21〜09-27（7日連続）: 日次 Schedule は正常に始まり続けたが、個々の Episode が
+# 作成から約20分で blocked に落ちたまま気づかれなかった。本番（claude/daily-hardening
+# 4d96027）にはこの ADR-0031 の拡張が入っておらず、watchdog は「今日は始まったか」
+# （ADR-0027 の4段のうち起動だけ）しか見ていなかった。この節は、本 ADR-0031 の実装が
+# ——実際にデプロイされていれば——このタイムラインを初回のhourly検査（最長 blocked_grace
+# の既定0分＝ほぼ即時）で捕まえ、以後も毎日再通知し続けたはずであることを、
+# 本物の日付・既定値（override無し）で再現して証明する。
+
+
+async def test_incident_8fb66fcb_a_blocked_episode_is_caught_within_the_first_hourly_check(
+    session_factory,
+) -> None:
+    """(a) 09-21 06:00 JST 作成 → 06:20 blocked → 06:35 の最初の hourly 検査で即検知。
+
+    override を一切渡さない（``WatchdogCheckRequest`` の生産既定値そのもの: 特に
+    ``DEFAULT_BLOCKED_GRACE_MINUTES=0``）。実際の事故は「翌朝レポートを待つ」どころか
+    「その日のうちに一度も検出されなかった」のであり、既定値だけで初回検査が捕まえられる
+    ことを示す。
+    """
+    created_at = datetime(2026, 9, 20, 21, 0, tzinfo=UTC)  # 2026-09-21 06:00 JST
+    blocked_at = created_at + timedelta(minutes=20)  # 2026-09-21 06:20 JST
+    first_check = datetime(2026, 9, 20, 21, 35, tzinfo=UTC)  # 2026-09-21 06:35 JST（毎時35分）
+    await _add_slot(session_factory)
+    episode_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.BLOCKED,
+        created_at=created_at,
+        status_changed_at=blocked_at,
+        blocked_reason="fal auth failure: submit rejected with 401",
+    )
+    result, notifier = await _run(session_factory, _control(first_check), first_check)
+
+    # 日次自動化そのものは「始まった」ので、旧・本番の watchdog（ADR-0027 のみ、起動だけを見る）
+    # の判定基準では健全に見える。個々の Episode が blocked なことは、その旧判定基準からは
+    # 独立に、別の検査として検出されなければならない。
+    assert result.daily_start == DailyStartStatus.STARTED_SLOT.value
+    assert result.schedule_health == ScheduleHealth.HEALTHY.value
+
+    assert AnomalyKind.EPISODE_STAGE_STALLED.value in result.anomalies
+    (row,) = await _open(session_factory, kinds=[AnomalyKind.EPISODE_STAGE_STALLED])
+    assert row.episode_id == episode_id
+    assert row.detail["reason"] == "fal auth failure: submit rejected with 401"
+    assert {n.kind for n in notifier.notices} >= {AnomalyKind.EPISODE_STAGE_STALLED}
+
+
+async def test_incident_8fb66fcb_the_same_blocked_episode_is_renotified_every_day_for_seven_days(
+    session_factory,
+) -> None:
+    """7日間、毎日06:35に検査しても放置されない: 日ごとに新しい行が立ち、毎日再通知される。
+
+    ``operational_anomalies`` の一意制約は ``(kind, anomaly_date, episode_id)`` なので、
+    ``anomaly_date`` が日ごとに変わるかぎり検査のたびに新しい行が生まれ、
+    ``notified_at`` もその新しい行では未設定 → 毎日再度 ``notifier.notify`` が呼ばれる。
+    「ログだけを1回出して終わり」ではないことを7日分回して確認する。
+    """
+    created_at = datetime(2026, 9, 20, 21, 0, tzinfo=UTC)  # 2026-09-21 06:00 JST
+    blocked_at = created_at + timedelta(minutes=20)
+    await _add_slot(session_factory)
+    episode_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.BLOCKED,
+        created_at=created_at,
+        status_changed_at=blocked_at,
+        blocked_reason="fal auth failure: submit rejected with 401",
+    )
+
+    notified_dates: list[date] = []
+    for day_offset in range(7):  # 09-21 〜 09-27
+        check_time = datetime(2026, 9, 20, 21, 35, tzinfo=UTC) + timedelta(days=day_offset)
+        result, notifier = await _run(session_factory, _control(check_time), check_time)
+        assert AnomalyKind.EPISODE_STAGE_STALLED.value in result.anomalies
+        notices = [n for n in notifier.notices if n.kind == AnomalyKind.EPISODE_STAGE_STALLED]
+        assert len(notices) == 1, f"day {day_offset}: expected exactly one fresh notification"
+        notified_dates.append(notices[0].anomaly_date)
+
+    assert notified_dates == [date(2026, 9, 21) + timedelta(days=i) for i in range(7)]
+    rows = await _open(session_factory, kinds=[AnomalyKind.EPISODE_STAGE_STALLED])
+    assert len(rows) == 7
+    assert all(r.episode_id == episode_id for r in rows)
+
+
+async def test_incident_8fb66fcb_completion_and_upload_deadlines_also_fire_with_pure_defaults(
+    session_factory,
+) -> None:
+    """(b)(c) 完成期限・投稿期限も production の既定値（override無し）だけで検出できる。
+
+    stage stall（進行）だけでなく、完成（``DEFAULT_COMPLETION_DEADLINE_HOURS=8.0``）・
+    投稿（``DEFAULT_UPLOAD_DEADLINE_HOURS=2.0``）も独立した検査として同時に機能する
+    多層防御を、override無しの既定値で確認する。
+    """
+    await _add_slot(session_factory)
+    now = datetime(2026, 9, 20, 21, 35, tzinfo=UTC)
+
+    # (b) 作成から8時間超、まだ in_progress（render_ready 未到達）
+    not_completed_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.IN_PROGRESS,
+        created_at=now - timedelta(hours=9),
+        status_changed_at=now - timedelta(hours=9),
+    )
+    # (c) render_ready から2時間超、まだ uploaded 未到達
+    not_uploaded_id = await _add_episode(
+        session_factory,
+        status=EpisodeStatus.RENDER_READY,
+        status_changed_at=now - timedelta(hours=3),
+    )
+
+    result, _ = await _run(session_factory, _control(now), now)  # override無し = production既定値
+
+    assert AnomalyKind.EPISODE_NOT_COMPLETED_BY_DEADLINE.value in result.anomalies
+    assert AnomalyKind.EPISODE_NOT_UPLOADED_BY_DEADLINE.value in result.anomalies
+    completed_rows = await _open(
+        session_factory, kinds=[AnomalyKind.EPISODE_NOT_COMPLETED_BY_DEADLINE]
+    )
+    uploaded_rows = await _open(
+        session_factory, kinds=[AnomalyKind.EPISODE_NOT_UPLOADED_BY_DEADLINE]
+    )
+    assert {r.episode_id for r in completed_rows} == {not_completed_id}
+    assert {r.episode_id for r in uploaded_rows} == {not_uploaded_id}

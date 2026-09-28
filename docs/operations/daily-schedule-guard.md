@@ -124,3 +124,19 @@ Schedule が**運用者の pause（印なし）**のときは deploy だけ実�
   - `with-maintenance-pause.sh` の往復（pause+印 → `maintenance_in_progress` → 終了で unpause）を本番 Schedule で確認
   - `avp-daily-watchdog` を登録・trigger → 9/20 分に `DAILY_AUTOMATION_NOT_STARTED` を記録（事故の検知そのもの）。
     9/20 は Episode を作らない判断なので、運用者が `resolved_at` を手で入れた（記録は残す）
+
+## 2026-09-21〜09-27 の事故（インシデント 8fb66fcb）と切り分け
+
+- 事故: 日次 Schedule は7日間とも正常に始まったが、個々の Episode が作成から約20分で `blocked`
+  に落ちたまま気づかれなかった（`operational_anomalies` にこの期間の Episode 系記録は無し）。
+- 原因の切り分け（2026-09-28、`docs/decisions/0031-daily-watchdog-progress-completion-upload.md`
+  §検証記録に詳細）: 本番（`claude/daily-hardening`）には ADR-0031（本ドキュメント §5 の
+  `EPISODE_STAGE_STALLED` 以下4種）が**デプロイされていなかった**。本番の watchdog は
+  「今日は始まったか」（§1 の起動判定）しか見ておらず、Episode 単位の進行・完成・投稿は
+  一切見ていなかった。ADR-0031 自体の検知ロジックに漏れは無いことを、実際の日付・
+  production 既定値で再現したテスト（`tests/unit/test_daily_watchdog.py::test_incident_8fb66fcb_*`）
+  で確認済み。
+- **導入手順（本節冒頭の §4）を実施し、`avp-daily-watchdog` が ADR-0031 込みでデプロイされて
+  初めて、この種の事故は初回 hourly 検査で検知できる。** デプロイしただけでは終わらない点にも
+  注意: 通知は既定でログのみ（§5末尾）なので、`schedule-guard.py status --json` を定期的に
+  見るか、ログ監視を別途設定しないと、検知はできても人には届かない。
