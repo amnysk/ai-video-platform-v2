@@ -259,3 +259,22 @@ PRE_DEPLOY_CMD='...' POST_DEPLOY_CMD='...' make deploy-workers
 - 設定不足で healthy にならない worker（§3）があると、ゲートが失敗して deploy は非0で終わる（意図どおり）
 - 別の worktree から実行するとき: compose は project 名 `avp2` 固定。`.env`（gitignore、秘密を含む）は
   compose のあるディレクトリから読まれるので、その worktree に `.env` を置く（symlink 可）
+
+## 11. `minio/minio:latest` の pull が拒否される既知の問題（未解決・2026-09-28 追記）
+
+このホストで `docker pull minio/minio:latest` が匿名でも `docker login` 後でも
+`pull access denied for minio/minio, repository does not exist or may require 'docker login'`
+になることを実測した（`quay.io/minio/minio:latest` も `401 UNAUTHORIZED`）。既に動いている
+`avp2-minio-1` はイメージがローカルに残っているため動き続けているが、**イメージを持たない
+環境（新しいホスト、`docker image prune`後、CIランナー）では `docker compose --profile core up`
+がこの時点で失敗しうる**。CI 側の緩和（DOCKERHUB_USERNAME/TOKEN による事前ログイン、本ファイル
+`.github/workflows/ci.yml` の定義）は用意済みだが、当該 repository 自体が引けない場合は効かない。
+
+`bitnamilegacy/minio:2025.7.23-debian-12-r0` は pull できることを確認したが、**単純な差し替えは
+壊れる**: このイメージは非 root（uid 1001）固定で起動し、`minio/minio:latest` 用に作られた
+volume・bind mount（root 所有）へ書き込めず `FATAL Unable to initialize backend: file access denied`
+になる（隔離した別 project の `docker compose up minio` で実測）。本番の `/mnt/minio-hdd/minio-data`
+も root 所有前提のため、chown を伴わない差し替えは事故になる。したがって**このブランチでは
+minio のイメージを変更していない**。対応するなら: (a) pull できる official image tag を別途探す、
+(b) bitnami 系を使うなら bind mount の chown を含めた運用手順の見直しと ADR（技術選定）が要る。
+どちらも本インシデント対応（branch 統合・CI/隔離テスト基盤整備）の範囲外として、対応を持ち越す。

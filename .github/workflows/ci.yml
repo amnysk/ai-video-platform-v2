@@ -80,10 +80,13 @@ jobs:
       # ここで明示的に build しないと `up` がローカルに無い image を pull しようとして
       # "pull access denied for avp2-app" になる（2026-09-23 CI失敗の直接原因）。
       - name: Log in to Docker Hub (raises the anonymous pull rate limit)
-        # secrets が無ければ何もしない。無い場合、匿名 pull の rate limit に当たることがある
-        # （minio/minio のような非公式 namespace の image で起きやすい。DOCKERHUB_USERNAME /
-        # DOCKERHUB_TOKEN を repo secrets に追加すると有効になる。追加は本ワークフローの範囲外）
-        if: ${{ vars.DOCKERHUB_USERNAME != '' || secrets.DOCKERHUB_TOKEN != '' }}
+        # secrets が両方揃っていなければ何もしない（無い場合、匿名 pull の rate limit に
+        # 当たることがある。minio/minio のような非公式 namespace の image で起きやすい。
+        # DOCKERHUB_USERNAME / DOCKERHUB_TOKEN を repo secrets に追加すると有効になる。
+        # 追加は本ワークフローの範囲外）。片方だけ設定されている状態で login action を
+        # 呼ぶと、空 credential でのログイン失敗がこのジョブ全体を、本来検査したい
+        # compose 起動の失敗より前に落としてしまう。両方揃っているときだけ試みる
+        if: ${{ vars.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
