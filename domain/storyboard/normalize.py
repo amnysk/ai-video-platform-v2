@@ -99,6 +99,7 @@ def assign_scene_identity(drafts: Sequence[StoryboardSceneDraft]) -> list[dict[s
             "framing": draft.framing,
             "camera_movement": draft.camera_movement,
             "transition_in": draft.transition_in,
+            "visual_subject": draft.visual_subject.value if draft.visual_subject else None,
         }
         for order, draft in enumerate(drafts, start=1)
     ]

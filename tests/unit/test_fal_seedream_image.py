@@ -162,7 +162,8 @@ def test_every_visual_kind_has_a_hint() -> None:
 
 def test_style_profile_id_carries_the_builder_version() -> None:
     # v2（ADR-0034）: 実在人物の写実的な肖像判定を避けるためスタイル文面を変更した。
-    assert DEFAULT_IMAGE_STYLE.style_profile_id.endswith(":prompt-v2")
+    # v3（ADR-0035）: 映像対象に応じた構図の指示を足した。
+    assert DEFAULT_IMAGE_STYLE.style_profile_id.endswith(":prompt-v3")
 
 
 def test_prompt_avoids_asking_for_a_photorealistic_likeness_of_a_real_person() -> None:

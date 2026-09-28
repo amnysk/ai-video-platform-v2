@@ -18,11 +18,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from contracts.artifacts import StoryboardScene, StoryboardVisualKind
+from contracts.artifacts import StoryboardScene, StoryboardVisualKind, VisualSubject
+from domain.storyboard.visual_subject import PEOPLE_SUBJECTS
 
 #: 組み立て規則の版。文面・並び・kind の対応を変えたら上げる。
 #: v2（ADR-0034）: 実在人物の写実的な肖像判定を避けるため、スタイルと制約文を変更。
-IMAGE_PROMPT_BUILDER_VERSION = "2"
+#: v3（ADR-0035）: 映像対象（``visual_subject``）に応じた構図の指示を足した。
+IMAGE_PROMPT_BUILDER_VERSION = "3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +69,50 @@ _CONSTRAINTS = (
 )
 
 
+#: 人物が画面に入る映像対象の描き方（ADR-0035）。provider の拒否理由（実在人物の肖像）への対処は、
+#: 名前を消すことではなく「顔を識別可能な肖像として描かない」構図にすること。
+_PEOPLE_COMPOSITION = (
+    "people appear small in the frame, seen from a distance or from behind, "
+    "faces not shown in detail, not a recognizable portrait"
+)
+
+#: 映像対象ごとの構図の指示（ADR-0035）。``None``（旧 storyboard）には何も足さない。
+_SUBJECT_HINTS: dict[VisualSubject, str] = {
+    VisualSubject.SITE: (
+        "a historic site or location as the main subject, no people in the foreground"
+    ),
+    VisualSubject.MAP: "an illustrated historical map as the main subject",
+    VisualSubject.DOCUMENT: (
+        "a historical document or scroll as the main subject, its writing rendered as "
+        "illegible brush texture rather than legible words"
+    ),
+    VisualSubject.ARTIFACT: (
+        "a historical object such as armor, a weapon or a tool as the main subject, "
+        "displayed on its own without a wearer"
+    ),
+    VisualSubject.BUILDING: "architecture as the main subject, people absent or tiny",
+    VisualSubject.LANDSCAPE: "a wide landscape as the main subject, people absent or tiny",
+    VisualSubject.CROWD_DISTANT: (
+        "a crowd or procession seen from far away, individuals tiny, no face recognizable"
+    ),
+    VisualSubject.FIGURE_ANONYMOUS: _PEOPLE_COMPOSITION,
+    VisualSubject.NAMED_PERSON: (
+        "the person is shown through setting, attire and action, " + _PEOPLE_COMPOSITION
+    ),
+    VisualSubject.DIAGRAM: "a clean explanatory diagram as the main subject",
+    VisualSubject.TEXT_CARD: (
+        "an uncluttered background for a caption added later, no legible words in the image"
+    ),
+}
+
+
 def build_image_prompt(
     scene: StoryboardScene, style: ImageStyleProfile = DEFAULT_IMAGE_STYLE
 ) -> str:
     """storyboard シーン → 静止画プロンプト。動きの指示（camera_movement 等）は含めない。"""
     parts = [scene.visual_description.strip(), _KIND_HINTS[scene.visual_kind]]
+    if scene.visual_subject is not None:
+        parts.append(_SUBJECT_HINTS[scene.visual_subject])
     if scene.framing:
         parts.append(f"framing: {scene.framing.strip()}")
     parts.append(style.style)
@@ -83,7 +124,8 @@ def build_image_prompt(
 
 #: 動画プロンプトの組み立て規則の版。文面・並びを変えたら上げる。
 #: v2（ADR-0034）: 共有の ``_CONSTRAINTS`` を変更（実在人物の写実的な肖像判定を避ける）。
-VIDEO_PROMPT_BUILDER_VERSION = "2"
+#: v3（ADR-0035）: 人物の映像対象では、動きの中でも人物を小さく・肖像にしない指示を足した。
+VIDEO_PROMPT_BUILDER_VERSION = "3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +150,9 @@ def build_video_prompt(
 ) -> str:
     """storyboard シーン → 元画像を動かす指示。見た目（visual_description）+ 動き。"""
     parts = [scene.visual_description.strip()]
+    if scene.visual_subject in PEOPLE_SUBJECTS:
+        # 元画像の構図を保つだけでは、寄り・振り向きで顔が主題になりうる
+        parts.append(f"{_PEOPLE_COMPOSITION}, no zoom toward faces")
     if scene.camera_movement:
         parts.append(f"camera: {scene.camera_movement.strip()}")
     if scene.transition_in:

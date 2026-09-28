@@ -131,3 +131,15 @@ workflow id（`episode-<id>-storyboard`）は完了後に再利用されるた�
 - Phase 4 の workflow が storyboard の先へ続けて進むようになったとき → `storyboard_ready` の駐機点としての必要性を再評価
 - `input_hash` の構成要素を変えるとき（過去 Artifact と一致しなくなり全 Episode が再生成される）
 - OpenMontage 以外の生成器を導入し、`generation_spec_id` の意味が一般化できなくなったとき
+
+## 追補（2026-09-29、ADR-0035）: 各シーンの映像対象を Storyboard で決める
+
+- `StoryboardScene.visual_subject`（任意）を Storyboard の時点で埋める。LLM は外部 scene_plan の既存の
+  任意項目 `required_assets[]` に `source: "generate"` の要素をちょうど1件書き、その `type` が映像対象
+  （`contracts.artifacts.VisualSubject`）になる。外部スキーマにキーは足さない（ADR-0016 の境界を保つ）。
+- 欠落・2件以上・語彙外、および人物の映像対象（`named_person` / `figure_anonymous`）を
+  `talking_head` / `character` の構図で計画したものは、LLM 出力の形式不正（retryable、ADR-0014）。
+  規則は `domain/storyboard/visual_subject.py`。人物を一律に禁じない（遠景・背後の構図なら選べる）。
+- テンプレートは `storyboard_ja@3`。`input_hash` に入るので、新しい Episode の storyboard だけが新しい
+  規則で作られる。`blocked` からの再開（ADR-0032）は production から始まり、既存 storyboard は作り直さない。
+- 旧 storyboard（`visual_subject` なし）は読める。画像・動画プロンプトは旧文面のまま（`domain/production/prompting.py`）。

@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from contracts.artifacts import ScriptArtifact, StoryboardVisualKind
+from contracts.artifacts import ScriptArtifact, StoryboardVisualKind, VisualSubject
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +54,8 @@ class StoryboardSceneDraft:
     framing: str | None = None
     camera_movement: str | None = None
     transition_in: str | None = None
+    #: ADR-0035: このシーンが画面の主題として何を映すか。旧形式の下書きは ``None``。
+    visual_subject: VisualSubject | None = None
 
 
 @runtime_checkable
