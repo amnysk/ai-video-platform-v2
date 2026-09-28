@@ -25,7 +25,7 @@ from contracts.artifacts import (
     parse_script_artifact,
     parse_storyboard_artifact,
 )
-from domain.errors import ProviderSubmitAmbiguousError
+from domain.errors import ProviderRejection, ProviderSubmitAmbiguousError
 from domain.production.ports import (
     ImageRequest,
     JobFailed,
@@ -242,6 +242,97 @@ class FakeVideoGenerator(_FakeAsyncJobGenerator):
 
     def _render(self, request: VideoRequest) -> bytes:
         return make_mp4(request.duration_ms, self.size[0], self.size[1], self.fps)
+
+
+#: 2026-09-26/27 に fal が実際に返した拒否の形（ADR-0035）
+LIKENESS_REJECTION = ProviderRejection(
+    types=("content_policy_violation",),
+    locs=("body.image_url",),
+    reason="partner_validation_failed",
+    message=(
+        "The images or videos provided may contain likenesses of real people "
+        "or other private information that cannot be processed."
+    ),
+    http_status=422,
+)
+
+
+class ImageRejectingVideoGenerator(FakeVideoGenerator):
+    """入力画像の sha256 で拒否する動画生成器（ADR-0035）。
+
+    実際の拒否は ``body.image_url`` ── 画像そのものが判定された。テキストをどう変えても
+    同じ画像なら拒否する、という provider の振る舞いを模す。``reject_images`` に入れた
+    画像の job は完了時に ``LIKENESS_REJECTION`` で失敗する。
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.reject_images: set[str] = set()
+        self.submitted_images: list[str] = []
+        self._rejected_refs: set[str] = set()
+
+    async def submit(self, request: VideoRequest) -> ProviderJobRef:
+        import hashlib
+
+        sha = hashlib.sha256(request.source_image).hexdigest()
+        self.submitted_images.append(sha)
+        ref = await super().submit(request)
+        if sha in self.reject_images:
+            self._rejected_refs.add(ref)
+        return ref
+
+    async def poll(self, ref: ProviderJobRef) -> JobStatus:
+        status = await super().poll(ref)
+        if ref in self._rejected_refs and isinstance(status, JobSucceeded):
+            return JobFailed(
+                message="fal job failed: HTTP 422 types=['content_policy_violation']",
+                rejected=True,
+                rejection=LIKENESS_REJECTION,
+            )
+        return status
+
+
+class FakeSceneAlternativePlanner:
+    """代替映像案の planner の fake（ADR-0035）。LLM は呼ばない。
+
+    ``responses`` を順に返す（dict は JSON にする）。尽きたら、許された映像対象の先頭で
+    毎回違う文面の案を作る。受け取った文脈は ``contexts`` に残る。
+    """
+
+    generator_id = "fake-scene-planner"
+    generator_model = "fake"
+    generation_profile_id = "fake-scene-planner-v1"
+
+    def __init__(self, responses: list[dict[str, Any] | str] | None = None) -> None:
+        self.responses = list(responses or [])
+        self.contexts: list[Any] = []
+
+    async def plan(self, context: Any) -> Any:
+        import json
+
+        from domain.production.scene_alternative import PlannerRawOutput
+
+        self.contexts.append(context)
+        if self.responses:
+            response = self.responses.pop(0)
+            text = response if isinstance(response, str) else json.dumps(response)
+            return PlannerRawOutput(text=text, model="fake")
+        subject = context.allowed_subjects[0].value
+        text = json.dumps(
+            {
+                "feasible": True,
+                "visual_kind": "broll",
+                "visual_subject": subject,
+                "visual_description": (
+                    f"[{context.scene.scene_id}] alternative {len(self.contexts)}: "
+                    "the historic site seen from a distance, no individual figures"
+                ),
+                "framing": "wide establishing shot",
+                "camera_movement": None,
+                "rationale": "The site conveys the event; the narration keeps the names.",
+            }
+        )
+        return PlannerRawOutput(text=text, model="fake")
 
 
 class FakeVoiceGenerator:

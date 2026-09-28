@@ -173,3 +173,43 @@ def test_video_prompt_builder() -> None:
     # v2（ADR-0034）: 共有の制約文を変更（実在人物の写実的な肖像判定を避ける）。
     assert DEFAULT_VIDEO_MOTION.motion_profile_id.endswith(":video-prompt-v2")
     assert "photorealistic likeness" in prompt
+
+
+async def test_image_url_rejection_reaches_job_failed_structured() -> None:
+    """ADR-0035: 2026-09-26/27 と同じ 422 の形。拒否の位置・理由が JobFailed まで構造化で届く。
+
+    落ちれば拒否の対象（画像かテキストか）が文字列にしか残らず、同じ画像の再送を止められない。
+    """
+    ref = json.dumps(
+        {
+            "v": 1,
+            "endpoint": SEEDANCE_ENDPOINT,
+            "request_id": "r1",
+            "status_url": f"{BASE}/status",
+            "response_url": BASE,
+            "cancel_url": None,
+        }
+    )
+    body = {
+        "detail": [
+            {
+                "loc": ["body", "image_url"],
+                "msg": "The images or videos provided may contain likenesses of real people",
+                "type": "content_policy_violation",
+                "ctx": {"extra_info": {"reason": "partner_validation_failed"}},
+            }
+        ]
+    }
+    routes = {
+        f"{BASE}/status": httpx.Response(200, json={"status": "COMPLETED"}),
+        BASE: httpx.Response(422, json=body),
+    }
+    gen, _ = _generator(routes)
+    status = await gen.poll(ref)  # type: ignore[arg-type]
+    assert isinstance(status, JobFailed) and status.rejected
+    assert status.rejection is not None
+    assert status.rejection.locs == ("body.image_url",)
+    assert status.rejection.rejected_input.value == "image"
+    assert status.rejection.reason == "partner_validation_failed"
+    assert status.rejection.types == ("content_policy_violation",)
+    assert status.rejection.http_status == 422

@@ -144,7 +144,7 @@ class FalSeedanceVideoGenerator:
         try:
             result = await self._result(ref, submission)
         except ProviderRejectedError as exc:
-            return JobFailed(message=str(exc), rejected=True)
+            return JobFailed(message=str(exc), rejected=True, rejection=exc.rejection)
         except ProviderJobFailedError as exc:
             return JobFailed(message=str(exc))
         if not _video_url(result):

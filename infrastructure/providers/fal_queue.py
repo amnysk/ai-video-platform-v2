@@ -34,6 +34,7 @@ from domain.errors import (
     MediaValidationError,
     ProviderJobFailedError,
     ProviderRejectedError,
+    ProviderRejection,
     ProviderSubmitAmbiguousError,
     ProviderUnavailableError,
     TransientError,
@@ -206,6 +207,43 @@ def _extra_info_reason(ctx: Any) -> str | None:
     return reason if isinstance(reason, str) and reason else None
 
 
+#: 構造化した拒否の ``message`` の上限（``provider_rejections.message`` と揃える）。
+_REJECTION_MESSAGE_MAX_CHARS = 1000
+
+
+def _rejection(body: Any, types: list[str], status: int) -> ProviderRejection:
+    """422 等の応答から構造化した拒否を組み立てる（ADR-0035）。文字列からは推測しない。
+
+    ``detail[]`` の ``loc``（``["body", "image_url"]`` → ``"body.image_url"``）、
+    ``msg``、``ctx.extra_info.reason`` を読む。body が構造化されていなければ位置・理由は空。
+    """
+    locs: list[str] = []
+    reasons: list[str] = []
+    messages: list[str] = []
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if isinstance(detail, list):
+        for item in detail:
+            if not isinstance(item, dict):
+                continue
+            loc = item.get("loc")
+            if isinstance(loc, list) and loc:
+                locs.append(".".join(str(part) for part in loc))
+            reason = _extra_info_reason(item.get("ctx"))
+            if reason:
+                reasons.append(reason)
+            msg = item.get("msg")
+            if isinstance(msg, str) and msg:
+                messages.append(msg)
+    message = "; ".join(messages)[:_REJECTION_MESSAGE_MAX_CHARS] or None
+    return ProviderRejection(
+        types=tuple(dict.fromkeys(types)),
+        locs=tuple(dict.fromkeys(locs)),
+        reason=reasons[0] if reasons else None,
+        message=message,
+        http_status=status,
+    )
+
+
 def _json_or_none(response: httpx.Response) -> Any:
     try:
         return response.json()
@@ -295,7 +333,8 @@ class FalQueueClient:
                 )
             types = _error_types_from_body(body)
             raise ProviderRejectedError(
-                f"fal submit rejected: HTTP {status} types={types}: {_short(body)}"
+                f"fal submit rejected: HTTP {status} types={types}: {_short(body)}",
+                rejection=_rejection(body, types, status),
             )
         if not isinstance(body, dict) or not body.get("request_id"):
             raise ProviderSubmitAmbiguousError(
@@ -360,11 +399,11 @@ class FalQueueClient:
 
         summary = f"fal job failed: HTTP {status} types={types}: {_short(body)}"
         if CONTENT_POLICY_ERROR_TYPE in types:
-            raise ProviderRejectedError(summary)
+            raise ProviderRejectedError(summary, rejection=_rejection(body, types, status))
         if _retryable_header(response) is True:
             raise ProviderJobFailedError(summary)
         if status == 422 or any(t in REJECTED_ERROR_TYPES for t in types):
-            raise ProviderRejectedError(summary)
+            raise ProviderRejectedError(summary, rejection=_rejection(body, types, status))
         # runner / timeout / downstream / 未知の error_type
         raise ProviderJobFailedError(summary)
 

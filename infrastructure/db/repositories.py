@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from contracts.states import (
     JobStatus,
     JobType,
     ProviderCall,
+    RejectedInput,
     ReservationStatus,
 )
 from contracts.topic_planning import (
@@ -40,7 +42,11 @@ from contracts.topic_planning import (
 from domain.artifact.entities import ArtifactMetadata
 from domain.episode.entities import Episode
 from domain.episode.transitions import EpisodeEvent, Rejected, transition_episode
-from domain.errors import InvalidTransitionError, UnreconciledReservationError
+from domain.errors import (
+    InvalidTransitionError,
+    ProviderRejection,
+    UnreconciledReservationError,
+)
 from domain.job.entities import Job
 from domain.job.transitions import JobEvent, transition_job
 from domain.provider.reservations import ReservationEvent, transition_reservation
@@ -53,6 +59,7 @@ from infrastructure.db.models import (
     OperationalAnomalyRow,
     OperationalSwitchRow,
     ProviderAuthIncidentRow,
+    ProviderRejectionRow,
     ProviderReservationRow,
     TopicCandidateRow,
     TopicPlanRow,
@@ -1892,3 +1899,159 @@ class AnalyticsSnapshotRepository:
         )
         row = result.first()
         return _to_snapshot(row) if row else None
+
+
+# ------------------------------------------------------------ provider の内容拒否（ADR-0035）
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRejectionRecord:
+    """``provider_rejections`` の1行（append-only）。"""
+
+    id: str
+    episode_id: str
+    scene_id: str | None
+    provider: ProviderCall
+    reservation_id: str | None
+    input_hash: str
+    rejected_input: RejectedInput
+    source_media_sha256: str | None
+    types: tuple[str, ...]
+    reason: str | None
+    message: str | None
+    http_status: int | None
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PaidReservationCost:
+    """復旧費用の集計に使う fal 予約の1行（``domain.production.scene_alternative``）。"""
+
+    scene_id: str | None
+    provider: ProviderCall
+    estimated_cost_usd: Decimal
+    input_rejected_by_provider: bool
+    reserved_at: datetime
+
+
+def _to_rejection(row: ProviderRejectionRow) -> ProviderRejectionRecord:
+    try:
+        types = tuple(str(t) for t in json.loads(row.types or "[]"))
+    except ValueError:
+        types = ()
+    return ProviderRejectionRecord(
+        id=str(row.id),
+        episode_id=str(row.episode_id),
+        scene_id=row.scene_id,
+        provider=ProviderCall(row.provider),
+        reservation_id=str(row.reservation_id) if row.reservation_id else None,
+        input_hash=row.input_hash,
+        rejected_input=RejectedInput(row.rejected_input),
+        source_media_sha256=row.source_media_sha256,
+        types=types,
+        reason=row.reason,
+        message=row.message,
+        http_status=row.http_status,
+        occurred_at=row.occurred_at,
+    )
+
+
+class ProviderRejectionRepository:
+    """provider による内容拒否の記録（ADR-0035）。
+
+    拒否は ``provider_reservations.error_summary`` の文字列からは推測しない。adapter が
+    応答から組み立てた ``ProviderRejection`` をそのまま1行にする。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(
+        self,
+        *,
+        episode_id: uuid.UUID | str,
+        scene_id: str | None,
+        provider: ProviderCall,
+        reservation_id: uuid.UUID | str | None,
+        input_hash: str,
+        rejection: ProviderRejection,
+        source_media_sha256: str | None,
+        now: datetime | None = None,
+    ) -> ProviderRejectionRecord:
+        row = ProviderRejectionRow(
+            id=uuid.uuid4(),
+            episode_id=_as_uuid(episode_id),
+            scene_id=scene_id,
+            provider=provider.value,
+            reservation_id=_as_uuid(reservation_id) if reservation_id else None,
+            input_hash=input_hash,
+            rejected_input=rejection.rejected_input.value,
+            source_media_sha256=source_media_sha256,
+            types=json.dumps(list(rejection.types)),
+            reason=(rejection.reason or None) and rejection.reason[:128],
+            message=(rejection.message or None) and rejection.message[:1000],
+            http_status=rejection.http_status,
+            occurred_at=now or _now(),
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return _to_rejection(row)
+
+    async def list_for_scene(
+        self, episode_id: uuid.UUID | str, scene_id: str
+    ) -> list[ProviderRejectionRecord]:
+        stmt = (
+            select(ProviderRejectionRow)
+            .where(
+                ProviderRejectionRow.episode_id == _as_uuid(episode_id),
+                ProviderRejectionRow.scene_id == scene_id,
+            )
+            .order_by(ProviderRejectionRow.occurred_at, ProviderRejectionRow.id)
+        )
+        return [_to_rejection(row) for row in (await self._session.scalars(stmt)).all()]
+
+    async def list_for_episode(self, episode_id: uuid.UUID | str) -> list[ProviderRejectionRecord]:
+        stmt = (
+            select(ProviderRejectionRow)
+            .where(ProviderRejectionRow.episode_id == _as_uuid(episode_id))
+            .order_by(ProviderRejectionRow.occurred_at, ProviderRejectionRow.id)
+        )
+        return [_to_rejection(row) for row in (await self._session.scalars(stmt)).all()]
+
+    async def find_rejected_image(
+        self, provider: ProviderCall, source_media_sha256: str
+    ) -> ProviderRejectionRecord | None:
+        """この provider が画像そのもの（``rejected_input='image'``）を拒否した記録（INV-32）。"""
+        stmt = (
+            select(ProviderRejectionRow)
+            .where(
+                ProviderRejectionRow.provider == provider.value,
+                ProviderRejectionRow.rejected_input == RejectedInput.IMAGE.value,
+                ProviderRejectionRow.source_media_sha256 == source_media_sha256,
+            )
+            .order_by(ProviderRejectionRow.occurred_at)
+            .limit(1)
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_rejection(row) if row else None
+
+    async def list_paid_reservation_costs(
+        self, episode_id: uuid.UUID | str
+    ) -> list[PaidReservationCost]:
+        """この Episode の fal 予約（見積り額つき）。復旧費用の集計の材料（INV-34）。"""
+        stmt = select(ProviderReservationRow).where(
+            ProviderReservationRow.episode_id == _as_uuid(episode_id),
+            ProviderReservationRow.provider.in_(
+                [ProviderCall.FAL_IMAGE.value, ProviderCall.FAL_VIDEO.value]
+            ),
+        )
+        return [
+            PaidReservationCost(
+                scene_id=row.scene_id,
+                provider=ProviderCall(row.provider),
+                estimated_cost_usd=row.estimated_cost_usd or Decimal("0"),
+                input_rejected_by_provider=bool(row.input_rejected_by_provider),
+                reserved_at=row.reserved_at,
+            )
+            for row in (await self._session.scalars(stmt)).all()
+        ]
