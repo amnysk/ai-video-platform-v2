@@ -20,6 +20,7 @@ from domain.errors import (
     ProviderPollDeadlineError,
     ProviderRejectedError,
     ProviderRejectedRetryBlockedError,
+    ProviderRejection,
     ProviderSubmitAmbiguousError,
     ProviderUnavailableError,
     UnreconciledReservationError,
@@ -29,6 +30,7 @@ from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
     ProviderAuthIncidentRepository,
+    ProviderRejectionRepository,
     ProviderReservation,
     ProviderReservationRepository,
 )
@@ -964,3 +966,107 @@ async def test_await_output_still_returns_a_valid_linked_artifact_fast(
 
     assert output.artifact is not None and output.artifact.id == current.id
     assert output.data == b""
+
+
+# ----------------------------- ADR-0035: 拒否の構造化と拒否画像の再送禁止（INV-32）
+
+_IMAGE_SHA = "i" * 64
+_LIKENESS = ProviderRejection(
+    types=("content_policy_violation",),
+    locs=("body.image_url",),
+    reason="partner_validation_failed",
+    message="may contain likenesses of real people",
+    http_status=422,
+)
+
+
+def _rejecting(rejection: ProviderRejection) -> FakeImageGenerator:
+    return FakeImageGenerator(
+        pending_polls=0,
+        fail_with=JobFailed(message="fal job failed: HTTP 422", rejected=True, rejection=rejection),
+    )
+
+
+async def _rejected_video(runner, session_factory, rejection=_LIKENESS) -> PaidJobSpec:
+    spec = replace(
+        await _spec(session_factory, scene="sb2"),
+        provider=ProviderCall.FAL_VIDEO,
+        artifact_type=ArtifactType.SCENE_VIDEO,
+        source_media_sha256=_IMAGE_SHA,
+    )
+    gen = _rejecting(rejection)
+    outcome = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(outcome, Submitted)
+    with pytest.raises(ProviderRejectedError):
+        await _await(runner, outcome.reservation_id, gen, source_media_sha256=_IMAGE_SHA)
+    return spec
+
+
+async def test_content_rejection_is_recorded_structured_with_the_input_image(
+    runner, session_factory
+) -> None:
+    """拒否は文字列でなく構造で残る。どの予約・入力・画像が、どこで・なぜ拒否されたか。"""
+    spec = await _rejected_video(runner, session_factory)
+    async with session_factory() as session:
+        (row,) = await ProviderRejectionRepository(session).list_for_scene(spec.episode_id, "sb2")
+        (reservation,) = await ProviderReservationRepository(session).list_for_episode_provider(
+            spec.episode_id, ProviderCall.FAL_VIDEO
+        )
+    assert row.rejected_input.value == "image"
+    assert row.source_media_sha256 == _IMAGE_SHA
+    assert row.reason == "partner_validation_failed"
+    assert row.types == ("content_policy_violation",)
+    assert row.http_status == 422
+    assert row.input_hash == spec.input_hash
+    assert row.reservation_id == reservation.id
+    assert reservation.input_rejected_by_provider is True
+
+
+async def test_rejected_image_is_not_resubmitted_with_different_text(
+    runner, session_factory
+) -> None:
+    """INV-32 の核: 動画用テキストを変えた（= 別の input_hash）だけの同じ画像は予約すら作らない。"""
+    spec = await _rejected_video(runner, session_factory)
+    reworded = replace(spec, input_hash="k" * 64)
+    gen = FakeImageGenerator(pending_polls=0)
+    with pytest.raises(ProviderRejectedRetryBlockedError):
+        await runner.submit(reworded, gen, REQUEST)
+    assert gen.submit_calls == 0 and gen.prepare_calls == 0
+    async with session_factory() as session:
+        rows = await ProviderReservationRepository(session).list_for_episode_provider(
+            spec.episode_id, ProviderCall.FAL_VIDEO
+        )
+    assert len(rows) == 1  # 新しい予約（= 新しい課金）は無い
+
+
+async def test_a_different_image_is_not_blocked(runner, session_factory) -> None:
+    """ゲートは画像単位。作り直した画像（別の sha256）なら通常どおり submit できる。"""
+    spec = await _rejected_video(runner, session_factory)
+    new_image = replace(spec, input_hash="m" * 64, source_media_sha256="j" * 64)
+    gen = FakeImageGenerator(pending_polls=0)
+    outcome = await runner.submit(new_image, gen, REQUEST)
+    assert isinstance(outcome, Submitted) and outcome.newly_submitted
+
+
+async def test_a_prompt_rejection_does_not_block_the_image(runner, session_factory) -> None:
+    """拒否の位置がテキストなら、画像はそのまま使える（過剰に止めない）。"""
+    prompt_rejection = ProviderRejection(
+        types=("content_policy_violation",), locs=("body.prompt",), http_status=422
+    )
+    spec = await _rejected_video(runner, session_factory, rejection=prompt_rejection)
+    reworded = replace(spec, input_hash="k" * 64)
+    outcome = await runner.submit(reworded, FakeImageGenerator(pending_polls=0), REQUEST)
+    assert isinstance(outcome, Submitted)
+
+
+async def test_unstructured_rejection_is_still_recorded_as_unknown(runner, session_factory) -> None:
+    """adapter が構造を持たない拒否でも1行残す（件数・復旧の判断材料）。対象は unknown。"""
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(pending_polls=0, fail_with=JobFailed(message="bad", rejected=True))
+    outcome = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(outcome, Submitted)
+    with pytest.raises(ProviderRejectedError):
+        await _await(runner, outcome.reservation_id, gen)
+    async with session_factory() as session:
+        (row,) = await ProviderRejectionRepository(session).list_for_scene(spec.episode_id, "sb1")
+    assert row.rejected_input.value == "unknown" and row.source_media_sha256 is None

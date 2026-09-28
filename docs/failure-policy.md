@@ -55,14 +55,18 @@
 台本工程を人間が再実行すれば回復する（回復経路がある）ため。検査:
 `tests/unit/test_failure_class_registry.py::test_storyboard_exceptions_classify_by_their_base`。
 
-### Production 工程（ADR-0017 / ADR-0034）
+### Production 工程（ADR-0017 / ADR-0034 / ADR-0035）
 
 | 例外 | クラス | 事象 |
 |---|---|---|
 | `ProviderSubmitAmbiguousError` | `needs_input` | 有料ジョブの submit が戻らず provider job 参照を記録できなかった（呼んだか不明） |
 | `UnreconciledReservationError` | `needs_input` | `dispatched_at` ありで provider job 参照も evidence も無い予約が残っている |
-| `ProviderRejectedError` | `needs_input` | provider が依頼を拒否（コンテンツポリシー等）。人間がプロンプト・素材を直す |
-| `ProviderRejectedRetryBlockedError`（`ProviderRejectedError` の下位、ADR-0034） | `needs_input` | 同じ `input_hash` の予約が直前に provider から拒否されている。`infrastructure/production/paid_job.py::_plan_round` が新しいラウンドを作らずここで止める（同じ入力の自動再送・再課金を防ぐ）。回復は人間がプロンプト・素材を直して新しい `input_hash` を作ることだけ |
+| `ProviderRejectedError` | `needs_input` | provider が依頼を拒否（コンテンツポリシー等）。拒否は `provider_rejections` に構造化して1件ずつ残す（対象 `image`/`prompt`/`unknown`・理由・入力画像 sha256。ADR-0035）。workflow はそのシーンだけ代替映像案で作り直す（下記）。できなければ人間が直す |
+| `ProviderRejectedRetryBlockedError`（`ProviderRejectedError` の下位、ADR-0034 / ADR-0035） | `needs_input` | 同じ `input_hash` の予約が直前に provider から拒否されている（`_plan_round`）、**または**入力画像そのもの（`rejected_input='image'`）が同じ provider に拒否されている（`_check_rejected_image_gate`、テキストを変えても同じ画像は再送しない。INV-32）。予約も課金も作らない。回復は新しい画像・入力（代替映像案）だけ |
+| `SceneAlternativeLimitReachedError`（ADR-0035） | `needs_input` | 拒否されたシーンの自動の代替案が上限（1シーン・1 Episode の回数、1 Episode の復旧追加費用）に達した（INV-34）。人間が決める |
+| `SceneAlternativeInfeasibleError`（ADR-0035） | `needs_input` | 史実を損なわずに方針に合う案を作れない、と planner が理由つきで判断した |
+| `SceneAlternativeInvalidError`（ADR-0035） | `needs_input` | planner の案が規則に落ちた（形式不正・人物を主題にした・既に試した文面）、記録された拒否が無い、または同じ案のまま再び止まった。LLM 出力の欠陥でも retryable にしない（自動の試行を増やさない） |
+| `SceneAlternativePlannerUnavailableError`（ADR-0035） | `needs_input` | planner が構成されていない・失敗した。planner worker が居なければ計画 Activity は schedule_to_close（1時間）で timeout し、同じく needs_input |
 | `ProviderJobFailedError` | `retryable` | provider 側ジョブの失敗。次ラウンド（新しい予約）で再生成 |
 | `ProviderPollDeadlineError` | `retryable` | 完了待ちの期限切れ。ジョブの状態は不明なので**同じ予約で再 await**（再送しない。上限を使い切ったら記録して止まる） |
 | `MediaValidationError` | `retryable` | 生成メディアが形式・解像度・尺の規則を満たさない |
@@ -94,6 +98,16 @@ Episode を resume すると新しい workflow 実行が round=1 から数え直
 `ProviderRejectedRetryBlockedError` を送出する。回復はプロンプト・素材を直して新しい
 `input_hash` を作ることだけ（`ProviderUnavailableError`＝401/403 はこの対象に含めない。
 ADR-0030 の時間窓ベースの抑止が別に扱う）。
+
+**拒否されたシーンの段階的な復旧（ADR-0035）**: 画像・動画が `ProviderRejectedError` /
+`ProviderRejectedRetryBlockedError` で止まったシーンについて、workflow
+（`workflow.patched("scene-alternative-recovery-v1")`）は枝の外へ失敗を出す前に
+`production_plan_scene_alternative`（task queue `production-scene-alternative`、Codex を持つ専用 worker）を
+呼ぶ。合格した代替案（`SCENE_VISUAL_OVERRIDE` Artifact）で**そのシーンの画像から**作り直し、
+動画へ進む。他シーンの枝は触らない。1回の実行で planner を呼ぶのは1シーンの上限回数まで。
+回数・費用の上限は計画 Activity が DB から数えるので resume でリセットされない（INV-34）。
+上の4つの `SceneAlternative*Error` はそのシーンを `needs_input` で止める（兄弟は既存どおり
+cancel される）。403（`ProviderUnavailableError`）は内容の問題ではないので対象外。
 
 Activity 境界の写像（画像・音声・動画共通、`infrastructure/production/activity_errors.py`）:
 

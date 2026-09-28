@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import NewType, Protocol, runtime_checkable
 
+from domain.errors import ProviderRejection
+
 #: provider が発行したジョブの不透明な参照。中身を解釈しない（形式は adapter だけが知る）。
 ProviderJobRef = NewType("ProviderJobRef", str)
 
@@ -55,6 +57,8 @@ class JobFailed:
 
     message: str
     rejected: bool = False
+    #: provider の内容拒否の構造化した記録（ADR-0035）。``rejected`` のときだけ意味を持つ。
+    rejection: ProviderRejection | None = None
 
 
 JobStatus = JobPending | JobSucceeded | JobFailed

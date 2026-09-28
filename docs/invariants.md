@@ -251,6 +251,18 @@ DB行の存在だけで再利用しない。MinIO実体の存在・size・sha256
 **機械検査**: `tests/unit/test_artifact_verification.py` / `tests/unit/test_artifact_verify_io.py`
 / `tests/unit/test_paid_job.py::test_corrupt_artifact_does_not_bypass_the_unreconciled_reservation_block`
 
+### INV-32 provider に拒否された入力は自動で再送しない ── 同じ入力も、同じ入力画像も
+provider が内容を拒否した入力（同じ `input_hash`、ADR-0034）は新しいラウンドを作らない。加えて、
+拒否の対象が入力画像（`provider_rejections.rejected_input = 'image'`）なら、その画像の sha256 を
+同じ provider へ、テキストを変えても再送しない（予約 INSERT の前に止め、予約も課金も作らない）。
+拒否は adapter が応答から組み立てた構造（対象・理由・種別）で `provider_rejections` に1件ずつ残し、
+`error_summary` の文字列から推測しない（ADR-0035）。
+**機械検査**: `tests/unit/test_paid_job.py::test_rejected_image_is_not_resubmitted_with_different_text`
+/ `::test_content_rejection_is_recorded_structured_with_the_input_image`
+/ `::test_a_different_image_is_not_blocked` / `::test_a_prompt_rejection_does_not_block_the_image`
+/ `::test_provider_rejected_input_blocks_the_next_round`（ADR-0034）
+/ `tests/unit/test_fal_queue.py::test_content_policy_rejection_is_structured_from_the_body`
+
 ### INV-33 1シーンの映像の差し替えとレシピ版の変更は、そのシーンと依存成果物以外を再生成・再課金しない
 画像・動画の `input_hash`（方式2、ADR-0035 (4)）はそのシーンの**実効内容**（storyboard のシーン +
 現行の代替映像案 `scene_visual_override`）の指紋を材料にし、別シーンの内容を含まない。代替映像案は
@@ -261,3 +273,19 @@ storyboard の世代を変えないので、差し替えていないシーンの
 hash の方式が変わっただけで進行中の課金ジョブへ二重 submit したり、provider に拒否された入力を
 再送したりしない。代替映像案のあるシーンでは旧方式の成果物（拒否された元の画像）を再利用しない。
 **機械検査**: `tests/unit/test_scene_identity_v2.py` / `tests/unit/test_scene_identity_reuse.py`
+
+### INV-34 内容拒否からの自動復旧は回数と費用に上限があり、超えたら人間の判断を待つ
+拒否されたシーンの代替映像案は、1シーンあたり `MAX_SCENE_ALTERNATIVES_PER_SCENE`、1 Episode あたり
+`MAX_SCENE_ALTERNATIVES_PER_EPISODE` 回まで、かつ復旧の追加費用（拒否された spent 予約と、代替案の後に
+作り直した fal 予約の `estimated_cost_usd` の合計 + 次の作り直しの見積り）が
+`MAX_RECOVERY_COST_USD_PER_EPISODE` 以下の間だけ自動で作る（定義元は
+`contracts/production_activities.py` の1箇所）。回数・費用は DB から数え、resume でリセットしない。
+上限到達・planner の不成立（理由つき）・規則違反（人物を主題にする・既に試した文面・根拠なし）は
+`needs_input` で止まる。workflow は1回の実行で planner を1シーンの上限回数より多く呼ばない（ADR-0035）。
+**機械検査**: `tests/unit/test_scene_alternative_activity.py::test_scene_limit_stops_automation`
+/ `::test_cost_cap_stops_automation_before_calling_the_planner`
+/ `::test_infeasible_plan_stops_with_the_planners_reason`
+/ `::test_a_person_subject_after_a_likeness_rejection_is_not_saved`
+/ `::test_blocked_again_on_the_same_plan_does_not_loop`
+/ `tests/unit/test_scene_alternative_rules.py::test_limits_stop_automation`
+/ `tests/unit/test_production_scene_recovery_workflow.py::test_workflow_never_asks_the_planner_more_than_the_scene_limit`

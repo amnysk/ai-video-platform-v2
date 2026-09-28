@@ -36,3 +36,53 @@
 既存テスト2件（`test_0004_scene_scope_types_are_frozen`、`test_0006_upgrade_adds_exactly_the_phase6_values`）は、
 今の enum ではなく 0014 が凍結した「前」の値と比べるよう変えた。これはファイル内の既存の前例
 （0005・0006 追加時の同じ書き換え）どおりで、仕様変更は ADR-0035 で承認している。
+
+## 拒否の構造化と再送禁止（INV-32）
+
+| テスト | 層 | 守るもの / 落ちたら何が起きているか |
+|---|---|---|
+| `test_fal_queue.py::test_content_policy_rejection_is_structured_from_the_body` | unit | fal の 422 body（実際の形）から対象・理由・種別を例外に載せる。落ちれば拒否が文字列にしか残らず、画像かテキストかを機械で区別できない |
+| `test_fal_queue.py::test_submit_rejection_on_the_prompt_is_structured` | unit | submit 時の拒否も同じ構造。テキスト起因は `prompt` |
+| `test_fal_seedance_video.py::test_image_url_rejection_reaches_job_failed_structured` | unit | adapter の poll → `JobFailed` まで構造が落ちずに届く（ここで落とすと台帳に残らない） |
+| `test_paid_job.py::test_content_rejection_is_recorded_structured_with_the_input_image` | unit（sqlite） | spent と同じトランザクションで `provider_rejections` に1行、入力画像 sha256 つき。後段の復旧・測定の唯一の材料 |
+| `test_paid_job.py::test_rejected_image_is_not_resubmitted_with_different_text` | unit（sqlite） | **INV-32 の核**。テキストを変えた（別 input_hash）だけの同じ画像は予約も submit も作らない。落ちれば「言い換えて同じ画像を再送」→ 同じ拒否 → 課金、が起きる |
+| `test_paid_job.py::test_a_different_image_is_not_blocked` | unit（sqlite） | ゲートは画像単位。作り直した画像は通る（過剰に止めて復旧できない、を防ぐ） |
+| `test_paid_job.py::test_a_prompt_rejection_does_not_block_the_image` | unit（sqlite） | 拒否位置がテキストなら画像は止めない |
+| `test_paid_job.py::test_unstructured_rejection_is_still_recorded_as_unknown` | unit（sqlite） | 構造の無い拒否も件数に入る（拒否率の分子から漏らさない） |
+
+## 代替案の規則と上限（INV-34）
+
+| テスト | 層 | 守るもの |
+|---|---|---|
+| `test_scene_alternative_rules.py::test_content_policy_rejection_rules_out_person_subjects` / `::test_other_rejections_do_not_rule_out_people` | unit | 人物を主題にしない制約は内容方針の拒否があるときだけ（一律禁止にしない） |
+| `test_scene_alternative_rules.py::test_parse_*` / `::test_malformed_planner_output_is_not_repaired` | unit | LLM 出力は修復せず、形式不正は止める |
+| `test_scene_alternative_rules.py::test_repeating_the_rejected_description_is_refused` / `::test_repeating_a_previous_alternative_is_refused` | unit | 同じ文面の作り直し（＝同じ判定の繰り返し）を採らない。大小文字・空白の違いでは別案にならない |
+| `test_scene_alternative_rules.py::test_an_alternative_without_rationale_is_refused` | unit | 史実を損なわない根拠の無い案は保存しない（人間が後で読める記録） |
+| `test_scene_alternative_rules.py::test_recovery_cost_counts_rejected_spends_and_rebuilds_only` | unit | 費用の定義: 拒否された試行 + 代替案後の作り直しだけ。通常の成功や無関係なシーンは数えない |
+| `test_scene_alternative_rules.py::test_limits_*` | unit | 回数・費用の上限の境界 |
+| `test_scene_alternative_activity.py::test_plans_and_saves_an_alternative_for_the_rejected_scene_only` | unit（sqlite + in-memory store） | 拒否シーンだけに案が保存され、planner 呼び出しが台帳に evidence 付きで残る |
+| `test_scene_alternative_activity.py::test_activity_retry_returns_the_saved_plan_without_calling_the_planner_again` | 同上 | Activity の再実行で二重に計画しない |
+| `test_scene_alternative_activity.py::test_blocked_again_on_the_same_plan_does_not_loop` | 同上 | 新しい拒否が無いのに再び止まった（案が画像に反映されていない等）なら計画しない。無限ループの防止 |
+| `test_scene_alternative_activity.py::test_a_new_rejection_of_the_alternative_gets_a_second_plan` | 同上 | 代替案も拒否されたら、それを「試した案」として2回目を計画 |
+| `test_scene_alternative_activity.py::test_scene_limit_stops_automation` / `::test_cost_cap_stops_automation_before_calling_the_planner` | 同上 | 上限は DB から数える（resume でリセットしない）。費用上限は planner を呼ぶ前に止める |
+| `test_scene_alternative_activity.py::test_infeasible_plan_stops_with_the_planners_reason` / `::test_a_person_subject_after_a_likeness_rejection_is_not_saved` / `::test_no_planner_configured_is_needs_input` / `::test_scene_without_a_recorded_rejection_is_not_planned` | 同上 | 止まる条件はすべて needs_input で、何も保存しない |
+
+## workflow の復旧ループ（`test_production_scene_recovery_workflow.py`、time-skipping + mock Activity）
+
+Temporal の決定論の中で「どのシーンの何を呼び直すか」を固定する。有料 submit の回数をシーンごとに数える。
+
+| テスト | 守るもの |
+|---|---|
+| `test_only_the_rejected_scene_is_rebuilt_from_its_image` | **事故の核の裏返し**。sb2 だけ画像から作り直し、sb1/sb3 の submit は1回のまま。記録される失敗も無い |
+| `test_retry_blocked_on_resume_also_plans_an_alternative` | 旧 Episode の resume（再送禁止で止まる）も同じ復旧に入る |
+| `test_planner_limit_stops_with_needs_input_and_the_reason` | 上限で止まったら理由つき needs_input、作り直しはしない |
+| `test_workflow_never_asks_the_planner_more_than_the_scene_limit` | Activity 側の判定が壊れていても1実行の planner 呼び出しは上限回数まで |
+| `test_other_failures_do_not_trigger_alternative_planning` | 403（資格情報）は内容の問題ではない。代替案を作らない |
+
+止まる系の3件は1シーンで走らせる: 兄弟の cancel（`WAIT_CANCELLATION_COMPLETED`）は mock Activity が
+受け取れず試験サーバが終わらないため（復旧の検査とは無関係の試験器の都合）。
+
+## 測定（`test_production_metrics_script.py`、unit / sqlite）
+
+拒否率・再試行・代替案・完成率・1本あたり費用の定義を固定する（本番では SELECT だけ）。
+

@@ -73,6 +73,7 @@ from domain.errors import (
     ProviderPollDeadlineError,
     ProviderRejectedError,
     ProviderRejectedRetryBlockedError,
+    ProviderRejection,
     ProviderSubmitAmbiguousError,
     ProviderUnavailableError,
     UnreconciledReservationError,
@@ -84,6 +85,7 @@ from infrastructure.artifact.verify import ArtifactVerdict, find_and_verify_curr
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     ProviderAuthIncidentRepository,
+    ProviderRejectionRepository,
     ProviderReservation,
     ProviderReservationRepository,
 )
@@ -302,6 +304,7 @@ class PaidJobRunner:
                 # 済んだ工程の再開（sb1〜sb5 の再利用等）を抑止期間中でも止めない
                 if not prepared:
                     await self._check_auth_outage_gate(spec.provider)
+                    await self._check_rejected_image_gate(spec)
                     prepare = getattr(generator, "prepare", None)
                     if prepare is not None:
                         try:
@@ -349,7 +352,9 @@ class PaidJobRunner:
         try:
             ref = await generator.submit(request)
         except NOT_ACCEPTED_SUBMIT_ERRORS as exc:
-            await self._spend_conservatively(reservation.id, exc)
+            await self._spend_conservatively(
+                reservation.id, exc, source_media_sha256=spec.source_media_sha256
+            )
             raise
         except Exception as exc:
             logger.warning(
@@ -396,10 +401,13 @@ class PaidJobRunner:
         heartbeat: Callable[..., None] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        source_media_sha256: str | None = None,
     ) -> PaidOutput:
         """provider job 参照に対して待ち、生の取得物を evidence にして返す。**再 submit しない**。
 
         cancel（``CancelledError``）はそのまま伝える。provider 側のジョブは cancel しない。
+        ``source_media_sha256`` は入力メディア（動画なら ``image_url`` の画像）の sha256。
+        provider が内容を拒否したとき ``provider_rejections`` に残す（INV-32 の鍵。ADR-0035）。
         """
         reservation = await self._load(reservation_id)
         raw_key = raw_output_key(reservation.episode_id, reservation.id)
@@ -445,11 +453,13 @@ class PaidJobRunner:
             status = await generator.poll(ref)
             if isinstance(status, JobFailed):
                 error: Exception = (
-                    ProviderRejectedError(status.message)
+                    ProviderRejectedError(status.message, rejection=status.rejection)
                     if status.rejected
                     else ProviderJobFailedError(status.message)
                 )
-                await self._spend_conservatively(reservation.id, error)
+                await self._spend_conservatively(
+                    reservation.id, error, source_media_sha256=source_media_sha256
+                )
                 raise error
             if not isinstance(status, JobPending):
                 break
@@ -667,9 +677,21 @@ class PaidJobRunner:
                 provider.value,
             )
 
-    async def _spend_conservatively(self, reservation_id: str, exc: BaseException) -> None:
+    async def _spend_conservatively(
+        self,
+        reservation_id: str,
+        exc: BaseException,
+        *,
+        source_media_sha256: str | None = None,
+    ) -> None:
+        """課金された前提でラウンドを確定する。内容拒否なら同じトランザクションで記録する。
+
+        拒否の記録（ADR-0035）は adapter が組み立てた ``ProviderRejection`` をそのまま使う。
+        ``error_summary`` の文字列からは推測しない。構造化されていない拒否（adapter 内部の
+        入力検査など）も1行残す（対象は ``unknown``）── 拒否の件数と復旧の判断材料にする。
+        """
         async with self._session_factory() as session:
-            await ProviderReservationRepository(session).mark_spent(
+            spent = await ProviderReservationRepository(session).mark_spent(
                 reservation_id,
                 raw_output_key=None,
                 reconciled_by="conservative",
@@ -679,7 +701,40 @@ class PaidJobRunner:
                 # （ADR-0034）。型で決める。文字列一致では決めない。
                 input_rejected_by_provider=isinstance(exc, ProviderRejectedError),
             )
+            if isinstance(exc, ProviderRejectedError):
+                await ProviderRejectionRepository(session).record(
+                    episode_id=spent.episode_id,
+                    scene_id=spent.scene_id,
+                    provider=spent.provider,
+                    reservation_id=spent.id,
+                    input_hash=spent.input_hash,
+                    rejection=exc.rejection or ProviderRejection(),
+                    source_media_sha256=source_media_sha256,
+                )
             await session.commit()
+
+    # ------------------------------------------------ 拒否された入力画像の再送禁止（INV-32）
+
+    async def _check_rejected_image_gate(self, spec: PaidJobSpec) -> None:
+        """provider が拒否した入力画像を、テキストを変えて再送しない（予約 INSERT の前）。
+
+        同じ ``input_hash`` の再送は ``_plan_round`` が止める（ADR-0034）。ここはそれとは別に、
+        入力画像の sha256 だけで止める: 拒否の位置が画像（``body.image_url``）なら、動画用の
+        テキストを変えても同じ画像は同じ判定になるはずで、費用だけが増える（ADR-0035）。
+        """
+        if spec.source_media_sha256 is None:
+            return
+        async with self._session_factory() as session:
+            rejected = await ProviderRejectionRepository(session).find_rejected_image(
+                spec.provider, spec.source_media_sha256
+            )
+        if rejected is not None:
+            raise ProviderRejectedRetryBlockedError(
+                f"{spec.provider.value} rejected this input image before "
+                f"(rejection {rejected.id}, reason={rejected.reason or 'unknown'}); "
+                "resubmitting the same image with different text would repeat the rejection. "
+                "The scene needs a different image."
+            )
 
 
 def _plan_round(latest: ProviderReservation | None) -> Submitted | ProviderReservation | int:

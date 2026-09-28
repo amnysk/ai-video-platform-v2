@@ -349,3 +349,43 @@ def test_api_read_timeout_is_configurable_and_short_by_default() -> None:
     assert client._api.timeout.read == 30  # noqa: SLF001
     custom = FalQueueClient(KEY, read_timeout_seconds=12)
     assert custom._api.timeout.read == 12 and custom._cdn.timeout.read == 12  # noqa: SLF001
+
+
+async def test_content_policy_rejection_is_structured_from_the_body() -> None:
+    """ADR-0035: 拒否の位置（loc）・理由（ctx.extra_info.reason）・種別を構造化して例外に載せる。
+
+    文字列からの推測（error_summary の解析）をしないための入口。
+    """
+    body = {
+        "detail": [
+            {
+                "loc": ["body", "image_url"],
+                "msg": "may contain likenesses of real people",
+                "type": "content_policy_violation",
+                "ctx": {"extra_info": {"reason": "partner_validation_failed"}},
+            }
+        ]
+    }
+    response = httpx.Response(422, json=body)
+    with pytest.raises(ProviderRejectedError) as excinfo:
+        await _client(lambda request: response).result(_submission())
+    rejection = excinfo.value.rejection
+    assert rejection is not None
+    assert rejection.locs == ("body.image_url",)
+    assert rejection.rejected_input.value == "image"
+    assert rejection.reason == "partner_validation_failed"
+    assert rejection.types == ("content_policy_violation",)
+    assert rejection.message == "may contain likenesses of real people"
+    assert rejection.http_status == 422
+
+
+async def test_submit_rejection_on_the_prompt_is_structured() -> None:
+    body = {
+        "detail": [
+            {"loc": ["body", "prompt"], "msg": "blocked", "type": "content_policy_violation"}
+        ]
+    }
+    with pytest.raises(ProviderRejectedError) as excinfo:
+        await _client(lambda request: httpx.Response(422, json=body)).submit("e/p", {"prompt": "x"})
+    assert excinfo.value.rejection is not None
+    assert excinfo.value.rejection.rejected_input.value == "prompt"

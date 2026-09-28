@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
-from contracts.states import FailureClass
+from dataclasses import dataclass
+
+from contracts.states import FailureClass, RejectedInput
 
 
 class DomainError(Exception):
@@ -135,12 +137,42 @@ class ProviderSubmitAmbiguousError(NeedsInputError):
     """
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderRejection:
+    """provider による内容拒否の構造化した記録（ADR-0035）。
+
+    provider の応答（HTTP 422 の validation error の ``detail[]`` 等）から
+    adapter が組み立てる。``message`` は provider が返した人間向けの理由で、secret は含まない。
+    ``locs`` は ``"body.image_url"`` のようにドットで連結した拒否の位置。
+    """
+
+    types: tuple[str, ...] = ()
+    locs: tuple[str, ...] = ()
+    reason: str | None = None
+    message: str | None = None
+    http_status: int | None = None
+
+    @property
+    def rejected_input(self) -> RejectedInput:
+        """拒否の対象。位置が画像なら ``image``、テキストなら ``prompt``、他は ``unknown``。"""
+        if any(loc.endswith("image_url") for loc in self.locs):
+            return RejectedInput.IMAGE
+        if any(loc.endswith("prompt") for loc in self.locs):
+            return RejectedInput.PROMPT
+        return RejectedInput.UNKNOWN
+
+
 class ProviderRejectedError(NeedsInputError):
     """provider が依頼を拒否した（コンテンツポリシー・入力不正）。
 
     同じ入力を再送しても同じ結果になるが、プロンプトや素材を人間が直せば回復するので
-    ``permanent`` にしない（ADR-0017）。
+    ``permanent`` にしない（ADR-0017）。``rejection`` は adapter が provider の応答から
+    組み立てた構造化の記録（ADR-0035）。無ければ ``None``（adapter 内部の入力検査など）。
     """
+
+    def __init__(self, message: str, *, rejection: ProviderRejection | None = None) -> None:
+        super().__init__(message)
+        self.rejection = rejection
 
 
 class ProviderRejectedRetryBlockedError(ProviderRejectedError):
@@ -153,6 +185,31 @@ class ProviderRejectedRetryBlockedError(ProviderRejectedError):
     （INV-15 / ADR-0033 と同じ規律）。回復は人間がプロンプト・素材を直して**新しい
     input_hash** を作ることだけ。
     """
+
+
+class SceneAlternativeLimitReachedError(NeedsInputError):
+    """拒否されたシーンの自動の代替案が上限（回数・追加費用）に達した（ADR-0035, INV-34）。
+
+    これ以上は自動で生成しない。人間が代替案を決めるか、上限を見直す。
+    """
+
+
+class SceneAlternativeInfeasibleError(NeedsInputError):
+    """史実を損なわずに provider の方針に合う代替案を作れない、と planner が判断した。
+
+    ADR-0035。理由は planner の出力から例外メッセージに残す。
+    """
+
+
+class SceneAlternativeInvalidError(NeedsInputError):
+    """planner の代替案が検証規則に落ちた（形式不正・禁止された映像対象・前と同じ文面）。
+
+    自動の試行回数を増やさないため、LLM 出力の欠陥でも retryable にしない（ADR-0035）。
+    """
+
+
+class SceneAlternativePlannerUnavailableError(NeedsInputError):
+    """代替案を計画する planner が構成されていない・届かない（ADR-0035）。"""
 
 
 class ProviderJobFailedError(RetryableError):
