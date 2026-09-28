@@ -10,12 +10,10 @@ Schedule はテスト内で作り、最後に削除する（存在しない task
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, datetime
 
 import pytest
-from temporalio.client import Client
 
 from contracts.pipeline import DailyEpisodeInput
 from contracts.schedule_guard import ScheduleHealth
@@ -31,19 +29,20 @@ from infrastructure.temporal.schedules import (
     TemporalScheduleControl,
     ensure_daily_episode_schedule,
 )
+from tests.support.temporal import temporal_test_address
 
-ADDRESS = os.environ.get("TEMPORAL_ADDRESS")
-NAMESPACE = os.environ.get("TEST_TEMPORAL_NAMESPACE")
-APP_NAMESPACE = os.environ.get("TEMPORAL_NAMESPACE", "default")
+ADDRESS = temporal_test_address()
 
 pytestmark = pytest.mark.skipif(
-    not ADDRESS or not NAMESPACE or NAMESPACE in {"default", APP_NAMESPACE},
-    reason="TEMPORAL_ADDRESS and TEST_TEMPORAL_NAMESPACE (not default/app namespace) required",
+    not ADDRESS,
+    reason="TEMPORAL_ADDRESS must be set (namespace is validated by connect_test_client)",
 )
 
 
 async def test_guard_round_trip_against_a_real_schedule() -> None:
-    client = await Client.connect(ADDRESS or "", namespace=NAMESPACE or "")
+    from tests.support.temporal import connect_test_client
+
+    client = await connect_test_client()
     schedule_id = f"guard-test-{uuid.uuid4().hex[:8]}"
     queue = f"nobody-listens-{uuid.uuid4().hex[:8]}"
     control = TemporalScheduleControl(client)

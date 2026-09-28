@@ -66,12 +66,9 @@ async def pg_session_factory():
 
 @pytest_asyncio.fixture
 async def minio_store():
-    from infrastructure.config import Settings
-    from infrastructure.storage.minio_store import MinioArtifactStore
+    from tests.support.minio import connect_test_artifact_store
 
-    store = MinioArtifactStore.from_settings(Settings())
-    await store.ensure_bucket()
-    return store
+    return await connect_test_artifact_store()
 
 
 async def _seed(factory, store) -> tuple[str, str]:

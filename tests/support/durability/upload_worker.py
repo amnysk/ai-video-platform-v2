@@ -11,11 +11,8 @@ import logging
 import os
 from pathlib import Path
 
-from temporalio.client import Client
 from temporalio.worker import Worker
 
-from infrastructure.config import Settings
-from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
 from infrastructure.workdir import WorkDirectory
 from tests.support.durability.common import (
@@ -29,6 +26,8 @@ from tests.support.durability.common import (
     schema_session_factory,
 )
 from tests.support.durability.file_uploader import FileBackedFakeUploader
+from tests.support.minio import connect_test_artifact_store, require_test_minio_bucket
+from tests.support.temporal import connect_test_client
 from tests.support.upload import CHANNEL_ID, TEST_CHUNK_BYTES
 from workers.upload.activities import UploadActivities
 from workers.upload.workflows import UploadWorkflow
@@ -39,7 +38,8 @@ async def main() -> None:
     queue = os.environ[ENV_QUEUE]
     assert queue not in {"upload", "upload-media"}
     factory = schema_session_factory(os.environ[ENV_DB_URL], os.environ[ENV_SCHEMA])
-    client = await Client.connect(os.environ["TEMPORAL_ADDRESS"], namespace="default")
+    client = await connect_test_client()
+    store = await connect_test_artifact_store()
     uploader = FileBackedFakeUploader(
         Path(os.environ[ENV_STATE_FILE]),
         chunk_delay=float(os.environ.get(ENV_CHUNK_DELAY, "0")),
@@ -48,8 +48,8 @@ async def main() -> None:
     )
     activities = UploadActivities(
         session_factory=factory,
-        store=MinioArtifactStore.from_settings(Settings()),
-        bucket="artifacts",
+        store=store,
+        bucket=require_test_minio_bucket(),
         workdir=WorkDirectory(Path(os.environ[ENV_WORK_DIR]), forbidden=()),
         uploader=uploader,
         channel_id=CHANNEL_ID,

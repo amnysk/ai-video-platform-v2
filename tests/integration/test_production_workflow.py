@@ -259,7 +259,9 @@ class Mocks:
 
 @pytest_asyncio.fixture
 async def env() -> Client:
-    return await Client.connect(TEMPORAL_ADDRESS or "", namespace="default")
+    from tests.support.temporal import connect_test_client
+
+    return await connect_test_client(TEMPORAL_ADDRESS)
 
 
 async def _run(
