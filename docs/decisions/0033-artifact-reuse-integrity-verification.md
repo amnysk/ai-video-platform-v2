@@ -325,3 +325,14 @@ DB行から読み取るだけ。**NULL のとき**（本ADR以前に書かれた
   `test_corrupt_artifact_is_never_silently_reused_or_silently_overwritten` /
   `test_auth_incident_threshold_suppresses_new_submits_for_same_provider_only` /
   `test_watchdog_flags_stopped_pipeline_before_resume_then_resume_recovers`）
+
+## 追補（2026-09-29, ADR-0035 (4)）: 再利用ゲートの3段階
+
+`find_and_verify_current` は唯一のゲートのまま、見つけ方を3段階にした: (1) `input_hash` 完全一致
+（生成設定版も完全一致で検証）、(2) `content_fingerprint` 一致（prompt 組み立て規則の版 `prompt-v<N>`
+の違いだけを許して検証。`verify_artifact(tolerate_recipe_version=True)`）、(3) 旧方式の行
+（`content_fingerprint` NULL）を呼び出し側が再計算した旧方式の hash で照合。実体検証（欠落・破損）は
+3段階とも同じで、生成器・モデルの違いは (2)(3) でも `VERSION_MISMATCH` のまま。
+理由: ADR-0034 で prompt 版を 1→2 に上げた結果、版の完全一致を要求する (1) だけでは
+成功済みの全シーンが再課金される（`test_422_..._version_bump_mitigation` で実証）。
+

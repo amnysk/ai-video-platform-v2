@@ -358,8 +358,12 @@ class ArtifactMetadataRepository:
         size_bytes: int | None = None,
         produced_by_job_id: uuid.UUID | str | None = None,
         scene_id: str | None = None,
+        content_fingerprint: str | None = None,
     ) -> ArtifactMetadata:
         """同じ内容の再記録は既存行を返す（INV-17）。UNIQUE制約と同じ鍵で引く。
+
+        ``content_fingerprint``（ADR-0035 (4)）: レシピの版を除いた入力指紋。渡せば保存する
+        （既存行の再記録でも、入力の記録を最新にするのと同じ理由で上書きする）。
 
         ``scene_id``（ADR-0018）を渡すと、同一性・世代・現行の判定はすべて
         ``(episode_id, artifact_type, scene_id)`` の中で閉じる。省略時は Episode 単位の行
@@ -392,7 +396,9 @@ class ArtifactMetadataRepository:
                     # 同じ内容が別の入力から得られた（例: 生成器の仕様だけ変わった）。
                     # 次回の skip 判定が最新の入力で当たるよう、入力の記録を更新する。
                     existing.input_hash = input_hash
-                    await self._session.flush()
+                if content_fingerprint is not None:
+                    existing.content_fingerprint = content_fingerprint
+                await self._session.flush()
                 return _to_artifact(existing)
             # A→B→A: 同じ内容が過去世代に居る。降ろされた行を「現行」として返すと
             # find_current_by_type と食い違うので、現行を降ろして過去行を復帰させる。
@@ -400,6 +406,8 @@ class ArtifactMetadataRepository:
             existing.superseded_at = None
             if input_hash is not None:
                 existing.input_hash = input_hash
+            if content_fingerprint is not None:
+                existing.content_fingerprint = content_fingerprint
             await self._session.flush()
             return _to_artifact(existing)
 
@@ -421,6 +429,7 @@ class ArtifactMetadataRepository:
             object_key=object_key,
             sha256=sha256,
             input_hash=input_hash if input_hash is not None else sha256,
+            content_fingerprint=content_fingerprint,
             version=(max_version or 0) + 1,
             superseded_at=None,
             size_bytes=size_bytes,
@@ -485,6 +494,48 @@ class ArtifactMetadataRepository:
             ArtifactMetadataRow.artifact_type == artifact_type.value,
             _artifact_scene_filter(scene_id),
             ArtifactMetadataRow.input_hash == input_hash,
+            ArtifactMetadataRow.superseded_at.is_(None),
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_artifact(row) if row else None
+
+    async def find_current_by_content_fingerprint(
+        self,
+        episode_id: uuid.UUID | str,
+        artifact_type: ArtifactType,
+        content_fingerprint: str,
+        scene_id: str | None = None,
+    ) -> ArtifactMetadata | None:
+        """現行世代で、レシピの版を除いた入力指紋が一致する成果物（ADR-0035 (4)）。"""
+        stmt = select(ArtifactMetadataRow).where(
+            ArtifactMetadataRow.episode_id == _as_uuid(episode_id),
+            ArtifactMetadataRow.artifact_type == artifact_type.value,
+            _artifact_scene_filter(scene_id),
+            ArtifactMetadataRow.content_fingerprint == content_fingerprint,
+            ArtifactMetadataRow.superseded_at.is_(None),
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_artifact(row) if row else None
+
+    async def find_current_legacy(
+        self,
+        episode_id: uuid.UUID | str,
+        artifact_type: ArtifactType,
+        input_hashes: tuple[str, ...],
+        scene_id: str | None = None,
+    ) -> ArtifactMetadata | None:
+        """旧方式（``content_fingerprint`` が NULL）の現行世代で、input_hash が候補に一致する行。
+
+        候補は呼び出し側が旧方式の hash 関数で再計算した値（ADR-0035 (4)）。
+        """
+        if not input_hashes:
+            return None
+        stmt = select(ArtifactMetadataRow).where(
+            ArtifactMetadataRow.episode_id == _as_uuid(episode_id),
+            ArtifactMetadataRow.artifact_type == artifact_type.value,
+            _artifact_scene_filter(scene_id),
+            ArtifactMetadataRow.input_hash.in_(input_hashes),
+            ArtifactMetadataRow.content_fingerprint.is_(None),
             ArtifactMetadataRow.superseded_at.is_(None),
         )
         row = (await self._session.scalars(stmt)).first()
@@ -649,6 +700,30 @@ class ProviderReservationRepository:
             .order_by(ProviderReservationRow.reserved_at, ProviderReservationRow.round)
         )
         return [_to_reservation(r) for r in (await self._session.scalars(stmt)).all()]
+
+    async def find_latest_for_inputs(
+        self,
+        episode_id: uuid.UUID | str,
+        provider: ProviderCall,
+        scene_id: str | None,
+        input_hashes: tuple[str, ...],
+    ) -> ProviderReservation | None:
+        """``find_latest_for_input`` の複数 hash 版（ADR-0035 (4)）。
+
+        新方式の hash と、旧方式で再計算した hash の両方の予約を見る。hash の方式を変えた
+        だけで「この入力の予約は無い」と誤認し、進行中の課金ジョブへの二重 submit や、
+        provider に拒否された同じ入力の再送を作らないため。最も新しく予約された行を返す。
+        """
+        # 1 hash ずつ既存の検索を使う（同じ入力のラウンド採番の規則を1箇所に保つ）
+        found = [
+            row
+            for input_hash in dict.fromkeys(input_hashes)
+            if (row := await self.find_latest_for_input(episode_id, provider, scene_id, input_hash))
+            is not None
+        ]
+        if not found:
+            return None
+        return max(found, key=lambda row: (row.reserved_at, row.round))
 
     async def find_unreconciled(
         self,
