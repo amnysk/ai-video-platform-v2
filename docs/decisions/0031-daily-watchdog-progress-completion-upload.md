@@ -129,6 +129,15 @@ DB側の見落としに対する二重の安全網として残す。採用（却
 - `STAGE_STALL_GRACE_MINUTES` 等の既定値は経験則であり、実際の生成時間分布に基づく調整が今後要る
 - `notifier: log_only` の可視化は「ログが通知として機能していない」ことの証明にはならない
   （ログを実際に監視しているかは運用側の責任として残る）
+- **未解決事項（インシデント 8fb66fcb の再検証で確認・2026-09-28）**: 本 ADR は Slack / メール等の
+  能動的な通知経路を実装しない（AGENTS.md §6・§9: 明示指示の無い外部サービス追加をしない）。
+  既定の `LoggingAnomalyNotifier` は ERROR ログと `operational_anomalies` 行を残すだけであり、
+  運用者が**能動的にログか `schedule-guard.py status --json` を見に行かない限り**、
+  `EPISODE_STAGE_STALLED` 等は検出されても誰にも届かない。2026-09-21〜09-27 の事故
+  （個々の Episode が blocked のまま7日間気づかれなかった）で実際に踏まれたのはこの経路の穴
+  そのものではなく「本 ADR が本番未デプロイだったこと」だが（下記「検証記録」参照）、
+  **仮に本番にデプロイされていたとしても、ログ監視を人が怠れば同じ「気づかれない」結果になる
+  余地は残る**。本 ADR のスコープでは閉じない（外部通知の追加は別ADRでの技術選定判断が要る）。
 - `PIPELINE_OUTCOME_MISMATCH` は today closed な pipeline workflow の Temporal 履歴を読む必要があり、
   watchdog Activity が Temporal client を持つという ADR-0027 の既存の負債がそのまま続く
 - migration 0012 の `downgrade()` は episode 単位の異常行を消してから旧 CHECK/UNIQUE に戻す
@@ -147,8 +156,44 @@ DB側の見落としに対する二重の安全網として残す。採用（却
 - `tests/unit/test_daily_watchdog.py::test_a_stopped_execution_for_a_nonexistent_episode_does_not_crash_the_whole_run`
   （§Decision(5)、新規: 存在しない Episode を指す実行があっても watchdog 全体は落ちず、
   他の正当な異常は正常に記録・通知される）
-- `tests/integration/test_pipeline_schedule.py`（新規: completed+outcome=stopped が healthy と
-  判定されないこと）
-- `tests/contract/test_operational_anomalies_episode_scope.py`（新規: 部分インデックス2本の制約）
 - `tests/integration/test_incident_recovery_e2e.py::test_watchdog_flags_stopped_pipeline_before_resume_then_resume_recovers`
-  （§Decision(5) の発見元。本物の Temporal + 実DBに対する統合検査）
+  （completed+outcome=stopped が healthy と判定されないこと。§Decision(5) の発見元でもある。
+  本物の Temporal + 実DBに対する統合検査。**訂正**: 当初この検査を
+  `tests/integration/test_pipeline_schedule.py` に新設する想定で書いたが、実装時に
+  `test_episode_resume.py` の fake-workflow スタックを再利用する方が二重配線を避けられたため、
+  実際の置き場所はこちらになった。`test_pipeline_schedule.py` 自体への変更は無い）
+- `tests/contract/test_operational_anomalies_episode_scope.py`（新規: 部分インデックス2本の制約）
+- `tests/unit/test_daily_watchdog.py::test_incident_8fb66fcb_*`（インシデント 8fb66fcb の
+  再検証で追加。2026-09-21〜09-27 の実タイムライン・production の既定値（override無し）で
+  (a) blocked が初回hourly検査で即検知されること、(b) 7日間毎日再通知され続けること、
+  (c) 完成・投稿期限も同じ既定値で独立に検知されることを固定する）
+
+## 検証記録（インシデント 8fb66fcb、2026-09-28）
+
+2026-09-21〜09-27 の7日間、日次自動化は毎日正常に始まったが、作成後 約20分で `blocked` に
+落ちた Episode が誰にも気づかれず放置された（`operational_anomalies` にこの期間の記録は
+`DAILY_AUTOMATION_NOT_STARTED` 1件のみ）。本 ADR のブランチ（このコミット時点で未マージ）で
+以下を機械的に切り分けた:
+
+- **本番（`claude/daily-hardening` 4d96027）は本 ADR を含んでいなかった。** `git diff`
+  で確認すると、本番の `infrastructure/temporal/watchdog.py` は ADR-0027 の起動判定
+  （daily slot / DailyEpisodeWorkflow の有無）だけを持ち、`contracts/schedule_guard.py` にも
+  `EPISODE_STAGE_STALLED` 等の4種は存在しない。つまり本番の watchdog は
+  「今日は始まったか」しか見ておらず、個々の Episode の状態は一切見ていなかった。
+- **本 ADR の実装自体（このブランチ）に検知漏れは無い。** `tests/unit/test_daily_watchdog.py`
+  の `test_incident_8fb66fcb_*`（上記）が、2026-09-21〜09-27 の実際の日付・
+  `WatchdogCheckRequest` の production 既定値（override無し）だけを使って
+  (a) blocked が最初の hourly 検査（猶予0分）で即検知されること、(b) 7日間毎日
+  再通知され続けること、(c) 完成期限・投稿期限も同じ既定値で独立に検知することを証明した。
+  27件の既存テストと合わせて全て green（`uv run pytest tests/unit/test_daily_watchdog.py`）。
+
+**結論: 「7日間気づかれなかった」原因は「設計上の検知漏れ」ではなく「本 ADR が本番に
+デプロイされていなかったこと」である。** ただし §Consequences に記した「ログ・DB以外の
+能動的な通知経路が無い」という未解決事項は、仮にデプロイされていても運用者がログを
+見なければ気づけないという別種のリスクとして残る（本 ADR のスコープでは閉じない）。
+
+resume・Artifact再利用（ADR-0032/0033）の既存実装・既存試験
+（`tests/integration/test_episode_resume.py::test_resume_reaches_upload_after_blocked_production_without_redoing_finished_scenes`、
+`tests/integration/test_incident_recovery_e2e.py::test_sb6_403_blocks_then_recovery_resumes_only_sb6_without_recharging`）
+は「拒否されたシーンだけ差し替えて、成功済みの Artifact と provider 予約は再利用しつつ再開する」
+という要件を既に満たしていることを確認した。重複実装は行っていない。

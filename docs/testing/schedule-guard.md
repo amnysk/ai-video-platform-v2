@@ -1,4 +1,4 @@
-# テスト設計の根拠: Daily Schedule ガード / watchdog（ADR-0027）
+# テスト設計の根拠: Daily Schedule ガード / watchdog（ADR-0027 / ADR-0031）
 
 各テストが何の事故・退行を止めるために存在するか。落ちたら実装を直す（テストを緩めない）。
 
@@ -21,6 +21,24 @@
 `deploy-workers.sh` ではなく `with-maintenance-pause.sh`（EXIT trap で unpause + describe 確認）経由であること、
 guard を動かす python を `PYTHON=` で差し替えられること。wrapper 単体は正しくても、Makefile が
 それを通さなければ「pause したまま deploy が落ちる」経路が残る（2026-09-19 の事故の形）ため、配線そのものを固定する。
+
+## 追加: インシデント 8fb66fcb の再検証（`tests/unit/test_daily_watchdog.py::test_incident_8fb66fcb_*`）
+
+2026-09-21〜09-27 の7日間、日次 Schedule は始まり続けたのに個々の Episode が `blocked` のまま
+7日間気づかれなかった事故（`docs/decisions/0031-daily-watchdog-progress-completion-upload.md`
+§検証記録）の再検証として追加。既存のADR-0031テスト群は各検査条件を個別の合成データで
+確認しているが、以下は**この事故の実タイムライン・実日付・production の既定値（override無し）
+だけ**を使って再現し、「ADR-0031の実装そのものに検知漏れがあるのか、単に本番未デプロイ
+だっただけなのか」を機械的に切り分けるために存在する。
+
+| テスト | 止めるもの |
+|---|---|
+| `test_incident_8fb66fcb_a_blocked_episode_is_caught_within_the_first_hourly_check` | 09-21 06:00 作成→06:20 blocked のタイムラインで、最初の毎時検査（06:35）が override無しの既定値だけで検知すること。「日次自動化は始まった」（旧・本番の判定基準では健全）ことと「個々のEpisodeがblocked」であることが独立した検査であることも合わせて固定する |
+| `test_incident_8fb66fcb_the_same_blocked_episode_is_renotified_every_day_for_seven_days` | 放置されたまま7日間経っても、「初日にログを1回出して終わり」にならず、日ごとに新しい行が立って毎日再通知され続けること（`anomaly_date` が日次で変わる一意制約の帰結が壊れていないこと） |
+| `test_incident_8fb66fcb_completion_and_upload_deadlines_also_fire_with_pure_defaults` | 進行（stall）だけでなく完成・投稿の期限超過も、override無しの production 既定値だけで独立に検知される多層防御が壊れていないこと |
+
+これら3件は現在の実装に対して**追加時点で green**（実装を直していない）。目的は退行検知であり、
+将来ここを触って壊せば実際の事故タイムラインの検知が失敗する形で気づけるようにするため。
 
 ## 既知の課題（この変更では直していない）
 
