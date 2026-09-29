@@ -2,7 +2,7 @@
 
 planner（LLM）は案を**提案**するだけで、採否はここの決定的な規則が決める:
 
-- provider が内容方針（``content_policy_violation``）で拒否したシーンでは、人物を画面の主題に
+- provider が内容方針（分類 ``content_policy``）で拒否したシーンでは、人物を画面の主題に
   する映像対象（``named_person`` / ``figure_anonymous``）を選ばない。拒否理由は実在人物の肖像で、
   判定器は非公開なので、人物を主題にしない方向へ倒す（保守側）
 - 元のシーン・過去の案と同じ文面は不可（同じ判定を繰り返すだけ）
@@ -26,12 +26,11 @@ from contracts.production_activities import (
     MAX_SCENE_ALTERNATIVES_PER_EPISODE,
     MAX_SCENE_ALTERNATIVES_PER_SCENE,
 )
-from contracts.states import RejectedInput
+from contracts.states import RejectedInput, RejectionCategory
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.errors import SceneAlternativeInvalidError, SceneAlternativeLimitReachedError
 
 __all__ = [
-    "CONTENT_POLICY_ERROR_TYPE",
     "PERSON_SUBJECTS",
     "CostEntry",
     "PlannerRawOutput",
@@ -49,7 +48,6 @@ __all__ = [
     "validate_proposal",
 ]
 
-CONTENT_POLICY_ERROR_TYPE = "content_policy_violation"
 #: 人物を画面の主題にする映像対象。内容方針で拒否されたシーンの代替案では選ばない。
 PERSON_SUBJECTS: frozenset[VisualSubject] = frozenset(
     {VisualSubject.NAMED_PERSON, VisualSubject.FIGURE_ANONYMOUS}
@@ -68,6 +66,8 @@ class RejectionFact:
     types: tuple[str, ...]
     reason: str | None
     message: str | None
+    #: 復旧を分岐させる分類（ADR-0035 (8)）。provider 固有の型名ではなくこちらで判断する
+    category: RejectionCategory = RejectionCategory.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,7 +136,7 @@ class SceneAlternativePlanner(Protocol):
 
 def allowed_subjects(rejections: Iterable[RejectionFact]) -> tuple[VisualSubject, ...]:
     """このシーンの代替案で選んでよい映像対象（語彙の定義順）。"""
-    policy_rejected = any(CONTENT_POLICY_ERROR_TYPE in r.types for r in rejections)
+    policy_rejected = any(r.category is RejectionCategory.CONTENT_POLICY for r in rejections)
     return tuple(s for s in VisualSubject if not (policy_rejected and s in PERSON_SUBJECTS))
 
 

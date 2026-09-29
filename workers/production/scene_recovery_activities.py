@@ -34,11 +34,14 @@ from contracts.artifacts import (
     parse_scene_visual_override_artifact,
 )
 from contracts.production_activities import (
+    MAX_RECOVERY_COST_USD_PER_EPISODE,
+    MAX_SCENE_ALTERNATIVES_PER_EPISODE,
+    MAX_SCENE_ALTERNATIVES_PER_SCENE,
     PLAN_SCENE_ALTERNATIVE,
     PlanSceneAlternativeRequest,
     SceneAlternativeOutcome,
 )
-from contracts.states import ArtifactType, ProviderCall, ReservationStatus
+from contracts.states import ArtifactType, ProviderCall, RejectionCategory, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key
@@ -47,6 +50,7 @@ from domain.errors import (
     ProductionInputMissingError,
     SceneAlternativeInfeasibleError,
     SceneAlternativeInvalidError,
+    SceneAlternativeNotApplicableError,
     SceneAlternativePlannerUnavailableError,
     UnreconciledReservationError,
     classify_failure,
@@ -92,11 +96,18 @@ class SceneAlternativeActivities:
         store: ArtifactStore,
         bucket: str,
         planner: SceneAlternativePlanner | None,
+        max_alternatives_per_scene: int = MAX_SCENE_ALTERNATIVES_PER_SCENE,
+        max_alternatives_per_episode: int = MAX_SCENE_ALTERNATIVES_PER_EPISODE,
+        max_recovery_cost_usd: float = MAX_RECOVERY_COST_USD_PER_EPISODE,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
         self._bucket = bucket
         self._planner = planner
+        #: 上限（INV-34）は設定値（``Settings``）から worker が注入する。既定は contracts の1箇所
+        self._max_per_scene = max_alternatives_per_scene
+        self._max_per_episode = max_alternatives_per_episode
+        self._max_cost_usd = max_recovery_cost_usd
 
     def all_activities(self) -> list[Callable[..., Any]]:
         return [self.plan_scene_alternative]
@@ -149,11 +160,28 @@ class SceneAlternativeActivities:
 
         # (3) 未対処の拒否が無いのに再び止まった → 同じ案を繰り返させない
         addressed = {rid for _, o in loaded for rid in o.rejection_ids}
-        unaddressed = [r for r in rejections if r.id not in addressed]
         if not rejections:
             raise SceneAlternativeInvalidError(
                 f"scene {request.scene_id} has no recorded provider rejection to address"
             )
+        # ADR-0035 (8): 代替映像案で直せるのは内容方針の拒否だけ。workflow は例外の型名で
+        # 計画を頼むので（ProviderRejectedError は検証失敗・分類不能の 422 でも同じ型）、ここで
+        # 分類を見る。未対処の失敗に内容方針以外が1件でもあれば、planner を呼ばずに止める
+        pending = [r for r in rejections if r.id not in addressed]
+        not_applicable = sorted(
+            {
+                r.category.value
+                for r in pending
+                if r.category is not RejectionCategory.CONTENT_POLICY
+            }
+        )
+        if not_applicable:
+            raise SceneAlternativeNotApplicableError(
+                f"scene {request.scene_id} stopped on {', '.join(not_applicable)} failure(s), "
+                "not a content-policy rejection; a different visual would not fix it, so no "
+                "alternative is planned. A human needs to look at it"
+            )
+        unaddressed = pending
         if not unaddressed:
             raise SceneAlternativeInvalidError(
                 f"scene {request.scene_id} was blocked again although the current alternative "
@@ -178,6 +206,9 @@ class SceneAlternativeActivities:
             episode_alternatives=len(overrides_meta),
             recovery_cost=recovery_cost_usd(entries, first_alternative_at),
             projected_cost=_projected_rebuild_cost(costs, request.scene_id),
+            max_per_scene=self._max_per_scene,
+            max_per_episode=self._max_per_episode,
+            max_cost_usd=self._max_cost_usd,
         )
 
         if self._planner is None:
@@ -407,6 +438,7 @@ def _fact(record: ProviderRejectionRecord) -> RejectionFact:
         types=record.types,
         reason=record.reason,
         message=record.message,
+        category=record.category,
     )
 
 

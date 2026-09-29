@@ -243,6 +243,25 @@ class RejectedInput(StrEnum):
     UNKNOWN = "unknown"
 
 
+class RejectionCategory(StrEnum):
+    """provider の拒否・失敗の分類（ADR-0035 (8)）。HTTP status だけでは決めない。
+
+    adapter が応答の error type から決める（provider 固有の型名→分類の対応は adapter が持つ）。
+    分類ごとに復旧が違う:
+
+    - ``content_policy``: 入力の内容が方針で拒否された。そのシーンだけ別の映像案（ADR-0035 (3)）
+    - ``input_unreachable``: provider がこちらの入力（URL のファイル）を取得できなかった。
+      内容の判定ではない。新しい URL で最大1回だけ自動再試行（INV-35）
+    - ``input_validation``: 入力が provider の検証に通らない（大きさ・形式など）。人の判断
+    - ``unknown``: 分類できない。人の判断
+    """
+
+    CONTENT_POLICY = "content_policy"
+    INPUT_VALIDATION = "input_validation"
+    INPUT_UNREACHABLE = "input_unreachable"
+    UNKNOWN = "unknown"
+
+
 RESERVATION_TERMINAL_STATUSES: frozenset[ReservationStatus] = frozenset(
     {ReservationStatus.SPENT, ReservationStatus.ABANDONED}
 )

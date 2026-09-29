@@ -62,14 +62,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from contracts.production_activities import (
     AUTH_INCIDENT_SUPPRESSION_THRESHOLD,
     AUTH_INCIDENT_WINDOW_MINUTES,
+    INPUT_FETCH_RETRIES_PER_SCENE,
 )
-from contracts.states import ArtifactType, ProviderCall, ReservationStatus
+from contracts.states import ArtifactType, ProviderCall, RejectionCategory, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
 from domain.errors import (
     InvalidTransitionError,
     MediaValidationError,
     ProviderCredentialSuspectedOutageError,
     ProviderInputFetchError,
+    ProviderInputFetchRetryExhaustedError,
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
@@ -106,6 +108,7 @@ _RESERVE_ATTEMPTS = 3
 NOT_ACCEPTED_SUBMIT_ERRORS: tuple[type[Exception], ...] = (
     ProviderJobFailedError,
     ProviderRejectedError,
+    ProviderInputFetchError,
     ProviderUnavailableError,
 )
 
@@ -275,6 +278,8 @@ class PaidJobRunner:
                 plan = _plan_round(latest)
                 if isinstance(plan, Submitted):
                     return plan
+                if isinstance(plan, int) and latest is not None:
+                    await self._check_input_fetch_retry(spec, latest)
                 if isinstance(plan, ProviderReservation):
                     candidate: ProviderReservation | None = plan
                     ledger_round = plan.round
@@ -457,8 +462,9 @@ class PaidJobRunner:
                 if status.rejected:
                     error = ProviderRejectedError(status.message, rejection=status.rejection)
                 elif status.input_unreachable:
-                    # 内容の拒否ではない: 拒否台帳・画像ゲート・再送禁止の対象外（ADR-0035 追補）
-                    error = ProviderInputFetchError(status.message)
+                    # 内容の拒否ではない: 画像ゲート・再送禁止の対象外。拒否台帳には分類つきで残し
+                    # 再試行回数（INV-35）をそこから数える（ADR-0035 (8)）
+                    error = ProviderInputFetchError(status.message, rejection=status.rejection)
                 else:
                     error = ProviderJobFailedError(status.message)
                 await self._spend_conservatively(
@@ -705,7 +711,7 @@ class PaidJobRunner:
                 # （ADR-0034）。型で決める。文字列一致では決めない。
                 input_rejected_by_provider=isinstance(exc, ProviderRejectedError),
             )
-            if isinstance(exc, ProviderRejectedError):
+            if isinstance(exc, (ProviderRejectedError, ProviderInputFetchError)):
                 await ProviderRejectionRepository(session).record(
                     episode_id=spent.episode_id,
                     scene_id=spent.scene_id,
@@ -716,6 +722,34 @@ class PaidJobRunner:
                     source_media_sha256=source_media_sha256,
                 )
             await session.commit()
+
+    # ------------------------------------- 入力の取得失敗の自動再試行は1回だけ（INV-35）
+
+    async def _check_input_fetch_retry(
+        self, spec: PaidJobSpec, latest: ProviderReservation
+    ) -> None:
+        """直前のラウンドが「provider が入力を取得できなかった」で終わったときの新ラウンド判定。
+
+        新しいラウンドは prepare で入力を上げ直すので、同じ壊れた URL は使わない。自動の再試行は
+        そのシーンで ``INPUT_FETCH_RETRIES_PER_SCENE`` 回まで。回数は拒否台帳の
+        ``input_unreachable`` 件数から数える（resume でリセットしない）。超えたら予約を作る前に
+        止める（予約も課金も作らない）。
+        """
+        async with self._session_factory() as session:
+            rejections = ProviderRejectionRepository(session)
+            last = await rejections.find_for_reservation(latest.id)
+            if last is None or last.category is not RejectionCategory.INPUT_UNREACHABLE:
+                return
+            failures = await rejections.count_input_unreachable(
+                spec.episode_id, spec.provider, spec.scene_id
+            )
+        if failures > INPUT_FETCH_RETRIES_PER_SCENE:
+            raise ProviderInputFetchRetryExhaustedError(
+                f"{spec.provider.value} could not fetch the input for scene {spec.scene_id} "
+                f"{failures} time(s); the automatic re-upload retry "
+                f"(limit {INPUT_FETCH_RETRIES_PER_SCENE}) is used up. A human needs to check "
+                "the provider's file access before another paid attempt."
+            )
 
     # ------------------------------------------------ 拒否された入力画像の再送禁止（INV-32）
 

@@ -12,7 +12,13 @@ from decimal import Decimal
 import pytest
 
 from contracts.production_activities import AUTH_INCIDENT_SUPPRESSION_THRESHOLD
-from contracts.states import ArtifactType, FailureClass, ProviderCall, ReservationStatus
+from contracts.states import (
+    ArtifactType,
+    FailureClass,
+    ProviderCall,
+    RejectionCategory,
+    ReservationStatus,
+)
 from domain.errors import (
     MediaValidationError,
     ProviderCredentialSuspectedOutageError,
@@ -977,6 +983,7 @@ _LIKENESS = ProviderRejection(
     reason="partner_validation_failed",
     message="may contain likenesses of real people",
     http_status=422,
+    category=RejectionCategory.CONTENT_POLICY,
 )
 
 
@@ -987,18 +994,20 @@ def _rejecting(rejection: ProviderRejection) -> FakeImageGenerator:
     )
 
 
-async def _rejected_video(runner, session_factory, rejection=_LIKENESS) -> PaidJobSpec:
+async def _rejected_video(
+    runner, session_factory, rejection=_LIKENESS, image_sha: str = _IMAGE_SHA
+) -> PaidJobSpec:
     spec = replace(
-        await _spec(session_factory, scene="sb2"),
+        await _spec(session_factory, scene="sb2", input_hash=image_sha[0] * 63 + "h"),
         provider=ProviderCall.FAL_VIDEO,
         artifact_type=ArtifactType.SCENE_VIDEO,
-        source_media_sha256=_IMAGE_SHA,
+        source_media_sha256=image_sha,
     )
     gen = _rejecting(rejection)
     outcome = await runner.submit(spec, gen, REQUEST)
     assert isinstance(outcome, Submitted)
     with pytest.raises(ProviderRejectedError):
-        await _await(runner, outcome.reservation_id, gen, source_media_sha256=_IMAGE_SHA)
+        await _await(runner, outcome.reservation_id, gen, source_media_sha256=image_sha)
     return spec
 
 
@@ -1072,44 +1081,126 @@ async def test_unstructured_rejection_is_still_recorded_as_unknown(runner, sessi
     assert row.rejected_input.value == "unknown" and row.source_media_sha256 is None
 
 
-async def test_unreachable_input_is_spent_but_not_marked_as_a_rejected_input(
-    runner, session_factory
-) -> None:
-    """ADR-0035 追補: 取得失敗（file_download_error）は needs_input で止まるが、入力の拒否ではない。
+_UNREACHABLE = ProviderRejection(
+    types=("file_download_error",),
+    locs=("body.image_url",),
+    message="Failed to download the file.",
+    http_status=422,
+    category=RejectionCategory.INPUT_UNREACHABLE,
+)
 
-    予約は spent（ジョブは終わった）、``input_rejected_by_provider`` は立てない、拒否台帳にも
-    載せない（画像ゲートが無関係な画像を止めない・代替案を計画しない）。人が resume すれば
-    同じ入力でも新しいラウンドとして取り直せる（画像は prepare で上げ直される）。
-    """
-    from domain.errors import ProviderInputFetchError
 
-    spec = replace(
+def _unreachable() -> FakeImageGenerator:
+    return FakeImageGenerator(
+        pending_polls=0,
+        fail_with=JobFailed(
+            message="fal job failed: HTTP 422 file_download_error",
+            input_unreachable=True,
+            rejection=_UNREACHABLE,
+        ),
+    )
+
+
+async def _unreachable_video_spec(session_factory) -> PaidJobSpec:
+    return replace(
         await _spec(session_factory, scene="sb5"),
         provider=ProviderCall.FAL_VIDEO,
         artifact_type=ArtifactType.SCENE_VIDEO,
         source_media_sha256=_IMAGE_SHA,
     )
-    gen = FakeImageGenerator(
-        pending_polls=0,
-        fail_with=JobFailed(
-            message="fal job failed: HTTP 422 file_download_error", input_unreachable=True
-        ),
-    )
+
+
+async def _fail_fetch_once(runner, spec: PaidJobSpec) -> None:
+    from domain.errors import ProviderInputFetchError
+
+    gen = _unreachable()
     outcome = await runner.submit(spec, gen, REQUEST)
-    assert isinstance(outcome, Submitted)
+    assert isinstance(outcome, Submitted) and outcome.newly_submitted
     with pytest.raises(ProviderInputFetchError):
         await _await(runner, outcome.reservation_id, gen, source_media_sha256=_IMAGE_SHA)
+
+
+async def test_unreachable_input_is_recorded_but_not_as_a_rejected_input(
+    runner, session_factory
+) -> None:
+    """ADR-0035 (8): 取得失敗（file_download_error）は分類つきで台帳に残るが、入力の拒否ではない。
+
+    予約は spent（ジョブは終わった）・needs_input、``input_rejected_by_provider`` は立てない。
+    拒否台帳には ``input_unreachable`` として1行残す（INV-35 の再試行回数をここから数える）。
+    画像ゲートはこの行では止めない: 同じ画像を上げ直した新しい URL で1回だけ取り直せる。
+
+    （旧版は「拒否台帳に載せない」を固定していた。ADR-0035 (8) で再試行回数を DB から数える
+    仕様に変えたため、分類つきで載せる形に変更した）
+    """
+    spec = await _unreachable_video_spec(session_factory)
+    await _fail_fetch_once(runner, spec)
 
     async with session_factory() as session:
         (reservation,) = await ProviderReservationRepository(session).list_for_episode_provider(
             spec.episode_id, ProviderCall.FAL_VIDEO
         )
-        rejections = await ProviderRejectionRepository(session).list_for_episode(spec.episode_id)
+        (row,) = await ProviderRejectionRepository(session).list_for_episode(spec.episode_id)
     assert reservation.status is ReservationStatus.SPENT
     assert reservation.failure_class is FailureClass.NEEDS_INPUT
     assert reservation.input_rejected_by_provider is False
-    assert rejections == []
+    assert row.category is RejectionCategory.INPUT_UNREACHABLE
+    assert row.reservation_id == reservation.id
+    assert row.source_media_sha256 == _IMAGE_SHA
 
     retry = FakeImageGenerator(pending_polls=0)
     again = await runner.submit(spec, retry, REQUEST)
     assert isinstance(again, Submitted) and again.newly_submitted and again.round == 2
+    assert retry.prepare_calls == 1  # 入力は上げ直す（同じ壊れた URL を使わない）
+
+
+async def test_second_fetch_failure_stops_before_reserving_a_third_round(
+    runner, session_factory
+) -> None:
+    """INV-35: 取得失敗の自動再試行は1回だけ。2回目の取得失敗の後は予約を作る前に止める。
+
+    回数は DB（拒否台帳）から数えるので、resume しても増えない。止まった後の submit は
+    provider にも台帳にも何も起こさない（再課金なし）。
+    """
+    from domain.errors import ProviderInputFetchRetryExhaustedError
+
+    spec = await _unreachable_video_spec(session_factory)
+    await _fail_fetch_once(runner, spec)
+    await _fail_fetch_once(runner, spec)  # 1回だけの再試行も取得失敗
+
+    third = FakeImageGenerator(pending_polls=0)
+    with pytest.raises(ProviderInputFetchRetryExhaustedError):
+        await runner.submit(spec, third, REQUEST)
+    assert third.prepare_calls == 0 and third.submit_calls == 0
+    async with session_factory() as session:
+        rows = await ProviderReservationRepository(session).list_for_episode_provider(
+            spec.episode_id, ProviderCall.FAL_VIDEO
+        )
+    assert sorted(r.round for r in rows) == [1, 2]
+
+
+async def test_image_gate_ignores_unreachable_and_unknown_but_blocks_validation(
+    runner, session_factory
+) -> None:
+    """INV-32 の画像ゲートは、画像そのものを判定した拒否（content_policy / input_validation）だけ。
+
+    取得失敗や分類不能で画像を再送禁止にすると、無関係な画像のせいでシーンが二度と作れない。
+    """
+    from domain.errors import ProviderRejectedRetryBlockedError
+
+    for category, blocks, image_sha in [
+        (RejectionCategory.INPUT_VALIDATION, True, "v" * 64),
+        (RejectionCategory.UNKNOWN, False, "u" * 64),
+    ]:
+        # 画像ゲートは Episode をまたいで効くので、ケースごとに別の画像にする
+        rejection = replace(_LIKENESS, types=("x",), category=category)
+        spec = await _rejected_video(
+            runner, session_factory, rejection=rejection, image_sha=image_sha
+        )
+        reworded = replace(spec, input_hash="q" * 64)
+        gen = FakeImageGenerator(pending_polls=0)
+        if blocks:
+            with pytest.raises(ProviderRejectedRetryBlockedError):
+                await runner.submit(reworded, gen, REQUEST)
+        else:
+            outcome = await runner.submit(reworded, gen, REQUEST)
+            assert isinstance(outcome, Submitted) and outcome.newly_submitted

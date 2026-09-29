@@ -8,10 +8,11 @@
 2. ``artifact_metadata.content_fingerprint``（NULL 可）: 生成レシピの版を除いた入力指紋。
 3. ``provider_rejections``: provider による内容拒否を1件ずつ構造化して保存する。
 4. 既存データの一度きりの補完: ``error_summary`` が ``ProviderRejectedError:`` で始まる
-   spent 予約（``file_download_error`` だけのものを除く。内容の拒否ではない）に
-   ``input_rejected_by_provider = true`` を立て、``provider_rejections`` を1行ずつ
-   作る。拒否の対象・理由は ``error_summary`` の文字列から判定する（構造化される前の行なので、
-   ここだけは文字列しか材料が無い）。判定できなければ ``unknown``。
+   spent 予約ごとに ``provider_rejections`` を1行作り（``category`` つき、ADR-0035 (8)）、
+   ``input_unreachable``（``file_download_error``。内容の拒否ではない）以外には
+   ``input_rejected_by_provider = true`` を立てる。拒否の対象・理由・分類は ``error_summary``
+   の文字列から判定する（構造化される前の行なので、ここだけは文字列しか材料が無い）。
+   判定できなければ ``unknown``。
 
 downgrade は新しい語彙を持つ行が残っていると CHECK の作成で失敗する（行は触らない）。
 補完した ``input_rejected_by_provider`` は戻さない（true は「同じ入力を再送しない」安全側）。
@@ -83,6 +84,13 @@ SCENE_PROVIDER_CALLS: tuple[str, ...] = (
     "codex_scene_alternative",
 )
 REJECTED_INPUTS: tuple[str, ...] = ("image", "prompt", "unknown")
+#: ADR-0035 (8)。``contracts.states.RejectionCategory`` と一致（凍結値）。
+REJECTION_CATEGORIES: tuple[str, ...] = (
+    "content_policy",
+    "input_validation",
+    "input_unreachable",
+    "unknown",
+)
 
 
 def _in(values: tuple[str, ...]) -> str:
@@ -181,28 +189,35 @@ def _apply(checks: tuple[tuple[str, str, str], ...], *, drop_fingerprint: bool =
         )
 
 
-def classify_legacy_rejection(error_summary: str) -> dict[str, object] | None:
-    """構造化される前の ``error_summary`` から拒否の対象と理由を判定する（この migration 専用）。
+def classify_legacy_rejection(error_summary: str) -> dict[str, object]:
+    """構造化前の ``error_summary`` から拒否の対象・理由・分類を判定する（この migration 専用）。
 
     ``fal_queue._short`` の2つの形（``(at body.image_url)`` と、ADR-0034 以前の pydantic repr
     ``'loc': ['body', 'image_url']``）の両方を読む。判定できなければ ``unknown``。
 
-    ``file_download_error``（provider が入力 URL を取得できなかった）は内容の拒否ではないので
-    ``None``（補完しない）。当時のコードは 422 を一律に拒否としていた（2026-09-29 の実例）。
+    分類（ADR-0035 (8)）: ``content_policy_violation`` → ``content_policy``、
+    ``file_download_error``（provider が入力 URL を取得できなかった。内容の拒否ではない。
+    当時のコードは 422 を一律に拒否としていた ── 2026-09-29 の実例）→ ``input_unreachable``、
+    それ以外 → ``unknown``。
     """
     text = error_summary or ""
-    if "file_download_error" in text and "content_policy_violation" not in text:
-        return None
+    if "content_policy_violation" in text:
+        category = "content_policy"
+    elif "file_download_error" in text:
+        category = "input_unreachable"
+    else:
+        category = "unknown"
     if "body.image_url" in text or "'body', 'image_url'" in text:
         rejected_input = "image"
     elif "body.prompt" in text or "'body', 'prompt'" in text:
         rejected_input = "prompt"
     else:
         rejected_input = "unknown"
-    types = ["content_policy_violation"] if "content_policy_violation" in text else []
+    types = [t for t in ("content_policy_violation", "file_download_error") if t in text]
     reason = "partner_validation_failed" if "partner_validation_failed" in text else None
     http_status = 422 if "HTTP 422" in text else None
     return {
+        "category": category,
         "rejected_input": rejected_input,
         "types": json.dumps(types),
         "reason": reason,
@@ -234,6 +249,7 @@ def _backfill_legacy_rejections() -> None:
         sa.column("reservation_id", sa.Uuid()),
         sa.column("input_hash", sa.String()),
         sa.column("rejected_input", sa.String()),
+        sa.column("category", sa.String()),
         sa.column("source_media_sha256", sa.String()),
         sa.column("types", sa.Text()),
         sa.column("reason", sa.String()),
@@ -257,13 +273,14 @@ def _backfill_legacy_rejections() -> None:
     ).all()
     for row in rows:
         values = classify_legacy_rejection(row.error_summary)
-        if values is None:
-            continue
-        bind.execute(
-            sa.update(reservations)
-            .where(reservations.c.id == row.id)
-            .values(input_rejected_by_provider=True)
-        )
+        # 入力の取得失敗は「入力の拒否」ではない: 同じ入力の再送禁止を立てない（resume で
+        # 入力を上げ直して1回だけ取り直せる。INV-35）。拒否台帳には分類つきで残す
+        if values["category"] != "input_unreachable":
+            bind.execute(
+                sa.update(reservations)
+                .where(reservations.c.id == row.id)
+                .values(input_rejected_by_provider=True)
+            )
         insert_values: dict[str, object] = {
             "id": uuid.uuid4(),
             "episode_id": row.episode_id,
@@ -302,6 +319,7 @@ def upgrade() -> None:
         ),
         sa.Column("input_hash", sa.String(length=64), nullable=False),
         sa.Column("rejected_input", sa.String(length=16), nullable=False),
+        sa.Column("category", sa.String(length=24), nullable=False),
         sa.Column("source_media_sha256", sa.String(length=64), nullable=True),
         sa.Column("types", sa.Text(), nullable=False),
         sa.Column("reason", sa.String(length=128), nullable=True),
@@ -319,6 +337,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             f"rejected_input IN ({_in(REJECTED_INPUTS)})",
             name="ck_provider_rejections_rejected_input",
+        ),
+        sa.CheckConstraint(
+            f"category IN ({_in(REJECTION_CATEGORIES)})",
+            name="ck_provider_rejections_category",
         ),
     )
     op.create_index(

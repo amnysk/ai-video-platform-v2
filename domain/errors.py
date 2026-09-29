@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from contracts.states import FailureClass, RejectedInput
+from contracts.states import FailureClass, RejectedInput, RejectionCategory
 
 
 class DomainError(Exception):
@@ -151,6 +151,8 @@ class ProviderRejection:
     reason: str | None = None
     message: str | None = None
     http_status: int | None = None
+    #: 復旧を分岐させる分類（ADR-0035 (8)）。adapter が provider の error type から決める。
+    category: RejectionCategory = RejectionCategory.UNKNOWN
 
     @property
     def rejected_input(self) -> RejectedInput:
@@ -180,8 +182,34 @@ class ProviderInputFetchError(NeedsInputError):
 
     例: 入力 URL の取得失敗（provider の docs では retryable=false）。入力の**内容**を判定した拒否
     ではないので ``ProviderRejectedError`` にしない: 画像の再送禁止（INV-32）・代替案の計画・
-    ``input_rejected_by_provider`` の対象外。同じ実行の中では再送しない（needs_input）。人が
-    resume すれば新しいラウンドとして取り直せる（画像は prepare で上げ直される）。
+    ``input_rejected_by_provider`` の対象外。ADR-0035 (8) / INV-35: そのシーンについて、入力を
+    上げ直した新しい URL で**最大1回だけ**自動再試行する（台帳の新ラウンド。回数は
+    ``provider_rejections`` の ``input_unreachable`` 件数から数える）。
+
+    ``rejection`` は adapter が応答から組み立てた構造化の記録（分類は ``input_unreachable``）。
+    """
+
+    def __init__(self, message: str, *, rejection: ProviderRejection | None = None) -> None:
+        super().__init__(message)
+        self.rejection = rejection or ProviderRejection(
+            category=RejectionCategory.INPUT_UNREACHABLE
+        )
+
+
+class ProviderInputFetchRetryExhaustedError(NeedsInputError):
+    """入力の取得失敗の自動再試行（最大1回）を使い切った（ADR-0035 (8)、INV-35）。
+
+    同じシーンで2回目の取得失敗が記録された後の新ラウンドを、予約を作る**前**に止める
+    （予約も課金も作らない）。``ProviderInputFetchError`` の派生にしない: workflow は
+    型名で「次のラウンドへ進む」を判定するので、ここで止まる型は別名にする。
+    """
+
+
+class SceneAlternativeNotApplicableError(NeedsInputError):
+    """このシーンの失敗は代替映像案で直すものではない（ADR-0035 (8)）。
+
+    代替案の対象は内容方針の拒否（``content_policy``）だけ。入力の検証失敗・分類不能・入力の
+    取得失敗では planner を呼ばずに止まり、人の判断を待つ。
     """
 
 

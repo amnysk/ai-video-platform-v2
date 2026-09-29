@@ -18,6 +18,9 @@ from contracts.production_activities import (
     DEFAULT_VIDEO_CONCURRENCY,
     DEFAULT_VIDEO_MAX_ROUNDS,
     DEFAULT_VOICE_CONCURRENCY,
+    MAX_RECOVERY_COST_USD_PER_EPISODE,
+    MAX_SCENE_ALTERNATIVES_PER_EPISODE,
+    MAX_SCENE_ALTERNATIVES_PER_SCENE,
 )
 from contracts.render import (
     DEFAULT_RENDER_CONCURRENCY,
@@ -108,6 +111,12 @@ class Settings(BaseSettings):
     production_video_max_rounds: int = DEFAULT_VIDEO_MAX_ROUNDS
     #: 状態不明の await 失敗に対し、同じ予約で await を追加実行する回数
     production_await_reexecutions: int = DEFAULT_AWAIT_REEXECUTIONS
+    #: 内容拒否からの自動復旧（代替映像案）の上限（ADR-0035 (8)、INV-34）。既定は contracts。
+    #: 1シーンの上限は workflow 入力（1実行で planner を呼ぶ回数）と計画 Activity（DB から数えた
+    #: 回数の判定）の両方に届く。Episode の回数・費用の上限は計画 Activity だけが判定する
+    production_max_scene_alternatives_per_scene: int = MAX_SCENE_ALTERNATIVES_PER_SCENE
+    production_max_scene_alternatives_per_episode: int = MAX_SCENE_ALTERNATIVES_PER_EPISODE
+    production_max_recovery_cost_usd: float = MAX_RECOVERY_COST_USD_PER_EPISODE
 
     # --- render（Phase 5） ---
     #: 固定版 static ffmpeg の絶対パスと sha256（scripts/install-render-ffmpeg.sh が表示する）。

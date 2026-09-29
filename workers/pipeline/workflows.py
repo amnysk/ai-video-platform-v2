@@ -257,6 +257,7 @@ def _stage_request(
                 "image_max_rounds": p.image_max_rounds,
                 "video_max_rounds": p.video_max_rounds,
                 "await_reexecutions": p.await_reexecutions,
+                "max_scene_alternatives_per_scene": p.max_scene_alternatives_per_scene,
             },
         )
     if stage is PipelineStage.RENDER:

@@ -14,6 +14,7 @@ from contracts.production_activities import (
     DEFAULT_AWAIT_REEXECUTIONS,
     DEFAULT_IMAGE_MAX_ROUNDS,
     DEFAULT_VIDEO_MAX_ROUNDS,
+    MAX_SCENE_ALTERNATIVES_PER_SCENE,
 )
 from contracts.render import DEFAULT_RENDER_PROFILE_ID
 from contracts.states import (
@@ -124,6 +125,11 @@ class TemporalWorkflowStarter:
                 ),
                 "await_reexecutions": getattr(
                     self._settings, "production_await_reexecutions", DEFAULT_AWAIT_REEXECUTIONS
+                ),
+                "max_scene_alternatives_per_scene": getattr(
+                    self._settings,
+                    "production_max_scene_alternatives_per_scene",
+                    MAX_SCENE_ALTERNATIVES_PER_SCENE,
                 ),
             },
             id=workflow_id,

@@ -148,7 +148,48 @@ HTTP 422 `file_download_error`（`loc: body.image_url`、"Failed to download the
 - migration 0014 の補完は `file_download_error` だけの行を補完しない（本番の3行のうち2行だけ）
 
 自動で1回取り直すか（fal は retryable=false と書くが、次の依頼は別の URL になる）は所有者の判断に
-残す（既定は止まる側）。
+残す（既定は止まる側）。→ 所有者が「1回だけ自動で取り直す」を採用した（(8)。上の「拒否台帳にも
+載せない」「補完しない」は (8) で置き換えた）。
+
+### (8) 追補: 拒否の分類の構造化と、入力取得失敗の1回だけの自動再試行（2026-09-29 採用）
+
+所有者の決定（本番適用の前提）:
+
+1. **分類を構造化する**: `contracts.states.RejectionCategory`（`content_policy` /
+   `input_validation` / `input_unreachable` / `unknown`）。fal adapter が error type から決め
+   （`rejection_category`。fal の型名は adapter だけが知る、INV-6）、`ProviderRejection.category`
+   → `provider_rejections.category`（migration 0014。未リリースだったので同じ revision に追加）。
+   **HTTP 422 という status だけで内容方針とは判断しない**: 型の無い 422（`detail[]` だけ）は
+   一時障害として再 await し続けず `unknown` の拒否として止める。
+2. **代替映像案は `content_policy` だけ**: 計画 Activity は workflow から例外の型名で呼ばれる
+   （`ProviderRejectedError` は `input_validation` / `unknown` でも同じ型）。未対処の失敗に
+   `content_policy` 以外が1件でもあれば planner を呼ばずに `SceneAlternativeNotApplicableError`
+   （needs_input）で止まる。domain の規則も provider の型名ではなく分類を見る。
+3. **INV-32 の画像ゲートは画像を判定した拒否だけ**（`content_policy` / `input_validation`）。
+   `input_unreachable` / `unknown` では画像を再送禁止にしない。
+4. **入力取得失敗は1回だけ自動で取り直す（INV-35）**:
+   - 取得失敗も拒否台帳に `input_unreachable` として1行残す（`input_rejected_by_provider` は立てない）
+   - workflow（`workflow.patched("input-fetch-retry-v1")`）は `ProviderInputFetchError` で次のラウンドへ
+     **1実行で1回だけ**進む。通常のラウンド予算とは別枠（予算1でも1回は取り直す）。planner は呼ばない
+   - 次のラウンドは `PaidJobRunner.submit` の `prepare` で入力を上げ直すので、新しい URL になる
+     （同じ壊れた URL を使わない）。再試行の予約も通常どおり `estimated_cost_usd` を持つ
+   - 台帳側の上限（`INPUT_FETCH_RETRIES_PER_SCENE` = 1、contracts に1箇所）: 直前のラウンドが取得失敗
+     で終わった入力に新ラウンドを作るとき、そのシーンの `input_unreachable` 件数が上限を超えていれば
+     予約の**前**に `ProviderInputFetchRetryExhaustedError`（needs_input）で止める。DB から数えるので
+     resume でリセットしない。workflow の「1実行1回」と台帳の「シーンで1回」の両方で止まる
+   - 代替案の回数・費用の上限（INV-34）には数えない（内容の問題ではない）
+   - 本番の既存行（Episode `54392404` sb5）: migration 0014 の補完が `input_unreachable` として1行入れ、
+     `input_rejected_by_provider` は false のまま。resume するとちょうど1回だけ入力を上げ直して取り直し、
+     それも取得失敗なら止まる
+5. **上限を設定値にする**: 既定値は contracts の1箇所（`MAX_SCENE_ALTERNATIVES_PER_SCENE` = 2 /
+   `_PER_EPISODE` = 3 / `MAX_RECOVERY_COST_USD_PER_EPISODE` = 5.0）。`Settings` の
+   `production_max_scene_alternatives_per_scene` / `_per_episode` / `production_max_recovery_cost_usd`
+   で上書きでき、`scene-alternative-worker` が計画 Activity に注入する（DB から数えた回数・費用の判定）。
+   1シーンの上限は workflow 入力 `ProductionWorkflowInput.max_scene_alternatives_per_scene` にも届く
+   （Schedule 入力の `ProductionParameters`・API の起動・pipeline の `_stage_request` から。workflow の
+   中では Settings を読まない）。workflow 側は「1実行で planner を呼ぶ回数」の暴走止めで、正は Activity
+   側の DB 判定。両者に同じ設定値を渡すのは運用の責任（片方だけ変えると、小さい方で止まる）。
+   既存の Schedule は再登録（`ensure-daily-schedule.py --apply`）するまで既定値の入力のまま。
 
 ## Alternatives
 

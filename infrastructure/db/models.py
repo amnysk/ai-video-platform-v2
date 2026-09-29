@@ -43,6 +43,7 @@ from contracts.states import (
     JobType,
     ProviderCall,
     RejectedInput,
+    RejectionCategory,
     ReservationStatus,
 )
 from contracts.topic import TOPIC_MAX_CHARS
@@ -569,6 +570,7 @@ class ProviderRejectionRow(Base):
     __table_args__ = (
         _check("provider", ProviderCall, "ck_provider_rejections_provider"),
         _check("rejected_input", RejectedInput, "ck_provider_rejections_rejected_input"),
+        _check("category", RejectionCategory, "ck_provider_rejections_category"),
         Index("ix_provider_rejections_episode_scene", "episode_id", "scene_id"),
         Index("ix_provider_rejections_source_media", "provider", "source_media_sha256"),
     )
@@ -584,6 +586,8 @@ class ProviderRejectionRow(Base):
     )
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     rejected_input: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: 復旧を分岐させる分類（ADR-0035 (8)。``contracts.states.RejectionCategory``）
+    category: Mapped[str] = mapped_column(String(24), nullable=False)
     source_media_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: provider のエラー種別の JSON 配列（例: ``["content_policy_violation"]``）
     types: Mapped[str] = mapped_column(Text, nullable=False, default="[]")

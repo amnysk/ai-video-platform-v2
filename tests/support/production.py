@@ -25,6 +25,7 @@ from contracts.artifacts import (
     parse_script_artifact,
     parse_storyboard_artifact,
 )
+from contracts.states import RejectionCategory
 from domain.errors import ProviderRejection, ProviderSubmitAmbiguousError
 from domain.production.ports import (
     ImageRequest,
@@ -254,6 +255,7 @@ LIKENESS_REJECTION = ProviderRejection(
         "or other private information that cannot be processed."
     ),
     http_status=422,
+    category=RejectionCategory.CONTENT_POLICY,
 )
 
 
