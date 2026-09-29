@@ -151,3 +151,101 @@ infrastructure contracts docs`:
   （Fake コーパスの `TIMEOUT_URL` に当たる 関ヶ原 の claim が該当）。取得の一時障害を穴として扱うかは
   ADR-0037 §8.2 の変更になるので、ここでは変えずに記録する。
 - 台本工程への接続（B6）が入るまで、照合は API や Workflow からは呼ばれない（操作とテストだけ）。
+
+## 追記 B6（2026-09-30）: 台本工程（ScriptWorkflow）への opt-in 接続
+
+### Status
+
+Accepted (2026-09-30)。Research Tier B の B6。**既定 OFF**。OFF のとき台本工程の挙動・prompt・版・同一性・
+Temporal の履歴・出力は接続前（f209e7c）とバイト単位で同じ（INV-37 の機械検査に足した）。
+
+### Context
+
+B4 は照合の**操作**（`ScriptVerifier`）だけを置き、台本工程からは呼ばれなかった。旧ブランチの Evidence
+ループ（`ScriptWorkflow._run_with_evidence`: 依頼 → 子 `ResearchWorkflow` → 根拠つきで書き直し → 照合 →
+follow-up ≤ `max_followup_rounds` → block）は、依頼を Gateway を通さずに直接作り、書き直しのたびに
+`codex_script` の予約（有料の呼び出し）を増やし、Storyboard の入場を検証済み台本に絞っていた（旧 INV-31）。
+base では Storyboard / Upload は本番の所有のまま（ADR-0037 §9）で、Research が Episode を止めてはならない
+（INV-37）。
+
+### Decision
+
+1. **切り替えは planning worker の設定** `SCRIPT_EVIDENCE_ENABLED`（`Settings.script_evidence_enabled`、既定
+   `false`）。ON の worker は `EvidenceScriptWorkflow`（同じ名前 `ScriptWorkflow` の派生クラス）と Activity
+   `script_evidence_check` を登録する。OFF の worker は接続前と同じ `ScriptWorkflow` と Activity だけを登録し、
+   Research のコード（`workers/planning/research_wiring.py` 以下）を import しない。`YOUTUBE_CHANNEL_ID` が
+   無ければ ON でも接続しない（Research の依頼は channel id で束ねる）。
+   `PipelineOptions` / `ScriptWorkflowInput` / `ScriptWorkflowResult` には欄を足さない: Temporal の既定の
+   converter は dataclass の欄を `null` でも書くので、欄を足すだけで Schedule の入力と子 workflow の入力の
+   バイト列が変わる（OFF の履歴が接続前と同じ、を満たせない）。
+2. **replay 安全**: 分岐は台本の生成が成功した後・`script_mark_ready` の前に 1 か所だけ置き、
+   `workflow.patched("script-evidence-b6")` で履歴に記録する。OFF の worker の**新しい実行**は `patched` を
+   呼ばない（marker を書かない）。replay 中だけは OFF の worker も `patched` を呼ぶ（履歴の marker の有無を
+   返すだけでコマンドを作らない）ので、ON で始まった実行を OFF に戻した worker でも止まらずに再現できる。
+   f209e7c の `ScriptWorkflow` で取った履歴
+   （`tests/unit/fixtures/script_workflow_off_path_history.json`）を両方のクラスで replay して検査する。
+3. **1 本の Activity**（`workers/planning/script_evidence_activities.py`）: 台本を読み戻して sha256 を照合 →
+   主張の候補（決定的な網 `detect_candidates` ∪ `ClaimExtractor`。`fake` のときだけ Fake、実 LLM は配線しない）
+   → **Gateway 経由で** Evidence を依頼（冪等キー `script-evidence:{episode_id}:{台本 sha256 の先頭 32}`、
+   `episode_id` は research 側の参照、`time_window` は固定の窓で同じ台本は同じ意味）→ `queued` なら
+   `ResearchWorkflow` を起動（`infrastructure/temporal/research_starter.py`）→ DB を読んで最大 15 分
+   （`SCRIPT_EVIDENCE_WAIT_SECONDS`）待つ（heartbeat）→ `completed` のときだけ `ScriptVerifier` で照合して、
+   照合結果（research の成果物、Evidence の依頼が所有）の参照を返してログに残す。
+   子 workflow ではなく Activity の poll を選んだ: Workflow が Research の名前・queue を知らずに済み（INV-3、
+   `tests/architecture/test_daily_does_not_wait_for_research.py` の対象ファイルは変えない）、待つ上限と
+   起動の冪等を 1 か所で持てる。
+4. **助言**: 照合の結論（`passed` / `failed` / `insufficient`）でも、`completed` 以外（`blocked` / `partial` /
+   `failed`）でも、待つ上限の超過でも、Activity の失敗（retry 2 回）でも、Workflow は `script_ready` へ進む。
+   INV-37 の「`completed` でなければ調査なし」をそのまま適用する。ON のとき台本工程は最大で約 20 分
+   （待つ上限 + 余裕）長くなりうるが、Daily・pipeline は Research を名指さず待たない。
+5. **追跡**: 本番の表に列を足さない。Episode との対応は `research_requests.episode_id`（参照）と照合結果の
+   `episode_id` / `script_ref`、worker のログ（依頼 ID・状態・結論・照合結果の ID）で辿る。
+6. **Strategy**: コードを変えない。聴き手の説明は Episode の Topic Plan の strategy（無ければ設定の既定）の
+   `StrategyProfile.audience_description` を**読むだけ**（旧ブランチと同じ）。
+7. **再開（base INV-30）**: 再開のエンドポイントは足さない。統一再開（`POST /episodes/{id}/resume`）が台本工程から
+   始めるときも、その時点の planning worker の設定に従う（worker の設定なので入力で運ぶものは無い）。
+   ON なら同じ台本（再利用）の照合をもう一度行い、冪等キーと鮮度キャッシュで同じ依頼に戻る。
+8. compose の `script-worker` に `SCRIPT_EVIDENCE_ENABLED`（既定 `false`）と `RESEARCH_PROVIDER`（既定 `none`。
+   api・research-worker と同じ門の値）を渡す。
+
+**移植しないもの（決定）**: 自動の台本書き直しループ（根拠の付録つきの再生成・follow-up のラウンド。1 ラウンド
+ごとに `codex_script` の有料呼び出しが増える）と、照合結果で台本工程を `blocked` にすること。Storyboard の
+検証済み台本ゲート（旧 INV-31）・`POST /episodes/{id}/script`・旧 replay fixture は ADR-0037 §9 のまま移植しない。
+
+**既存テストの変更（この節が承認する）**:
+- `tests/contract/test_research_worker_compose.py::test_the_provider_is_only_given_to_the_api_and_the_research_worker`
+  の列挙に `script-worker` を**足した**（B3 が `WORKERS` に research-worker を足した前例と同じ）。script-worker が
+  同じ既定値で受け取ることも同じテストで検査する（緩めていない）。
+- `tests/architecture/test_daily_does_not_wait_for_research.py` は docstring に B6 の追記だけを足した（検査は不変）。
+- `tests/architecture/test_research_isolation.py` に接続モジュールの検査を**足した**（検査が広がる側）。
+
+**読み手・書き手（AGENTS.md §8 の grep 記録、B6）**: `grep -rn "<key>" apps/ workers/ domain/ infrastructure/
+contracts/ docs/ compose.yaml prompts/` を B5 の commit（81fa6d6）の上で、変更の前に実行した結果:
+
+| キー | 件数 | 分類 |
+|---|---|---|
+| `script_evidence_enabled` / `SCRIPT_EVIDENCE_ENABLED` | 0 / 0 | 新規（`infrastructure/config.py` が唯一の定義。読み手は `workers/planning/run_worker.py` と `research_wiring.py`、書き手は compose の script-worker） |
+| `script_evidence_check` / `script-evidence` | 0 / 0 | 新規（Activity 名と patch id。`workers/planning/script_evidence.py` が唯一の定義） |
+| `EvidenceScriptWorkflow` | 0 | 新規（`workers/planning/workflows.py`） |
+| `RESEARCH_PROVIDER` | 32 | 読み手 1（`infrastructure/config.py` の `research_provider`）・書き手 2（compose の api / research-worker。compose の 3 件目はコメント）。残りは定義・docstring・設計書と運用手順の言及。B6 で書き手に script-worker を足した |
+
+### Alternatives
+
+- **(a) `PipelineOptions` / `ScriptWorkflowInput` に `evidence` の欄を足す（旧実装）**: 既定 `None` でも converter が
+  `null` を書くので Schedule の入力と子 workflow の入力のバイト列が変わる。Schedule の登録（`schedules.py`・
+  `scripts/ensure-daily-schedule.py`）と pipeline の変更も要る。採らない。
+- **(b) 子 `ResearchWorkflow` を ScriptWorkflow から起動して待つ（旧実装）**: Workflow が Research の workflow 名と
+  queue を知る。research-worker が落ちていると待つ上限まで子の完了が来ない（期限は子の execution timeout で
+  切ることになり、Research を途中で殺す）。採らない（Activity の poll。Research は止めない）。
+- **(c) 自動の書き直しループを移植する**: 1 Episode あたりの Codex の呼び出しが増え、照合の結論で工程を止める
+  経路ができる（INV-37 の「Research で Episode を止めない」に反する）。採らない。
+- **(d) OFF の worker でも `patched` を常に呼ぶ**: 新しい実行の履歴に marker が増え、OFF の履歴が接続前と
+  同じでなくなる。採らない（replay 中だけ呼ぶ）。
+
+### Consequences
+
+- 良い: OFF の履歴・prompt・同一性は接続前と同じ（golden と f209e7c の履歴で検査）。ON でも Episode は止まらない。
+  依頼は Gateway の予算の門・鮮度キャッシュ・冪等キーを通る。
+- 悪い: ON のとき台本工程が最大約 20 分長くなる。照合の結論は今は**ログと research の成果物にだけ**残り、
+  台本や後工程には反映されない（書き直しは移植していない）。設定は worker 単位で、Episode ごとには選べない。
+  `RESEARCH_PROVIDER` を script-worker と research-worker で食い違わせると依頼が `blocked` になる（安全側）。

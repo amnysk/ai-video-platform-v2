@@ -56,8 +56,14 @@ def test_the_api_reads_the_same_provider_setting(compose) -> None:
 
 
 def test_the_provider_is_only_given_to_the_api_and_the_research_worker(compose) -> None:
+    """B6（ADR-0038 §B6）で script-worker も Evidence の依頼の門として同じ変数を読む。
+
+    script-worker は opt-in の Evidence 照合を Gateway 経由で依頼するので、門の値が api・
+    research-worker と食い違うと依頼が ``blocked`` になる。同じ既定で渡すことも検査する。
+    """
     having = {name for name, svc in compose["services"].items() if PROVIDER_ENV in _env(svc)}
-    assert having == {"api", "research-worker"}
+    assert having == {"api", "research-worker", "script-worker"}
+    assert _env(compose["services"]["script-worker"])[PROVIDER_ENV] == EXPECTED_PROVIDER
 
 
 def test_the_research_worker_has_no_codex_sandbox_exceptions(compose) -> None:

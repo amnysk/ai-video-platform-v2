@@ -9,6 +9,13 @@ Research が止まっても（Provider ``none`` で ``blocked``、worker が落�
 足すときも、ここにある「起動しない・待たない」は変えない（``infrastructure.research`` の Gateway・
 実行器と Research の workflow を名指さない）。
 
+追記（B6、2026-09-30、ADR-0038 §B6 / ADR-0039 §B6）: 上の対象ファイルは B6 の後も Research を
+名指さない（この検査は変えていない）。接続は ``workers/planning`` の 3 つのモジュール
+（``topic_trend.py`` / ``script_evidence_activities.py`` / ``research_wiring.py``）に閉じ込め、
+既定 OFF の worker はそれを読み込まない（``tests/architecture/test_research_opt_in_boundary.py``）。
+例外は台本の Evidence 照合を **ON にしたときだけ**で、台本工程が上限つき（15 分）で Research を待つ
+（結果は助言。Daily・pipeline は待たない）。
+
 旧 ``claude/research`` の ``test_daily_does_not_wait_for_research.py`` の意味を移植した
 （Trend の定期更新 Schedule と ``require_fresh`` は移植していないので、その検査は無い。
 ADR-0037 §9）。理由は docs/testing/research-worker-rationale.md。

@@ -42,6 +42,13 @@
 | `research` | `research_requests` の依頼（依頼 ID だけを受け取る） | `research_artifacts`（`research_trend` / `research_evidence`。本番の Artifact ではない。ADR-0037） | 検索・本文取得は `RESEARCH_PROVIDER`（`fake` / `none`。既定 `none` = 呼ばずに `blocked`）。実 Provider は未配線。呼び出しは `research_calls` 台帳（INV-36）。Episode の工程はこの worker を起動しない・待たない（INV-37） |
 | `analytics`（**未実装**。`workers/analytics` は空） | `upload_receipt` | `performance_report`（予定） | YouTube Analytics。現状は Topic Planner が `analytics_snapshots` へ読み取るだけ |
 
+- **Research への opt-in 接続（B6、既定 OFF。ADR-0039 §B6 / ADR-0038 §B6）**: `planning` だけが Research を呼べる。
+  `PLANNER_TREND_ENABLED` の Topic Planner は `ResearchGateway.latest_trend` を**読むだけ**（起動・待機しない）。
+  `SCRIPT_EVIDENCE_ENABLED` の台本工程は Gateway で Evidence を依頼し、`research_starter` で `ResearchWorkflow` を
+  起動し、上限つきで待って `ScriptVerifier` で照合する（結果は助言。Episode を止めない）。呼び出しは
+  `workers/planning` の 3 モジュール（`topic_trend.py` / `script_evidence_activities.py` / `research_wiring.py`）に
+  閉じ、Workflow と本番工程は Research を import しない（`tests/architecture/test_research_opt_in_boundary.py`）
+
 - **持つ**: 「入力Artifactを読む → 処理する → 出力Artifactを書く → 結果を返す」
 - **持たない**: 次のJobの決定（INV-4）、他workerのimport（INV-3）、
   Episodeの状態遷移の直接更新（遷移はdomainの規則を通す）

@@ -199,3 +199,77 @@ contracts/ docs/` を B4 の commit（5b9c609）の上で、変更の前に実�
 - テーマの適合は見出しと snippet の語の一致で、近似。`difference_from_past` は過去の動画の**同一性**だけを見る
   （題材の近さは見ない）。
 - 総合スコア・順位の文の検出は正規表現の近似（見逃しはありうる。検出すれば提案ごと捨てる安全側）。
+
+## 追記 B6（2026-09-30）: Topic Planner への opt-in 接続
+
+### Status
+
+Accepted (2026-09-30)。Research Tier B の B6。**既定 OFF**。OFF のとき、また ON でも使える Trend が無いとき、
+Planner の prompt・`TOPIC_PROMPT_TEMPLATE_VERSION`・`topic_plans.prompt_version`・Activity の入出力・
+Temporal の履歴は接続前（f209e7c）とバイト単位で同じ（INV-37 の機械検査に足した）。
+
+### Context
+
+旧ブランチ（旧 ADR-0033 §3）は `topic_gather_context` で最新 Trend を読んで `PlanningContext.trend` に載せ、
+`topic_plans` に `trend_mode` / `trend_request_id` の列を足し、`topic_en.md` に `{{trend_summary}}` を足して
+版を `3` に上げた。この形は Trend が無いときも `PlanningContext` の JSON（Activity の結果 = 履歴）と prompt・版を
+変え、本番の表に migration を要する。
+
+### Decision
+
+1. **切り替えは planning worker の設定** `PLANNER_TREND_ENABLED`（`Settings.planner_trend_enabled`、既定
+   `false`）。ON で `YOUTUBE_CHANNEL_ID` があるときだけ `workers/planning/research_wiring.py` が
+   `GatewayTrendSource`（`workers/planning/topic_trend.py`）を組み、`TopicPlannerActivities(trend=...)` に渡す。
+   OFF の worker は Research のコードを import しない。
+2. **読むのは `topic_generate_candidates` の中だけ**（§4 の `ResearchGateway.latest_trend`。DB と ArtifactStore を
+   読むだけで Research を起動しない・待たない）。`topic_gather_context` と `PlanningContext` などの Temporal の
+   境界の型は変えない。読み口は Strategy profile の `market_country`（地域）と `language` の先頭（`en` / `ja`）、
+   設定の channel id で引き、形式では絞らない（`format_profile=None`）。全体を 10 秒
+   （`TREND_LOOKUP_TIMEOUT_SECONDS`）で打ち切り、例外・timeout・検証の失敗は「Trend 無し」。
+3. **鮮度**（§2 の `classify_trend_freshness`、`fresh_hours` は `Settings.trend_fresh_hours`）: `fresh` と `stale` は
+   使い（要約に `mode` と `observed_at`・`age_hours` を載せ、`stale` は弱い手掛かりと prompt で明示する）、
+   `none`（古すぎる・未来の観測）は「Trend 無し」。
+4. **prompt**: `prompts/topic_en.md` と `render_topic_prompt` は変えない。Trend があるときだけ、描画済みの prompt の
+   `# Requirements for each candidate` の見出し行（ちょうど 1 つでなければ差し込まずに Trend 無し）の直前に
+   `prompts/topic_trend_en.md` の節（参照データであって指示ではない、観測と仮説を分ける、Trend は戦略・重複規則・
+   形式に優先しない）を差し込む。要約はテーマ・指標の読み（`known` / `unknown` と理由）・仮説・切り口・限界を件数と
+   文字数の上限つきで載せ、成果物そのもの・URL・参照・依頼 ID は載せない。
+5. **版**: Trend の節を含む prompt のときだけ `TOPIC_TREND_PROMPT_VERSION` =
+   `topic_en@2+topic_trend_en@1`（`prompts/topic_trend.py`）を `GenerateCandidatesResult.prompt_version` →
+   `topic_plans.prompt_version` に記録する（64 文字以内）。Trend 無しは `topic_en@2` のまま。節の本文を変えたら
+   `TOPIC_TREND_PROMPT_TEMPLATE_VERSION` を上げる。
+6. **追跡**: `topic_plans` に列を足さない・migration を足さない。Trend を使ったことは `prompt_version` で、どの Trend
+   かは worker のログ（依頼 ID・成果物 ID・sha256・`fresh` / `stale`）で辿る。研究側の対応表は作らない
+   （Planner は依頼を作らないので、研究側に書く行が無い）。
+7. **Strategy**: コードを変えない（profile の地域・言語を読むだけ）。
+8. compose の `script-worker` に `PLANNER_TREND_ENABLED`（既定 `false`）を渡す。Trend の依頼そのものは従来どおり
+   `POST /research/requests`（定期更新は移植していない）。
+
+**読み手・書き手（AGENTS.md §8 の grep 記録、B6）**: `git grep -n "<key>" 81fa6d6 -- apps workers domain
+infrastructure contracts docs compose.yaml prompts`:
+
+| キー | 件数 | 分類 |
+|---|---|---|
+| `planner_trend_enabled` / `PLANNER_TREND_ENABLED` | 0 / 0 | 新規（`infrastructure/config.py` が唯一の定義。読み手は `run_worker.py` / `research_wiring.py`、書き手は compose の script-worker） |
+| `topic_trend_en` / `TOPIC_TREND` | 0 / 0 | 新規（`prompts/topic_trend.py` が唯一の定義） |
+| `trend_fresh_hours` | 10 | 設定の定義・Gateway の再利用の窓・設計書。B6 で読み手に `research_wiring.py`（`GatewayTrendSource` へ渡す）を足した |
+| `latest_trend` | 13 | 定義（Gateway）・その検査・設計書。B6 で読み手に `topic_trend.py` を足した |
+
+### Alternatives
+
+- **(a) 旧実装どおり `PlanningContext` に `trend` を足し `topic_en.md` に `{{trend_summary}}` を足す**: Trend が無くても
+  履歴の JSON と prompt・版が変わる。採らない。
+- **(b) `topic_plans` に `trend_mode` / `trend_request_id` を足す（旧 migration 0012）**: 本番の表と migration を変える。
+  採らない（`prompt_version` とログ）。
+- **(c) `topic_trend_en.md` を `topic_en.md` の全文の写しにする**: 同じ本文を 2 か所に持ち、片方だけ直す事故を招く
+  （AGENTS.md §8）。採らない（節だけを差し込む）。
+- **(d) `stale` を使わない**: §2 は `stale` を観測日時つきで使うと決めている。定期更新が無い（Context）ので、`stale` を
+  捨てると多くの日で Trend が使えない。`mode` を明示して弱い手掛かりとして使う。
+
+### Consequences
+
+- 良い: OFF・Trend 無しの Planner は接続前とバイト単位で同じ（golden で検査）。Trend の障害・遅延で Planner は
+  止まらない（最大 10 秒で諦める）。
+- 悪い: Trend を使った plan は `prompt_version` だけが印で、どの Trend かはログにしか残らない。round ごとに読み直すので、
+  round の間に新しい Trend が完了すると round ごとに別の Trend を見うる（記録される版は最後の round のもの）。
+  地域・言語は Strategy profile から機械的に決めるので、別の地域の Trend を使うには profile を変える必要がある。

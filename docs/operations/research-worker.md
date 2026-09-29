@@ -31,7 +31,8 @@ Provider が未設定でも、Episode の工程は変わらずに進む。
   `RESEARCH_MAX_YOUTUBE_UNITS`）が両方とも要り、どちらかが無ければ呼ぶ前に `blocked`（`budget_not_set`）。
 - `.env` の `RESEARCH_PROVIDER` は api と research-worker の**両方**が読む。片方だけ変えると、受け付けか実行の
   どちらかの門で `blocked` になる（安全側）。変えたら両方を作り直す:
-  `docker compose --profile core up -d api research-worker`。
+  `docker compose --profile core up -d api research-worker`。台本の Evidence 照合（`SCRIPT_EVIDENCE_ENABLED`、
+  既定 OFF）を使うなら script-worker も同じ値を読む（B6。`up -d api research-worker script-worker`）。
 - **Evidence と Trend の Handler がある**（ADR-0038 / ADR-0039）。`fake` では Evidence は Fake 検索・Fake 取得・
   Fake 評価器（`FakeEvidenceAssessor`）で `research_evidence` を、Trend は Fake 検索・Fake 解釈器
   （`FakeTrendInterpreter`）で `research_trend` を作る（Trend は本文を取得しない）。
@@ -108,15 +109,16 @@ scripts/smoke-workers.sh                                           # research-wo
   `interpreter proposal rejected`）・検索の失敗・統計の欠け・`call_budget_exhausted`。観測は残るが、
   **呼び出し側は `completed` 以外を「Trend 無し」として扱う**。
 - 読み口 `ResearchGateway.latest_trend(channel_id, region, language)` は、最新の `completed` の Trend を
-  保存物の sha256 を照合してから返す。照合できなければ `None`（古い Trend に戻らない）。まだ API や企画工程からは
-  呼ばれない（Topic Planner への接続は B6。既定 OFF）。
+  保存物の sha256 を照合してから返す。照合できなければ `None`（古い Trend に戻らない）。Topic Planner は
+  `PLANNER_TREND_ENABLED`（既定 OFF）のときだけこれを読む（docs/operations/pipeline-worker.md、ADR-0039 §B6）。
 
 ### 台本の照合（ADR-0038 §4）
 
 `infrastructure/research/verification.py::ScriptVerifier.verify` が、台本の文面と Evidence の成果物
 （その依頼の現行の `research_evidence`）を照合して `research_script_verification` を Evidence の依頼の成果物
 として記録する。外部は呼ばない。結論は `passed` / `failed`（台本が根拠を越える）/ `insufficient`（根拠不足・
-Evidence が `completed` でない）。まだ API や台本工程からは呼ばれない（台本への接続は B6。既定 OFF）。
+Evidence が `completed` でない）。台本工程は `SCRIPT_EVIDENCE_ENABLED`（既定 OFF）のときだけ、Evidence を依頼して
+これを呼ぶ（結果は助言。docs/operations/pipeline-worker.md、ADR-0038 §B6）。
 
 ### `blocked` の依頼を再開する
 
@@ -136,4 +138,5 @@ worker が戻ったときに続きから実行される（成功済みの呼び�
   （`tests/contract/test_research_worker_compose.py`）。
 - テスト・CI から実 Provider を呼ばない（AGENTS.md §9）。
 - Episode の workflow や日次の Schedule から Research を起動・待機させない（INV-37、
-  `tests/architecture/test_daily_does_not_wait_for_research.py`）。
+  `tests/architecture/test_daily_does_not_wait_for_research.py`）。例外は planning worker の opt-in の
+  Evidence 照合（`SCRIPT_EVIDENCE_ENABLED`、既定 OFF）だけで、上限つきで待ち、結果で Episode を止めない。

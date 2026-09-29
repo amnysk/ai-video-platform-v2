@@ -13,6 +13,9 @@ ADR-0037 は Research の永続化を本番の表から切り離した（owner-X
 4. Episode 本番工程（production / render / upload / storyboard / pipeline / 課金）は Research を
    import しない（待つ・失敗させる経路をコードの上に作らない）。企画・台本側の opt-in 接続は
    ADR-0037 の後続（B6）で、既定 OFF の検査とともに扱う
+5. （B6）企画・台本の接続モジュール（``workers/planning`` の 3 つ）は本番の課金コードと、本番の
+   Artifact・Job・予約のリポジトリを import しない（Episode の読み取りと Topic Plan の読み取り
+   だけ）。接続の境界と既定 OFF は ``tests/architecture/test_research_opt_in_boundary.py``
 
 理由は docs/testing/research-persistence-rationale.md。
 """
@@ -266,3 +269,34 @@ def test_research_execution_does_not_wire_a_real_provider() -> None:
             if any(name in value for name in REAL_PROVIDER_NAMES):
                 violations.append(f"{rel}: names {value[:80]!r}")
     assert not violations, "ADR-0037 §6:\n" + "\n".join(violations)
+
+
+#: B6 の接続モジュール（企画・台本 → Research）。Research を呼ぶ側で、Research そのものではない。
+PLANNING_LINK_PATHS: tuple[str, ...] = (
+    "workers/planning/topic_trend.py",
+    "workers/planning/script_evidence_activities.py",
+    "workers/planning/research_wiring.py",
+)
+#: 接続モジュールが本番のリポジトリから使ってよい名前（読み取りだけ）
+PLANNING_LINK_ALLOWED_REPOSITORIES: frozenset[str] = frozenset(
+    {"EpisodeRepository", "TopicPlanRepository"}
+)
+
+
+def test_the_planning_links_do_not_touch_production_billing_or_artifacts() -> None:
+    """B6: 接続が課金・本番の Artifact / Job / 予約に触れない（照合結果は research の成果物）。"""
+    violations: list[str] = []
+    for rel in PLANNING_LINK_PATHS:
+        path = REPO / rel
+        assert path.is_file(), rel
+        for module, names in _imports(path):
+            if _under(module, "infrastructure.production") or _under(
+                module, "infrastructure.artifact"
+            ):
+                violations.append(f"{rel}: imports {module}")
+            if _under(module, "infrastructure.db.repositories"):
+                extra = names - PLANNING_LINK_ALLOWED_REPOSITORIES
+                violations += [f"{rel}: imports {n} from {module}" for n in sorted(extra)]
+            for name in sorted(names & FORBIDDEN_NAMES):
+                violations.append(f"{rel}: imports {name} from {module}")
+    assert not violations, "INV-37:\n" + "\n".join(violations)

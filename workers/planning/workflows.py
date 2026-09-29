@@ -6,12 +6,20 @@
 Phase 1 の骨組みと違い、**有料Activityは Temporal の自動retryに委ねない**
 （ADR-0013）。`maximum_attempts=1` とし、retry は workflow のラウンドとして
 予約台帳を通す。自動retryに任せると課金呼び出しが台帳を経ずに増える。
+
+Evidence の照合（ADR-0038 §B6、opt-in・既定 OFF）: ``SCRIPT_EVIDENCE_ENABLED`` の worker は
+``EvidenceScriptWorkflow``（同じ名前 ``ScriptWorkflow``）を登録する。台本ができた後・
+``mark_script_ready`` の前に ``workflow.patched(SCRIPT_EVIDENCE_PATCH_ID)`` の分岐で 1 本の
+Activity を呼び、結果（助言）を記録するだけで、どの結果でも ``script_ready`` へ進む。
+OFF の worker の新しい実行は ``patched`` を呼ばないので、コマンドと履歴は接続前（f209e7c）と
+同じ（``tests/unit/test_script_evidence_workflow_opt_in.py``）。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import ClassVar
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -29,6 +37,16 @@ with workflow.unsafe.imports_passed_through():
         GenerateScriptRequest,
         RecordFailureRequest,
         ScriptActivities,
+        ScriptResult,
+    )
+    from workers.planning.script_evidence import (
+        SCRIPT_EVIDENCE_CHECK,
+        SCRIPT_EVIDENCE_HEARTBEAT_TIMEOUT,
+        SCRIPT_EVIDENCE_PATCH_ID,
+        SCRIPT_EVIDENCE_RETRY_POLICY,
+        SCRIPT_EVIDENCE_START_TO_CLOSE,
+        ScriptEvidenceOutcome,
+        ScriptEvidenceRequest,
     )
 
 STATE_ACTIVITY_TIMEOUT = timedelta(seconds=30)
@@ -68,6 +86,10 @@ class ScriptWorkflowResult:
 
 @workflow.defn(name="ScriptWorkflow")
 class ScriptWorkflow:
+    #: 新しい実行で Evidence を照合するか（ADR-0038 §B6）。既定 OFF。
+    #: ON の worker は ``EvidenceScriptWorkflow`` を登録する
+    evidence_for_new_runs: ClassVar[bool] = False
+
     @workflow.run
     async def run(self, request: ScriptWorkflowInput) -> ScriptWorkflowResult:
         episode_ref = EpisodeRef(episode_id=request.episode_id)
@@ -103,6 +125,9 @@ class ScriptWorkflow:
                     break
                 continue
 
+            if self._takes_evidence_branch():
+                await self._check_evidence(request.episode_id, result)
+
             status: str = await workflow.execute_activity_method(
                 ScriptActivities.mark_script_ready,
                 episode_ref,
@@ -120,6 +145,50 @@ class ScriptWorkflow:
 
         assert last_error is not None
         return await self._settle_failure(request, job_id, last_error)
+
+    def _takes_evidence_branch(self) -> bool:
+        """Evidence の分岐に入るか。
+
+        OFF の worker の**新しい実行**では ``patched`` を呼ばない（marker を書かない =
+        履歴は接続前と同じ）。replay 中は ``patched`` が履歴の marker の有無を返すだけで
+        コマンドを作らないので、ON で始まった実行を OFF の worker が引き継いでも同じ分岐を
+        再現できる（逆も同じ）。
+        """
+        if not (self.evidence_for_new_runs or workflow.unsafe.is_replaying()):
+            return False
+        return workflow.patched(SCRIPT_EVIDENCE_PATCH_ID)
+
+    @staticmethod
+    async def _check_evidence(episode_id: str, result: ScriptResult) -> None:
+        """Evidence の依頼・待機・照合（1 本の Activity）。
+
+        **助言**: どの結果でも・失敗しても台本工程は進む（INV-37）。
+        """
+        try:
+            outcome: ScriptEvidenceOutcome = await workflow.execute_activity(
+                SCRIPT_EVIDENCE_CHECK,
+                ScriptEvidenceRequest(
+                    episode_id=episode_id,
+                    artifact_id=result.artifact_id,
+                    object_key=result.object_key,
+                    sha256=result.sha256,
+                ),
+                result_type=ScriptEvidenceOutcome,
+                start_to_close_timeout=SCRIPT_EVIDENCE_START_TO_CLOSE,
+                heartbeat_timeout=SCRIPT_EVIDENCE_HEARTBEAT_TIMEOUT,
+                retry_policy=SCRIPT_EVIDENCE_RETRY_POLICY,
+            )
+        except ActivityError as err:
+            cause = err.cause
+            kind = cause.type if isinstance(cause, ApplicationError) else type(cause).__name__
+            workflow.logger.warning("script evidence check did not finish (%s); continuing", kind)
+            return
+        workflow.logger.info(
+            "script evidence: %s (research %s, verdict %s)",
+            outcome.outcome,
+            outcome.research_request_id,
+            outcome.verdict,
+        )
 
     @staticmethod
     def _failure_class(err: ActivityError) -> FailureClass:
@@ -159,3 +228,17 @@ class ScriptWorkflow:
             retry_policy=STATE_RETRY_POLICY,
         )
         return ScriptWorkflowResult(episode_id=request.episode_id, status=outcome.episode_status)
+
+
+@workflow.defn(name="ScriptWorkflow")
+class EvidenceScriptWorkflow(ScriptWorkflow):
+    """``SCRIPT_EVIDENCE_ENABLED`` の worker が登録する ``ScriptWorkflow``（ADR-0038 §B6）。
+
+    新しい実行で Evidence の分岐に入る（``patched`` の marker を履歴に残す）。それ以外は同じ。
+    """
+
+    evidence_for_new_runs: ClassVar[bool] = True
+
+    @workflow.run
+    async def run(self, request: ScriptWorkflowInput) -> ScriptWorkflowResult:
+        return await super().run(request)

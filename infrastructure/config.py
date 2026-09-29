@@ -196,6 +196,12 @@ class Settings(BaseSettings):
     #: ``blocked``（ADR-0037 §6）。Fake / none には影響しない
     research_max_cost_usd: Decimal | None = None
     research_max_youtube_units: int | None = None
+    #: B6 の opt-in（既定 OFF）。OFF のとき planning worker は Research のコードを読み込まず、
+    #: prompt・版・Temporal の履歴は接続前と同じ（ADR-0039 §B6 / ADR-0038 §B6、INV-37）。
+    #: Topic Planner が確定済みの最新 Trend（検証済み・鮮度つき）を prompt に参考として載せる
+    planner_trend_enabled: bool = False
+    #: 台本の後に Evidence を依頼して照合する（助言だけ。結果で Episode を止めない）
+    script_evidence_enabled: bool = False
 
     @field_validator("topic_strategy_profile_id")
     @classmethod

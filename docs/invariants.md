@@ -336,10 +336,25 @@ Research は `jobs` / `artifact_metadata` / `provider_reservations` / `provider_
 `PaidJobRunner`）を import しない。research の表は research の表だけを FK で指し、本番の表は research の表を
 指さない。本番の工程（production / render / upload / storyboard / pipeline / 課金）は Research を
 import しない。Research の結果が `completed` でなければ、呼び出し側は「調査なし」として調査前の挙動で続ける。
+「待たない」は既定（opt-in OFF）の意味で、唯一の例外は `SCRIPT_EVIDENCE_ENABLED` の台本工程である。そこでは
+`script_ready` の前に上限つき（`SCRIPT_EVIDENCE_START_TO_CLOSE` × `SCRIPT_EVIDENCE_RETRY_POLICY` の試行回数）で
+照合を待つが、どの結果・失敗・timeout でも Episode は止まらない（助言。ADR-0038 §B6）。
 **機械検査**: `tests/architecture/test_research_isolation.py`
 / `tests/contract/test_migration_0015_research.py::test_upgrade_adds_only_research_tables_and_leaves_production_tables_alone`
 / `tests/contract/test_migration_0015_research.py::test_research_tables_only_reference_research_tables`
 / `tests/architecture/test_research_isolation.py::test_research_execution_does_not_wire_a_real_provider`
 / `tests/architecture/test_daily_does_not_wait_for_research.py`（日次・pipeline・企画・台本は Research の
 workflow・queue・起動・実行器を名指さない。ADR-0037 §8.5）
-（企画・台本への opt-in 接続が既定 OFF で出力を変えないことの検査は、接続を入れる段（ADR-0037 §7）で足す）
+/ `tests/unit/test_research_opt_in_off_path.py`（B6: 企画・台本への opt-in 接続は既定 OFF。OFF の worker は
+Research のコードを読み込まず、登録する workflow・Activity、Topic の prompt テンプレートと版、台本の同一性は
+f209e7c と同じ）
+/ `tests/unit/test_planner_trend_opt_in.py::test_off_prompt_and_version_are_byte_identical_to_f209e7c`
+（OFF と「Trend 無し」の Planner の prompt・版は f209e7c の golden とバイト単位で同じ）
+/ `tests/unit/test_script_evidence_workflow_opt_in.py::test_the_f209e7c_off_history_replays_on_both_workers`
+/ `tests/unit/test_script_evidence_workflow_opt_in.py::test_a_new_off_run_has_the_same_history_shape_as_f209e7c`
+（OFF の ScriptWorkflow の履歴は接続前と同じ。ON の照合は結果によらず `script_ready` へ進む助言:
+`::test_an_on_run_checks_evidence_once_and_always_reaches_script_ready`）
+/ `tests/architecture/test_research_opt_in_boundary.py`（接続は `workers/planning` の 3 モジュールに閉じる。
+Workflow と本番工程はそれを import しない）
+/ `tests/architecture/test_research_isolation.py::test_the_planning_links_do_not_touch_production_billing_or_artifacts`
+（B6 で追加。ADR-0038 §B6 / ADR-0039 §B6）
