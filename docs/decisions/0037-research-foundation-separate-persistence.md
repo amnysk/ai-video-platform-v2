@@ -261,6 +261,10 @@ B3 の Worker は、research の Activity の `RetryPolicy.non_retryable_error_t
 - `RESEARCH_PROVIDER` の既定は `none`（依頼は外部を呼ばずに `blocked`）。受け付けの門（api）と実行の門（worker）
   が**同じ変数**を読む（compose の api にも同じ既定で渡す）。片方だけ `fake` にしても、もう片方の門で
   `blocked` になる（fail-closed）。
+- 未知・誤記の `RESEARCH_PROVIDER` は設定の読み込みで `none` へ落とし、警告を出すだけで起動は止めない
+  （2026-09-30 追記。B6 で script-worker も同じ変数を受け取るため、検証エラーにすると Research を使っていない
+  日次の企画・台本の worker まで起動できなくなる。独立レビューの指摘による。検査:
+  `tests/unit/test_research_registry.py::test_only_fake_and_none_are_modes_and_an_unknown_value_falls_back_to_none`）。
 - compose / deploy / smoke / Makefile / docs は f67e95b（scene-alternative-worker）の型に倣う:
   `compose.yaml`、`scripts/deploy-workers.sh` の `APP_SERVICES`、`scripts/smoke-workers.sh` の `QUEUES` と
   `ALL_WORKERS`、`Makefile` の `workers-logs`、`docs/operations/workers.md`。旧ブランチは smoke と Makefile を

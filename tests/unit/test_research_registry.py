@@ -5,9 +5,6 @@
 
 from __future__ import annotations
 
-import pytest
-from pydantic import ValidationError
-
 from contracts.research import RESEARCH_PROVIDER_MODES, ResearchKind
 from domain.research.evidence_handler import EvidenceHandler
 from domain.research.trend_handler import TrendHandler
@@ -46,10 +43,18 @@ def test_fake_builds_the_fixed_corpus_providers() -> None:
     assert providers.is_real is False
 
 
-def test_only_fake_and_none_are_accepted() -> None:
+def test_only_fake_and_none_are_modes_and_an_unknown_value_falls_back_to_none() -> None:
+    """未知・誤記の ``RESEARCH_PROVIDER`` で ``Settings()`` を落とさない（ADR-0037 §8.5）。
+
+    script-worker も B6 でこの値を受け取るので、起動エラーにすると Research を OFF にしていても
+    日次の企画・台本の worker が止まる。未知の値は ``none``（依頼は ``blocked``）へ落とす。
+    """
     assert set(RESEARCH_PROVIDER_MODES) == {"fake", "none"}
-    with pytest.raises(ValidationError):
-        _settings(research_provider="youtube")
+    for value in ("youtube", "FAKE ", "", "some-future-provider"):
+        settings = _settings(research_provider=value)
+        assert settings.research_provider == "none"
+        assert build_providers(settings).configured is False
+    assert _settings(research_provider="fake").research_provider == "fake"
 
 
 def test_unknown_modes_count_as_real_and_unconfigured() -> None:

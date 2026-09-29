@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 from pydantic import SecretStr, field_validator
@@ -34,6 +35,7 @@ from contracts.render import (
 from contracts.research import (
     DEFAULT_RESEARCH_PROVIDER,
     EVIDENCE_REVERIFY_DAYS,
+    RESEARCH_PROVIDER_MODES,
     TREND_FRESH_HOURS,
     ResearchProviderMode,
 )
@@ -202,6 +204,21 @@ class Settings(BaseSettings):
     planner_trend_enabled: bool = False
     #: 台本の後に Evidence を依頼して照合する（助言だけ。結果で Episode を止めない）
     script_evidence_enabled: bool = False
+
+    @field_validator("research_provider", mode="before")
+    @classmethod
+    def _research_provider_fails_closed(cls, v: object) -> object:
+        """未知・誤記の値は ``none``（依頼は ``blocked``）へ落とし、起動は止めない。
+
+        ADR-0037 §8.5。script-worker もこの値を読むので、検証エラーにすると
+        Research を使っていない日次の企画・台本まで止まる。
+        """
+        if v in RESEARCH_PROVIDER_MODES:
+            return v
+        logging.getLogger(__name__).warning(
+            "unknown RESEARCH_PROVIDER %r; falling back to %r", v, DEFAULT_RESEARCH_PROVIDER
+        )
+        return DEFAULT_RESEARCH_PROVIDER
 
     @field_validator("topic_strategy_profile_id")
     @classmethod

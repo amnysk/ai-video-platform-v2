@@ -34,7 +34,7 @@
 |---|---|
 | `test_the_default_provider_is_none_and_builds_nothing_that_can_call_out` | 既定の `none` で外部を呼べる Provider を組むと、設定の無い環境で調査が外に出る |
 | `test_fake_builds_the_fixed_corpus_providers` | `fake` は固定コーパスの Fake だけを組む |
-| `test_only_fake_and_none_are_accepted` | 実 Provider の名前を設定値として受けない（選定は所有者の判断と ADR を待つ） |
+| `test_only_fake_and_none_are_modes_and_an_unknown_value_falls_back_to_none` | 実 Provider の名前を有効な値にしない（選定は所有者の判断と ADR を待つ）。ただし未知・誤記の値で `Settings()` を落とさず `none` へ落とす。script-worker も同じ変数を読むので、起動エラーは Research を使っていない日次の企画・台本まで止める（2026-09-30 変更） |
 | `test_unknown_modes_count_as_real_and_unconfigured` | 将来の設定値が登録前に紛れ込んでも、予算の門と Provider の門の両方で止まる側に倒れる |
 | `test_the_provider_config_version_separates_fake_results_from_other_modes` | Fake の結果が別の Provider 設定の依頼に再利用されると、本物の調査の代わりに固定コーパスの結果を使ってしまう |
 | `test_exactly_the_evidence_and_trend_handlers_are_registered` | B2 には種別ごとの Handler が無く、この欄は `test_no_kind_specific_handler_is_registered_yet` だった。B4（ADR-0038 §6）で Evidence を登録して `test_only_the_evidence_handler_is_registered` に、B5（ADR-0039 §6）で Trend を登録してこの名前に置き換えた。登録される種別が**ちょうど** Evidence と Trend であること（黙って別の種別が増えない・どちらかが抜けない）と、種別と Handler の対応を検査する。登録されていない種別の `blocked` は `tests/unit/test_research_executor.py::test_a_kind_without_a_handler_is_blocked` が引き続き検査する |
