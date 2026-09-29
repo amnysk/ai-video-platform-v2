@@ -340,4 +340,6 @@ import しない。Research の結果が `completed` でなければ、呼び出
 / `tests/contract/test_migration_0015_research.py::test_upgrade_adds_only_research_tables_and_leaves_production_tables_alone`
 / `tests/contract/test_migration_0015_research.py::test_research_tables_only_reference_research_tables`
 / `tests/architecture/test_research_isolation.py::test_research_execution_does_not_wire_a_real_provider`
+/ `tests/architecture/test_daily_does_not_wait_for_research.py`（日次・pipeline・企画・台本は Research の
+workflow・queue・起動・実行器を名指さない。ADR-0037 §8.5）
 （企画・台本への opt-in 接続が既定 OFF で出力を変えないことの検査は、接続を入れる段（ADR-0037 §7）で足す）

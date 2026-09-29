@@ -147,6 +147,8 @@ services:
       minio: {condition: service_started}
     environment:
       <<: *app-env
+      # ADR-0037 §8.5: Research の受け付けの門（予算・Provider）。research-worker と同じ値を読む
+      RESEARCH_PROVIDER: ${RESEARCH_PROVIDER:-none}
     ports: ["8000:8000"]
     restart: unless-stopped
     command:
@@ -395,6 +397,20 @@ services:
     healthcheck:
       <<: *worker-health
       test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "pipeline"]
+
+  research-worker:
+    # ADR-0037 §8.5: Research（Trend / Evidence）の workflow と Activity。Episode の工程は待たない（INV-37）。
+    # RESEARCH_PROVIDER: none（既定。依頼は外部を呼ばずに blocked）| fake（固定コーパス）。実 Provider は未配線。
+    # YOUTUBE_* / CODEX_* / FAL_KEY は持たせない
+    <<: *worker
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+      RESEARCH_PROVIDER: ${RESEARCH_PROVIDER:-none}
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.research.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "research"]
 
   prometheus:
     image: prom/prometheus:latest

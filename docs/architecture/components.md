@@ -17,6 +17,9 @@
   工程の順序判断
 - **呼んでよい**: `domain`, `contracts`, `infrastructure`
 - ハンドラの本体は「検証 → domainのcommandを作る → 永続化 → workflowへ渡す → 202を返す」
+- Research（`routers/research.py`、ADR-0037 §8.5）: `POST /research/requests`（Gateway で受け付け、`queued` の
+  ときだけ `ResearchWorkflow` を起動）、`POST /research/requests/{id}/resume`、`GET /research/requests/{id}`
+  （DB だけを読む）。Episode のエンドポイントは Research を呼ばない
 
 ## Temporal workflow 定義（`workers/<stage>/workflows.py`）
 
@@ -36,6 +39,7 @@
 | `render` | 現行の `production_manifest`（と、それが指す `script` / `storyboard` / シーン素材） | `final_video`（ADR-0019） | なし（ローカル計算。CPU・ディスクを占有） |
 | `upload` | 現行の `final_video`（と、メタデータを導出する `script`） | `upload_receipt`（ADR-0020） | **YouTube private 投稿**（予約台帳 `youtube_upload`、1ラウンドのみ） |
 | `pipeline` | DB の Episode 状態・operational switch | `episodes` 行の claim（`topic_plan_id` を結ぶ） | なし（工程の起動は子 workflow） |
+| `research` | `research_requests` の依頼（依頼 ID だけを受け取る） | `research_artifacts`（`research_trend` / `research_evidence`。本番の Artifact ではない。ADR-0037） | 検索・本文取得は `RESEARCH_PROVIDER`（`fake` / `none`。既定 `none` = 呼ばずに `blocked`）。実 Provider は未配線。呼び出しは `research_calls` 台帳（INV-36）。Episode の工程はこの worker を起動しない・待たない（INV-37） |
 | `analytics`（**未実装**。`workers/analytics` は空） | `upload_receipt` | `performance_report`（予定） | YouTube Analytics。現状は Topic Planner が `analytics_snapshots` へ読み取るだけ |
 
 - **持つ**: 「入力Artifactを読む → 処理する → 出力Artifactを書く → 結果を返す」
@@ -68,6 +72,7 @@
 | `research/executor.py` | Research の実行器（Temporal 非依存）。外部呼び出しは `reserve → dispatch → spent` で `research_calls` を通し、上限で止めて `partial`、一時障害は retryable、成否不明は送り直さない。成果物は書く → 読み戻す → 記録（ADR-0037 §8.2 / INV-36） |
 | `research/registry.py` | `RESEARCH_PROVIDER`（`fake` / `none`。既定 `none`）から Provider・Handler・見積もりを組む。実 Provider は組まない（ADR-0037 §6） |
 | `research/raw_store.py` | 外部呼び出しの生データ（`research/{request_id}/raw/`）。再実行が同じ呼び出しを送り直さないための証拠 |
+| `temporal/research_starter.py` | `ResearchWorkflow` の起動（依頼 1 件 = workflow id 1 つ。実行中なら二重に起動しない。完了は待たない。ADR-0037 §8.5） |
 | `storage/` | MinIO クライアント、Artifactの put/get、キー規約 |
 | `temporal/` | Temporal への接続（`connect.py`）、Daily Schedule の定義（`schedules.py`）、worker の health（`poller_check.py`）、実行の点検（`run_inspector.py`）。workflow 名と task queue 名は `contracts/`（`pipeline.py` / `states.py` / `topic_planning.py`） |
 | `providers/` | fal.ai / YouTube / LLM の adapter。**必ずProtocolの背後に置く** |

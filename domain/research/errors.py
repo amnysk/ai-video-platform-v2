@@ -23,6 +23,7 @@ from __future__ import annotations
 from contracts.states import FailureClass
 from domain.errors import (
     FAILURE_CLASS_BY_TYPE_NAME,
+    NON_RETRYABLE_ERROR_TYPE_NAMES,
     DomainError,
     NeedsInputError,
     PermanentError,
@@ -119,6 +120,14 @@ RESEARCH_NON_RETRYABLE_ERROR_TYPE_NAMES: tuple[str, ...] = tuple(
 )
 
 
+#: research の Worker が Activity の ``RetryPolicy.non_retryable_error_types`` に渡す型名の集合:
+#: 基底の表（``NON_RETRYABLE_ERROR_TYPE_NAMES``）∪ research の表。Worker はこれだけを引く
+#: （2 つの表を Worker 側で合わせ直さない。ADR-0037 §8.4 / §8.5）。
+RESEARCH_WORKER_NON_RETRYABLE_ERROR_TYPE_NAMES: tuple[str, ...] = tuple(
+    dict.fromkeys((*NON_RETRYABLE_ERROR_TYPE_NAMES, *RESEARCH_NON_RETRYABLE_ERROR_TYPE_NAMES))
+)
+
+
 def research_failure_class_from_type_name(type_name: str | None) -> FailureClass:
     """research の表を引き、無ければ基底の表（未知の名前は ``needs_input``。INV-12）。"""
     if type_name is not None and type_name in RESEARCH_FAILURE_CLASS_BY_TYPE_NAME:
@@ -129,6 +138,7 @@ def research_failure_class_from_type_name(type_name: str | None) -> FailureClass
 __all__ = [
     "RESEARCH_FAILURE_CLASS_BY_TYPE_NAME",
     "RESEARCH_NON_RETRYABLE_ERROR_TYPE_NAMES",
+    "RESEARCH_WORKER_NON_RETRYABLE_ERROR_TYPE_NAMES",
     "ResearchAmbiguousCallError",
     "ResearchArtifactReadbackError",
     "ResearchBudgetExceededError",

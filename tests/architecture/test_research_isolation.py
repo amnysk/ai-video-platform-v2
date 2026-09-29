@@ -34,6 +34,7 @@ RESEARCH_PATHS: tuple[str, ...] = (
     "infrastructure/db/migrations/versions/0015_research_foundation.py",
     "workers/research",
     "apps/api/routers/research.py",
+    "infrastructure/temporal/research_starter.py",
 )
 #: Research のモジュール名の接頭辞（本番側が import してはならない）。
 RESEARCH_MODULE_PREFIXES: tuple[str, ...] = (
@@ -42,6 +43,8 @@ RESEARCH_MODULE_PREFIXES: tuple[str, ...] = (
     "infrastructure.research",
     "infrastructure.db.research_repositories",
     "workers.research",
+    "infrastructure.temporal.research_starter",
+    "apps.api.routers.research",
 )
 
 #: Research が import してはならない本番モジュール。

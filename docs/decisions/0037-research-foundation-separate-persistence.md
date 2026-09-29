@@ -5,7 +5,7 @@
 Accepted (2026-09-29)
 
 範囲: この ADR は Research Tier B の土台を決める。B1（契約と永続化）は §1〜§5、B2（Gateway・実行器）は
-§5〜§6 と §8.1〜§8.4 に書いた。Worker（B3）は §8.5 に方針だけを書き、その段で同じ ADR に追記する。
+§5〜§6 と §8.1〜§8.4、Worker・起動・API（B3）は §8.5 に書いた。
 Evidence（B4）は ADR-0038、Trend（B5）は ADR-0039 に分ける。
 
 ## Context
@@ -224,10 +224,88 @@ B3 の Worker は、research の Activity の `RetryPolicy.non_retryable_error_t
 `ResearchExecutor.record_failure(error_type=型名)` で記録する（`needs_input` なら `blocked`、それ以外は
 `failed`、理由コードは `execution_failed`）。
 
-#### 8.5 Worker（B3 で追記）
+#### 8.5 Worker・起動・API（B3、`workers/research/`・`infrastructure/temporal/research_starter.py`・`apps/api/routers/research.py`）
 
-- 専用の task queue に置き、Temporal の Activity retry で上限つきで再試行した後に
-  `failed` / `partial` にする。compose / deploy / smoke / Makefile / docs は f67e95b の型に倣う。
+**Workflow（`workers/research/workflows.py::ResearchWorkflow`）**
+
+- `research_execute`（依頼全体を 1 回実行する。`ResearchExecutor.execute` の薄いラッパ）を 1 本だけ呼ぶ。
+  失敗したら `research_record_failure`（`ResearchExecutor.record_failure(error_type=型名)`）を呼び、その結果を
+  返す。**検索・取得ごとに Activity を分けない**（決定）。executor は 1 回の `execute` の中で順に呼び、
+  再実行は成功済みの呼び出しを生データから読むので、分けても送り直しの防止は増えない。分けると
+  Workflow が executor の分岐（§8.2 の表）を二重に持つことになる。
+- I/O・壁時計・乱数・DB を使わない。依頼の期限は executor が DB の `started_at` から測るので、
+  Workflow は `workflow.time()` も読まない。Activity は**名前**で呼ぶ（INV-3）。
+- 履歴に載るのは `contracts/research.py` の dataclass（`ResearchWorkflowInput` / `ResearchExecuteRequest` /
+  `ResearchRecordFailureRequest` / `ResearchWorkflowOutput` / `ResearchArtifactPointer`）だけで、依頼 ID・状態・
+  理由コード・成果物の参照（id・sha256）・件数（検索・取得・評価・quota 単位・金額の文字列）に限る
+  （ADR-0029 の「型注釈どおりの形」。成果物の本体・検索結果・本文は載せない）。
+- `research_execute` の retry: `maximum_attempts = RESEARCH_EXECUTE_MAX_ATTEMPTS`（3。1 回目を含む）、
+  指数バックオフ（5 秒から、最大 60 秒）。`non_retryable_error_types` は
+  `domain/research/errors.py::RESEARCH_WORKER_NON_RETRYABLE_ERROR_TYPE_NAMES`（基底の
+  `NON_RETRYABLE_ERROR_TYPE_NAMES` ∪ research の表。§8.4。Worker 側で 2 つの表を合わせ直さない）。
+  retry は executor が新しい番号の予約を取るので、retry も合計で呼び出しの枠を数える（INV-36）。
+- 時間: `start_to_close` は依頼の期限の天井（`LIMIT_CEILING_DEADLINE_SECONDS`）+ 30 分、heartbeat timeout は
+  2 分。Activity は実行中に 20 秒ごとに heartbeat を送る。worker が落ちたら heartbeat timeout で retry され、
+  executor が成否不明の呼び出しを送り直さずに `blocked`（`ambiguous_call`）にする。
+- 失敗の記録: Activity の timeout（heartbeat を含む）は `TransientError` として記録する（retry を使い切った
+  一時障害 = `failed`）。型名の分類は §8.4（`needs_input` は `blocked`、それ以外は `failed`、理由コードは
+  `execution_failed`）。cancel は記録せずに伝える。
+
+**Worker（`workers/research/run_worker.py`、compose service `research-worker`）**
+
+- task queue は `contracts/research.py::RESEARCH_TASK_QUEUE`（`research`。唯一の定義）。登録するのは
+  `ResearchWorkflow` と上の 2 つの Activity だけ。Provider・Handler・見積もりは registry（§8.2）が組む。
+- 環境は DB・MinIO・Temporal（`x-app-env`）と `RESEARCH_PROVIDER` だけ。`YOUTUBE_*` / `CODEX_*` / `FAL_KEY` を
+  渡さない。Codex の sandbox 例外（cap_add / seccomp）も持たない。Workflow を持つ queue なので、Activity 専用
+  queue の長い max-age は使わない（healthcheck は既定の max-age で `research` を見る）。
+- `RESEARCH_PROVIDER` の既定は `none`（依頼は外部を呼ばずに `blocked`）。受け付けの門（api）と実行の門（worker）
+  が**同じ変数**を読む（compose の api にも同じ既定で渡す）。片方だけ `fake` にしても、もう片方の門で
+  `blocked` になる（fail-closed）。
+- compose / deploy / smoke / Makefile / docs は f67e95b（scene-alternative-worker）の型に倣う:
+  `compose.yaml`、`scripts/deploy-workers.sh` の `APP_SERVICES`、`scripts/smoke-workers.sh` の `QUEUES` と
+  `ALL_WORKERS`、`Makefile` の `workers-logs`、`docs/operations/workers.md`。旧ブランチは smoke と Makefile を
+  漏らしていた。
+- **既存テストの変更（この ADR が承認する）**: 新しい worker を列挙した集合に足すだけで、検査は緩めない。
+  `tests/contract/test_compose_workers.py` の `WORKERS` に `research-worker` を足す（Activity 専用ではないので
+  `ACTIVITY_ONLY_MIN_MAX_AGE` には足さない。`YOUTUBE_` / `CODEX_` / `FAL_KEY` の持ち主と `CODEX_WORKERS` は
+  変えない）。`tests/unit/test_deploy_scripts.py` の `APP` に足す。`tests/architecture/test_research_isolation.py`
+  の検査対象（`RESEARCH_PATHS` / `RESEARCH_MODULE_PREFIXES`）に起動と API のモジュールを足す（検査が広がる側）。
+
+**起動（`infrastructure/temporal/research_starter.py`）**
+
+- workflow id は依頼 1 件につき 1 つ（`research_workflow_id` = `research-{request_id}`）。実行中の同じ id は
+  Temporal が構造的に拒否する（`WorkflowAlreadyStartedError`）ので、同じ依頼を同時に 2 つ走らせない。拒否は
+  「もう走っている」として成功扱いにし、同じ id を返す。
+- id の再利用は `ALLOW_DUPLICATE`。`blocked` で止めた workflow は Temporal の上では成功終了しているので、
+  `ALLOW_DUPLICATE_FAILED_ONLY` だと再開（`blocked → queued`）した依頼を二度と走らせられない。終了済みの id で
+  再び走らせても executor は終わった依頼を書き換えず、成功済みの呼び出しを送り直さない。**完了は待たない**
+  （INV-16）。
+
+**API（`apps/api/routers/research.py`。追加だけ）**
+
+- `POST /research/requests`: `ResearchGateway.submit`（§8.1）の後、依頼が `queued`（新規、または保存と起動の
+  間で落ちて `queued` のまま）なら起動して 202。`blocked`（Provider 未設定・予算未設定）・再利用・`running` 以降の
+  依頼は起動しない。同じ冪等キーの再 POST が「保存と起動の間で落ちた依頼」の回収経路になる。
+- `POST /research/requests/{id}/resume`: `ResearchGateway.resume`（同じ門）が `blocked → queued` にしたときだけ
+  起動する。門を通らない・`blocked` でない依頼は 409、未知の依頼は 404。
+- `GET /research/requests/{id}`: DB だけを読む（Temporal に問い合わせない。INV-8）。
+- Episode のエンドポイントは変えない。`POST /episodes/{id}/script` は作らない（§9）。
+
+**Episode 本番との関係（INV-37）**: 日次・Episode pipeline・企画・台本の workflow とその worker は、Research の
+workflow・queue・起動・Gateway・実行器を名指さない
+（`tests/architecture/test_daily_does_not_wait_for_research.py`）。Research の workflow を登録する worker は
+research-worker だけ。
+
+**読み手・書き手（AGENTS.md §8 の grep 記録、B3）**: `git grep -n "<key>" 74a8bfa -- apps workers domain
+infrastructure contracts docs compose.yaml scripts Makefile .env.example` を変更の前に実行した結果:
+
+| キー | 件数 | 分類 |
+|---|---|---|
+| `RESEARCH_TASK_QUEUE` / `RESEARCH_WORKFLOW` / `research_workflow_id` | 0 / 0 / 0 | 新規（`contracts/research.py` が唯一の定義。読み手は worker・起動・compose の検査） |
+| `research_execute` / `research_record_failure` | 0 / 0 | 新規（Activity 名。`contracts/research.py`） |
+| `RESEARCH_WORKER_NON_RETRYABLE_ERROR_TYPE_NAMES` | 0 | 新規（`domain/research/errors.py`。読み手は Workflow の RetryPolicy だけ） |
+| `research-worker` | 1 | 無関係（`infrastructure/youtube/search.py` の docstring が「YOUTUBE_* を持たない」と言及するだけ） |
+| `RESEARCH_PROVIDER` | 12 | 読み手 1（`infrastructure/config.py` の `research_provider`）、書き手 0（B3 で compose の api / research-worker と `.env.example` が書き手になる）、残り 11 は定義（`DEFAULT_RESEARCH_PROVIDER` / `RESEARCH_PROVIDER_MODES`）・docstring・設計書の言及 |
 
 ### 9. 移植しないもの（決定）
 
@@ -262,6 +340,17 @@ B3 の Worker は、research の Activity の `RetryPolicy.non_retryable_error_t
   壊れた本体を持つ依頼を黙って飛ばすことになる。採らない（新しい依頼として実行する）。
 - **(i) 一時障害の予約を `abandoned` に戻して同じ番号で再送する**: 送った呼び出しは課金されうるので
   `abandoned` にできない（§4）。採らない（`spent` にして新しい番号を取る）。
+- **(j) 検索・取得ごとに Activity を分ける（旧実装: plan / search / select / fetch / synthesize）**: Workflow が
+  executor の再実行の分岐（§8.2）と期限・停止の判断を二重に持つことになり、Activity の結果（検索結果の
+  要約など）が履歴に増える。送り直しの防止は台帳と生データが担うので、分けても安全性は増えない。
+  採らない（§8.5。1 本の `research_execute` と失敗の記録だけ）。
+- **(k) 起動の id 再利用を `ALLOW_DUPLICATE_FAILED_ONLY` にする（旧実装の通常の起動）**: `blocked` の依頼は
+  Workflow としては成功終了するので、再開した依頼が二度と走らない（旧実装は再開だけ別の方針にしていた）。
+  採らない（常に `ALLOW_DUPLICATE`。実行中の二重起動は Temporal が拒否し、終了済みの再実行は executor が
+  冪等に扱う）。
+- **(l) Research の API を既存の `WorkflowStarter` / `apps/api/dependencies.py` に足す**: 既存の Protocol に
+  メソッドを足すと、Episode の API のテスト用 fake まで直すことになる。採らない（Research 専用の
+  `ResearchWorkflowStarter` と依存をルータに置く）。
 
 ## Consequences
 
@@ -284,7 +373,14 @@ B3 の Worker は、research の Activity の `RetryPolicy.non_retryable_error_t
   必要がある（§8.4。B3 のテストで固定する）。
 - 再利用の検証は候補ごとに成果物の本体を全部読む。成果物が大きくなると受け付けが遅くなる。
 - 実行器は検索・取得を 1 つの `execute` の中で順に行う。Temporal の retry は依頼全体をやり直すが、
-  成功済みの呼び出しは生データから読むので送り直さない。検索・取得ごとに Activity を分けるかは B3 で決める。
+  成功済みの呼び出しは生データから読むので送り直さない。Activity は分けない（§8.5 で決定）。
+- B3 で既存テスト 2 本（`tests/contract/test_compose_workers.py` の `WORKERS`、`tests/unit/test_deploy_scripts.py`
+  の `APP`）の列挙に `research-worker` を足した。新しい worker を足すたびに同じ列挙を更新する前例
+  （f67e95b）どおりで、検査は緩めていない（§8.5）。
+- 受け付けの門（api）と実行の門（worker）が同じ `RESEARCH_PROVIDER` を別々のプロセスで読む。compose は同じ
+  変数を渡すが、片方だけ値を変えると依頼は `blocked` になる（安全側だが、気づきにくい。運用手順に書いた）。
+- `research_execute` の最長時間は依頼の期限の天井（24 時間）+ 30 分で、依頼ごとの期限より長い。固まった
+  worker は heartbeat timeout（2 分）で検出する。
 - 旧ブランチの Research 用 PostgreSQL 並行テストはまだ移植していない。SQLite では並行する 2 つの
   トランザクションを作れないので、単体テストは採番の競合を決定的に再現して代用している。
   本物の並行性は integration の段で見る。

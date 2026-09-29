@@ -39,10 +39,11 @@ declare -A QUEUES=(
   [upload-worker]="upload"
   [pipeline-worker]="pipeline"
   [scene-alternative-worker]="production-scene-alternative"
+  [research-worker]="research"
 )
 ALL_WORKERS=(dummy-worker script-worker storyboard-worker production-worker production-image-worker
   production-voice-worker production-video-worker render-worker upload-worker pipeline-worker
-  scene-alternative-worker)
+  scene-alternative-worker research-worker)
 
 FAILS=0
 ok() { echo "OK: $*"; }

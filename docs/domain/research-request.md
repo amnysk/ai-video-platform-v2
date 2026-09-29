@@ -108,3 +108,16 @@ Episode の状態機械（INV-8）とは別の表である。表に無い遷移�
 `contracts/research.py` と `infrastructure/config.py` と `domain/research/*`。本番のコードに読み手は無い
 （`tests/architecture/test_research_isolation.py`）。`.env.example` は変えていない（設定の既定値で
 `none` = fail-closed になり、既存の設定テストも `.env.example` の項目を要求しない）。
+
+## Workflow・worker・API（B3、ADR-0037 §8.5）
+
+| モジュール | 役割 |
+|---|---|
+| `apps/api/routers/research.py` | `POST /research/requests`（Gateway の `submit` → `queued` なら起動）/ `POST /research/requests/{id}/resume`（`blocked → queued` → 起動）/ `GET /research/requests/{id}`（DB だけ） |
+| `infrastructure/temporal/research_starter.py` | `ResearchWorkflow` の起動。workflow id は `research-{request_id}`、`ALLOW_DUPLICATE`、実行中なら二重に起動しない |
+| `workers/research/workflows.py` | `research_execute`（上限つき retry）→ 失敗したら `research_record_failure`。I/O を持たない |
+| `workers/research/activities.py` | executor の `execute` / `record_failure` の薄いラッパ（heartbeat つき）。結果は参照と件数だけ |
+| `workers/research/run_worker.py` | queue `research`（`contracts/research.py::RESEARCH_TASK_QUEUE`）。registry から Provider・Handler を組む |
+
+状態の遷移は B1 の表のままで、Workflow は状態を持たない（記録は executor が DB に行う）。
+読み手・書き手の grep 記録は ADR-0037 §8.5 にある。運用は [research-worker.md](../operations/research-worker.md)。

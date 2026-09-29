@@ -16,6 +16,7 @@ import yaml
 
 from contracts.pipeline import PIPELINE_TASK_QUEUE
 from contracts.production_activities import SCENE_ALTERNATIVE_TASK_QUEUE
+from contracts.research import RESEARCH_TASK_QUEUE
 from contracts.states import (
     PRODUCTION_IMAGE_TASK_QUEUE,
     PRODUCTION_VIDEO_TASK_QUEUE,
@@ -74,6 +75,8 @@ WORKERS: dict[str, tuple[str, set[str], bool]] = {
         {SCENE_ALTERNATIVE_TASK_QUEUE},
         True,
     ),
+    # ADR-0037 §8.5: Research の workflow と Activity（外部は Fake / none だけ）
+    "research-worker": ("workers.research.run_worker", {RESEARCH_TASK_QUEUE}, True),
 }
 NEW_WORKERS = [s for s in WORKERS if s != "dummy-worker"]
 

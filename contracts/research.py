@@ -13,14 +13,18 @@ Research は本番の Episode 工程とは別の永続化を持つ（ADR-0037。
 - 結果 ``ResearchResult``（``research_requests.result_summary`` の形）
 
 依頼は **絶対日時**（``time_window``）と ``as_of``（tz 必須）を持つ。壁時計を契約の中で読まない。
-DB の型はここに置かない（INV-6）。Temporal の workflow 名・Activity の型・API の View は
-Worker を足す段（ADR-0037 §8）で足す。
+DB の型はここに置かない（INV-6）。
+
+Temporal の境界（ADR-0037 §8.5）: task queue・workflow 名・workflow id の規約・Activity 名と、
+Activity の引数・戻り値の dataclass（ADR-0029 の「型注釈どおりの形」。成果物の本体は載せず、
+参照と件数だけ）もここが唯一の宣言元。
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -527,6 +531,75 @@ class ResearchResult(FrozenModel):
         return self
 
 
+# ------------------------------------------------------------------ Temporal（ADR-0037 §8.5）
+
+#: research-worker が poll する task queue。**唯一の定義**（worker・starter・compose の検査が引く）
+RESEARCH_TASK_QUEUE = "research"
+RESEARCH_WORKFLOW_NAME = "ResearchWorkflow"
+#: (workflow 名, task queue)。``contracts/states.py`` の ``*_WORKFLOW`` と同じ形
+RESEARCH_WORKFLOW: tuple[str, str] = (RESEARCH_WORKFLOW_NAME, RESEARCH_TASK_QUEUE)
+#: Activity 名（workflow は名前で呼ぶ。実装を import しない。INV-3）
+RESEARCH_EXECUTE_ACTIVITY = "research_execute"
+RESEARCH_RECORD_FAILURE_ACTIVITY = "research_record_failure"
+#: ``research_execute`` の試行回数の上限（1 回目を含む）。retry は executor が新しい番号の予約を
+#: 取るので、retry も合計で呼び出しの枠を数える（INV-36）
+RESEARCH_EXECUTE_MAX_ATTEMPTS = 3
+
+
+def research_workflow_id(request_id: str) -> str:
+    """依頼 1 件につき 1 つの workflow id（同じ依頼を同時に 2 つ走らせない）。"""
+    return f"research-{check_canonical_uuid(request_id)}"
+
+
+@dataclass
+class ResearchWorkflowInput:
+    """``ResearchWorkflow`` の入力。依頼の中身は DB にあり、履歴には ID だけを載せる。"""
+
+    request_id: str
+
+
+@dataclass
+class ResearchExecuteRequest:
+    request_id: str
+
+
+@dataclass
+class ResearchRecordFailureRequest:
+    """retry を使い切った・想定外の失敗の記録（型名で分類する。ADR-0037 §8.4）。"""
+
+    request_id: str
+    error_type: str | None
+    summary: str
+
+
+@dataclass
+class ResearchArtifactPointer:
+    """成果物の参照（``research_artifacts`` の行）。本体は ArtifactStore にあり、履歴に載せない。"""
+
+    artifact_type: str
+    artifact_id: str
+    sha256: str
+
+
+@dataclass
+class ResearchWorkflowOutput:
+    """``research_execute`` / ``research_record_failure`` / workflow の結果。
+
+    状態の正本は DB（``research_requests``）。ここは参照と件数だけ（ADR-0029 の形。金額は
+    ``Decimal`` の文字列表現）。
+    """
+
+    request_id: str
+    status: str
+    stop_code: str | None = None
+    artifact_refs: list[ResearchArtifactPointer] = field(default_factory=list)
+    searches: int = 0
+    fetches: int = 0
+    assessments: int = 0
+    youtube_units: int = 0
+    cost_usd: str = "0"
+
+
 __all__ = [
     "DEFAULT_DEADLINE_SECONDS",
     "DEFAULT_MAX_ASSESSMENTS",
@@ -539,7 +612,13 @@ __all__ = [
     "RESEARCH_PROVIDER_MODES",
     "RESEARCH_POLICY_VERSION",
     "RESEARCH_PROMPT_VERSION",
+    "RESEARCH_EXECUTE_ACTIVITY",
+    "RESEARCH_EXECUTE_MAX_ATTEMPTS",
+    "RESEARCH_RECORD_FAILURE_ACTIVITY",
     "RESEARCH_SCHEMA_VERSION",
+    "RESEARCH_TASK_QUEUE",
+    "RESEARCH_WORKFLOW",
+    "RESEARCH_WORKFLOW_NAME",
     "TREND_FRESH_HOURS",
     "ClaimImportance",
     "ClaimInput",
@@ -547,14 +626,17 @@ __all__ = [
     "EvidenceResearchInputs",
     "EvidenceResearchRequest",
     "EvidenceResearchSubmit",
+    "ResearchArtifactPointer",
     "ResearchArtifactRef",
     "ResearchArtifactType",
     "ResearchCall",
     "ResearchCallStatus",
     "ResearchCoverage",
+    "ResearchExecuteRequest",
     "ResearchKind",
     "ResearchLimits",
     "ResearchProviderMode",
+    "ResearchRecordFailureRequest",
     "ResearchRequestBase",
     "ResearchRequestSpec",
     "ResearchResult",
@@ -562,6 +644,8 @@ __all__ = [
     "ResearchStopCode",
     "ResearchSubmit",
     "ResearchUsage",
+    "ResearchWorkflowInput",
+    "ResearchWorkflowOutput",
     "TimeWindow",
     "TrendResearchInputs",
     "TrendResearchRequest",
@@ -571,5 +655,6 @@ __all__ = [
     "parse_research_spec",
     "parse_research_submit",
     "refresh_slot_of",
+    "research_workflow_id",
     "submit_to_spec",
 ]
