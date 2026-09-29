@@ -6,8 +6,11 @@
   ここで組まない。``tests/architecture/test_research_isolation.py`` が検査する）。実 Provider を
   足すときは所有者の判断と ADR を先に置き、``provider_is_real`` が真になるので金額・quota の上限が
   必須になる（ADR-0037 §6）
-- 種別ごとの Handler（Evidence は ADR-0038、Trend は ADR-0039）はまだ無い。``build_handlers`` は
-  空を返し、実行器は Handler の無い種別の依頼を ``blocked`` にする
+- 種別ごとの Handler: Evidence（ADR-0038。``EvidenceHandler``。純粋な判断だけなので設定に依らず
+  登録する。``none`` の依頼は実行器の門で先に ``blocked``）。Trend（ADR-0039）はまだ無く、
+  実行器は Handler の無い種別の依頼を ``blocked``（``handler_not_available``）にする
+- LLM 向けの Port（ADR-0038）: ``fake`` は ``FakeEvidenceAssessor`` / ``FakeClaimExtractor``、
+  ``none`` は組まない。実 LLM は配線しない（評価は台帳 ``ResearchCall.ASSESS`` を通る）
 """
 
 from __future__ import annotations
@@ -21,9 +24,12 @@ from contracts.research import (
     ResearchCall,
     ResearchKind,
 )
+from domain.research.evidence_handler import EvidenceHandler
+from domain.research.evidence_ports import ClaimExtractor, EvidenceAssessor
 from domain.research.handlers import ResearchHandler
 from domain.research.ports import ContentFetcher, SearchKind, SearchProvider
 from infrastructure.config import Settings
+from infrastructure.research.fake_evidence import FakeClaimExtractor, FakeEvidenceAssessor
 from infrastructure.research.fake_providers import FakeContentFetcher, FakeSearchProvider
 from infrastructure.research.quota_costs import YOUTUBE_FULL_SEARCH_UNITS
 
@@ -32,6 +38,7 @@ __all__ = [
     "NONE_PROVIDER",
     "CostModel",
     "ResearchProviders",
+    "build_claim_extractor",
     "build_cost_model",
     "build_handlers",
     "build_providers",
@@ -77,6 +84,9 @@ class ResearchProviders:
     #: ``FakeContentFetcher`` だけを入れる。実行器は URL をこの Port 以外で取得しない
     fetcher: ContentFetcher | None
     is_real: bool
+    #: Evidence の評価器（ADR-0038）。``None`` なら評価せず、評価が要る claim は ``insufficient``
+    #: のまま依頼は ``partial``（``assessor_not_available``）。合格にしない
+    assessor: EvidenceAssessor | None = None
 
     @property
     def configured(self) -> bool:
@@ -109,14 +119,20 @@ def build_providers(settings: Settings) -> ResearchProviders:
             search=FakeSearchProvider(),
             fetcher=FakeContentFetcher(),
             is_real=provider_is_real(mode),
+            assessor=FakeEvidenceAssessor(),
         )
     return ResearchProviders(mode=mode, search=None, fetcher=None, is_real=provider_is_real(mode))
 
 
 def build_handlers(settings: Settings) -> Mapping[ResearchKind, ResearchHandler]:
-    """種別ごとの Handler。Evidence / Trend の Handler を足す段（ADR-0038 / 0039）で登録する。"""
+    """種別ごとの Handler。Evidence は ADR-0038、Trend は ADR-0039 の段で足す。"""
     del settings
-    return {}
+    return {ResearchKind.EVIDENCE: EvidenceHandler()}
+
+
+def build_claim_extractor(settings: Settings) -> ClaimExtractor | None:
+    """台本の照合の上乗せ抽出器（ADR-0038 §4）。``fake`` だけが組める。無くても決定的な網は走る。"""
+    return FakeClaimExtractor() if settings.research_provider == FAKE_PROVIDER else None
 
 
 def build_cost_model(settings: Settings) -> CostModel:

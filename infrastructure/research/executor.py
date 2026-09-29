@@ -41,6 +41,13 @@ reserved + dispatch 前                  呼んでいない証拠。その行で
 - 恒久的な失敗（入力の拒否・取得できない URL）: その 1 件の穴として記録し、続ける
 - 分類できない例外: 予約は dispatch 済みのまま（成否不明）で伝える。再実行は送り直さない
 
+評価（ADR-0038）: ``AssessingHandler`` の ``plan_assessments`` が計画した評価を、検索・取得と同じ
+台帳（``ResearchCall.ASSESS``。枠は ``max_assessments``。INV-36）と同じ書き込み順序で評価器に
+送る。評価の入力 hash は claim と passage の正準 JSON。評価器が組まれていなければ呼ばずに
+``assessor_not_available`` で止め（``partial``）、評価しなかった claim は ``insufficient`` のまま。
+成果物の資料（``sources[].url``）は、この実行で取得した ``final_url`` に属することを確かめてから
+保存する（Handler を信用しない。外れたら ``ResearchOutputInvalidError``）。
+
 成果物: 正準 JSON を ``research/{request_id}/{type}/{sha256}.json`` に ``put_json`` → 読み戻して
 sha256 を照合 → ``research_artifacts`` に記録 → 依頼を ``completed`` / ``partial`` に進める（記録と
 状態は同じ commit）。照合が合わなければ記録しない（``ResearchArtifactReadbackError``。retryable）。
@@ -72,6 +79,7 @@ from contracts.research import (
     ResearchUsage,
     parse_research_spec,
 )
+from contracts.research_evidence import AssessmentProposal, parse_evidence_artifact
 from contracts.states import FailureClass
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.errors import NeedsInputError, PermanentError, RetryableError, TransientError
@@ -86,7 +94,13 @@ from domain.research.errors import (
     ResearchSourceUnavailableError,
     research_failure_class_from_type_name,
 )
+from domain.research.evidence_ports import EvidenceAssessor, assessment_input_payload
+from domain.research.evidence_rules import check_sources_were_fetched
 from domain.research.handlers import (
+    TASK_ID_PATTERN,
+    AssessingHandler,
+    AssessmentOutcome,
+    AssessmentTask,
     FetchedSource,
     FetchTarget,
     HandlerOutput,
@@ -115,7 +129,13 @@ from infrastructure.research.errors import (
     fetch_failure_to_domain_error,
     to_domain_error,
 )
-from infrastructure.research.raw_store import FETCH_CODEC, SEARCH_CODEC, RawCodec, ResearchRawStore
+from infrastructure.research.raw_store import (
+    ASSESS_CODEC,
+    FETCH_CODEC,
+    SEARCH_CODEC,
+    RawCodec,
+    ResearchRawStore,
+)
 from infrastructure.research.registry import CostModel, ResearchProviders
 from infrastructure.storage.artifact_store import ArtifactStore, readback_sha256
 from infrastructure.youtube.errors import (
@@ -127,6 +147,7 @@ from infrastructure.youtube.errors import (
 __all__ = [
     "ResearchExecution",
     "ResearchExecutor",
+    "assessment_hash",
     "call_idempotency_key",
     "query_hash",
     "url_hash",
@@ -170,6 +191,11 @@ def query_hash(query: SearchQuery) -> str:
 def url_hash(url: str) -> str:
     """取得の入力 hash（正規化 URL。同じ資料を 2 回取得しない）。"""
     return sha256_hex(normalize_url(url).encode("utf-8"))
+
+
+def assessment_hash(task: AssessmentTask) -> str:
+    """評価の入力 hash（claim と passage。同じ入力は同じ呼び出しに戻る）。"""
+    return sha256_hex(canonical_json_bytes(assessment_input_payload(task.claim, task.passages)))
 
 
 def call_idempotency_key(
@@ -427,21 +453,33 @@ class ResearchExecutor:
             return await self._finish_without_artifact(loaded, ResearchStatus.BLOCKED, fetch_stop)
         failures = [f"search:{r.step.step_id}:{r.error}" for r in rounds if r.error] + failures
 
+        assessments, skipped_assessments, assess_failures, assess_stop = await self._assess_all(
+            loaded, handler, rounds, sources, started
+        )
+        if assess_stop is not None and assess_stop.code is ResearchStopCode.AMBIGUOUS_CALL:
+            return await self._finish_without_artifact(loaded, ResearchStatus.BLOCKED, assess_stop)
+        failures += assess_failures
+
         ctx = SynthesisContext(
             request_id=loaded.request.id,
             as_of=spec.as_of,
             searches_skipped=tuple(skipped_searches),
             fetches_skipped=tuple(skipped_fetches),
             failures=tuple(failures),
+            assessments=tuple(assessments),
+            assessments_skipped=tuple(skipped_assessments),
         )
         output = handler.synthesize(spec, ctx, rounds, sources)
-        stop = search_stop or fetch_stop
+        self._check_sources(handler, output, sources)
+        stop = search_stop or fetch_stop or assess_stop
         if stop is None and plan_cut:
             stop = _stop(
                 ResearchStopCode.CALL_BUDGET_EXHAUSTED,
                 "the plan had more searches than max_searches",
             )
-        degraded = bool(skipped_searches or skipped_fetches or failures or stop)
+        degraded = bool(
+            skipped_searches or skipped_fetches or skipped_assessments or failures or stop
+        )
         status = (
             ResearchStatus.PARTIAL if degraded or not output.complete else ResearchStatus.COMPLETED
         )
@@ -484,6 +522,109 @@ class ResearchExecutor:
                 stop = outcome.reason
                 skipped.append(label)
         return sources, skipped, failures, stop
+
+    async def _assess_all(
+        self,
+        loaded: _Loaded,
+        handler: ResearchHandler,
+        rounds: Sequence[SearchRound],
+        sources: Sequence[FetchedSource],
+        started: datetime,
+    ) -> tuple[list[AssessmentOutcome], list[str], list[str], StopReason | None]:
+        """(評価の結果, 実行しなかった評価, 穴の理由コード, 止めた理由)。ADR-0038。"""
+        if not isinstance(handler, AssessingHandler):
+            return [], [], [], None
+        tasks = handler.plan_assessments(loaded.spec, rounds, sources)
+        ids = [t.task_id for t in tasks]
+        if len(set(ids)) != len(ids) or any(not TASK_ID_PATTERN.match(i) for i in ids):
+            raise ResearchOutputInvalidError("the handler planned invalid assessment task ids")
+        limit = loaded.limits.max_assessments
+        runnable, skipped = list(tasks[:limit]), [t.task_id for t in tasks[limit:]]
+        stop: StopReason | None = None
+        if skipped:
+            stop = _stop(
+                ResearchStopCode.CALL_BUDGET_EXHAUSTED,
+                "the plan had more assessments than max_assessments",
+            )
+        assessor = self._providers.assessor
+        outcomes: list[AssessmentOutcome] = []
+        failures: list[str] = []
+        for task in runnable:
+            if assessor is None:
+                stop = stop or _stop(
+                    ResearchStopCode.ASSESSOR_NOT_AVAILABLE,
+                    "no evidence assessor is configured; unassessed claims stay insufficient",
+                )
+                skipped.append(task.task_id)
+                continue
+            if (stop is None or stop.code is ResearchStopCode.CALL_BUDGET_EXHAUSTED) and (
+                self._past_deadline(started, loaded.limits)
+            ):
+                stop = _stop(ResearchStopCode.DEADLINE_EXCEEDED, "research deadline passed")
+            if stop is not None and stop.code is not ResearchStopCode.CALL_BUDGET_EXHAUSTED:
+                skipped.append(task.task_id)
+                continue
+            outcome = await self._assess(loaded, task, assessor)
+            if isinstance(outcome, _Done):
+                outcomes.append(AssessmentOutcome(task_id=task.task_id, proposal=outcome.value))
+            elif isinstance(outcome, _Failed):
+                outcomes.append(AssessmentOutcome(task.task_id, None, error=outcome.code))
+                failures.append(f"assess:{task.task_id}:{outcome.code}")
+            else:
+                stop = outcome.reason
+                skipped.append(task.task_id)
+        return outcomes, skipped, failures, stop
+
+    async def _assess(
+        self, loaded: _Loaded, task: AssessmentTask, assessor: EvidenceAssessor
+    ) -> _CallOutcome[AssessmentProposal]:
+        async def invoke() -> AssessmentProposal:
+            proposal: Any = await assessor.assess(task.claim, task.passages)
+            try:
+                return AssessmentProposal.model_validate(
+                    proposal.model_dump() if isinstance(proposal, AssessmentProposal) else proposal
+                )
+            except ValidationError as exc:  # 評価器の出力が schema に合わない（修復しない）
+                raise ResearchOutputInvalidError(
+                    f"assessor output for {task.task_id} does not match the proposal schema"
+                ) from exc
+
+        return await self._run_call(
+            loaded,
+            call=ResearchCall.ASSESS,
+            input_hash=assessment_hash(task),
+            provider_label=str(getattr(assessor, "name", self._providers.mode)),
+            quota_units=None,
+            codec=ASSESS_CODEC,
+            invoke=invoke,
+            classify_value=lambda _proposal: "",
+        )
+
+    @staticmethod
+    def _check_sources(
+        handler: ResearchHandler, output: HandlerOutput, sources: Sequence[FetchedSource]
+    ) -> None:
+        """成果物の資料の URL は、この実行で実際に取得した ``final_url`` だけ（ADR-0038）。
+
+        ``sources[].url`` を持つ成果物すべてに適用する。評価を使う Handler（Evidence）の成果物は
+        契約（``EvidenceArtifact``）も通す。
+        """
+        if isinstance(handler, AssessingHandler):
+            try:
+                parse_evidence_artifact(dict(output.artifact))
+            except ValidationError as exc:
+                raise ResearchOutputInvalidError("evidence artifact violates its contract") from exc
+        listed = output.artifact.get("sources")
+        urls = [
+            str(s["url"])
+            for s in (listed if isinstance(listed, list) else [])
+            if isinstance(s, Mapping) and "url" in s
+        ]
+        stray = check_sources_were_fetched(urls, [s.content.final_url for s in sources])
+        if stray:
+            raise ResearchOutputInvalidError(
+                f"artifact sources were not fetched in this run: {', '.join(stray)[:200]}"
+            )
 
     async def _search(self, loaded: _Loaded, step: SearchStep) -> _CallOutcome[SearchResults]:
         provider = self._providers.search

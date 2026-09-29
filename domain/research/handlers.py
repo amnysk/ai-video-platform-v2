@@ -14,8 +14,10 @@ Research の**共通の骨格**（予約・予算・検索と本文取得の実�
 拡張点（後続の段）:
 - Evidence の Handler（ADR-0038）と Trend の Handler（ADR-0039）はこの Protocol を実装し、
   ``infrastructure/research/registry.py::build_handlers`` に登録する
-- LLM による評価（``ResearchCall.ASSESS``）は、実行器に「評価」の段を足して同じ台帳を通す。
-  ``synthesize`` の中で外部を呼ばない
+- LLM による評価（``ResearchCall.ASSESS``）は、実行器の「評価」の段が同じ台帳を通して行う
+  （ADR-0038）。評価を使う Handler は ``AssessingHandler``（``plan_assessments``）も実装し、
+  実行器が評価した結果を ``SynthesisContext.assessments`` で受け取る。``synthesize`` の中で
+  外部を呼ばない
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from contracts.research import (
     EvidenceResearchRequest,
@@ -33,11 +35,17 @@ from contracts.research import (
     ResearchKind,
     TrendResearchRequest,
 )
+from contracts.research_evidence import AssessmentProposal
+from domain.research.evidence_ports import AssessClaim, Passage
 from domain.research.ports import FetchedContent, SearchHit, SearchQuery, SearchResults
 from domain.research.urls import normalize_url
 
 __all__ = [
     "STEP_ID_PATTERN",
+    "TASK_ID_PATTERN",
+    "AssessingHandler",
+    "AssessmentOutcome",
+    "AssessmentTask",
     "FetchTarget",
     "FetchedSource",
     "HandlerOutput",
@@ -54,6 +62,8 @@ ResearchSpec = TrendResearchRequest | EvidenceResearchRequest
 
 #: 検索の段の ID（依頼の中で一意・決定的）。警告・成果物に写るので短い英数字に限る。
 STEP_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+#: 評価の ID（依頼の中で一意・決定的。例: claim id ``C-001``）
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +100,25 @@ class FetchedSource:
 
 
 @dataclass(frozen=True, slots=True)
+class AssessmentTask:
+    """評価 1 回（評価器への 1 呼び出し。台帳の ``assess`` 1 行）。"""
+
+    #: 依頼の中で一意・決定的（例: claim id）
+    task_id: str
+    claim: AssessClaim
+    passages: tuple[Passage, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AssessmentOutcome:
+    """評価 1 回の結果。失敗・未実行は ``proposal=None`` と理由コード（``error``）。"""
+
+    task_id: str
+    proposal: AssessmentProposal | None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SynthesisContext:
     """``synthesize`` に渡す実行の事実。判断に使うが、成果物の内容そのものではない。"""
 
@@ -101,6 +130,10 @@ class SynthesisContext:
     fetches_skipped: tuple[str, ...] = ()
     #: 取得できなかった範囲の理由コード（人が読む用。URL・secret を含めない）
     failures: tuple[str, ...] = ()
+    #: 実行器が台帳を通して行った評価の結果（``AssessingHandler`` だけが使う。ADR-0038）
+    assessments: tuple[AssessmentOutcome, ...] = ()
+    #: 上限・期限・停止・評価器なしで**実行しなかった**評価の ``task_id``
+    assessments_skipped: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +179,20 @@ class ResearchHandler(Protocol):
         rounds: Sequence[SearchRound],
         fetched: Sequence[FetchedSource],
     ) -> HandlerOutput: ...
+
+
+@runtime_checkable
+class AssessingHandler(ResearchHandler, Protocol):
+    """評価器（``ResearchCall.ASSESS``）を使う Handler。"""
+
+    def plan_assessments(
+        self,
+        spec: ResearchSpec,
+        rounds: Sequence[SearchRound],
+        fetched: Sequence[FetchedSource],
+    ) -> tuple[AssessmentTask, ...]:
+        """行いたい評価を優先順で返す（決定的）。上限を超えた分は実行器が落とす。"""
+        ...
 
 
 def plan_within_ceiling(

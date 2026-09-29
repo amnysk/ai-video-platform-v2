@@ -118,6 +118,9 @@ class ResearchStopCode(StrEnum):
     BUDGET_NOT_SET = "budget_not_set"
     #: その種別（Trend / Evidence）の Handler が登録されていない
     HANDLER_NOT_AVAILABLE = "handler_not_available"
+    #: 評価器（``EvidenceAssessor``）が組まれていない。評価できなかった claim は ``insufficient``
+    #: のまま、依頼は ``partial``（合格にしない。ADR-0038）
+    ASSESSOR_NOT_AVAILABLE = "assessor_not_available"
     #: 呼び出し台帳の件数・金額・quota の上限に達した（INV-36）
     CALL_BUDGET_EXHAUSTED = "call_budget_exhausted"
     DEADLINE_EXCEEDED = "deadline_exceeded"

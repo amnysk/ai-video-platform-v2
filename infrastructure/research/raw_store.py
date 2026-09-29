@@ -1,6 +1,7 @@
 """外部呼び出しの生データ（検索結果・本文）の保存（ADR-0037 §8）。
 
-- 検索結果（``SearchResults``）と本文（``FetchedContent``）は JSON で research の接頭辞の
+- 検索結果（``SearchResults``）と本文（``FetchedContent``）、評価器の提案（``AssessmentProposal``。
+  ADR-0038）は JSON で research の接頭辞の
   ``research/{request_id}/raw/{call}/{call_id}.json`` にだけ置く（キーは
   ``domain/research/keys.py``。形をここで組み立てない）。成果物ではないので
   ``research_artifacts`` に記録しない
@@ -17,6 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from contracts.research import ResearchCall
+from contracts.research_evidence import AssessmentProposal
 from domain.research.keys import research_raw_object_key
 from domain.research.ports import (
     FetchedContent,
@@ -186,6 +188,13 @@ FETCH_CODEC: RawCodec[FetchedContent] = RawCodec(
     call=ResearchCall.FETCH, encode=_encode_fetch, decode=_decode_fetch
 )
 
+#: 評価器の提案（ADR-0038）。読み戻しは契約（``AssessmentProposal``）を通す
+ASSESS_CODEC: RawCodec[AssessmentProposal] = RawCodec(
+    call=ResearchCall.ASSESS,
+    encode=lambda proposal: proposal.model_dump(mode="json"),
+    decode=AssessmentProposal.model_validate,
+)
+
 
 class ResearchRawStore:
     """``ArtifactStore`` の上の薄い層。台帳の行 1 件につき 1 オブジェクト。"""
@@ -211,4 +220,4 @@ class ResearchRawStore:
         return codec.decode(await self._store.get_json(key))
 
 
-__all__ = ["FETCH_CODEC", "SEARCH_CODEC", "RawCodec", "ResearchRawStore"]
+__all__ = ["ASSESS_CODEC", "FETCH_CODEC", "SEARCH_CODEC", "RawCodec", "ResearchRawStore"]

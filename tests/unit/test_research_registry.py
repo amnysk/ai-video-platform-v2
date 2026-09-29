@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from contracts.research import RESEARCH_PROVIDER_MODES
+from contracts.research import RESEARCH_PROVIDER_MODES, ResearchKind
 from infrastructure.config import Settings
 from infrastructure.research.fake_providers import FakeContentFetcher, FakeSearchProvider
 from infrastructure.research.quota_costs import YOUTUBE_FULL_SEARCH_UNITS
@@ -65,9 +65,13 @@ def test_the_provider_config_version_separates_fake_results_from_other_modes() -
     assert provider_config_version("fake").endswith("+fake")
 
 
-def test_no_kind_specific_handler_is_registered_yet() -> None:
-    """Trend / Evidence の Handler は後続の段で登録する。未登録の種別は実行器が blocked にする。"""
-    assert dict(build_handlers(_settings(research_provider="fake"))) == {}
+def test_only_the_evidence_handler_is_registered() -> None:
+    """Evidence の Handler は ADR-0038 で登録した。Trend は後続の段（ADR-0039）で登録する。
+
+    未登録の種別（Trend）は実行器が ``blocked``（``handler_not_available``）にする。
+    """
+    for mode in ("fake", "none"):
+        assert set(build_handlers(_settings(research_provider=mode))) == {ResearchKind.EVIDENCE}
 
 
 def test_the_cost_model_estimates_youtube_quota_from_the_shared_constant() -> None:

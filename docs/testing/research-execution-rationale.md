@@ -37,7 +37,7 @@
 | `test_only_fake_and_none_are_accepted` | 実 Provider の名前を設定値として受けない（選定は所有者の判断と ADR を待つ） |
 | `test_unknown_modes_count_as_real_and_unconfigured` | 将来の設定値が登録前に紛れ込んでも、予算の門と Provider の門の両方で止まる側に倒れる |
 | `test_the_provider_config_version_separates_fake_results_from_other_modes` | Fake の結果が別の Provider 設定の依頼に再利用されると、本物の調査の代わりに固定コーパスの結果を使ってしまう |
-| `test_no_kind_specific_handler_is_registered_yet` | B2 には種別ごとの Handler が無い。登録されていない種別は実行器が `blocked` にする（黙って空の成果物を作らない） |
+| `test_only_the_evidence_handler_is_registered` | B2 には種別ごとの Handler が無く、この欄は `test_no_kind_specific_handler_is_registered_yet` だった。B4（ADR-0038 §6）で Evidence を登録したので置き換えた。Trend はまだ登録されず、登録されていない種別は実行器が `blocked` にする（黙って空の成果物を作らない） |
 | `test_the_cost_model_estimates_youtube_quota_from_the_shared_constant` | quota の見積もりは Adapter と Fake が共有する 1 つの定数から来る。別の値を書くと上限の判定がずれる |
 
 ## `tests/unit/test_research_gateway.py`（受け付け・鮮度キャッシュ・予算の門・再開）

@@ -61,3 +61,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0035](./0035-scene-visual-subject-and-rejection-recovery.md) | シーンの映像対象を Storyboard で決め、内容拒否をシーン単位で復旧する | Accepted |
 | [0036](./0036-research-search-provider-adapters.md) | 調査用の検索・本文取得を Port の背後の Adapter に閉じ、SSRF 規則を通してだけ取得する | Accepted |
 | [0037](./0037-research-foundation-separate-persistence.md) | Research の依頼・外部呼び出し台帳・成果物を本番の表から分離して永続化する | Accepted |
+| [0038](./0038-evidence-research-and-script-verification.md) | Evidence Research と台本の照合を research の成果物として実装する | Accepted |

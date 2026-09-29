@@ -28,6 +28,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 #: Research のコード（ファイルまたはディレクトリ、REPO 相対）。後続の段で増える場所も先に並べる。
 RESEARCH_PATHS: tuple[str, ...] = (
     "contracts/research.py",
+    "contracts/research_evidence.py",
     "domain/research",
     "infrastructure/research",
     "infrastructure/db/research_repositories.py",
@@ -39,6 +40,7 @@ RESEARCH_PATHS: tuple[str, ...] = (
 #: Research のモジュール名の接頭辞（本番側が import してはならない）。
 RESEARCH_MODULE_PREFIXES: tuple[str, ...] = (
     "contracts.research",
+    "contracts.research_evidence",
     "domain.research",
     "infrastructure.research",
     "infrastructure.db.research_repositories",
@@ -225,6 +227,11 @@ EXECUTION_MODULES: tuple[str, ...] = (
     "infrastructure/research/executor.py",
     "infrastructure/research/registry.py",
     "infrastructure/research/raw_store.py",
+    # Evidence（ADR-0038）
+    "domain/research/evidence_handler.py",
+    "domain/research/script_verification.py",
+    "infrastructure/research/fake_evidence.py",
+    "infrastructure/research/verification.py",
 )
 #: 実 Provider（実ネットワークに出る Adapter）。registry / Gateway / 実行器は組まない・import しない
 #: （実 Provider の配線は所有者の判断と ADR を待つ。ADR-0037 §6）。
