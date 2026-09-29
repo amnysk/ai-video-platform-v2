@@ -1,4 +1,4 @@
-"""Web 検索 Provider は選定未了（ADR-0031 §7 / ADR-0033 §5）。
+"""Web 検索 Provider は選定未了（ADR-0036 §3）。
 
 費用・quota・利用条件が未確認のため、推測で外部サービスへ固定しない。所有者が選び ADR を足すまで、
 呼ぶと ``ResearchProviderNotConfigured``（domain では ``ResearchProviderNotConfiguredError``、
@@ -16,5 +16,5 @@ class NotConfiguredSearchProvider:
 
     async def search(self, query: SearchQuery) -> SearchResults:
         raise ResearchProviderNotConfigured(
-            "no web search provider is configured; the owner must choose one (ADR-0033 §5)"
+            "no web search provider is configured; the owner must choose one (ADR-0036 §3)"
         )

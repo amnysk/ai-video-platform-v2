@@ -36,7 +36,7 @@ class ResolutionError(ResearchAdapterError):
 
 
 class ResearchProviderNotConfigured(ResearchAdapterError):  # noqa: N818
-    """実 Provider が未選定・未設定。人間が選ぶまで実行しない（ADR-0033 §5）。"""
+    """実 Provider が未選定・未設定。人間が選ぶまで実行しない（ADR-0036 §3）。"""
 
 
 class ProviderRateLimited(ResearchAdapterError):  # noqa: N818

@@ -1,4 +1,4 @@
-"""research の Provider Port（ADR-0031 §7）。純粋。I/O・HTTP・DNS を持たない（INV-6）。
+"""research の Provider Port（ADR-0036）。純粋。I/O・HTTP・DNS を持たない（INV-6）。
 
 Trend / Evidence は**同じ Port** を使う。実装は ``infrastructure/research/``
 （``FakeSearchProvider`` / ``HttpContentFetcher`` / ``NotConfiguredSearchProvider``）と

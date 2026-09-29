@@ -1,4 +1,4 @@
-# テスト設計の根拠: Research の Provider Adapter（ADR-0031 §7 / ADR-0033 §5）
+# テスト設計の根拠: Research の Provider Adapter（ADR-0036 §3）
 
 各テストが**なぜテストになったか**を残す。守るものは 3 つ: (1) 外部ページ・検索結果にあった URL を辿って
 内部ネットワークへ到達しないこと（SSRF）、(2) 取得できていないものを「本文確認済み」にしないこと、
@@ -11,7 +11,7 @@
 |---|---|
 | `test_only_a_complete_nonblank_text_is_a_confirmed_body` | `body_confirmed` は「本文確認済み」の**唯一の定義**。切り詰め・失敗・テキスト無し（PDF）・空本文が真になると、根拠の無い資料が Evidence の裏付けとして数えられる |
 | `test_value_objects_are_frozen` | 検索結果・取得結果が途中で書き換わると、保存した Artifact と判定の根拠が食い違う |
-| `test_search_hit_carries_observations_with_their_observation_time` | 統計は観測時刻なしでは増加速度も鮮度も語れない（ADR-0033 §1）。`None` の購読者数を 0 と区別する |
+| `test_search_hit_carries_observations_with_their_observation_time` | 統計は観測時刻なしでは増加速度も鮮度も語れない（ADR-0036 §4）。`None` の購読者数を 0 と区別する |
 | `test_ports_are_structural_protocols` | Adapter は Port を継承せず構造で満たす（domain が infrastructure を import しない。INV-6） |
 
 ## `tests/unit/test_url_guard.py`（SSRF 規則、実 DNS なし）
@@ -71,7 +71,7 @@ permanent、quota・認証・未設定の Provider は needs_input。未知の�
 | テスト | なぜ必要か |
 |---|---|
 | 全体の流れ・quota 単位（100 + 1 + 1） | 予約台帳に記録する単位の根拠。呼び出し順・パラメータを固定 |
-| `test_region_and_language_are_filters_...` | `regionCode` / `relevanceLanguage` は絞り込み・重みづけ。人気・言語・視聴者層を断定しない。`videoDuration` は送らない（Shorts 判定に使わない。ADR-0033 (d)） |
+| `test_region_and_language_are_filters_...` | `regionCode` / `relevanceLanguage` は絞り込み・重みづけ。人気・言語・視聴者層を断定しない。`videoDuration` は送らない（Shorts 判定に使わない。ADR-0036 §4） |
 | 補助呼び出しの失敗は警告に落とす・費用は数える | 検索に 100 units 使った後の失敗で結果を捨てない。送った呼び出しは課金されたものとして数える（INV-15） |
 | エラー分類（quota / 429 / 5xx / 400 / 403 / 401 再取得 / 通信失敗） | 既存 uploader と同じ作法。token・応答本文を例外に出さない |
 | ISO 8601 の再生時間 | 読めない値を推測しない（`None`） |

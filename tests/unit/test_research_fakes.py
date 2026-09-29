@@ -1,4 +1,4 @@
-"""Fake Provider と固定コーパス（ADR-0031 §7）。
+"""Fake Provider と固定コーパス（ADR-0036）。
 
 Fake は通常テストの唯一の Provider であり、worker の Fake 実行でも使う。ここが壊れると
 下流（Evidence / Trend）のテストが「もっともらしいが偽の入力」で緑になるので、

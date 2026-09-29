@@ -1,4 +1,4 @@
-"""HttpContentFetcher（ADR-0031 §7）。実ネットワークには出ない（MockTransport + Fake resolver）。
+"""HttpContentFetcher（ADR-0036）。実ネットワークには出ない（MockTransport + Fake resolver）。
 
 守るもの: 外部ページの取得が、内部ネットワークへ到達せず・資源を使い切られず・
 「取れていないものを本文確認済みにしない」こと。期待される失敗は例外ではなく

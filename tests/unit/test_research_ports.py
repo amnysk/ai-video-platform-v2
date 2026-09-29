@@ -1,4 +1,4 @@
-"""research Port の値オブジェクト（ADR-0031 §7）。
+"""research Port の値オブジェクト（ADR-0036）。
 
 Port は「取得できた事実」と「本文を確認できたか」を分けて運ぶ。取得失敗・切り詰め・
 テキスト化できない資料を、呼び出し側が誤って「本文確認済み」として扱わないための形を固定する。
@@ -61,7 +61,7 @@ def test_a_complete_text_fetch_counts_as_a_confirmed_body() -> None:
     ids=["truncated", "failed", "no_text", "empty", "blank", "truncated_flag_only"],
 )
 def test_only_a_complete_nonblank_text_is_a_confirmed_body(overrides: dict[str, object]) -> None:
-    """切り詰め・失敗・テキスト無しを「本文確認済み」にしない（ADR-0031 §7）。"""
+    """切り詰め・失敗・テキスト無しを「本文確認済み」にしない（ADR-0036）。"""
     assert _content(**overrides).body_confirmed is False
 
 

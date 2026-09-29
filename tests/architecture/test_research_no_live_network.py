@@ -1,4 +1,4 @@
-"""research の外部通信の入口を数えられる場所に閉じ込める（INV-6 / INV-18、ADR-0031 §7）。
+"""research の外部通信の入口を数えられる場所に閉じ込める（INV-6 / INV-18、ADR-0036）。
 
 - ``domain/research/`` は純粋（HTTP・socket・TLS を import しない）
 - ``infrastructure/research/`` で httpx を import してよいのは ``http_fetcher.py`` だけ。

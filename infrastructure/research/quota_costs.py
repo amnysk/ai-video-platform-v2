@@ -1,4 +1,4 @@
-"""YouTube Data API の quota 単位（公開 docs の値。**この repo では未検証**、ADR-0033 §5）。
+"""YouTube Data API の quota 単位（公開 docs の値。**この repo では未検証**、ADR-0036 §3）。
 
 Fake が本物と同じ規模の ``cost_units`` を返すために、Adapter と Fake が同じ値を参照する
 （定義は 1 か所。AGENTS.md §8）。実行前に所有者が公式 docs で確認する。

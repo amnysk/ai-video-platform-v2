@@ -1,1 +1,1 @@
-"""research の Provider Adapter（ADR-0031 §7）。実 Provider は Port の背後に置く。"""
+"""research の Provider Adapter（ADR-0036）。実 Provider は Port の背後に置く。"""

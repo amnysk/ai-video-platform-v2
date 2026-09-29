@@ -1,4 +1,4 @@
-"""YouTubeSearchProvider（ADR-0031 §7 / ADR-0033 §5）。実ネットワークに出ない（MockTransport）。
+"""YouTubeSearchProvider（ADR-0036 §3）。実ネットワークに出ない（MockTransport）。
 
 守るもの: 呼び出し（search.list → videos.list → channels.list）の順序と quota 単位の計上、
 統計に観測時刻が付くこと、``regionCode`` / ``relevanceLanguage`` を**指定した値**としてだけ残し

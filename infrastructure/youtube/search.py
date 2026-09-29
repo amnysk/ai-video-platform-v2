@@ -1,6 +1,6 @@
-"""YouTube Data API v3 の検索（``SearchProvider`` 実装、ADR-0031 §7 / ADR-0033 §5）。
+"""YouTube Data API v3 の検索（``SearchProvider`` 実装、ADR-0036 §3）。
 
-**worker へは配線しない**（research-worker は ``YOUTUBE_*`` を持たない。ADR-0031 §8）。
+**worker へは配線しない**（research-worker は ``YOUTUBE_*`` を持たない。ADR-0036 §5）。
 有効化には ADR・env の追加・``youtube.readonly`` scope の同意確認が要る。エンドポイントの文字列が
 ``infrastructure/youtube/`` にだけ置けるのは INV-18 の規則
 （``tests/architecture/test_no_live_calls.py``）。
@@ -22,7 +22,7 @@
   関連度の**重みづけ**であって、人気・視聴者層・動画の言語の断定ではない。指定した値は
   ``extras`` に ``requested_region_code`` / ``requested_relevance_language`` として残すだけ。
 - ``videoDuration`` は使わない。``short`` は「4 分未満」の条件であって Shorts の判定ではない
-  （ADR-0033 (d)）。再生時間は ``duration_seconds`` として事実だけを返す。
+  （ADR-0036 §4）。再生時間は ``duration_seconds`` として事実だけを返す。
 - 非公開・欠けた統計は 0 にせず欠けたままにする。
 """
 
