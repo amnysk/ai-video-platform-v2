@@ -69,6 +69,7 @@ from domain.errors import (
     InvalidTransitionError,
     MediaValidationError,
     ProviderCredentialSuspectedOutageError,
+    ProviderInputFetchError,
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
@@ -452,11 +453,14 @@ class PaidJobRunner:
                 heartbeat({"reservation_id": reservation.id, "polls": polls})
             status = await generator.poll(ref)
             if isinstance(status, JobFailed):
-                error: Exception = (
-                    ProviderRejectedError(status.message, rejection=status.rejection)
-                    if status.rejected
-                    else ProviderJobFailedError(status.message)
-                )
+                error: Exception
+                if status.rejected:
+                    error = ProviderRejectedError(status.message, rejection=status.rejection)
+                elif status.input_unreachable:
+                    # 内容の拒否ではない: 拒否台帳・画像ゲート・再送禁止の対象外（ADR-0035 追補）
+                    error = ProviderInputFetchError(status.message)
+                else:
+                    error = ProviderJobFailedError(status.message)
                 await self._spend_conservatively(
                     reservation.id, error, source_media_sha256=source_media_sha256
                 )

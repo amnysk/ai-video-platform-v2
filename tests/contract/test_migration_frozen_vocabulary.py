@@ -360,3 +360,20 @@ def test_0014_legacy_rejection_classification_reads_both_summary_formats() -> No
     assert prompt["rejected_input"] == "prompt"
     unknown = migration.classify_legacy_rejection("ProviderRejectedError: HTTP 400 bad input")
     assert unknown["rejected_input"] == "unknown" and unknown["reason"] is None
+
+
+def test_0014_legacy_file_download_error_is_not_backfilled_as_a_rejection() -> None:
+    """本番に実在する3行目（Episode 54392404 sb5、2026-09-29）は 422 だが内容の拒否ではない。
+
+    fal が入力 URL を取得できなかった（file_download_error）。これを拒否として補完すると、
+    無関係な画像を再送禁止にし、resume しても取り直せず、代替案の計画まで走る。
+    """
+    migration = _load_0014()
+    summary = (
+        "ProviderRejectedError: fal job failed: HTTP 422 types=['file_download_error']: "
+        "[{'loc': ['body', 'image_url'], 'msg': 'Failed to download the file. Please check if "
+        "the URL is accessible and try again.', 'type': 'file_download_error', "
+        "'url': 'https://docs.fal.ai/errors#file_download_error', "
+        "'input': 'https://v3b.fal.media/files/b/x/y.png'}]"
+    )
+    assert migration.classify_legacy_rejection(summary) is None

@@ -1070,3 +1070,46 @@ async def test_unstructured_rejection_is_still_recorded_as_unknown(runner, sessi
     async with session_factory() as session:
         (row,) = await ProviderRejectionRepository(session).list_for_scene(spec.episode_id, "sb1")
     assert row.rejected_input.value == "unknown" and row.source_media_sha256 is None
+
+
+async def test_unreachable_input_is_spent_but_not_marked_as_a_rejected_input(
+    runner, session_factory
+) -> None:
+    """ADR-0035 追補: 取得失敗（file_download_error）は needs_input で止まるが、入力の拒否ではない。
+
+    予約は spent（ジョブは終わった）、``input_rejected_by_provider`` は立てない、拒否台帳にも
+    載せない（画像ゲートが無関係な画像を止めない・代替案を計画しない）。人が resume すれば
+    同じ入力でも新しいラウンドとして取り直せる（画像は prepare で上げ直される）。
+    """
+    from domain.errors import ProviderInputFetchError
+
+    spec = replace(
+        await _spec(session_factory, scene="sb5"),
+        provider=ProviderCall.FAL_VIDEO,
+        artifact_type=ArtifactType.SCENE_VIDEO,
+        source_media_sha256=_IMAGE_SHA,
+    )
+    gen = FakeImageGenerator(
+        pending_polls=0,
+        fail_with=JobFailed(
+            message="fal job failed: HTTP 422 file_download_error", input_unreachable=True
+        ),
+    )
+    outcome = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(outcome, Submitted)
+    with pytest.raises(ProviderInputFetchError):
+        await _await(runner, outcome.reservation_id, gen, source_media_sha256=_IMAGE_SHA)
+
+    async with session_factory() as session:
+        (reservation,) = await ProviderReservationRepository(session).list_for_episode_provider(
+            spec.episode_id, ProviderCall.FAL_VIDEO
+        )
+        rejections = await ProviderRejectionRepository(session).list_for_episode(spec.episode_id)
+    assert reservation.status is ReservationStatus.SPENT
+    assert reservation.failure_class is FailureClass.NEEDS_INPUT
+    assert reservation.input_rejected_by_provider is False
+    assert rejections == []
+
+    retry = FakeImageGenerator(pending_polls=0)
+    again = await runner.submit(spec, retry, REQUEST)
+    assert isinstance(again, Submitted) and again.newly_submitted and again.round == 2

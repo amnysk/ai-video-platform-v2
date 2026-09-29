@@ -389,3 +389,26 @@ async def test_submit_rejection_on_the_prompt_is_structured() -> None:
         await _client(lambda request: httpx.Response(422, json=body)).submit("e/p", {"prompt": "x"})
     assert excinfo.value.rejection is not None
     assert excinfo.value.rejection.rejected_input.value == "prompt"
+
+
+async def test_file_download_error_raises_input_fetch_error_not_rejection() -> None:
+    """ADR-0035 追補: 422 file_download_error は「入力を取得できなかった」（fal: retryable=false）。
+
+    内容の拒否（``ProviderRejectedError``）にしない。submit 時の同期 422 でも同じ。
+    """
+    from domain.errors import ProviderInputFetchError
+
+    body = {
+        "detail": [
+            {
+                "loc": ["body", "image_url"],
+                "msg": "Failed to download the file.",
+                "type": "file_download_error",
+            }
+        ]
+    }
+    response = httpx.Response(422, json=body)
+    with pytest.raises(ProviderInputFetchError) as excinfo:
+        await _client(lambda request: response).result(_submission())
+    assert not isinstance(excinfo.value, ProviderRejectedError)
+    assert "file_download_error" in str(excinfo.value)

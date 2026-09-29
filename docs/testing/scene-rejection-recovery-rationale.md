@@ -105,3 +105,20 @@ docstring にある「本物の stage を通すと本番 worker が拾う」懸�
 | `test_scene_rejection_recovery_e2e.py::test_only_the_rejected_scene_is_replanned_and_regenerated_through_private_upload` | ADR-0035 の目的そのもの。fake は実際の拒否に合わせ、**動画の await で** `body.image_url` を理由に拒否し、判定は画像の sha256 で決まる（テキストを変えても同じ画像なら拒否）。画像生成器はプロンプトで絵が変わる。1回の Production 実行で: sb1〜sb5 の画像・動画 submit は各1回のまま、sb6 だけ画像から作り直して動画が2回目で成功、拒否された画像は再送されない、代替案は1回・人物を主題にしない・根拠と拒否 id つき、manifest は作り直した sb6 を指す。続けて本物の Render・private Upload が1回ずつ、Upload の再実行で二重投稿しない、日次枠は1行のまま。回数（fake の呼び出し）と台帳（`provider_reservations`・`provider_rejections`・Artifact）の両方で見る。**変異確認**: 動画 Activity の await に画像 sha を渡す1行を戻すと、この試験は拒否行の画像キーが NULL で落ちる |
 | `test_incident_recovery_e2e.py::test_422_rejection_then_recipe_version_bump_rebills_nothing_and_never_resends_the_image` | 旧版は「prompt 版を上げると全6シーン再送」を**既知のギャップとして assert** していた（`8a8c499`）。ADR-0035（INV-33/INV-32）でそれは不具合になったので、同じ状況（sb6 が画像を理由に拒否、ADR-0034 の緩和＝版上げだけを当てる）で「成功済みシーンの画像・動画を1件も再送しない」「拒否された同じ画像を文面だけ変えて送らない」「planner が居なければ needs_input で止まる」を固定する。仕様変更は ADR-0035 で承認 |
 | `test_production_workflow.py::test_needs_input_stops_without_further_rounds`（既存を更新） | mock の Activity 群に代替案の計画 Activity（planner 不在の worker と同じく `SceneAlternativePlannerUnavailableError`）を足し、「内容拒否はまず計画を**1回だけ**頼み、代替案が無ければ追加 submit せず blocked」を固定した。更新しないと、ADR-0035 の復旧 Activity に応答する worker が居ないため workflow が計画待ちで終わらなかった（本番で planner worker を配線し忘れた場合の挙動そのもので、`scene-alternative-worker` を compose に置いた理由でもある）。元の意図「同じ入力で次のラウンドへ進まない」は保っている |
+
+## 追補: 入力の取得失敗は内容の拒否ではない（2026-09-29 の実例、ADR-0035 (7)）
+
+本番 DB のダンプを隔離 Postgres に復元して migration 0014 を当てたところ、補完が3行目
+（Episode `54392404` sb5、HTTP 422 `file_download_error`）まで「画像の拒否」として立てた。
+fal 公式では「入力 URL を取得できなかった」で内容の判定ではない。各層で区別を固定する。
+
+| テスト | 守るもの |
+|---|---|
+| `test_fal_queue.py::test_file_download_error_raises_input_fetch_error_not_rejection`（unit） | adapter の境界。422 `file_download_error` を `ProviderRejectedError` にしない |
+| `test_fal_seedance_video.py::test_file_download_error_is_not_a_content_rejection`（unit） | 本番で実際に返った本文の形のまま、poll が `rejected` ではなく `input_unreachable` で届ける |
+| `test_paid_job.py::test_unreachable_input_is_spent_but_not_marked_as_a_rejected_input`（unit） | 予約は spent・needs_input、`input_rejected_by_provider` は false、拒否台帳は空（画像ゲート・代替案が動かない）。次の submit は新しいラウンドとして許される（resume で1回取り直せる）。落ちれば、取得失敗の画像が永久に再送禁止になるか、逆に同じ実行内で自動再送が始まる |
+| `test_migration_frozen_vocabulary.py::test_0014_legacy_file_download_error_is_not_backfilled_as_a_rejection`（contract） | 一度きりの補完が本番の3行目を拒否として立てない |
+
+本番ダンプへの適用結果（読み取りのみで取得したダンプ、隔離環境で実行）: 0010→0014 を適用、
+`dedcf315` sb4 / `ec44fadd` sb2 だけが補完され、`54392404` sb5 は補完されない。downgrade 0010 →
+upgrade 0014 の往復も通る。

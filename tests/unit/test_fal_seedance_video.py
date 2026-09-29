@@ -214,3 +214,47 @@ async def test_image_url_rejection_reaches_job_failed_structured() -> None:
     assert status.rejection.reason == "partner_validation_failed"
     assert status.rejection.types == ("content_policy_violation",)
     assert status.rejection.http_status == 422
+
+
+#: 2026-09-29 06:17 JST（Episode 54392404 sb5）に本番で実際に返った本文の形。
+FILE_DOWNLOAD_ERROR_BODY = {
+    "detail": [
+        {
+            "loc": ["body", "image_url"],
+            "msg": (
+                "Failed to download the file. Please check if the URL is accessible and try again."
+            ),
+            "type": "file_download_error",
+            "url": "https://docs.fal.ai/errors#file_download_error",
+            "input": "https://v3b.fal.media/files/b/x/y.png",
+        }
+    ]
+}
+
+
+async def test_file_download_error_is_not_a_content_rejection() -> None:
+    """ADR-0035 追補: 入力 URL の取得失敗（file_download_error）は内容の判定ではない。
+
+    ``rejected``（= 画像を拒否した・別の映像案が要る）にすると、無関係な画像を再送禁止にし、
+    代替案の計画まで走る。取得失敗として区別して届ける。
+    """
+    ref = json.dumps(
+        {
+            "v": 1,
+            "endpoint": SEEDANCE_ENDPOINT,
+            "request_id": "r1",
+            "status_url": f"{BASE}/status",
+            "response_url": BASE,
+            "cancel_url": None,
+        }
+    )
+    routes = {
+        f"{BASE}/status": httpx.Response(200, json={"status": "COMPLETED"}),
+        BASE: httpx.Response(422, json=FILE_DOWNLOAD_ERROR_BODY),
+    }
+    gen, _ = _generator(routes)
+    status = await gen.poll(ref)  # type: ignore[arg-type]
+    assert isinstance(status, JobFailed)
+    assert status.rejected is False and status.rejection is None
+    assert status.input_unreachable is True
+    assert "file_download_error" in status.message

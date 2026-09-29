@@ -59,6 +59,9 @@ class JobFailed:
     rejected: bool = False
     #: provider の内容拒否の構造化した記録（ADR-0035）。``rejected`` のときだけ意味を持つ。
     rejection: ProviderRejection | None = None
+    #: provider がこちらの入力（URL のファイル）を取得できなかった（ADR-0035 追補）。
+    #: 内容の拒否ではない（``rejected`` とは排他）。
+    input_unreachable: bool = False
 
 
 JobStatus = JobPending | JobSucceeded | JobFailed

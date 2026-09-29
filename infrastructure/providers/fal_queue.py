@@ -32,6 +32,7 @@ import httpx
 
 from domain.errors import (
     MediaValidationError,
+    ProviderInputFetchError,
     ProviderJobFailedError,
     ProviderRejectedError,
     ProviderRejection,
@@ -58,7 +59,6 @@ REJECTED_ERROR_TYPES = frozenset(
         "image_too_large",
         "image_too_small",
         "image_load_error",
-        "file_download_error",
         "file_too_large",
         "face_detection_error",
         "no_media_generated",
@@ -76,6 +76,9 @@ REJECTED_ERROR_TYPES = frozenset(
     }
 )
 CONTENT_POLICY_ERROR_TYPE = "content_policy_violation"
+#: 入力の内容ではなく、入力 URL のファイルを provider が取得できなかった（docs: retryable=false）。
+#: 拒否（``REJECTED_ERROR_TYPES``）とは区別する（ADR-0035 追補、2026-09-29 の実例）。
+INPUT_FETCH_ERROR_TYPE = "file_download_error"
 
 
 class FalQueueState(StrEnum):
@@ -332,6 +335,10 @@ class FalQueueClient:
                     f"fal submit not accepted (retryable): HTTP {status}: {_short(body)}"
                 )
             types = _error_types_from_body(body)
+            if INPUT_FETCH_ERROR_TYPE in types and CONTENT_POLICY_ERROR_TYPE not in types:
+                raise ProviderInputFetchError(
+                    f"fal submit input not fetchable: HTTP {status} types={types}: {_short(body)}"
+                )
             raise ProviderRejectedError(
                 f"fal submit rejected: HTTP {status} types={types}: {_short(body)}",
                 rejection=_rejection(body, types, status),
@@ -400,6 +407,8 @@ class FalQueueClient:
         summary = f"fal job failed: HTTP {status} types={types}: {_short(body)}"
         if CONTENT_POLICY_ERROR_TYPE in types:
             raise ProviderRejectedError(summary, rejection=_rejection(body, types, status))
+        if INPUT_FETCH_ERROR_TYPE in types:
+            raise ProviderInputFetchError(summary)
         if _retryable_header(response) is True:
             raise ProviderJobFailedError(summary)
         if status == 422 or any(t in REJECTED_ERROR_TYPES for t in types):

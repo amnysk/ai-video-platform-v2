@@ -12,7 +12,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from domain.errors import ProviderJobFailedError, ProviderRejectedError
+from domain.errors import ProviderInputFetchError, ProviderJobFailedError, ProviderRejectedError
 from domain.production.ports import (
     ImageRequest,
     JobFailed,
@@ -87,6 +87,8 @@ class FalSeedreamImageGenerator:
             result = await self._result(ref, submission)
         except ProviderRejectedError as exc:
             return JobFailed(message=str(exc), rejected=True, rejection=exc.rejection)
+        except ProviderInputFetchError as exc:
+            return JobFailed(message=str(exc), input_unreachable=True)
         except ProviderJobFailedError as exc:
             return JobFailed(message=str(exc))
         if not _image_url(result):

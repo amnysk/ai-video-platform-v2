@@ -8,7 +8,8 @@
 2. ``artifact_metadata.content_fingerprint``（NULL 可）: 生成レシピの版を除いた入力指紋。
 3. ``provider_rejections``: provider による内容拒否を1件ずつ構造化して保存する。
 4. 既存データの一度きりの補完: ``error_summary`` が ``ProviderRejectedError:`` で始まる
-   spent 予約に ``input_rejected_by_provider = true`` を立て、``provider_rejections`` を1行ずつ
+   spent 予約（``file_download_error`` だけのものを除く。内容の拒否ではない）に
+   ``input_rejected_by_provider = true`` を立て、``provider_rejections`` を1行ずつ
    作る。拒否の対象・理由は ``error_summary`` の文字列から判定する（構造化される前の行なので、
    ここだけは文字列しか材料が無い）。判定できなければ ``unknown``。
 
@@ -180,13 +181,18 @@ def _apply(checks: tuple[tuple[str, str, str], ...], *, drop_fingerprint: bool =
         )
 
 
-def classify_legacy_rejection(error_summary: str) -> dict[str, object]:
+def classify_legacy_rejection(error_summary: str) -> dict[str, object] | None:
     """構造化される前の ``error_summary`` から拒否の対象と理由を判定する（この migration 専用）。
 
     ``fal_queue._short`` の2つの形（``(at body.image_url)`` と、ADR-0034 以前の pydantic repr
     ``'loc': ['body', 'image_url']``）の両方を読む。判定できなければ ``unknown``。
+
+    ``file_download_error``（provider が入力 URL を取得できなかった）は内容の拒否ではないので
+    ``None``（補完しない）。当時のコードは 422 を一律に拒否としていた（2026-09-29 の実例）。
     """
     text = error_summary or ""
+    if "file_download_error" in text and "content_policy_violation" not in text:
+        return None
     if "body.image_url" in text or "'body', 'image_url'" in text:
         rejected_input = "image"
     elif "body.prompt" in text or "'body', 'prompt'" in text:
@@ -250,12 +256,14 @@ def _backfill_legacy_rejections() -> None:
         )
     ).all()
     for row in rows:
+        values = classify_legacy_rejection(row.error_summary)
+        if values is None:
+            continue
         bind.execute(
             sa.update(reservations)
             .where(reservations.c.id == row.id)
             .values(input_rejected_by_provider=True)
         )
-        values = classify_legacy_rejection(row.error_summary)
         insert_values: dict[str, object] = {
             "id": uuid.uuid4(),
             "episode_id": row.episode_id,

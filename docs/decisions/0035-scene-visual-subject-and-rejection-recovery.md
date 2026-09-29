@@ -127,6 +127,29 @@ worker が止まっていれば計画 Activity は schedule_to_close で timeout
 literal で重複している。新しい worker は `contracts.production_activities.CODEX_DEFAULT_MODEL_LABEL`
 を参照する。既存2箇所の寄せは別タスク。
 
+### (7) 追補: 「入力を取得できなかった」は内容の拒否ではない（2026-09-29 の実例）
+
+2026-09-29 06:00 JST の日次 Episode `54392404` は sb1〜sb4 の動画が成功した後、sb5 の動画で
+HTTP 422 `file_download_error`（`loc: body.image_url`、"Failed to download the file"）を受けて
+`blocked` になった。fal 公式の errors ページは「入力の URL のファイルを取得できなかった」
+（retryable: false、URL が公開で取得可能か確認せよ）と書く。**入力の内容の判定ではない**。
+
+当時のコードは 422 を一律に `ProviderRejectedError`（内容の拒否）にしていた。そのままだと
+本 ADR の仕組みが、無関係な画像を再送禁止にし（INV-32）、`input_rejected_by_provider` で resume でも
+取り直せなくし、別の映像案の計画まで走らせる。そこで第3の結果として分ける:
+
+- fal adapter: `file_download_error` → `ProviderInputFetchError`（needs_input。`ProviderRejectedError`
+  の派生にしない）→ `JobFailed(input_unreachable=True)`
+- `PaidJobRunner`: 予約は spent（ジョブは終わっている）、`input_rejected_by_provider` は立てない、
+  拒否台帳にも載せない。同じ実行の中では再送しない（fal: retryable=false）
+- 復旧（代替案の計画）は起動しない（`ProviderRejectedError` 系だけが対象）
+- 人が resume すれば同じ入力でも新しいラウンドとして1回取り直す（画像は prepare で上げ直すので
+  別の URL になる）
+- migration 0014 の補完は `file_download_error` だけの行を補完しない（本番の3行のうち2行だけ）
+
+自動で1回取り直すか（fal は retryable=false と書くが、次の依頼は別の URL になる）は所有者の判断に
+残す（既定は止まる側）。
+
 ## Alternatives
 
 - **(a) 版を上げて全シーンを作り直す（ADR-0034 の状態）** — 実装は無いが、1シーンの拒否で
