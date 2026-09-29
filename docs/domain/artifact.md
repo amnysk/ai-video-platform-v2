@@ -76,6 +76,7 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 | `scene_voice` | production voice（Phase 4、ADR-0017） | 台本シーンのナレーション音声。ナレーション文は持たず台本を参照 |
 | `scene_video` | production video（Phase 4、ADR-0017） | storyboard シーンの動画（元画像を参照、音声なし、fps は `fps_millis`） |
 | `production_manifest` | production（Phase 4、ADR-0017。旧予定名 `asset_manifest`） | 全シーンの画像・動画・音声の参照一覧 |
+| `scene_visual_override` | production（ADR-0035） | provider に拒否されたシーンの代替映像案（映像対象・映像指示・根拠・対処した拒否）。storyboard の世代は変えず、そのシーンの映像の項目だけを差し替える。シーン単位・current は supersede で1本 |
 | `final_video` | render（Phase 5、ADR-0019） | 完成動画（mp4 本体への記述子、入力の固定、profile・エンジン・描画計画 sha256、実測、時間軸・音声配置・字幕 cue（文字オフセットのみ）、技術検査の合格記録）。Episode 単位 |
 | `review_report`（**未実装**） | render（Phase 5B 予定） | 創作面の品質判定の結果 |
 

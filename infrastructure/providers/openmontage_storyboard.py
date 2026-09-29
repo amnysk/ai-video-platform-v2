@@ -36,6 +36,7 @@ from domain.errors import (
 )
 from domain.script.ports import GenerationRequest, StoryGenerator
 from domain.storyboard.ports import StoryboardRawResult, StoryboardRequest, StoryboardSceneDraft
+from domain.storyboard.visual_subject import check_subject_composition, subject_from_required_assets
 from infrastructure.providers.process import ProcessRunner, ProcessTimeout
 from infrastructure.workdir import WorkDirectory
 from prompts import render_storyboard_prompt
@@ -356,6 +357,10 @@ class OpenMontageGuidedStoryboardGenerator:
         if not (texts["visual_description"] or "").strip():
             raise StoryboardSchemaViolationError(f"{label}: description is empty")
 
+        # ADR-0035 (1): 映像対象を Storyboard の時点で決める（外部スキーマにキーは足さない）
+        subject = subject_from_required_assets(scene.get("required_assets"), label=label)
+        check_subject_composition(kind, subject, label=label)
+
         start_ms = round(float(scene["start_seconds"]) * 1000)
         end_ms = round(float(scene["end_seconds"]) * 1000)
         return StoryboardSceneDraft(
@@ -367,6 +372,7 @@ class OpenMontageGuidedStoryboardGenerator:
             framing=texts["framing"],
             camera_movement=texts["camera_movement"],
             transition_in=texts["transition_in"],
+            visual_subject=subject,
         )
 
 

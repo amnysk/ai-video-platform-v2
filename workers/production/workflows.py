@@ -50,11 +50,17 @@ with workflow.unsafe.imports_passed_through():
         DEFAULT_VOICE_CONCURRENCY,
         IMAGE_AWAIT,
         IMAGE_SUBMIT,
+        INPUT_FETCH_RETRIES_PER_SCENE,
+        INPUT_FETCH_RETRY_PATCH_ID,
+        MAX_SCENE_ALTERNATIVES_PER_SCENE,
+        PLAN_SCENE_ALTERNATIVE,
         PRODUCTION_ADMIT,
         PRODUCTION_ASSEMBLE_MANIFEST,
         PRODUCTION_MARK_READY,
         PRODUCTION_PLAN,
         PRODUCTION_RECORD_FAILURE,
+        SCENE_ALTERNATIVE_PATCH_ID,
+        SCENE_ALTERNATIVE_TASK_QUEUE,
         SUBMIT_MAX_ATTEMPTS,
         VIDEO_AWAIT,
         VIDEO_SUBMIT,
@@ -62,6 +68,7 @@ with workflow.unsafe.imports_passed_through():
         VOICE_MAX_ATTEMPTS,
         ImageAwaitRequest,
         ImageSubmitRequest,
+        PlanSceneAlternativeRequest,
         ProductionAdmitRequest,
         ProductionAdmitResult,
         ProductionAssembleRequest,
@@ -71,6 +78,7 @@ with workflow.unsafe.imports_passed_through():
         ProductionPlan,
         ProductionPlanRequest,
         ProductionRecordFailureRequest,
+        SceneAlternativeOutcome,
         SceneArtifactResult,
         SceneVideoWork,
         SceneVoiceWork,
@@ -91,9 +99,12 @@ with workflow.unsafe.imports_passed_through():
         FAILURE_CLASS_BY_TYPE_NAME,
         NON_RETRYABLE_ERROR_TYPE_NAMES,
         MediaValidationError,
+        ProviderInputFetchError,
         ProviderInvocationError,
         ProviderJobFailedError,
         ProviderPollDeadlineError,
+        ProviderRejectedError,
+        ProviderRejectedRetryBlockedError,
         ProviderTimeoutError,
         failure_class_from_type_name,
     )
@@ -196,6 +207,12 @@ class ProductionWorkflowInput:
     image_task_queue: str = PRODUCTION_IMAGE_TASK_QUEUE
     video_task_queue: str = PRODUCTION_VIDEO_TASK_QUEUE
     voice_task_queue: str = PRODUCTION_VOICE_TASK_QUEUE
+    #: 拒否されたシーンの代替案を計画する worker の queue（ADR-0035。Codex を使う）
+    scene_alternative_task_queue: str = SCENE_ALTERNATIVE_TASK_QUEUE
+    #: 1実行で planner を呼ぶシーンあたりの上限（ADR-0035 (8)）。設定値は起動側が入れる
+    #: （workflow の中では Settings を読まない）。既定値つき: 旧履歴の入力でも decode できる。
+    #: DB から数えた回数の判定は計画 Activity が同じ設定値で行う（こちらは暴走止めの二重化）
+    max_scene_alternatives_per_scene: int = MAX_SCENE_ALTERNATIVES_PER_SCENE
 
 
 @dataclass
@@ -217,6 +234,36 @@ class _StageFailure(Exception):
     failure_class: FailureClass
     summary: str
     retry_exhausted: bool
+    #: 原因の例外の型名（Activity の ``ApplicationError.type``）。復旧の判定に使う（ADR-0035）
+    error_type: str | None = None
+
+
+#: この型で止まったシーンは、代替映像案で復旧を試みる（ADR-0035）。
+#: 同じ入力・同じ画像の再送禁止（RetryBlocked）も含める: 旧 Episode の resume で拒否済みの
+#: シーンに当たったとき、そのまま止まらず代替案へ進む。
+SCENE_REJECTION_ERROR_TYPE_NAMES: frozenset[str] = frozenset(
+    {ProviderRejectedError.__name__, ProviderRejectedRetryBlockedError.__name__}
+)
+#: 代替案の計画（Codex）。planner の worker が居なければ schedule_to_close で needs_input になる
+SCENE_ALTERNATIVE_START_TO_CLOSE = timedelta(minutes=20)
+SCENE_ALTERNATIVE_SCHEDULE_TO_CLOSE = timedelta(hours=1)
+
+
+#: provider がこちらの入力を取得できなかった（ADR-0035 (8)、INV-35）。内容の問題ではないので
+#: 代替案は頼まず、入力を上げ直す次のラウンドへ最大 ``INPUT_FETCH_RETRIES_PER_SCENE`` 回進む。
+#: 台帳（``PaidJobRunner``）も DB から数えた同じ上限を持ち、使い切った後は予約前に
+#: ``ProviderInputFetchRetryExhaustedError``（別の型名。ここでは進まない）で止める。
+INPUT_FETCH_ERROR_TYPE_NAMES: frozenset[str] = frozenset({ProviderInputFetchError.__name__})
+
+
+def _input_fetch_retry(err: ActivityError, used: int) -> bool:
+    """この失敗で入力を上げ直して次のラウンドへ進んでよいか（1実行の中の判定）。"""
+    if _error_type(err) not in INPUT_FETCH_ERROR_TYPE_NAMES:
+        return False
+    if used >= INPUT_FETCH_RETRIES_PER_SCENE:
+        return False
+    # 旧履歴にはこの型の失敗が無い。新しい実行だけがこの分岐を通る（marker を残す）
+    return workflow.patched(INPUT_FETCH_RETRY_PATCH_ID)
 
 
 def _failure_class(err: ActivityError) -> FailureClass:
@@ -245,6 +292,11 @@ def _reraise_if_cancelled(err: ActivityError) -> None:
     """
     if isinstance(err.cause, CancelledError):
         raise asyncio.CancelledError() from err
+
+
+def _error_type(err: ActivityError) -> str | None:
+    cause = err.cause
+    return cause.type if isinstance(cause, ApplicationError) else None
 
 
 def _summary(err: BaseException) -> str:
@@ -476,6 +528,84 @@ class ProductionWorkflow:
         video_slots: asyncio.Semaphore,
         result: ProductionWorkflowResult,
     ) -> None:
+        """1シーンの画像 → 動画。provider に内容を拒否されたら代替案で**このシーンだけ**作り直す。
+
+        ADR-0035: 拒否（または拒否済み入力の再送禁止）で止まったら、代替案を計画させ、
+        合格した案でこのシーンの画像から作り直す。他シーンの枝は触らない（兄弟を cancel しない
+        ── 例外が枝の外へ出る前にここで受ける）。上限・不成立・検証失敗は計画 Activity が
+        needs_input で返し、ここで _StageFailure にして止まる。planner を呼ぶ回数は1シーンの上限
+        で打ち切る（Activity 側の判定が壊れても無限に回さない）。
+        """
+        recovery = workflow.patched(SCENE_ALTERNATIVE_PATCH_ID)
+        seen_revision = 0
+        plans = 0
+        while True:
+            try:
+                await self._scene_media(request, plan, work, image_slots, video_slots, result)
+                return
+            except _StageFailure as failure:
+                if not recovery or failure.error_type not in SCENE_REJECTION_ERROR_TYPE_NAMES:
+                    raise
+                if plans >= request.max_scene_alternatives_per_scene:
+                    raise _StageFailure(
+                        FailureClass.NEEDS_INPUT,
+                        f"scene {work.scene_id} was still rejected after {plans} alternative(s) "
+                        f"in this run: {failure.summary}",
+                        retry_exhausted=False,
+                        error_type=failure.error_type,
+                    ) from failure
+                workflow.logger.info(
+                    "scene %s rejected by the provider (%s); planning an alternative",
+                    work.scene_id,
+                    failure.error_type,
+                )
+                outcome = await self._plan_alternative(request, plan, work.scene_id, seen_revision)
+                plans += 1
+                seen_revision = outcome.revision
+
+    async def _plan_alternative(
+        self,
+        request: ProductionWorkflowInput,
+        plan: ProductionPlan,
+        scene_id: str,
+        seen_revision: int,
+    ) -> SceneAlternativeOutcome:
+        info = workflow.info()
+        try:
+            return await workflow.execute_activity(
+                PLAN_SCENE_ALTERNATIVE,
+                PlanSceneAlternativeRequest(
+                    episode_id=request.episode_id,
+                    workflow_id=info.workflow_id,
+                    run_id=info.run_id,
+                    scene_id=scene_id,
+                    storyboard_artifact_id=plan.storyboard_artifact_id,
+                    seen_revision=seen_revision,
+                ),
+                result_type=SceneAlternativeOutcome,
+                task_queue=request.scene_alternative_task_queue,
+                start_to_close_timeout=SCENE_ALTERNATIVE_START_TO_CLOSE,
+                schedule_to_close_timeout=SCENE_ALTERNATIVE_SCHEDULE_TO_CLOSE,
+                retry_policy=STATE_RETRY_POLICY,
+            )
+        except ActivityError as err:
+            _reraise_if_cancelled(err)
+            raise _StageFailure(
+                _failure_class(err),
+                f"scene {scene_id}: {_summary(err)}",
+                retry_exhausted=False,
+                error_type=_error_type(err),
+            ) from err
+
+    async def _scene_media(
+        self,
+        request: ProductionWorkflowInput,
+        plan: ProductionPlan,
+        work: SceneVideoWork,
+        image_slots: asyncio.Semaphore,
+        video_slots: asyncio.Semaphore,
+        result: ProductionWorkflowResult,
+    ) -> None:
         info = workflow.info()
         scene_id = work.scene_id
 
@@ -623,13 +753,20 @@ async def _rounds(
       - 状態不明（``REAWAIT_ERROR_TYPE_NAMES`` / timeout）: **同じ予約で** await を追加実行
         （``await_reexecutions`` 回まで）。使い切ったら失敗として記録し、新しい submit はしない
       - ジョブが確定的に終わった（``NEW_ROUND_ERROR_TYPE_NAMES``）: 次の試行（新しい submit）
+      - provider が入力を取得できなかった（``INPUT_FETCH_ERROR_TYPE_NAMES``）: 入力を上げ直す
+        次の試行へ**1実行で1回だけ**進む（通常の予算とは別枠。台帳も DB から数えた上限を持つ）
       - それ以外: 失敗として記録
 
     試行番号は台帳のラウンドではない（台帳が実行をまたいで実効ラウンドを決める）。
     枠（semaphore）は submit から await の完了まで握る: provider に投げて未回収のジョブ数の上限。
     """
     budget = max(1, max_rounds)
-    for attempt in range(1, budget + 1):
+    #: 入力の取得失敗の再試行（INV-35）は通常の予算とは別枠で、使ったときだけ上限を1つ延ばす
+    limit = budget
+    fetch_retries = 0
+    attempt = 0
+    while attempt < limit:
+        attempt += 1
         async with slots:
             try:
                 submitted = await submit(attempt)
@@ -637,8 +774,19 @@ async def _rounds(
                 _reraise_if_cancelled(err)
                 cls = _failure_class(err)
                 retryable = cls in RETRYABLE_FAILURE_CLASSES
-                if not retryable or attempt >= budget:
-                    raise _StageFailure(cls, _summary(err), retry_exhausted=retryable) from err
+                if _input_fetch_retry(err, fetch_retries):
+                    fetch_retries += 1
+                    limit = max(limit, attempt + 1)
+                    workflow.logger.info(
+                        "production submit %s: provider could not fetch the input; "
+                        "re-uploading for one more round",
+                        attempt,
+                    )
+                    continue
+                if not retryable or attempt >= limit:
+                    raise _StageFailure(
+                        cls, _summary(err), retry_exhausted=retryable, error_type=_error_type(err)
+                    ) from err
                 workflow.logger.info("production submit %s failed with %s; next", attempt, cls)
                 continue
             if submitted.artifact is not None:
@@ -660,12 +808,23 @@ async def _rounds(
                             await_reexecutions,
                         )
                         continue
-                    if _await_failure_ends_job(err) and attempt < budget:
+                    if _input_fetch_retry(err, fetch_retries):
+                        fetch_retries += 1
+                        limit = max(limit, attempt + 1)
+                        workflow.logger.info(
+                            "production attempt %s: provider could not fetch the input; "
+                            "re-uploading for one more round",
+                            attempt,
+                        )
+                        break
+                    if _await_failure_ends_job(err) and attempt < limit:
                         workflow.logger.info(
                             "production attempt %s job over with %s; next attempt", attempt, cls
                         )
                         break
-                    raise _StageFailure(cls, _summary(err), retry_exhausted=retryable) from err
+                    raise _StageFailure(
+                        cls, _summary(err), retry_exhausted=retryable, error_type=_error_type(err)
+                    ) from err
     raise AssertionError("unreachable")  # pragma: no cover
 
 

@@ -3,25 +3,40 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
-from contracts.states import ArtifactType, FailureClass, ProviderCall, ReservationStatus
+from contracts.production_activities import AUTH_INCIDENT_SUPPRESSION_THRESHOLD
+from contracts.states import (
+    ArtifactType,
+    FailureClass,
+    ProviderCall,
+    RejectionCategory,
+    ReservationStatus,
+)
 from domain.errors import (
     MediaValidationError,
+    ProviderCredentialSuspectedOutageError,
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
+    ProviderRejectedRetryBlockedError,
+    ProviderRejection,
     ProviderSubmitAmbiguousError,
+    ProviderUnavailableError,
     UnreconciledReservationError,
 )
 from domain.production.ports import ImageRequest, JobFailed, JobPending, ProviderJobRef
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
+    ProviderAuthIncidentRepository,
+    ProviderRejectionRepository,
     ProviderReservation,
     ProviderReservationRepository,
 )
@@ -79,6 +94,99 @@ async def _await(runner, rid, gen, **kw):
     return await runner.await_output(rid, gen, **kw)
 
 
+async def _record_reusable_scene_image(
+    session_factory, artifact_store, *, episode_id, scene_id, input_hash
+):
+    """ADR-0033: 再利用判定は実体も検証するので、DB行だけでなく store にも本物を置く。"""
+    media_body = b"png-bytes"
+    media_key = f"artifacts/{episode_id}/scene_image/{scene_id}.png"
+    await artifact_store.put_bytes(media_key, media_body, "image/png")
+    payload = {
+        "episode_id": str(episode_id),
+        "type": "scene_image",
+        "schema_version": "1.0",
+        "source_storyboard": {
+            "artifact_id": str(uuid.uuid4()),
+            "sha256": "a" * 64,
+            "schema_version": "1.0",
+        },
+        "scene_id": scene_id,
+        "media": {
+            "object_key": media_key,
+            "sha256": hashlib.sha256(media_body).hexdigest(),
+            "bytes": len(media_body),
+            "mime": "image/png",
+        },
+        "width": 1080,
+        "height": 1920,
+        "generator": {
+            "generator": "fal",
+            "generator_model": "seedream-4.5",
+            # FakeImageGenerator().generation_profile_id と一致させる
+            # （tests/support/production.py。ADR-0033: fal の固定定数ではなく、今まさに
+            # 構成されている generator が報告する値と比較する）
+            "generation_profile_id": "fake-image-profile-v1",
+        },
+    }
+    descriptor_key = f"artifacts/{episode_id}/scene_image/{scene_id}.json"
+    put = await artifact_store.put_json(descriptor_key, payload)
+    async with session_factory() as session:
+        await ArtifactMetadataRepository(session).record(
+            episode_id=episode_id,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            schema_version="1.0",
+            bucket="b",
+            object_key=descriptor_key,
+            sha256=put.sha256,
+            input_hash=input_hash,
+            scene_id=scene_id,
+            size_bytes=put.size,
+        )
+        await session.commit()
+
+
+async def test_corrupt_artifact_does_not_bypass_the_unreconciled_reservation_block(
+    runner, session_factory, artifact_store
+) -> None:
+    """ADR-0033 §4: 破損検出は「現行が無い」に倒すだけで、未照合予約のブロックを迂回しない。
+
+    DB行はあるが実体（store）が無い＝破損として扱われる。それでも同じ Episode+provider+scene に
+    evidence の無い reserved が残っていれば、通常どおり ``UnreconciledReservationError`` で止まる
+    （ADR-0013 は変更しない。破損の有無に関わらず同じ判定を通す）。
+    """
+    spec = await _spec(session_factory)
+    async with session_factory() as session:
+        # DB行はあるが object を store に置かない（欠落 = MISSING 相当）
+        await ArtifactMetadataRepository(session).record(
+            episode_id=spec.episode_id,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            schema_version="1.0",
+            bucket="b",
+            object_key="artifacts/missing/sb1.json",
+            sha256="1" * 64,
+            input_hash=spec.input_hash,
+            scene_id="sb1",
+        )
+        repo = ProviderReservationRepository(session)
+        row = await repo.reserve(
+            episode_id=spec.episode_id,
+            provider=spec.provider,
+            idempotency_key=spec.idempotency_key,
+            input_hash=spec.input_hash,
+            round=1,
+            scene_id="sb1",
+        )
+        await repo.mark_dispatched(row.id)
+        await session.commit()
+
+    gen = FakeImageGenerator()
+    with pytest.raises(UnreconciledReservationError):
+        await runner.submit(spec, gen, REQUEST)
+    assert gen.submit_calls == 0
+    # 破損検出そのものが新しい予約や外部呼び出しを一切起こさない
+    assert not await artifact_store.exists("artifacts/missing/sb1.json")
+
+
 async def test_happy_path_writes_ledger_in_order(runner, session_factory, artifact_store) -> None:
     spec = await _spec(session_factory)
     gen = FakeImageGenerator(pending_polls=2, cost_usd=0.04)
@@ -101,20 +209,18 @@ async def test_happy_path_writes_ledger_in_order(runner, session_factory, artifa
     assert await artifact_store.get_bytes(output.raw_output_key) == output.data
 
 
-async def test_existing_artifact_is_reused_without_reserving(runner, session_factory) -> None:
+async def test_existing_artifact_is_reused_without_reserving(
+    runner, session_factory, artifact_store
+) -> None:
     spec = await _spec(session_factory)
-    async with session_factory() as session:
-        await ArtifactMetadataRepository(session).record(
-            episode_id=spec.episode_id,
-            artifact_type=ArtifactType.SCENE_IMAGE,
-            schema_version="1.0",
-            bucket="b",
-            object_key="k",
-            sha256="1" * 64,
-            input_hash=spec.input_hash,
-            scene_id="sb1",
-        )
-        await session.commit()
+    # ADR-0033: 再利用は実体も検証するので、DB行だけでなく store にも本物を置く
+    await _record_reusable_scene_image(
+        session_factory,
+        artifact_store,
+        episode_id=spec.episode_id,
+        scene_id="sb1",
+        input_hash=spec.input_hash,
+    )
     gen = FakeImageGenerator()
     assert isinstance(await runner.submit(spec, gen, REQUEST), Reused)
     other_scene = replace(spec, scene_id="sb2")
@@ -255,6 +361,48 @@ async def test_job_failure_spends_conservatively(runner, session_factory, failur
     row = await _reservation(session_factory, outcome.reservation_id)
     assert row.status is ReservationStatus.SPENT and row.reconciled_by == "conservative"
     assert gen.download_calls == 0
+
+
+async def test_provider_rejected_input_blocks_the_next_round(runner, session_factory) -> None:
+    """ADR-0034: 2026-09-26/27 の fal 422 content_policy_violation 事故。
+
+    provider が入力そのものを拒否した（``ProviderRejectedError``）ときは、同じ input_hash
+    のまま次のラウンドへ自動で進まない。新しい予約も新しい provider 呼び出しも作らない
+    （そのまま再送しても同じ拒否を繰り返すだけで課金だけが増える）。
+    """
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(pending_polls=0, fail_with=JobFailed("policy", rejected=True))
+    outcome = await runner.submit(spec, gen, REQUEST)
+    with pytest.raises(ProviderRejectedError):
+        await _await(runner, outcome.reservation_id, gen)
+
+    row = await _reservation(session_factory, outcome.reservation_id)
+    assert row.status is ReservationStatus.SPENT
+    assert row.input_rejected_by_provider is True
+
+    with pytest.raises(ProviderRejectedRetryBlockedError):
+        await runner.submit(replace(spec, round=2), gen, REQUEST)
+
+    # 新しい予約は作らない（ラウンド1のまま）。provider へも再送しない。
+    assert await _rounds(session_factory, spec) == [(1, ReservationStatus.SPENT)]
+    assert gen.submit_calls == 1
+
+
+async def test_provider_rejected_input_does_not_block_a_different_input_hash(
+    runner, session_factory
+) -> None:
+    """プロンプト・素材を直して input_hash が変われば、新しいラウンド1として進める。"""
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(pending_polls=0, fail_with=JobFailed("policy", rejected=True))
+    outcome = await runner.submit(spec, gen, REQUEST)
+    with pytest.raises(ProviderRejectedError):
+        await _await(runner, outcome.reservation_id, gen)
+
+    fixed_spec = replace(spec, input_hash="f" * 64)
+    ok = FakeImageGenerator(pending_polls=0)
+    again = await runner.submit(fixed_spec, ok, REQUEST)
+    assert isinstance(again, Submitted) and again.newly_submitted and again.round == 1
+    assert ok.submit_calls == 1
 
 
 async def test_download_over_cap_is_spent_and_not_stored(
@@ -400,6 +548,37 @@ class _ConcurrentAttemptFinishes(FakeImageGenerator):
         key = raw_output_key(self.episode_id, self.reservation_id)
         # 同じジョブの取得物なので、並行試行の evidence は同じバイト列
         await self.store.put_bytes(key, b"".join(chunks), "application/octet-stream")
+        # ADR-0033: await_output は紐づいた Artifact を実体まで検証してから返すので、DB行だけ
+        # でなく本物のJSON記述子・メディアも置く（実際の Activity が常にそうしているのと同じ形）
+        media_body = b"png-bytes-concurrent"
+        media_key = f"artifacts/{self.episode_id}/scene_image/sb1-concurrent.png"
+        await self.store.put_bytes(media_key, media_body, "image/png")
+        descriptor_payload = {
+            "episode_id": str(self.episode_id),
+            "type": "scene_image",
+            "schema_version": "1.0",
+            "source_storyboard": {
+                "artifact_id": str(uuid.uuid4()),
+                "sha256": "a" * 64,
+                "schema_version": "1.0",
+            },
+            "scene_id": "sb1",
+            "media": {
+                "object_key": media_key,
+                "sha256": hashlib.sha256(media_body).hexdigest(),
+                "bytes": len(media_body),
+                "mime": "image/png",
+            },
+            "width": 1080,
+            "height": 1920,
+            "generator": {
+                "generator": "fal",
+                "generator_model": "seedream-4.5",
+                "generation_profile_id": "fake-image-profile-v1",
+            },
+        }
+        descriptor_key = f"artifacts/{self.episode_id}/scene_image/x.json"
+        put = await self.store.put_json(descriptor_key, descriptor_payload)
         async with self.session_factory() as session:
             await ProviderReservationRepository(session).mark_spent(
                 self.reservation_id, raw_output_key=key, reconciled_by="evidence"
@@ -407,11 +586,11 @@ class _ConcurrentAttemptFinishes(FakeImageGenerator):
             meta = await ArtifactMetadataRepository(session).record(
                 episode_id=self.episode_id,
                 artifact_type=ArtifactType.SCENE_IMAGE,
-                schema_version="1",
+                schema_version="1.0",
                 bucket="b",
-                object_key=f"artifacts/{self.episode_id}/x.json",
-                sha256="c" * 64,
-                size_bytes=1,
+                object_key=descriptor_key,
+                sha256=put.sha256,
+                size_bytes=put.size,
                 input_hash="h" * 64,
                 scene_id="sb1",
             )
@@ -542,3 +721,486 @@ async def test_concurrent_insert_of_the_same_round_resumes_instead_of_resubmitti
     assert isinstance(again, Submitted) and not again.newly_submitted
     assert again.reservation_id == first.reservation_id
     assert gen.submit_calls == 1 and calls["n"] >= 2
+
+
+# --------------------------------------------------------------- ADR-0030: provider auth incidents
+
+
+async def test_prepare_auth_failure_records_incident_and_creates_no_reservation(
+    runner, session_factory
+) -> None:
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+    with pytest.raises(ProviderUnavailableError):
+        await runner.submit(spec, gen, REQUEST)
+    assert gen.submit_calls == 0
+    async with session_factory() as session:
+        latest = await ProviderReservationRepository(session).find_latest_for_input(
+            spec.episode_id, spec.provider, spec.scene_id, spec.input_hash
+        )
+        assert latest is None  # 予約は一切作られない（非課金の準備は予約の前）
+        count = await ProviderAuthIncidentRepository(session).count_unresolved_within_window(
+            spec.provider, since=datetime.min.replace(tzinfo=UTC)
+        )
+        assert count == 1
+
+
+async def test_repeated_auth_incidents_suppress_new_submits_for_same_provider(
+    runner, session_factory
+) -> None:
+    for scene in ("sb1", "sb2", "sb3")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
+        spec = await _spec(session_factory, scene=scene)
+        gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+        with pytest.raises(ProviderUnavailableError):
+            await runner.submit(spec, gen, REQUEST)
+
+    blocked_spec = await _spec(session_factory, scene="sb4")
+    blocked_gen = FakeImageGenerator()
+    with pytest.raises(ProviderCredentialSuspectedOutageError):
+        await runner.submit(blocked_spec, blocked_gen, REQUEST)
+    assert blocked_gen.prepare_calls == 0  # 準備すら呼ばない
+    assert blocked_gen.submit_calls == 0
+    async with session_factory() as session:
+        latest = await ProviderReservationRepository(session).find_latest_for_input(
+            blocked_spec.episode_id,
+            blocked_spec.provider,
+            blocked_spec.scene_id,
+            blocked_spec.input_hash,
+        )
+        assert latest is None
+
+
+async def test_auth_outage_gate_is_scoped_to_one_provider(runner, session_factory) -> None:
+    for scene in ("sb1", "sb2", "sb3")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
+        spec = await _spec(session_factory, scene=scene)
+        gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+        with pytest.raises(ProviderUnavailableError):
+            await runner.submit(spec, gen, REQUEST)
+
+    video_spec = PaidJobSpec(
+        episode_id=(await _spec(session_factory, scene="sb9")).episode_id,
+        scene_id="sb9",
+        provider=ProviderCall.FAL_VIDEO,
+        artifact_type=ArtifactType.SCENE_VIDEO,
+        input_hash="v" * 64,
+        round=1,
+    )
+    from tests.support.production import FakeVideoGenerator
+
+    video_gen = FakeVideoGenerator(pending_polls=0)
+    outcome = await runner.submit(video_spec, video_gen, REQUEST)
+    assert isinstance(outcome, Submitted) and outcome.newly_submitted
+
+
+async def test_successful_prepare_resolves_open_incidents(runner, session_factory) -> None:
+    spec = await _spec(session_factory)
+    failing = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+    with pytest.raises(ProviderUnavailableError):
+        await runner.submit(spec, failing, REQUEST)
+
+    recovered_spec = await _spec(session_factory, scene="sb2")
+    healthy = FakeImageGenerator(pending_polls=0)
+    outcome = await runner.submit(recovered_spec, healthy, REQUEST)
+    assert isinstance(outcome, Submitted)
+
+    async with session_factory() as session:
+        count = await ProviderAuthIncidentRepository(session).count_unresolved_within_window(
+            spec.provider, since=datetime.min.replace(tzinfo=UTC)
+        )
+        assert count == 0
+
+
+async def test_auth_outage_gate_does_not_block_resuming_already_produced_scenes(
+    runner, session_factory, artifact_store
+) -> None:
+    """sb1〜sb5 のように既に Artifact がある scene は、抑止期間中でも再開できる（ADR-0030）。
+
+    ゲートは Reused / Submitted の早期returnより後（実際に provider I/O が要る場面）でだけ
+    評価する。抑止中に済んだ工程の再開まで止めると failure-policy.md §4
+    「済んだ工程は課金を伴わずに素通りする」が壊れる。
+    """
+    done_spec = await _spec(session_factory, scene="sb1")
+    # ADR-0033: 再利用は実体も検証するので、DB行だけでなく store にも本物を置く
+    await _record_reusable_scene_image(
+        session_factory,
+        artifact_store,
+        episode_id=done_spec.episode_id,
+        scene_id="sb1",
+        input_hash=done_spec.input_hash,
+    )
+
+    for scene in ("sb2", "sb3", "sb4")[:AUTH_INCIDENT_SUPPRESSION_THRESHOLD]:
+        spec = await _spec(session_factory, scene=scene)
+        gen = FakeImageGenerator(prepare_error=ProviderUnavailableError("denied", http_status=403))
+        with pytest.raises(ProviderUnavailableError):
+            await runner.submit(spec, gen, REQUEST)
+
+    # 同じ provider が抑止中でも、既に成果物がある sb1 は provider を一切呼ばずに再利用できる
+    resumed = await runner.submit(done_spec, FakeImageGenerator(), REQUEST)
+    assert isinstance(resumed, Reused)
+
+
+# --------------------------------------------------------------- ADR-0033: await_output の検証
+
+
+async def test_await_output_does_not_return_a_corrupted_linked_artifact_silently(
+    runner, session_factory, artifact_store
+) -> None:
+    """独立の統合試験で発見: reservation.outcome_artifact_id への近道が検証をすり抜けていた。
+
+    予約に紐づいた Artifact（``outcome_artifact_id``）の実体が壊れていても、``await_output`` は
+    それを「完了済み」として黙って返してはいけない（``find_and_verify_current`` が予約の**前**で
+    行う検査と同じものを、予約の**後**（await の再開）でも通す）。evidence（生の取得物）が
+    無傷なら、それを ``.data`` として返す（呼び出し側が読み直せるように）。壊れた Artifact を
+    ``.artifact`` に入れて返さない。
+    """
+    spec = await _spec(session_factory)
+    media_body = b"png-bytes-original"
+    media_key = f"artifacts/{spec.episode_id}/scene_image/sb1.png"
+    await artifact_store.put_bytes(media_key, media_body, "image/png")
+    descriptor_payload = {
+        "episode_id": str(spec.episode_id),
+        "type": "scene_image",
+        "schema_version": "1.0",
+        "source_storyboard": {
+            "artifact_id": str(uuid.uuid4()),
+            "sha256": "a" * 64,
+            "schema_version": "1.0",
+        },
+        "scene_id": "sb1",
+        "media": {
+            "object_key": media_key,
+            "sha256": hashlib.sha256(media_body).hexdigest(),
+            "bytes": len(media_body),
+            "mime": "image/png",
+        },
+        "width": 1080,
+        "height": 1920,
+        "generator": {
+            "generator": "fal",
+            "generator_model": "seedream-4.5",
+            "generation_profile_id": "fake-image-profile-v1",
+        },
+    }
+    descriptor_key = f"artifacts/{spec.episode_id}/scene_image/sb1.json"
+    put = await artifact_store.put_json(descriptor_key, descriptor_payload)
+    async with session_factory() as session:
+        artifact = await ArtifactMetadataRepository(session).record(
+            episode_id=spec.episode_id,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            schema_version="1.0",
+            bucket="b",
+            object_key=descriptor_key,
+            sha256=put.sha256,
+            input_hash=spec.input_hash,
+            scene_id="sb1",
+            size_bytes=put.size,
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        reservations = ProviderReservationRepository(session)
+        reservation = await reservations.reserve(
+            episode_id=spec.episode_id,
+            provider=spec.provider,
+            idempotency_key=spec.idempotency_key,
+            input_hash=spec.input_hash,
+            round=1,
+            scene_id="sb1",
+        )
+        await reservations.mark_dispatched(reservation.id)
+        raw_key = raw_output_key(spec.episode_id, reservation.id)
+        await artifact_store.put_text(raw_key, "raw-evidence-untouched")
+        await reservations.mark_spent(reservation.id, raw_output_key=raw_key)
+        await reservations.attach_artifact(reservation.id, artifact.id)
+        await session.commit()
+
+    # 実体を壊す（DB行・予約は無傷のまま）。immutability ガードを迂回して直接書き換える
+    # （アプリの書き込み経路の外からの破損を模す）
+    artifact_store._objects[media_key] = b"corrupted-bytes"  # type: ignore[attr-defined]
+
+    gen = FakeImageGenerator()
+    output = await runner.await_output(reservation.id, gen, poll_interval_seconds=0)
+
+    # 壊れた Artifact を「完了済み」として黙って返していない
+    assert output.artifact is None
+    # evidence（生の取得物）は無傷なので、それを呼び出し側が読み直せるように返す
+    assert output.data == b"raw-evidence-untouched"
+    assert output.raw_output_key == raw_key
+    # 破損した実体・予約・DB行のいずれも自動で削除・変更されていない
+    async with session_factory() as session:
+        still_linked = await ArtifactMetadataRepository(session).get(artifact.id)
+    assert still_linked is not None and still_linked.id == artifact.id
+    assert await artifact_store.get_bytes(media_key) == b"corrupted-bytes"
+
+
+async def test_await_output_still_returns_a_valid_linked_artifact_fast(
+    runner, session_factory, artifact_store
+) -> None:
+    """非退行: 実体が無傷なら、従来どおり検証済みの既存 Artifact をそのまま返す（再検証で通る）。"""
+    spec = await _spec(session_factory)
+    await _record_reusable_scene_image(
+        session_factory,
+        artifact_store,
+        episode_id=spec.episode_id,
+        scene_id="sb1",
+        input_hash=spec.input_hash,
+    )
+    async with session_factory() as session:
+        current = await ArtifactMetadataRepository(session).find_current(
+            spec.episode_id, ArtifactType.SCENE_IMAGE, spec.input_hash, "sb1"
+        )
+        assert current is not None
+        reservations = ProviderReservationRepository(session)
+        reservation = await reservations.reserve(
+            episode_id=spec.episode_id,
+            provider=spec.provider,
+            idempotency_key=spec.idempotency_key,
+            input_hash=spec.input_hash,
+            round=1,
+            scene_id="sb1",
+        )
+        await reservations.mark_dispatched(reservation.id)
+        raw_key = raw_output_key(spec.episode_id, reservation.id)
+        await artifact_store.put_text(raw_key, "raw-evidence")
+        await reservations.mark_spent(reservation.id, raw_output_key=raw_key)
+        await reservations.attach_artifact(reservation.id, current.id)
+        await session.commit()
+
+    gen = FakeImageGenerator()
+    output = await runner.await_output(reservation.id, gen, poll_interval_seconds=0)
+
+    assert output.artifact is not None and output.artifact.id == current.id
+    assert output.data == b""
+
+
+# ----------------------------- ADR-0035: 拒否の構造化と拒否画像の再送禁止（INV-32）
+
+_IMAGE_SHA = "i" * 64
+_LIKENESS = ProviderRejection(
+    types=("content_policy_violation",),
+    locs=("body.image_url",),
+    reason="partner_validation_failed",
+    message="may contain likenesses of real people",
+    http_status=422,
+    category=RejectionCategory.CONTENT_POLICY,
+)
+
+
+def _rejecting(rejection: ProviderRejection) -> FakeImageGenerator:
+    return FakeImageGenerator(
+        pending_polls=0,
+        fail_with=JobFailed(message="fal job failed: HTTP 422", rejected=True, rejection=rejection),
+    )
+
+
+async def _rejected_video(
+    runner, session_factory, rejection=_LIKENESS, image_sha: str = _IMAGE_SHA
+) -> PaidJobSpec:
+    spec = replace(
+        await _spec(session_factory, scene="sb2", input_hash=image_sha[0] * 63 + "h"),
+        provider=ProviderCall.FAL_VIDEO,
+        artifact_type=ArtifactType.SCENE_VIDEO,
+        source_media_sha256=image_sha,
+    )
+    gen = _rejecting(rejection)
+    outcome = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(outcome, Submitted)
+    with pytest.raises(ProviderRejectedError):
+        await _await(runner, outcome.reservation_id, gen, source_media_sha256=image_sha)
+    return spec
+
+
+async def test_content_rejection_is_recorded_structured_with_the_input_image(
+    runner, session_factory
+) -> None:
+    """拒否は文字列でなく構造で残る。どの予約・入力・画像が、どこで・なぜ拒否されたか。"""
+    spec = await _rejected_video(runner, session_factory)
+    async with session_factory() as session:
+        (row,) = await ProviderRejectionRepository(session).list_for_scene(spec.episode_id, "sb2")
+        (reservation,) = await ProviderReservationRepository(session).list_for_episode_provider(
+            spec.episode_id, ProviderCall.FAL_VIDEO
+        )
+    assert row.rejected_input.value == "image"
+    assert row.source_media_sha256 == _IMAGE_SHA
+    assert row.reason == "partner_validation_failed"
+    assert row.types == ("content_policy_violation",)
+    assert row.http_status == 422
+    assert row.input_hash == spec.input_hash
+    assert row.reservation_id == reservation.id
+    assert reservation.input_rejected_by_provider is True
+
+
+async def test_rejected_image_is_not_resubmitted_with_different_text(
+    runner, session_factory
+) -> None:
+    """INV-32 の核: 動画用テキストを変えた（= 別の input_hash）だけの同じ画像は予約すら作らない。"""
+    spec = await _rejected_video(runner, session_factory)
+    reworded = replace(spec, input_hash="k" * 64)
+    gen = FakeImageGenerator(pending_polls=0)
+    with pytest.raises(ProviderRejectedRetryBlockedError):
+        await runner.submit(reworded, gen, REQUEST)
+    assert gen.submit_calls == 0 and gen.prepare_calls == 0
+    async with session_factory() as session:
+        rows = await ProviderReservationRepository(session).list_for_episode_provider(
+            spec.episode_id, ProviderCall.FAL_VIDEO
+        )
+    assert len(rows) == 1  # 新しい予約（= 新しい課金）は無い
+
+
+async def test_a_different_image_is_not_blocked(runner, session_factory) -> None:
+    """ゲートは画像単位。作り直した画像（別の sha256）なら通常どおり submit できる。"""
+    spec = await _rejected_video(runner, session_factory)
+    new_image = replace(spec, input_hash="m" * 64, source_media_sha256="j" * 64)
+    gen = FakeImageGenerator(pending_polls=0)
+    outcome = await runner.submit(new_image, gen, REQUEST)
+    assert isinstance(outcome, Submitted) and outcome.newly_submitted
+
+
+async def test_a_prompt_rejection_does_not_block_the_image(runner, session_factory) -> None:
+    """拒否の位置がテキストなら、画像はそのまま使える（過剰に止めない）。"""
+    prompt_rejection = ProviderRejection(
+        types=("content_policy_violation",), locs=("body.prompt",), http_status=422
+    )
+    spec = await _rejected_video(runner, session_factory, rejection=prompt_rejection)
+    reworded = replace(spec, input_hash="k" * 64)
+    outcome = await runner.submit(reworded, FakeImageGenerator(pending_polls=0), REQUEST)
+    assert isinstance(outcome, Submitted)
+
+
+async def test_unstructured_rejection_is_still_recorded_as_unknown(runner, session_factory) -> None:
+    """adapter が構造を持たない拒否でも1行残す（件数・復旧の判断材料）。対象は unknown。"""
+    spec = await _spec(session_factory)
+    gen = FakeImageGenerator(pending_polls=0, fail_with=JobFailed(message="bad", rejected=True))
+    outcome = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(outcome, Submitted)
+    with pytest.raises(ProviderRejectedError):
+        await _await(runner, outcome.reservation_id, gen)
+    async with session_factory() as session:
+        (row,) = await ProviderRejectionRepository(session).list_for_scene(spec.episode_id, "sb1")
+    assert row.rejected_input.value == "unknown" and row.source_media_sha256 is None
+
+
+_UNREACHABLE = ProviderRejection(
+    types=("file_download_error",),
+    locs=("body.image_url",),
+    message="Failed to download the file.",
+    http_status=422,
+    category=RejectionCategory.INPUT_UNREACHABLE,
+)
+
+
+def _unreachable() -> FakeImageGenerator:
+    return FakeImageGenerator(
+        pending_polls=0,
+        fail_with=JobFailed(
+            message="fal job failed: HTTP 422 file_download_error",
+            input_unreachable=True,
+            rejection=_UNREACHABLE,
+        ),
+    )
+
+
+async def _unreachable_video_spec(session_factory) -> PaidJobSpec:
+    return replace(
+        await _spec(session_factory, scene="sb5"),
+        provider=ProviderCall.FAL_VIDEO,
+        artifact_type=ArtifactType.SCENE_VIDEO,
+        source_media_sha256=_IMAGE_SHA,
+    )
+
+
+async def _fail_fetch_once(runner, spec: PaidJobSpec) -> None:
+    from domain.errors import ProviderInputFetchError
+
+    gen = _unreachable()
+    outcome = await runner.submit(spec, gen, REQUEST)
+    assert isinstance(outcome, Submitted) and outcome.newly_submitted
+    with pytest.raises(ProviderInputFetchError):
+        await _await(runner, outcome.reservation_id, gen, source_media_sha256=_IMAGE_SHA)
+
+
+async def test_unreachable_input_is_recorded_but_not_as_a_rejected_input(
+    runner, session_factory
+) -> None:
+    """ADR-0035 (8): 取得失敗（file_download_error）は分類つきで台帳に残るが、入力の拒否ではない。
+
+    予約は spent（ジョブは終わった）・needs_input、``input_rejected_by_provider`` は立てない。
+    拒否台帳には ``input_unreachable`` として1行残す（INV-35 の再試行回数をここから数える）。
+    画像ゲートはこの行では止めない: 同じ画像を上げ直した新しい URL で1回だけ取り直せる。
+
+    （旧版は「拒否台帳に載せない」を固定していた。ADR-0035 (8) で再試行回数を DB から数える
+    仕様に変えたため、分類つきで載せる形に変更した）
+    """
+    spec = await _unreachable_video_spec(session_factory)
+    await _fail_fetch_once(runner, spec)
+
+    async with session_factory() as session:
+        (reservation,) = await ProviderReservationRepository(session).list_for_episode_provider(
+            spec.episode_id, ProviderCall.FAL_VIDEO
+        )
+        (row,) = await ProviderRejectionRepository(session).list_for_episode(spec.episode_id)
+    assert reservation.status is ReservationStatus.SPENT
+    assert reservation.failure_class is FailureClass.NEEDS_INPUT
+    assert reservation.input_rejected_by_provider is False
+    assert row.category is RejectionCategory.INPUT_UNREACHABLE
+    assert row.reservation_id == reservation.id
+    assert row.source_media_sha256 == _IMAGE_SHA
+
+    retry = FakeImageGenerator(pending_polls=0)
+    again = await runner.submit(spec, retry, REQUEST)
+    assert isinstance(again, Submitted) and again.newly_submitted and again.round == 2
+    assert retry.prepare_calls == 1  # 入力は上げ直す（同じ壊れた URL を使わない）
+
+
+async def test_second_fetch_failure_stops_before_reserving_a_third_round(
+    runner, session_factory
+) -> None:
+    """INV-35: 取得失敗の自動再試行は1回だけ。2回目の取得失敗の後は予約を作る前に止める。
+
+    回数は DB（拒否台帳）から数えるので、resume しても増えない。止まった後の submit は
+    provider にも台帳にも何も起こさない（再課金なし）。
+    """
+    from domain.errors import ProviderInputFetchRetryExhaustedError
+
+    spec = await _unreachable_video_spec(session_factory)
+    await _fail_fetch_once(runner, spec)
+    await _fail_fetch_once(runner, spec)  # 1回だけの再試行も取得失敗
+
+    third = FakeImageGenerator(pending_polls=0)
+    with pytest.raises(ProviderInputFetchRetryExhaustedError):
+        await runner.submit(spec, third, REQUEST)
+    assert third.prepare_calls == 0 and third.submit_calls == 0
+    async with session_factory() as session:
+        rows = await ProviderReservationRepository(session).list_for_episode_provider(
+            spec.episode_id, ProviderCall.FAL_VIDEO
+        )
+    assert sorted(r.round for r in rows) == [1, 2]
+
+
+async def test_image_gate_ignores_unreachable_and_unknown_but_blocks_validation(
+    runner, session_factory
+) -> None:
+    """INV-32 の画像ゲートは、画像そのものを判定した拒否（content_policy / input_validation）だけ。
+
+    取得失敗や分類不能で画像を再送禁止にすると、無関係な画像のせいでシーンが二度と作れない。
+    """
+    from domain.errors import ProviderRejectedRetryBlockedError
+
+    for category, blocks, image_sha in [
+        (RejectionCategory.INPUT_VALIDATION, True, "v" * 64),
+        (RejectionCategory.UNKNOWN, False, "u" * 64),
+    ]:
+        # 画像ゲートは Episode をまたいで効くので、ケースごとに別の画像にする
+        rejection = replace(_LIKENESS, types=("x",), category=category)
+        spec = await _rejected_video(
+            runner, session_factory, rejection=rejection, image_sha=image_sha
+        )
+        reworded = replace(spec, input_hash="q" * 64)
+        gen = FakeImageGenerator(pending_polls=0)
+        if blocks:
+            with pytest.raises(ProviderRejectedRetryBlockedError):
+                await runner.submit(reworded, gen, REQUEST)
+        else:
+            outcome = await runner.submit(reworded, gen, REQUEST)
+            assert isinstance(outcome, Submitted) and outcome.newly_submitted

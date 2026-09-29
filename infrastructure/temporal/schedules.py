@@ -62,6 +62,9 @@ def daily_episode_input_from_settings(settings: Settings) -> DailyEpisodeInput:
                 image_max_rounds=settings.production_image_max_rounds,
                 video_max_rounds=settings.production_video_max_rounds,
                 await_reexecutions=settings.production_await_reexecutions,
+                max_scene_alternatives_per_scene=(
+                    settings.production_max_scene_alternatives_per_scene
+                ),
             ),
         ),
     )

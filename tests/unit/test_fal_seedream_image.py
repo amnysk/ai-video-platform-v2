@@ -161,4 +161,13 @@ def test_every_visual_kind_has_a_hint() -> None:
 
 
 def test_style_profile_id_carries_the_builder_version() -> None:
-    assert DEFAULT_IMAGE_STYLE.style_profile_id.endswith(":prompt-v1")
+    # v2（ADR-0034）: 実在人物の写実的な肖像判定を避けるためスタイル文面を変更した。
+    # v3（ADR-0035）: 映像対象に応じた構図の指示を足した。
+    assert DEFAULT_IMAGE_STYLE.style_profile_id.endswith(":prompt-v3")
+
+
+def test_prompt_avoids_asking_for_a_photorealistic_likeness_of_a_real_person() -> None:
+    # ADR-0034: 2026-09-26/27 の fal 422 content_policy_violation 事故（実在人物の肖像疑い）。
+    prompt = build_image_prompt(_scene())
+    assert "photorealistic likeness" in prompt
+    assert "photographic portrait" in prompt

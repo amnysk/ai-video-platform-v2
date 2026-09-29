@@ -28,7 +28,6 @@ from contracts.artifacts import (
     ScriptArtifact,
     StoryboardArtifact,
     build_final_video_artifact,
-    parse_final_video,
     parse_production_manifest,
     parse_scene_video_artifact,
     parse_scene_voice_artifact,
@@ -99,6 +98,7 @@ from domain.render.qa import (
     run_technical_qa,
 )
 from domain.render.subtitles import subtitle_display_texts
+from infrastructure.artifact.verify import find_and_verify_current
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -386,25 +386,25 @@ class RenderActivities:
         )
 
         async with self._session_factory() as session:
-            existing = await ArtifactMetadataRepository(session).find_current(
-                episode_id=episode_id, artifact_type=ArtifactType.FINAL_VIDEO, input_hash=input_hash
+            # 再利用の唯一のゲート（ADR-0033）: 欠落・破損・版不一致は自前で readback して
+            # 判定し直さない。工程ごとに判定ロジックを複製しない（AGENTS §8）
+            existing = await find_and_verify_current(
+                repo=ArtifactMetadataRepository(session),
+                store=self._store,
+                episode_id=episode_id,
+                artifact_type=ArtifactType.FINAL_VIDEO,
+                input_hash=input_hash,
             )
         if existing is not None:
-            if await self._reusable(existing):
-                async with self._session_factory() as session:
-                    await self._finish_job(session, job_id, skipped=True)
-                    await session.commit()
-                logger.info(
-                    "render skipped episode=%s: current final_video %s has the same input",
-                    episode_id,
-                    existing.id,
-                )
-                return _result(existing, skipped=True, job_id=job_id)
-            logger.warning(
-                "current final_video %s failed readback verification; re-rendering episode=%s",
-                existing.id,
+            async with self._session_factory() as session:
+                await self._finish_job(session, job_id, skipped=True)
+                await session.commit()
+            logger.info(
+                "render skipped episode=%s: current final_video %s has the same input",
                 episode_id,
+                existing.id,
             )
+            return _result(existing, skipped=True, job_id=job_id)
 
         self._preflight_disk(inputs.input_bytes)
         attempt = _attempt()
@@ -465,19 +465,6 @@ class RenderActivities:
         except asyncio.CancelledError:
             task.cancel()
             raise
-
-    async def _reusable(self, existing: ArtifactMetadata) -> bool:
-        """再利用してよいか: 現行 final_video の JSON と本体を読み戻して sha256 を照合する。"""
-        try:
-            loaded = await self._load_json(existing, "final_video")
-            final = parse_final_video(loaded.payload)
-            media_sha = await self._beating(
-                "verify_existing", self._store.sha256_of(final.media.object_key)
-            )
-        except (DomainError, KeyError, ValueError):
-            logger.warning("final_video %s is not readable", existing.id, exc_info=True)
-            return False
-        return media_sha == final.media.sha256
 
     async def _store_final(
         self,

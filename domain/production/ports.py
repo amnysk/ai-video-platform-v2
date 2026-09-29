@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import NewType, Protocol, runtime_checkable
 
+from domain.errors import ProviderRejection
+
 #: provider が発行したジョブの不透明な参照。中身を解釈しない（形式は adapter だけが知る）。
 ProviderJobRef = NewType("ProviderJobRef", str)
 
@@ -55,6 +57,12 @@ class JobFailed:
 
     message: str
     rejected: bool = False
+    #: provider の拒否・取得失敗の構造化した記録（ADR-0035）。``rejected`` または
+    #: ``input_unreachable`` のときだけ意味を持つ（分類は ``rejection.category``）。
+    rejection: ProviderRejection | None = None
+    #: provider がこちらの入力（URL のファイル）を取得できなかった（ADR-0035 追補）。
+    #: 内容の拒否ではない（``rejected`` とは排他）。
+    input_unreachable: bool = False
 
 
 JobStatus = JobPending | JobSucceeded | JobFailed

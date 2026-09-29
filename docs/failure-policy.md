@@ -55,13 +55,21 @@
 台本工程を人間が再実行すれば回復する（回復経路がある）ため。検査:
 `tests/unit/test_failure_class_registry.py::test_storyboard_exceptions_classify_by_their_base`。
 
-### Production 工程（ADR-0017）
+### Production 工程（ADR-0017 / ADR-0034 / ADR-0035）
 
 | 例外 | クラス | 事象 |
 |---|---|---|
 | `ProviderSubmitAmbiguousError` | `needs_input` | 有料ジョブの submit が戻らず provider job 参照を記録できなかった（呼んだか不明） |
 | `UnreconciledReservationError` | `needs_input` | `dispatched_at` ありで provider job 参照も evidence も無い予約が残っている |
-| `ProviderRejectedError` | `needs_input` | provider が依頼を拒否（コンテンツポリシー等）。人間がプロンプト・素材を直す |
+| `ProviderRejectedError` | `needs_input` | provider が依頼を拒否（コンテンツポリシー等）。拒否は `provider_rejections` に構造化して1件ずつ残す（対象 `image`/`prompt`/`unknown`・理由・入力画像 sha256。ADR-0035）。workflow はそのシーンだけ代替映像案で作り直す（下記）。できなければ人間が直す |
+| `ProviderRejectedRetryBlockedError`（`ProviderRejectedError` の下位、ADR-0034 / ADR-0035） | `needs_input` | 同じ `input_hash` の予約が直前に provider から拒否されている（`_plan_round`）、**または**入力画像そのもの（`rejected_input='image'`）が同じ provider に拒否されている（`_check_rejected_image_gate`、テキストを変えても同じ画像は再送しない。INV-32）。予約も課金も作らない。回復は新しい画像・入力（代替映像案）だけ |
+| `SceneAlternativeLimitReachedError`（ADR-0035） | `needs_input` | 拒否されたシーンの自動の代替案が上限（1シーン・1 Episode の回数、1 Episode の復旧追加費用）に達した（INV-34）。人間が決める |
+| `SceneAlternativeInfeasibleError`（ADR-0035） | `needs_input` | 史実を損なわずに方針に合う案を作れない、と planner が理由つきで判断した |
+| `SceneAlternativeInvalidError`（ADR-0035） | `needs_input` | planner の案が規則に落ちた（形式不正・人物を主題にした・既に試した文面）、記録された拒否が無い、または同じ案のまま再び止まった。LLM 出力の欠陥でも retryable にしない（自動の試行を増やさない） |
+| `SceneAlternativePlannerUnavailableError`（ADR-0035） | `needs_input` | planner が構成されていない・失敗した。planner worker が居なければ計画 Activity は schedule_to_close（1時間）で timeout し、同じく needs_input |
+| `SceneAlternativeNotApplicableError`（ADR-0035 (8)） | `needs_input` | そのシーンの未対処の失敗に内容方針（`content_policy`）以外の分類（`input_validation` / `unknown` / `input_unreachable`）がある。映像を差し替えても直らないので planner を呼ばない |
+| `ProviderInputFetchError`（ADR-0035 (8)） | `needs_input` | provider がこちらの入力（URL のファイル）を取得できなかった（分類 `input_unreachable`。内容の判定ではない）。予約は spent、`input_rejected_by_provider` は立てない、拒否台帳に分類つきで残す。workflow は入力を上げ直す次のラウンドへ**1回だけ**進む（INV-35） |
+| `ProviderInputFetchRetryExhaustedError`（ADR-0035 (8)） | `needs_input` | そのシーンの取得失敗が再試行を含めて2回記録された後の新ラウンドを、予約の**前**に止めた（予約も課金も作らない。resume でも同じ） |
 | `ProviderJobFailedError` | `retryable` | provider 側ジョブの失敗。次ラウンド（新しい予約）で再生成 |
 | `ProviderPollDeadlineError` | `retryable` | 完了待ちの期限切れ。ジョブの状態は不明なので**同じ予約で再 await**（再送しない。上限を使い切ったら記録して止まる） |
 | `MediaValidationError` | `retryable` | 生成メディアが形式・解像度・尺の規則を満たさない |
@@ -84,6 +92,39 @@ workflow 側で await が失敗したとき（ADR-0017 §4）:
 | それ以外 | 失敗クラスのまま記録 |
 
 workflow の cancel は `needs_input`（`blocked`）として記録する。POST で再開できる（ADR-0017 §8）。
+
+**resume を跨いだ自動再送の防止（ADR-0034）**: 上の表は「1回の workflow 実行の中」の話。
+Episode を resume すると新しい workflow 実行が round=1 から数え直すため、台帳
+（`infrastructure/production/paid_job.py::_plan_round`）が同じ `input_hash` へ新しいラウンドを
+作ってよいかを決める。provider がその入力自体を拒否していた（`input_rejected_by_provider`）
+場合は、`_plan_round` が新しいラウンド・新しい provider 呼び出しを作らず
+`ProviderRejectedRetryBlockedError` を送出する。回復はプロンプト・素材を直して新しい
+`input_hash` を作ることだけ（`ProviderUnavailableError`＝401/403 はこの対象に含めない。
+ADR-0030 の時間窓ベースの抑止が別に扱う）。
+
+**拒否されたシーンの段階的な復旧（ADR-0035）**: 画像・動画が `ProviderRejectedError` /
+`ProviderRejectedRetryBlockedError` で止まったシーンについて、workflow
+（`workflow.patched("scene-alternative-recovery-v1")`）は枝の外へ失敗を出す前に
+`production_plan_scene_alternative`（task queue `production-scene-alternative`、Codex を持つ専用 worker）を
+呼ぶ。合格した代替案（`SCENE_VISUAL_OVERRIDE` Artifact）で**そのシーンの画像から**作り直し、
+動画へ進む。他シーンの枝は触らない。1回の実行で planner を呼ぶのは1シーンの上限回数まで。
+回数・費用の上限は計画 Activity が DB から数えるので resume でリセットされない（INV-34）。
+上の4つの `SceneAlternative*Error` はそのシーンを `needs_input` で止める（兄弟は既存どおり
+cancel される）。403（`ProviderUnavailableError`）は内容の問題ではないので対象外。
+
+**拒否の分類（ADR-0035 (8)）**: HTTP 422 という status だけで内容方針の拒否とは判断しない。
+adapter が応答の error type から `RejectionCategory` を決め（fal の型名はここだけが知る）、
+`provider_rejections.category` に残す。復旧は分類で分岐する:
+
+| 分類 | 例（fal の error type） | 復旧 |
+|---|---|---|
+| `content_policy` | `content_policy_violation` | そのシーンだけ代替映像案（上記、INV-34 の上限つき） |
+| `input_unreachable` | `file_download_error` | 入力を上げ直した新しい URL で最大1回だけ自動再試行、2回目で停止（INV-35）。代替案の回数・費用には数えない |
+| `input_validation` | `image_too_small` など既知の入力検証 | 停止（人の判断）。画像の再送禁止（INV-32）の対象 |
+| `unknown` | 型なしの 422 など | 停止（人の判断）。画像の再送禁止の対象外 |
+
+計画 Activity は workflow から型名で呼ばれるが、分類が `content_policy` 以外なら planner を呼ばずに
+`SceneAlternativeNotApplicableError` で止まる（`ProviderRejectedError` は検証失敗・分類不能でも同じ型のため）。
 
 Activity 境界の写像（画像・音声・動画共通、`infrastructure/production/activity_errors.py`）:
 

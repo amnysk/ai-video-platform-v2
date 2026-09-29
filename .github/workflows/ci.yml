@@ -75,9 +75,27 @@ jobs:
       - run: pip install -e ".[dev]"
       - name: Prepare MinIO data directory
         run: sudo mkdir -p /mnt/minio-hdd/minio-data && sudo chmod 777 /mnt/minio-hdd/minio-data
+      # api / migrate / dummy-worker は image: avp2-app:local を build: から作る（registry には無い）。
+      # このジョブは Docker build ジョブとは別 VM なのでそちらの成果物を引き継げない。
+      # ここで明示的に build しないと `up` がローカルに無い image を pull しようとして
+      # "pull access denied for avp2-app" になる（2026-09-23 CI失敗の直接原因）。
+      - name: Log in to Docker Hub (raises the anonymous pull rate limit)
+        # secrets が両方揃っていなければ何もしない（無い場合、匿名 pull の rate limit に
+        # 当たることがある。minio/minio のような非公式 namespace の image で起きやすい。
+        # DOCKERHUB_USERNAME / DOCKERHUB_TOKEN を repo secrets に追加すると有効になる。
+        # 追加は本ワークフローの範囲外）。片方だけ設定されている状態で login action を
+        # 呼ぶと、空 credential でのログイン失敗がこのジョブ全体を、本来検査したい
+        # compose 起動の失敗より前に落としてしまう。両方揃っているときだけ試みる
+        if: ${{ vars.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build the app image
+        run: docker compose --profile core build api dummy-worker migrate
       - name: Start core services
         # 常駐 Worker は host の ffmpeg / Codex 認証 / OAuth を要するので CI では起動しない（ADR-0024）
-        run: docker compose --profile core up -d --wait postgres minio temporal temporal-ui migrate api dummy-worker
+        run: docker compose --profile core up -d --wait --no-build postgres minio temporal temporal-ui migrate api dummy-worker
       - name: Assert the migration container succeeded
         # --wait の依存条件に頼らず、ワンショットの migrate が 0 で終わったことを直接見る
         run: |
@@ -86,16 +104,33 @@ jobs:
           test "$code" = "0" || { echo "migrate exited with $code"; exit 1; }
       - name: Assert the isolated test database exists
         run: docker compose exec -T postgres psql -U avp -d avp_test -c 'SELECT 1'
-      - run: pytest tests/integration -q -m integration
+      - name: Provision the isolated Temporal test namespace
+        # ADR-0021 追補: TEST_TEMPORAL_NAMESPACE を実行前に必ず作る（`make temporal-test-namespace`
+        # と同じ手順）。無いと Temporal を使う integration テストが軒並み skip になり、
+        # 「skip を success 扱いしない」という要求に反する（CIはこれまで TEMPORAL_ADDRESS
+        # 自体が未設定で、Temporal 系テストを検査せず素通りさせていた）
+        run: |
+          docker compose exec -T temporal sh -c '
+            A=$(hostname -i):7233
+            temporal operator namespace describe --namespace avp-test --address "$A" >/dev/null 2>&1 \
+              || temporal operator namespace create --namespace avp-test --retention 72h --address "$A"
+          '
+      - run: pytest tests/integration -q -m integration -rs | tee pytest-integration.log
         env:
           DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
           # 破壊的なテストは *_test にだけ向く（ADR-0021）。avp_test は
           # deploy/postgres-init/01-test-db.sql が初回起動時に作る
           TEST_DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp_test
+          # 本番と同じ default namespace は使わない（ADR-0021 追補）。CIのTemporalは
+          # このjob専用の使い捨てコンテナだが、テストコードの隔離ガード自体をここでも検査する
+          TEMPORAL_ADDRESS: localhost:7233
+          TEST_TEMPORAL_NAMESPACE: avp-test
           MINIO_ENDPOINT: http://localhost:9000
           MINIO_ACCESS_KEY: minioadmin
           MINIO_SECRET_KEY: change-me
           MINIO_BUCKET: artifacts
+          # テストは本番と同じ bucket を使わない（ADR-0021 追補）
+          TEST_MINIO_BUCKET: artifacts-test
           # 有料provider・実投稿へは絶対に到達させない (INV-18)
           FAL_KEY: ""
           YOUTUBE_CLIENT_ID: ""
@@ -104,6 +139,14 @@ jobs:
           # でも除外されるが、環境側でも塞ぐ）
           AVP_LIVE_CODEX: ""
           CODEX_BINARY: /nonexistent/codex
+      - name: Fail if too many integration tests were skipped
+        # skip を success 扱いしない: TEMPORAL_ADDRESS / MINIO_ENDPOINT / TEST_DATABASE_URL は
+        # 全てこのjobで設定済みなので、正当な skip は「実行環境そのものが無い」ケースだけに限られる
+        # はず。閾値を超えたら「本当は検査すべきテストが静かに通っている」可能性として落とす
+        run: |
+          skipped=$(grep -oE '[0-9]+ skipped' pytest-integration.log | grep -oE '[0-9]+' || echo 0)
+          echo "skipped=$skipped"
+          test "$skipped" -le 5 || { echo "NG: $skipped tests skipped (threshold 5) — investigate before raising this"; exit 1; }
       - if: always()
         run: docker compose --profile core logs --no-color > compose-logs.txt
       - if: always()

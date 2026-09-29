@@ -210,6 +210,17 @@ Activity 境界（画像・音声・動画で共通、`infrastructure/production
 - マニフェストは動画の元画像を**メディア本体の sha256**で照合する（動画の `input_hash` が覆うのは
   画像メディア sha。同じメディアで画像 Artifact が記録し直されても動画は有効）
 
+### 追補（2026-09-29, ADR-0035 (4)）: 画像・動画の input_hash 方式2
+
+画像・動画の `input_hash` はシーンの実効内容の指紋（`scene_visual_fingerprint`。代替映像案を
+重ねたシーン）を材料にする方式2へ移った（`domain/production/identity.py::image_input_hash_v2` /
+`video_input_hash_v2`）。storyboard の sha256 は残す（画像・動画 Artifact の `source_storyboard` を
+manifest・render が Episode の storyboard と照合するため。別世代の成果物を再利用すると後工程で止まる）。
+「文面を変えたら版を上げる」規律は残るが、版だけが違う成功済み成果物は
+`content_fingerprint` で再利用され、作り直されない（INV-33）。方式1（`image_input_hash` /
+`video_input_hash`）は本番の旧行・旧予約の照合のためだけに残す。音声の hash は変えていない
+（代替映像案は storyboard の世代も台本も変えないので音声の入力は変わらない。音声は非課金）。
+
 ## Alternatives
 
 **(a) 画像・音声・動画を1つの worker / 1つの ADR で実装する** — 語彙の追加が1回で済む。

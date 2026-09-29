@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import errno
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,12 +21,14 @@ from contracts.render_activities import (
 )
 from contracts.states import ArtifactType, EpisodeStatus, JobStatus, JobType
 from domain.artifact.hashing import sha256_hex
+from domain.artifact.verification import ArtifactVerdict
 from domain.episode.transitions import EpisodeEvent
 from domain.errors import (
     MediaValidationError,
     RenderEngineFailedError,
 )
 from domain.render.identity import render_plan_sha256
+from infrastructure.artifact.verify import verify_artifact
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -659,6 +662,30 @@ async def test_corrupt_current_final_video_is_re_rendered_not_reused(
 
     assert not second.skipped and second.version == 2 and second.artifact_id != first.artifact_id
     assert len(harness.engine.requests) == 2
+
+
+async def test_final_video_with_a_retired_render_profile_is_version_mismatch(
+    harness, session_factory, artifact_store
+) -> None:
+    """ADR-0033: RENDER_PROFILES に無い profile_id を指す final_video は再利用できない。
+
+    現行 verdict の分岐を実際の FinalVideoArtifact 形状（他の全フィールドは有効）で検査する
+    （独立レビュー指摘: この分岐は当時どのテストにも通っていなかった）。
+    """
+    seed = await seed_render_inputs(session_factory, artifact_store)
+    await harness.activities.render_final_video(_req(seed))
+    row = (await _final_rows(session_factory, seed.episode_id))[0]
+    payload = await artifact_store.get_json(row.object_key)
+    payload["render_profile"] = {**payload["render_profile"], "profile_id": "retired_profile_v0"}
+    stale_key = row.object_key + ".retired-profile-test"
+    put = await artifact_store.put_json(stale_key, payload)
+    stale_row = dataclasses.replace(
+        row, object_key=stale_key, sha256=put.sha256, size_bytes=put.size
+    )
+
+    result = await verify_artifact(artifact_store, stale_row)
+
+    assert result.verdict is ArtifactVerdict.VERSION_MISMATCH
 
 
 async def test_attempts_get_their_own_work_directories(

@@ -300,6 +300,29 @@ services:
       <<: *worker-health
       test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "production-video", "--max-age-seconds", "2700"]
 
+  scene-alternative-worker:
+    # ADR-0035: provider に拒否されたシーンの代替映像案を Codex で計画する（有料の画像・動画は呼ばない）。
+    # Codex の sandbox のため storyboard-worker と同じ seccomp / cap の例外を持つ（ADR-0024）
+    <<: *worker
+    cap_add: [SETFCAP]
+    security_opt: ["no-new-privileges:true", "seccomp=unconfined"]
+    depends_on: *deps-minio
+    environment:
+      <<: *app-env
+      HOME: /home/avp
+      CODEX_BINARY: /usr/local/bin/codex
+      CODEX_MODEL: ${CODEX_MODEL:-}
+      CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
+    volumes:
+      - type: bind
+        source: ${CODEX_HOME_HOST_DIR:-${HOME}/.codex}
+        target: /home/avp/.codex
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.production.scene_alternative.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      # Activity 専用 queue。計画 Activity（start_to_close 20 分）の実行中は poll しないので長めに見る
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "production-scene-alternative", "--max-age-seconds", "1500"]
+
   render-worker:
     <<: *worker
     # 描画中の Activity を heartbeat 付きで区切りよく止める猶予

@@ -20,6 +20,7 @@ from temporalio import activity
 
 from contracts.artifacts import (
     PRODUCTION_ARTIFACT_SCHEMA_VERSION,
+    SceneVisualOverrideArtifact,
     StoryboardArtifact,
     StoryboardScene,
     build_scene_image_artifact,
@@ -45,7 +46,13 @@ from domain.errors import (
     classify_failure,
 )
 from domain.job.transitions import job_event_for_failure
-from domain.production.identity import image_input_hash
+from domain.production.effective_scene import scene_visual_fingerprint
+from domain.production.identity import (
+    image_content_fingerprint,
+    image_input_hash,
+    image_input_hash_v2,
+    recipe_version_candidates,
+)
 from domain.production.media import TARGET_HEIGHT, TARGET_WIDTH, MediaProbe, validate_image
 from domain.production.ports import ImageGenerator, ImageRequest
 from domain.production.prompting import DEFAULT_IMAGE_STYLE, ImageStyleProfile, build_image_prompt
@@ -60,6 +67,7 @@ from infrastructure.production.activity_errors import (
     raise_activity_error,
     translate_error,
 )
+from infrastructure.production.effective_scene_loader import load_effective_scene
 from infrastructure.production.paid_job import PaidJobRunner, PaidJobSpec, Reused
 from infrastructure.storage.artifact_store import ArtifactStore, readback_sha256
 
@@ -73,7 +81,11 @@ _IMAGE_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 class _LoadedStoryboard:
     meta: ArtifactMetadata
     storyboard: StoryboardArtifact
+    #: 実効シーン（storyboard のシーン + 現行の代替映像案。ADR-0035）
     scene: StoryboardScene
+    #: storyboard に書かれたままのシーン（旧方式の hash 再計算用）
+    original_scene: StoryboardScene
+    override: SceneVisualOverrideArtifact | None
 
 
 class ImageProductionActivities:
@@ -132,6 +144,9 @@ class ImageProductionActivities:
                 input_hash=input_hash,
                 round=request.round,
                 job_id=job_id,
+                current_generation_profile_id=self._generator.generation_profile_id,
+                content_fingerprint=self._content_fingerprint(loaded),
+                legacy_input_hashes=self._legacy_input_hashes(loaded),
             )
             # 再利用なら job を skipped にするので、start は再利用判定の後
             async with self._session_factory() as session:
@@ -188,7 +203,7 @@ class ImageProductionActivities:
         if (
             reservation.episode_id != request.episode_id
             or reservation.scene_id != request.scene_id
-            or reservation.input_hash != input_hash
+            or reservation.input_hash not in (input_hash, *self._legacy_input_hashes(loaded))
             or reservation.provider is not ProviderCall.FAL_IMAGE
         ):
             raise ProductionInputInvalidError(
@@ -277,6 +292,7 @@ class ImageProductionActivities:
                 produced_by_job_id=job_id,
                 input_hash=input_hash,
                 scene_id=request.scene_id,
+                content_fingerprint=self._content_fingerprint(loaded),
             )
             await ProviderReservationRepository(session).attach_artifact(
                 request.reservation_id, meta.id
@@ -332,10 +348,57 @@ class ImageProductionActivities:
         scene = next((s for s in storyboard.scenes if s.scene_id == scene_id), None)
         if scene is None:
             raise ProductionInputInvalidError(f"storyboard has no scene {scene_id}")
-        return _LoadedStoryboard(meta=meta, storyboard=storyboard, scene=scene)
+        effective, override = await load_effective_scene(
+            self._session_factory,
+            self._store,
+            episode_id=episode_id,
+            scene=scene,
+            storyboard_meta=meta,
+        )
+        return _LoadedStoryboard(
+            meta=meta,
+            storyboard=storyboard,
+            scene=effective,
+            original_scene=scene,
+            override=override,
+        )
+
+    def _v2_fields(self, loaded: _LoadedStoryboard) -> dict[str, str]:
+        """方式2の材料（ADR-0035 (4)）。静止画は動きの項目に依存しない（方式1と同じ規律）。"""
+        still = loaded.scene.model_copy(update={"camera_movement": None, "transition_in": None})
+        return {
+            "episode_id": loaded.storyboard.episode_id,
+            "artifact_type": ArtifactType.SCENE_IMAGE.value,
+            "schema_version": PRODUCTION_ARTIFACT_SCHEMA_VERSION,
+            "storyboard_sha256": loaded.meta.sha256,
+            "scene_id": loaded.scene.scene_id,
+            "scene_fingerprint": scene_visual_fingerprint(still),
+            "style_profile_id": self._style.style_profile_id,
+            "generator_id": self._generator.generator_id,
+            "generation_profile_id": self._generator.generation_profile_id,
+        }
 
     def _input_hash(self, loaded: _LoadedStoryboard) -> str:
-        scene = loaded.scene
+        return image_input_hash_v2(**self._v2_fields(loaded))
+
+    def _content_fingerprint(self, loaded: _LoadedStoryboard) -> str:
+        return image_content_fingerprint(**self._v2_fields(loaded))
+
+    def _legacy_input_hashes(self, loaded: _LoadedStoryboard) -> tuple[str, ...]:
+        """方式1（4d96027 まで）で作られた成果物・予約を照合する hash（版 1〜現在）。
+
+        代替映像案があるシーンは対象外: 映像の内容が変わったので、旧方式の成果物（拒否された
+        画像を含む）を再利用してはいけない。
+        """
+        if loaded.override is not None:
+            return ()
+        return tuple(
+            self._legacy_input_hash(loaded, style_profile_id)
+            for style_profile_id in recipe_version_candidates(self._style.style_profile_id)
+        )
+
+    def _legacy_input_hash(self, loaded: _LoadedStoryboard, style_profile_id: str) -> str:
+        scene = loaded.original_scene
         return image_input_hash(
             episode_id=loaded.storyboard.episode_id,
             artifact_type=ArtifactType.SCENE_IMAGE.value,
@@ -345,7 +408,7 @@ class ImageProductionActivities:
             visual_description=scene.visual_description,
             visual_kind=scene.visual_kind.value,
             framing=scene.framing,
-            style_profile_id=self._style.style_profile_id,
+            style_profile_id=style_profile_id,
             generator_id=self._generator.generator_id,
             generation_profile_id=self._generator.generation_profile_id,
         )

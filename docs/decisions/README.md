@@ -53,3 +53,9 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0027](./0027-daily-schedule-guard-and-watchdog.md) | Daily Schedule の望ましい状態・maintenance pause・watchdog | Accepted |
 | [0028](./0028-voice-fit-before-render.md) | 音声の実尺を描画の前に区間へ合わせる | Accepted |
 | [0029](./0029-topic-planner-activity-payload-shape.md) | Topic Planner の Activity 境界は型注釈どおりの形だけを返す | Accepted |
+| [0030](./0030-provider-auth-failure-diagnostics-and-suppression.md) | provider 準備呼び出しの失敗診断・分類の是正と共有障害の抑止 | Accepted |
+| [0031](./0031-daily-watchdog-progress-completion-upload.md) | Daily Watchdog を起動・進行・完成・投稿の4段階で判定する | Accepted |
+| [0032](./0032-unified-episode-resume-entrypoint.md) | Episode の統一再開エントリポイント | Accepted |
+| [0033](./0033-artifact-reuse-integrity-verification.md) | Artifact 再利用の完全性検証 | Accepted |
+| [0034](./0034-provider-content-rejection-retry-and-prompt-mitigation.md) | provider のコンテンツ拒否は同じ入力で自動再送しない・拒否理由を全文残す・写実的な肖像を避ける | Accepted |
+| [0035](./0035-scene-visual-subject-and-rejection-recovery.md) | シーンの映像対象を Storyboard で決め、内容拒否をシーン単位で復旧する | Accepted |

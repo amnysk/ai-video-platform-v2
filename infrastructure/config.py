@@ -18,6 +18,9 @@ from contracts.production_activities import (
     DEFAULT_VIDEO_CONCURRENCY,
     DEFAULT_VIDEO_MAX_ROUNDS,
     DEFAULT_VOICE_CONCURRENCY,
+    MAX_RECOVERY_COST_USD_PER_EPISODE,
+    MAX_SCENE_ALTERNATIVES_PER_EPISODE,
+    MAX_SCENE_ALTERNATIVES_PER_SCENE,
 )
 from contracts.render import (
     DEFAULT_RENDER_CONCURRENCY,
@@ -26,7 +29,14 @@ from contracts.render import (
     DEFAULT_RENDER_PROFILE_ID,
     DEFAULT_RENDER_TIMEOUT_SECONDS,
 )
-from contracts.schedule_guard import DEFAULT_WATCHDOG_CRON, DEFAULT_WATCHDOG_GRACE_SECONDS
+from contracts.schedule_guard import (
+    DEFAULT_BLOCKED_GRACE_MINUTES,
+    DEFAULT_COMPLETION_DEADLINE_HOURS,
+    DEFAULT_STAGE_STALL_GRACE_MINUTES,
+    DEFAULT_UPLOAD_DEADLINE_HOURS,
+    DEFAULT_WATCHDOG_CRON,
+    DEFAULT_WATCHDOG_GRACE_SECONDS,
+)
 from contracts.topic_planning import (
     CONTENT_PROFILES,
     DEFAULT_CONTENT_PROFILE_ID,
@@ -101,6 +111,12 @@ class Settings(BaseSettings):
     production_video_max_rounds: int = DEFAULT_VIDEO_MAX_ROUNDS
     #: 状態不明の await 失敗に対し、同じ予約で await を追加実行する回数
     production_await_reexecutions: int = DEFAULT_AWAIT_REEXECUTIONS
+    #: 内容拒否からの自動復旧（代替映像案）の上限（ADR-0035 (8)、INV-34）。既定は contracts。
+    #: 1シーンの上限は workflow 入力（1実行で planner を呼ぶ回数）と計画 Activity（DB から数えた
+    #: 回数の判定）の両方に届く。Episode の回数・費用の上限は計画 Activity だけが判定する
+    production_max_scene_alternatives_per_scene: int = MAX_SCENE_ALTERNATIVES_PER_SCENE
+    production_max_scene_alternatives_per_episode: int = MAX_SCENE_ALTERNATIVES_PER_EPISODE
+    production_max_recovery_cost_usd: float = MAX_RECOVERY_COST_USD_PER_EPISODE
 
     # --- render（Phase 5） ---
     #: 固定版 static ffmpeg の絶対パスと sha256（scripts/install-render-ffmpeg.sh が表示する）。
@@ -143,6 +159,11 @@ class Settings(BaseSettings):
     #: daily watchdog（ADR-0027）。別の Schedule で毎時。猶予は予定時刻からの秒数
     watchdog_cron: str = DEFAULT_WATCHDOG_CRON
     watchdog_grace_seconds: int = DEFAULT_WATCHDOG_GRACE_SECONDS
+    #: Episode 進行・完成・投稿の監視（ADR-0031）。工程・尺に固有の値をここ以外に埋め込まない
+    stage_stall_grace_minutes: int = DEFAULT_STAGE_STALL_GRACE_MINUTES
+    blocked_grace_minutes: int = DEFAULT_BLOCKED_GRACE_MINUTES
+    completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
+    upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
     #: 自動 pipeline が Render に渡す出力 profile（Shorts 前提にしない）
     pipeline_render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
     #: ``PAUSED=true`` なら Daily の起動と投稿ゲートを止める（DB の switch と OR）

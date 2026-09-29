@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,8 @@ from contracts.states import (
     JobStatus,
     JobType,
     ProviderCall,
+    RejectedInput,
+    RejectionCategory,
     ReservationStatus,
 )
 from contracts.topic_planning import (
@@ -40,7 +43,11 @@ from contracts.topic_planning import (
 from domain.artifact.entities import ArtifactMetadata
 from domain.episode.entities import Episode
 from domain.episode.transitions import EpisodeEvent, Rejected, transition_episode
-from domain.errors import InvalidTransitionError, UnreconciledReservationError
+from domain.errors import (
+    InvalidTransitionError,
+    ProviderRejection,
+    UnreconciledReservationError,
+)
 from domain.job.entities import Job
 from domain.job.transitions import JobEvent, transition_job
 from domain.provider.reservations import ReservationEvent, transition_reservation
@@ -52,6 +59,8 @@ from infrastructure.db.models import (
     JobRow,
     OperationalAnomalyRow,
     OperationalSwitchRow,
+    ProviderAuthIncidentRow,
+    ProviderRejectionRow,
     ProviderReservationRow,
     TopicCandidateRow,
     TopicPlanRow,
@@ -104,6 +113,7 @@ def _to_artifact(row: ArtifactMetadataRow) -> ArtifactMetadata:
         created_at=row.created_at,
         scene_id=row.scene_id,
         version=row.version,
+        size_bytes=row.size_bytes,
     )
 
 
@@ -194,6 +204,24 @@ class EpisodeRepository:
         if row is not None:
             row.workflow_id = workflow_id
             await self._session.flush()
+
+    async def list_progress_snapshots(
+        self, statuses: Sequence[EpisodeStatus]
+    ) -> list[EpisodeProgressSnapshot]:
+        """watchdog（ADR-0031）が進行・完成・投稿を判定するための最小限の読み取り専用ビュー。"""
+        result = await self._session.execute(
+            select(EpisodeRow).where(EpisodeRow.status.in_([s.value for s in statuses]))
+        )
+        return [
+            EpisodeProgressSnapshot(
+                id=row.id,
+                status=row.status,
+                status_changed_at=_aware(row.status_changed_at) or row.status_changed_at,
+                created_at=_aware(row.created_at) or row.created_at,
+                blocked_reason=row.blocked_reason,
+            )
+            for row in result.scalars()
+        ]
 
 
 class JobRepository:
@@ -338,8 +366,12 @@ class ArtifactMetadataRepository:
         size_bytes: int | None = None,
         produced_by_job_id: uuid.UUID | str | None = None,
         scene_id: str | None = None,
+        content_fingerprint: str | None = None,
     ) -> ArtifactMetadata:
         """同じ内容の再記録は既存行を返す（INV-17）。UNIQUE制約と同じ鍵で引く。
+
+        ``content_fingerprint``（ADR-0035 (4)）: レシピの版を除いた入力指紋。渡せば保存する
+        （既存行の再記録でも、入力の記録を最新にするのと同じ理由で上書きする）。
 
         ``scene_id``（ADR-0018）を渡すと、同一性・世代・現行の判定はすべて
         ``(episode_id, artifact_type, scene_id)`` の中で閉じる。省略時は Episode 単位の行
@@ -372,7 +404,9 @@ class ArtifactMetadataRepository:
                     # 同じ内容が別の入力から得られた（例: 生成器の仕様だけ変わった）。
                     # 次回の skip 判定が最新の入力で当たるよう、入力の記録を更新する。
                     existing.input_hash = input_hash
-                    await self._session.flush()
+                if content_fingerprint is not None:
+                    existing.content_fingerprint = content_fingerprint
+                await self._session.flush()
                 return _to_artifact(existing)
             # A→B→A: 同じ内容が過去世代に居る。降ろされた行を「現行」として返すと
             # find_current_by_type と食い違うので、現行を降ろして過去行を復帰させる。
@@ -380,6 +414,8 @@ class ArtifactMetadataRepository:
             existing.superseded_at = None
             if input_hash is not None:
                 existing.input_hash = input_hash
+            if content_fingerprint is not None:
+                existing.content_fingerprint = content_fingerprint
             await self._session.flush()
             return _to_artifact(existing)
 
@@ -401,6 +437,7 @@ class ArtifactMetadataRepository:
             object_key=object_key,
             sha256=sha256,
             input_hash=input_hash if input_hash is not None else sha256,
+            content_fingerprint=content_fingerprint,
             version=(max_version or 0) + 1,
             superseded_at=None,
             size_bytes=size_bytes,
@@ -470,6 +507,48 @@ class ArtifactMetadataRepository:
         row = (await self._session.scalars(stmt)).first()
         return _to_artifact(row) if row else None
 
+    async def find_current_by_content_fingerprint(
+        self,
+        episode_id: uuid.UUID | str,
+        artifact_type: ArtifactType,
+        content_fingerprint: str,
+        scene_id: str | None = None,
+    ) -> ArtifactMetadata | None:
+        """現行世代で、レシピの版を除いた入力指紋が一致する成果物（ADR-0035 (4)）。"""
+        stmt = select(ArtifactMetadataRow).where(
+            ArtifactMetadataRow.episode_id == _as_uuid(episode_id),
+            ArtifactMetadataRow.artifact_type == artifact_type.value,
+            _artifact_scene_filter(scene_id),
+            ArtifactMetadataRow.content_fingerprint == content_fingerprint,
+            ArtifactMetadataRow.superseded_at.is_(None),
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_artifact(row) if row else None
+
+    async def find_current_legacy(
+        self,
+        episode_id: uuid.UUID | str,
+        artifact_type: ArtifactType,
+        input_hashes: tuple[str, ...],
+        scene_id: str | None = None,
+    ) -> ArtifactMetadata | None:
+        """旧方式（``content_fingerprint`` が NULL）の現行世代で、input_hash が候補に一致する行。
+
+        候補は呼び出し側が旧方式の hash 関数で再計算した値（ADR-0035 (4)）。
+        """
+        if not input_hashes:
+            return None
+        stmt = select(ArtifactMetadataRow).where(
+            ArtifactMetadataRow.episode_id == _as_uuid(episode_id),
+            ArtifactMetadataRow.artifact_type == artifact_type.value,
+            _artifact_scene_filter(scene_id),
+            ArtifactMetadataRow.input_hash.in_(input_hashes),
+            ArtifactMetadataRow.content_fingerprint.is_(None),
+            ArtifactMetadataRow.superseded_at.is_(None),
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_artifact(row) if row else None
+
     async def list_current_by_type(
         self, episode_id: uuid.UUID | str, artifact_type: ArtifactType
     ) -> list[ArtifactMetadata]:
@@ -523,6 +602,8 @@ class ProviderReservation:
     estimated_cost_usd: Decimal | None = None
     #: 外部呼び出しの結果参照（YouTube video id、ADR-0020）
     provider_result_ref: str | None = None
+    #: provider が入力そのものを拒否したために spent したか（ADR-0034）。
+    input_rejected_by_provider: bool = False
 
 
 def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
@@ -547,6 +628,7 @@ def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
         provider_job_ref=row.provider_job_ref,
         estimated_cost_usd=row.estimated_cost_usd,
         provider_result_ref=row.provider_result_ref,
+        input_rejected_by_provider=bool(row.input_rejected_by_provider),
     )
 
 
@@ -626,6 +708,30 @@ class ProviderReservationRepository:
             .order_by(ProviderReservationRow.reserved_at, ProviderReservationRow.round)
         )
         return [_to_reservation(r) for r in (await self._session.scalars(stmt)).all()]
+
+    async def find_latest_for_inputs(
+        self,
+        episode_id: uuid.UUID | str,
+        provider: ProviderCall,
+        scene_id: str | None,
+        input_hashes: tuple[str, ...],
+    ) -> ProviderReservation | None:
+        """``find_latest_for_input`` の複数 hash 版（ADR-0035 (4)）。
+
+        新方式の hash と、旧方式で再計算した hash の両方の予約を見る。hash の方式を変えた
+        だけで「この入力の予約は無い」と誤認し、進行中の課金ジョブへの二重 submit や、
+        provider に拒否された同じ入力の再送を作らないため。最も新しく予約された行を返す。
+        """
+        # 1 hash ずつ既存の検索を使う（同じ入力のラウンド採番の規則を1箇所に保つ）
+        found = [
+            row
+            for input_hash in dict.fromkeys(input_hashes)
+            if (row := await self.find_latest_for_input(episode_id, provider, scene_id, input_hash))
+            is not None
+        ]
+        if not found:
+            return None
+        return max(found, key=lambda row: (row.reserved_at, row.round))
 
     async def find_unreconciled(
         self,
@@ -907,6 +1013,7 @@ class ProviderReservationRepository:
         reconciled_by: str = "evidence",
         failure_class: FailureClass | None = None,
         error_summary: str | None = None,
+        input_rejected_by_provider: bool = False,
     ) -> ProviderReservation:
         """「呼んだ」事実を確定する。**パース・検証より前**に commit すること。
 
@@ -920,6 +1027,12 @@ class ProviderReservationRepository:
 
         Worker が落ちて**何も記録できなかった**場合はここへ到達しないので、
         予約は ``reserved`` のまま残り、次ラウンドは正しくブロックされる。
+
+        ``input_rejected_by_provider``: provider が入力そのものを拒否した（content
+        policy 等）ことを示す機械判定フラグ（ADR-0034）。true の予約は
+        ``infrastructure.production.paid_job._plan_round`` が次ラウンドへ自動で
+        進めない。呼び出し側は例外の型（``isinstance(exc, ProviderRejectedError)``）
+        だけで決める。文字列一致では決めない。
         """
         event = (
             ReservationEvent.EVIDENCE_RECONCILED
@@ -934,6 +1047,8 @@ class ProviderReservationRepository:
             row.failure_class = failure_class.value
         if error_summary is not None:
             row.error_summary = error_summary[:2000]
+        if input_rejected_by_provider:
+            row.input_rejected_by_provider = True
         await self._session.flush()
         return _to_reservation(row)
 
@@ -975,6 +1090,58 @@ class ProviderReservationRepository:
         return _to_reservation(row)
 
 
+class ProviderAuthIncidentRepository:
+    """provider の認可拒否（401/403）の記録と、共有障害の抑止判定（ADR-0030）。
+
+    ``operational_anomalies``（1日1行）とは別テーブル。数分単位のウィンドウで数えるため。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(
+        self,
+        *,
+        provider: ProviderCall,
+        http_status: int | None,
+        episode_id: uuid.UUID | str | None,
+        now: datetime,
+    ) -> None:
+        row = ProviderAuthIncidentRow(
+            provider=provider.value,
+            http_status=http_status,
+            episode_id=_as_uuid(episode_id) if episode_id is not None else None,
+            occurred_at=now,
+        )
+        self._session.add(row)
+        await self._session.flush()
+
+    async def count_unresolved_within_window(
+        self, provider: ProviderCall, *, since: datetime
+    ) -> int:
+        result = await self._session.execute(
+            select(func.count(ProviderAuthIncidentRow.id)).where(
+                ProviderAuthIncidentRow.provider == provider.value,
+                ProviderAuthIncidentRow.resolved_at.is_(None),
+                ProviderAuthIncidentRow.occurred_at >= since,
+            )
+        )
+        return int(result.scalar_one())
+
+    async def resolve_open_for_provider(self, provider: ProviderCall, *, now: datetime) -> int:
+        result = await self._session.execute(
+            select(ProviderAuthIncidentRow).where(
+                ProviderAuthIncidentRow.provider == provider.value,
+                ProviderAuthIncidentRow.resolved_at.is_(None),
+            )
+        )
+        rows = list(result.scalars())
+        for row in rows:
+            row.resolved_at = now
+        await self._session.flush()
+        return len(rows)
+
+
 class OperationalSwitchRepository:
     """DB の停止スイッチ（ADR-0021）。行が無ければ off。"""
 
@@ -999,6 +1166,17 @@ class OperationalSwitchRepository:
 
 
 @dataclass(frozen=True, slots=True)
+class EpisodeProgressSnapshot:
+    """watchdog（ADR-0031）用の最小限の読み取り専用ビュー。domain の ``Episode`` は変更しない。"""
+
+    id: uuid.UUID
+    status: str
+    status_changed_at: datetime
+    created_at: datetime
+    blocked_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AnomalyRecord:
     """``OperationalAnomalyRepository.record`` の結果。``is_new`` は新規か再発。"""
 
@@ -1007,6 +1185,7 @@ class AnomalyRecord:
     anomaly_date: date
     occurrences: int
     is_new: bool
+    episode_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1020,6 +1199,7 @@ class OperationalAnomaly:
     occurrences: int
     resolved_at: datetime | None
     notified_at: datetime | None
+    episode_id: uuid.UUID | None = None
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -1035,12 +1215,15 @@ class OperationalAnomalyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def _find(self, kind: AnomalyKind, anomaly_date: date) -> OperationalAnomalyRow | None:
+    async def _find(
+        self, kind: AnomalyKind, anomaly_date: date, episode_id: uuid.UUID | None
+    ) -> OperationalAnomalyRow | None:
         result = await self._session.execute(
             select(OperationalAnomalyRow)
             .where(
                 OperationalAnomalyRow.kind == kind.value,
                 OperationalAnomalyRow.anomaly_date == anomaly_date,
+                OperationalAnomalyRow.episode_id == episode_id,
             )
             .execution_options(populate_existing=True)
         )
@@ -1058,13 +1241,25 @@ class OperationalAnomalyRepository:
             occurrences=row.occurrences,
             resolved_at=_aware(row.resolved_at),
             notified_at=_aware(row.notified_at),
+            episode_id=row.episode_id,
         )
 
     async def record(
-        self, kind: AnomalyKind, anomaly_date: date, detail: dict[str, Any], *, now: datetime
+        self,
+        kind: AnomalyKind,
+        anomaly_date: date,
+        detail: dict[str, Any],
+        *,
+        now: datetime,
+        episode_id: uuid.UUID | str | None = None,
     ) -> AnomalyRecord:
+        """スケジュール系（``episode_id=None``）は1日1行。Episode系は Episode ごとに1日1行。
+
+        ADR-0031。
+        """
+        eid = _as_uuid(episode_id) if episode_id is not None else None
         for _ in range(2):
-            row = await self._find(kind, anomaly_date)
+            row = await self._find(kind, anomaly_date, eid)
             if row is not None:
                 reopened = row.resolved_at is not None
                 row.occurrences += 1
@@ -1074,12 +1269,15 @@ class OperationalAnomalyRepository:
                     row.resolved_at = None
                     row.notified_at = None
                 await self._session.flush()
-                return AnomalyRecord(row.id, kind.value, anomaly_date, row.occurrences, reopened)
+                return AnomalyRecord(
+                    row.id, kind.value, anomaly_date, row.occurrences, reopened, eid
+                )
             try:
                 async with self._session.begin_nested():
                     row = OperationalAnomalyRow(
                         kind=kind.value,
                         anomaly_date=anomaly_date,
+                        episode_id=eid,
                         detail=detail,
                         first_detected_at=now,
                         last_detected_at=now,
@@ -1089,24 +1287,51 @@ class OperationalAnomalyRepository:
                     await self._session.flush()
             except IntegrityError:
                 continue  # 別の検査が先に作った。読み直して数える
-            return AnomalyRecord(row.id, kind.value, anomaly_date, 1, True)
+            return AnomalyRecord(row.id, kind.value, anomaly_date, 1, True, eid)
         raise RuntimeError("could not record the anomaly")  # 2回とも衝突は起きない前提
 
-    async def resolve(self, kind: AnomalyKind, anomaly_date: date, *, now: datetime) -> bool:
-        row = await self._find(kind, anomaly_date)
+    async def resolve(
+        self,
+        kind: AnomalyKind,
+        anomaly_date: date,
+        *,
+        now: datetime,
+        episode_id: uuid.UUID | str | None = None,
+    ) -> bool:
+        eid = _as_uuid(episode_id) if episode_id is not None else None
+        row = await self._find(kind, anomaly_date, eid)
         if row is None or row.resolved_at is not None:
             return False
         row.resolved_at = now
         await self._session.flush()
         return True
 
-    async def resolve_open(self, kinds: Sequence[AnomalyKind], *, now: datetime) -> int:
-        result = await self._session.execute(
-            select(OperationalAnomalyRow).where(
-                OperationalAnomalyRow.kind.in_([k.value for k in kinds]),
-                OperationalAnomalyRow.resolved_at.is_(None),
+    async def resolve_open(
+        self,
+        kinds: Sequence[AnomalyKind],
+        *,
+        now: datetime,
+        episode_id: uuid.UUID | str | None = None,
+        episode_ids: Sequence[uuid.UUID | str] | None = None,
+    ) -> int:
+        """``episode_id``: そのEpisodeの行だけ。``episode_ids``: 列挙したEpisodeの行だけ。
+
+        どちらも省略した場合はスケジュール系（``episode_id IS NULL``）の行だけを対象にする
+        （Episode系の行を誤って一括解決しないため）。
+        """
+        conditions: list[ColumnElement[bool]] = [
+            OperationalAnomalyRow.kind.in_([k.value for k in kinds]),
+            OperationalAnomalyRow.resolved_at.is_(None),
+        ]
+        if episode_id is not None:
+            conditions.append(OperationalAnomalyRow.episode_id == _as_uuid(episode_id))
+        elif episode_ids is not None:
+            conditions.append(
+                OperationalAnomalyRow.episode_id.in_([_as_uuid(e) for e in episode_ids])
             )
-        )
+        else:
+            conditions.append(OperationalAnomalyRow.episode_id.is_(None))
+        result = await self._session.execute(select(OperationalAnomalyRow).where(*conditions))
         rows = list(result.scalars())
         for row in rows:
             row.resolved_at = now
@@ -1119,13 +1344,14 @@ class OperationalAnomalyRepository:
             row.notified_at = now
             await self._session.flush()
 
-    async def list_open(self) -> list[OperationalAnomaly]:
-        result = await self._session.execute(
-            select(OperationalAnomalyRow)
-            .where(OperationalAnomalyRow.resolved_at.is_(None))
-            .order_by(OperationalAnomalyRow.anomaly_date, OperationalAnomalyRow.kind)
-            .execution_options(populate_existing=True)
-        )
+    async def list_open(
+        self, kinds: Sequence[AnomalyKind] | None = None
+    ) -> list[OperationalAnomaly]:
+        stmt = select(OperationalAnomalyRow).where(OperationalAnomalyRow.resolved_at.is_(None))
+        if kinds is not None:
+            stmt = stmt.where(OperationalAnomalyRow.kind.in_([k.value for k in kinds]))
+        stmt = stmt.order_by(OperationalAnomalyRow.anomaly_date, OperationalAnomalyRow.kind)
+        result = await self._session.execute(stmt.execution_options(populate_existing=True))
         return [self._entity(r) for r in result.scalars()]
 
     async def pending_notifications(self) -> list[OperationalAnomaly]:
@@ -1749,3 +1975,203 @@ class AnalyticsSnapshotRepository:
         )
         row = result.first()
         return _to_snapshot(row) if row else None
+
+
+# ------------------------------------------------------------ provider の内容拒否（ADR-0035）
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRejectionRecord:
+    """``provider_rejections`` の1行（append-only）。"""
+
+    id: str
+    episode_id: str
+    scene_id: str | None
+    provider: ProviderCall
+    reservation_id: str | None
+    input_hash: str
+    rejected_input: RejectedInput
+    source_media_sha256: str | None
+    types: tuple[str, ...]
+    reason: str | None
+    message: str | None
+    http_status: int | None
+    occurred_at: datetime
+    #: 復旧を分岐させる分類（ADR-0035 (8)）
+    category: RejectionCategory = RejectionCategory.UNKNOWN
+
+
+#: 画像そのものを判定した拒否（INV-32 の画像ゲートの対象）。取得失敗・分類不能は含めない。
+IMAGE_JUDGEMENT_CATEGORIES: tuple[RejectionCategory, ...] = (
+    RejectionCategory.CONTENT_POLICY,
+    RejectionCategory.INPUT_VALIDATION,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PaidReservationCost:
+    """復旧費用の集計に使う fal 予約の1行（``domain.production.scene_alternative``）。"""
+
+    scene_id: str | None
+    provider: ProviderCall
+    estimated_cost_usd: Decimal
+    input_rejected_by_provider: bool
+    reserved_at: datetime
+
+
+def _to_rejection(row: ProviderRejectionRow) -> ProviderRejectionRecord:
+    try:
+        types = tuple(str(t) for t in json.loads(row.types or "[]"))
+    except ValueError:
+        types = ()
+    return ProviderRejectionRecord(
+        id=str(row.id),
+        episode_id=str(row.episode_id),
+        scene_id=row.scene_id,
+        provider=ProviderCall(row.provider),
+        reservation_id=str(row.reservation_id) if row.reservation_id else None,
+        input_hash=row.input_hash,
+        rejected_input=RejectedInput(row.rejected_input),
+        source_media_sha256=row.source_media_sha256,
+        types=types,
+        reason=row.reason,
+        message=row.message,
+        http_status=row.http_status,
+        occurred_at=row.occurred_at,
+        category=RejectionCategory(row.category),
+    )
+
+
+class ProviderRejectionRepository:
+    """provider による内容拒否の記録（ADR-0035）。
+
+    拒否は ``provider_reservations.error_summary`` の文字列からは推測しない。adapter が
+    応答から組み立てた ``ProviderRejection`` をそのまま1行にする。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(
+        self,
+        *,
+        episode_id: uuid.UUID | str,
+        scene_id: str | None,
+        provider: ProviderCall,
+        reservation_id: uuid.UUID | str | None,
+        input_hash: str,
+        rejection: ProviderRejection,
+        source_media_sha256: str | None,
+        now: datetime | None = None,
+    ) -> ProviderRejectionRecord:
+        row = ProviderRejectionRow(
+            id=uuid.uuid4(),
+            episode_id=_as_uuid(episode_id),
+            scene_id=scene_id,
+            provider=provider.value,
+            reservation_id=_as_uuid(reservation_id) if reservation_id else None,
+            input_hash=input_hash,
+            rejected_input=rejection.rejected_input.value,
+            category=rejection.category.value,
+            source_media_sha256=source_media_sha256,
+            types=json.dumps(list(rejection.types)),
+            reason=(rejection.reason or None) and rejection.reason[:128],
+            message=(rejection.message or None) and rejection.message[:1000],
+            http_status=rejection.http_status,
+            occurred_at=now or _now(),
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return _to_rejection(row)
+
+    async def list_for_scene(
+        self, episode_id: uuid.UUID | str, scene_id: str
+    ) -> list[ProviderRejectionRecord]:
+        stmt = (
+            select(ProviderRejectionRow)
+            .where(
+                ProviderRejectionRow.episode_id == _as_uuid(episode_id),
+                ProviderRejectionRow.scene_id == scene_id,
+            )
+            .order_by(ProviderRejectionRow.occurred_at, ProviderRejectionRow.id)
+        )
+        return [_to_rejection(row) for row in (await self._session.scalars(stmt)).all()]
+
+    async def list_for_episode(self, episode_id: uuid.UUID | str) -> list[ProviderRejectionRecord]:
+        stmt = (
+            select(ProviderRejectionRow)
+            .where(ProviderRejectionRow.episode_id == _as_uuid(episode_id))
+            .order_by(ProviderRejectionRow.occurred_at, ProviderRejectionRow.id)
+        )
+        return [_to_rejection(row) for row in (await self._session.scalars(stmt)).all()]
+
+    async def find_rejected_image(
+        self, provider: ProviderCall, source_media_sha256: str
+    ) -> ProviderRejectionRecord | None:
+        """この provider が画像そのもの（``rejected_input='image'``）を拒否した記録（INV-32）。
+
+        画像を**判定した**拒否（content_policy / input_validation）だけ。取得失敗
+        （input_unreachable）や分類不能（unknown）では画像を再送禁止にしない（ADR-0035 (8)）。
+        """
+        stmt = (
+            select(ProviderRejectionRow)
+            .where(
+                ProviderRejectionRow.provider == provider.value,
+                ProviderRejectionRow.rejected_input == RejectedInput.IMAGE.value,
+                ProviderRejectionRow.category.in_([c.value for c in IMAGE_JUDGEMENT_CATEGORIES]),
+                ProviderRejectionRow.source_media_sha256 == source_media_sha256,
+            )
+            .order_by(ProviderRejectionRow.occurred_at)
+            .limit(1)
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_rejection(row) if row else None
+
+    async def count_input_unreachable(
+        self, episode_id: uuid.UUID | str, provider: ProviderCall, scene_id: str | None
+    ) -> int:
+        """このシーンで provider が入力を取得できなかった回数（INV-35 の再試行判定）。"""
+        stmt = (
+            select(func.count())
+            .select_from(ProviderRejectionRow)
+            .where(
+                ProviderRejectionRow.episode_id == _as_uuid(episode_id),
+                ProviderRejectionRow.provider == provider.value,
+                ProviderRejectionRow.scene_id == scene_id,
+                ProviderRejectionRow.category == RejectionCategory.INPUT_UNREACHABLE.value,
+            )
+        )
+        return int(await self._session.scalar(stmt) or 0)
+
+    async def find_for_reservation(
+        self, reservation_id: uuid.UUID | str
+    ) -> ProviderRejectionRecord | None:
+        stmt = (
+            select(ProviderRejectionRow)
+            .where(ProviderRejectionRow.reservation_id == _as_uuid(reservation_id))
+            .order_by(ProviderRejectionRow.occurred_at)
+            .limit(1)
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_rejection(row) if row else None
+
+    async def list_paid_reservation_costs(
+        self, episode_id: uuid.UUID | str
+    ) -> list[PaidReservationCost]:
+        """この Episode の fal 予約（見積り額つき）。復旧費用の集計の材料（INV-34）。"""
+        stmt = select(ProviderReservationRow).where(
+            ProviderReservationRow.episode_id == _as_uuid(episode_id),
+            ProviderReservationRow.provider.in_(
+                [ProviderCall.FAL_IMAGE.value, ProviderCall.FAL_VIDEO.value]
+            ),
+        )
+        return [
+            PaidReservationCost(
+                scene_id=row.scene_id,
+                provider=ProviderCall(row.provider),
+                estimated_cost_usd=row.estimated_cost_usd or Decimal("0"),
+                input_rejected_by_provider=bool(row.input_rejected_by_provider),
+                reserved_at=row.reserved_at,
+            )
+            for row in (await self._session.scalars(stmt)).all()
+        ]

@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from domain.artifact.hashing import sha256_hex
-from domain.errors import ProviderJobFailedError, ProviderRejectedError
+from domain.errors import ProviderInputFetchError, ProviderJobFailedError, ProviderRejectedError
 from domain.production.ports import (
     JobFailed,
     JobPending,
@@ -144,7 +144,9 @@ class FalSeedanceVideoGenerator:
         try:
             result = await self._result(ref, submission)
         except ProviderRejectedError as exc:
-            return JobFailed(message=str(exc), rejected=True)
+            return JobFailed(message=str(exc), rejected=True, rejection=exc.rejection)
+        except ProviderInputFetchError as exc:
+            return JobFailed(message=str(exc), input_unreachable=True, rejection=exc.rejection)
         except ProviderJobFailedError as exc:
             return JobFailed(message=str(exc))
         if not _video_url(result):

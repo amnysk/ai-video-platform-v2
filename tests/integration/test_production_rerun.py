@@ -12,7 +12,6 @@ import os
 import uuid
 
 import pytest
-from temporalio.client import Client
 from temporalio.worker import Worker
 
 from contracts.states import EpisodeStatus
@@ -61,8 +60,10 @@ async def test_failed_production_resumes_on_post_without_new_paid_submits(
     store,  # noqa: F811
     tmp_path,
 ) -> None:
+    from tests.support.temporal import connect_test_client
+
     seeded = await _seed(factory, store)
-    client = await Client.connect(TEMPORAL_ADDRESS or "", namespace="default")
+    client = await connect_test_client(TEMPORAL_ADDRESS)
     suffix = uuid.uuid4().hex[:10]
     queues = {k: f"production-{k}-rerun-{suffix}" for k in ("state", "image", "video", "voice")}
     image_gen = FakeImageGenerator(pending_polls=1)

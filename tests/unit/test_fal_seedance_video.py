@@ -170,4 +170,95 @@ def test_video_prompt_builder() -> None:
     assert "camera: slow push in" in prompt and "opening: fade" in prompt
     assert "close-up" not in prompt  # 構図は元画像が持つ
     assert build_video_prompt(_scene(camera_movement=None, transition_in=None)) != prompt
-    assert DEFAULT_VIDEO_MOTION.motion_profile_id.endswith(":video-prompt-v1")
+    # v2（ADR-0034）: 共有の制約文を変更（実在人物の写実的な肖像判定を避ける）。
+    # v3（ADR-0035）: 人物の映像対象に、肖像にしない動きの指示を足した。
+    assert DEFAULT_VIDEO_MOTION.motion_profile_id.endswith(":video-prompt-v3")
+    assert "photorealistic likeness" in prompt
+
+
+async def test_image_url_rejection_reaches_job_failed_structured() -> None:
+    """ADR-0035: 2026-09-26/27 と同じ 422 の形。拒否の位置・理由が JobFailed まで構造化で届く。
+
+    落ちれば拒否の対象（画像かテキストか）が文字列にしか残らず、同じ画像の再送を止められない。
+    """
+    ref = json.dumps(
+        {
+            "v": 1,
+            "endpoint": SEEDANCE_ENDPOINT,
+            "request_id": "r1",
+            "status_url": f"{BASE}/status",
+            "response_url": BASE,
+            "cancel_url": None,
+        }
+    )
+    body = {
+        "detail": [
+            {
+                "loc": ["body", "image_url"],
+                "msg": "The images or videos provided may contain likenesses of real people",
+                "type": "content_policy_violation",
+                "ctx": {"extra_info": {"reason": "partner_validation_failed"}},
+            }
+        ]
+    }
+    routes = {
+        f"{BASE}/status": httpx.Response(200, json={"status": "COMPLETED"}),
+        BASE: httpx.Response(422, json=body),
+    }
+    gen, _ = _generator(routes)
+    status = await gen.poll(ref)  # type: ignore[arg-type]
+    assert isinstance(status, JobFailed) and status.rejected
+    assert status.rejection is not None
+    assert status.rejection.locs == ("body.image_url",)
+    assert status.rejection.rejected_input.value == "image"
+    assert status.rejection.reason == "partner_validation_failed"
+    assert status.rejection.types == ("content_policy_violation",)
+    assert status.rejection.http_status == 422
+
+
+#: 2026-09-29 06:17 JST（Episode 54392404 sb5）に本番で実際に返った本文の形。
+FILE_DOWNLOAD_ERROR_BODY = {
+    "detail": [
+        {
+            "loc": ["body", "image_url"],
+            "msg": (
+                "Failed to download the file. Please check if the URL is accessible and try again."
+            ),
+            "type": "file_download_error",
+            "url": "https://provider-docs.example/errors#file_download_error",
+            "input": "https://provider-cdn.example/files/b/x/y.png",
+        }
+    ]
+}
+
+
+async def test_file_download_error_is_not_a_content_rejection() -> None:
+    """ADR-0035 追補: 入力 URL の取得失敗（file_download_error）は内容の判定ではない。
+
+    ``rejected``（= 画像を拒否した・別の映像案が要る）にすると、無関係な画像を再送禁止にし、
+    代替案の計画まで走る。取得失敗として区別して届ける。
+    """
+    ref = json.dumps(
+        {
+            "v": 1,
+            "endpoint": SEEDANCE_ENDPOINT,
+            "request_id": "r1",
+            "status_url": f"{BASE}/status",
+            "response_url": BASE,
+            "cancel_url": None,
+        }
+    )
+    routes = {
+        f"{BASE}/status": httpx.Response(200, json={"status": "COMPLETED"}),
+        BASE: httpx.Response(422, json=FILE_DOWNLOAD_ERROR_BODY),
+    }
+    gen, _ = _generator(routes)
+    status = await gen.poll(ref)  # type: ignore[arg-type]
+    assert isinstance(status, JobFailed)
+    assert status.rejected is False
+    assert status.input_unreachable is True
+    assert "file_download_error" in status.message
+    # ADR-0035 (8): 取得失敗も構造化して届く（拒否台帳に分類つきで残し、再試行回数を数える）
+    assert status.rejection is not None
+    assert status.rejection.category.value == "input_unreachable"
+    assert status.rejection.locs == ("body.image_url",)

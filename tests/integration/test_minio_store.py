@@ -11,7 +11,6 @@ import pytest_asyncio
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key
 from infrastructure.storage.artifact_store import ArtifactConflictError
-from infrastructure.storage.minio_store import MinioArtifactStore
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("MINIO_ENDPOINT"),
@@ -21,12 +20,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest_asyncio.fixture
 async def store():
-    from infrastructure.config import Settings
+    from tests.support.minio import connect_test_artifact_store
 
-    settings = Settings()
-    store = MinioArtifactStore.from_settings(settings)
-    await store.ensure_bucket()
-    return store
+    return await connect_test_artifact_store()
 
 
 async def test_put_get_exists_roundtrip_against_real_minio(store) -> None:

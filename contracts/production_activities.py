@@ -59,6 +59,32 @@ AWAIT_HEARTBEAT_TIMEOUT_SECONDS = 90
 #: ローカル非課金の音声合成（INV-15 の対象外。ADR-0017 の限定例外）。
 VOICE_MAX_ATTEMPTS = 3
 
+# ------------------------------------------------------------ provider 認可障害の抑止（ADR-0030）
+
+#: 同じ provider の未解決 ``provider_auth_incidents`` をこの分の過去だけ数える。
+AUTH_INCIDENT_WINDOW_MINUTES = 10
+#: ウィンドウ内でこの件数以上の未解決 incident があれば、新規 submit を止める（予約 INSERT の前）。
+AUTH_INCIDENT_SUPPRESSION_THRESHOLD = 3
+
+# ------------------------------------------------ 入力の取得失敗の自動再試行（ADR-0035 (8)）
+
+#: provider がこちらの入力（URL のファイル）を取得できなかったとき、そのシーンで入力を上げ直して
+#: 自動で再試行してよい回数（INV-35）。回数は ``provider_rejections`` の ``input_unreachable``
+#: 件数から数え、resume でリセットしない。2回目の取得失敗で止まる。
+INPUT_FETCH_RETRIES_PER_SCENE = 1
+
+
+# ------------------------------------------- provider の内容拒否からの復旧（ADR-0035, INV-34）
+
+#: 1シーンについて自動で計画してよい代替映像案の回数。超えたら needs_input で人の判断を待つ。
+MAX_SCENE_ALTERNATIVES_PER_SCENE = 2
+#: 1 Episode について自動で計画してよい代替映像案の合計回数。
+MAX_SCENE_ALTERNATIVES_PER_EPISODE = 3
+#: 1 Episode について、内容拒否からの復旧に使ってよい追加費用の上限（USD、見積り）。
+#: 拒否された spent 予約と、代替案で作り直した fal 予約の ``estimated_cost_usd`` の合計で判定する
+#: （拒否時の課金有無は provider が文書化していないので、拒否された試行も費用として数える）。
+MAX_RECOVERY_COST_USD_PER_EPISODE = 5.0
+
 
 # --------------------------------------------------------------------------- 状態系
 
@@ -237,6 +263,8 @@ class VideoAwaitRequest:
 
 
 __all__ = [
+    "AUTH_INCIDENT_SUPPRESSION_THRESHOLD",
+    "AUTH_INCIDENT_WINDOW_MINUTES",
     "AWAIT_HEARTBEAT_TIMEOUT_SECONDS",
     "AWAIT_MAX_ATTEMPTS",
     "AWAIT_START_TO_CLOSE_SECONDS",
@@ -279,3 +307,47 @@ __all__ = [
     "VideoSubmitRequest",
     "VoiceGenerateRequest",
 ]
+
+
+# ------------------------------------------- 拒否されたシーンの代替映像案（ADR-0035）
+#
+# planner は Codex CLI を使うので、production worker（Codex を持たない）ではなく専用の worker
+# （``workers/production/scene_alternative/run_worker.py``）が専用の task queue で提供する。
+# worker が居なければ Activity は schedule_to_close で timeout し、そのシーンは needs_input で
+# 止まる（自動では進まない側に倒れる）。
+
+#: Codex の model を設定で指定しないときの来歴ラベル（新しい worker はここを参照する）
+CODEX_DEFAULT_MODEL_LABEL = "codex-config-default"
+
+#: Activity 名（workflow は名前で呼ぶ / INV-3）
+PLAN_SCENE_ALTERNATIVE = "production_plan_scene_alternative"
+#: planner を提供する worker の task queue（Codex を使う）
+SCENE_ALTERNATIVE_TASK_QUEUE = "production-scene-alternative"
+#: 既存の実行履歴の再生を壊さないための patch id
+SCENE_ALTERNATIVE_PATCH_ID = "scene-alternative-recovery-v1"
+#: 入力の取得失敗で次のラウンドへ1回進む分岐（ADR-0035 (8)、INV-35）の patch id
+INPUT_FETCH_RETRY_PATCH_ID = "input-fetch-retry-v1"
+
+
+@dataclass
+class PlanSceneAlternativeRequest:
+    episode_id: str
+    workflow_id: str
+    run_id: str
+    scene_id: str
+    storyboard_artifact_id: str
+    #: この workflow 実行がすでに試した代替案の revision（無ければ 0）。現行の案がこれより
+    #: 新しければそれを返す（Activity の再実行で二重に計画しない）。同じなら「同じ案のまま
+    #: 再び止まった」ので計画せず needs_input にする（無限ループを作らない）。
+    seen_revision: int = 0
+
+
+@dataclass
+class SceneAlternativeOutcome:
+    """保存した代替案（``SCENE_VISUAL_OVERRIDE`` Artifact）。"""
+
+    override_artifact_id: str
+    revision: int
+    visual_subject: str
+    #: 今回新しく計画したか（既存の案を返しただけなら False）
+    newly_planned: bool

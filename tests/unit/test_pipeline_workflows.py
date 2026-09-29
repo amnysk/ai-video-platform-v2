@@ -38,6 +38,7 @@ from contracts.pipeline import (
     EpisodePipelineInput,
     PipelineOptions,
     PipelineOutcome,
+    PipelineStage,
     UploadGateRequest,
     UploadGateResult,
     pipeline_workflow_id,
@@ -479,6 +480,66 @@ async def test_upload_gate_refusal_skips_upload(env: Env) -> None:
     assert result["reason"] == "no final_video"
     assert result["status"] == "render_ready"
     assert "UploadWorkflow" not in _stage_names()
+
+
+# ------------------------------------------------------- (h) 統一再開の途中入場（ADR-0032）
+
+
+@pytest.mark.asyncio
+async def test_starting_mid_pipeline_skips_earlier_stages_without_starting_their_children(
+    env: Env,
+) -> None:
+    """``start_stage=PRODUCTION`` は SCRIPT/STORYBOARD の子 workflow を起動しない（再課金しない）。
+
+    PRODUCTION/RENDER/UPLOAD は起動し、スキップした工程は ``completed_stages`` に載る。
+    """
+    ep = f"ep-{uuid.uuid4()}"
+    result = await env.client.execute_workflow(
+        "EpisodePipelineWorkflow",
+        EpisodePipelineInput(
+            episode_id=ep, options=env.options(), start_stage=PipelineStage.PRODUCTION.value
+        ),
+        id=pipeline_workflow_id(ep),
+        task_queue=env.queue,
+        result_type=dict,
+    )
+    assert result["outcome"] == PipelineOutcome.COMPLETED
+    assert result["status"] == "uploaded"
+    assert _stage_names() == ["ProductionWorkflow", "RenderWorkflow", "UploadWorkflow"]
+    assert "ScriptWorkflow" not in _stage_names()
+    assert "StoryboardWorkflow" not in _stage_names()
+    assert result["completed_stages"] == [
+        "script",
+        "storyboard",
+        "production",
+        "render",
+        "upload",
+    ]
+    assert WORLD.gate_calls == [ep]
+
+
+@pytest.mark.asyncio
+async def test_starting_at_upload_still_applies_the_upload_gate(env: Env) -> None:
+    """途中入場で UPLOAD から始めても、投稿ゲート（UPLOADS_PAUSED 等）はスキップされない。
+
+    ループのスキップは per-iteration continue であって slice ではないため、UPLOAD の
+    iteration には必ず到達し、ゲート判定を経由する（ADR-0032 実装時の懸念点の検査）。
+    """
+    WORLD.gate_allowed = False
+    ep = f"ep-{uuid.uuid4()}"
+    result = await env.client.execute_workflow(
+        "EpisodePipelineWorkflow",
+        EpisodePipelineInput(
+            episode_id=ep, options=env.options(), start_stage=PipelineStage.UPLOAD.value
+        ),
+        id=pipeline_workflow_id(ep),
+        task_queue=env.queue,
+        result_type=dict,
+    )
+    assert result["outcome"] == PipelineOutcome.UPLOAD_SKIPPED
+    assert WORLD.gate_calls == [ep]
+    assert "UploadWorkflow" not in _stage_names()
+    assert result["completed_stages"] == ["script", "storyboard", "production", "render"]
 
 
 # ------------------------------------------------------------------------- PAUSED

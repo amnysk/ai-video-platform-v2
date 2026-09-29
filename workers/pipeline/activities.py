@@ -37,10 +37,19 @@ from infrastructure.db.repositories import (
 )
 from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
 from infrastructure.temporal.schedules import TemporalScheduleControl
-from infrastructure.temporal.watchdog import TemporalWorkflowStartCounter, run_daily_watchdog
+from infrastructure.temporal.watchdog import (
+    TemporalPipelineOutcomeChecker,
+    TemporalWorkflowStartCounter,
+    run_daily_watchdog,
+)
 
 
 class PipelineActivities:
+    #: 通知の唯一の差し替え口（ADR-0027 §運用）。既定はログのみ。Slack / メール等へ
+    #: 差し替えるときはこの1箇所を変える（AGENTS.md §8）。``scripts/schedule-guard.py status``
+    #: がこの属性を直接読んで「通知未設定」を診断する（ADR-0031 §3。新しい設定フラグは増やさない）。
+    notifier_factory: Callable[[], LoggingAnomalyNotifier] = LoggingAnomalyNotifier
+
     def __init__(
         self,
         *,
@@ -73,8 +82,9 @@ class PipelineActivities:
             control=TemporalScheduleControl(self._temporal_client),
             session_factory=self._session_factory,
             workflow_counter=TemporalWorkflowStartCounter(self._temporal_client),
-            notifier=LoggingAnomalyNotifier(),
+            notifier=self.notifier_factory(),
             request=request,
+            pipeline_outcome_checker=TemporalPipelineOutcomeChecker(self._temporal_client),
         )
 
     async def _paused_reason(self, session: AsyncSession, *, include_uploads: bool) -> str | None:

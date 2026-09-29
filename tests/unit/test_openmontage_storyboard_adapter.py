@@ -95,6 +95,19 @@ SCENE_PLAN_SCHEMA: dict[str, Any] = {
                     "framing": {"type": "string"},
                     "movement": {"type": "string"},
                     "transition_in": {"type": "string"},
+                    # 固定 commit の scene_plan にある任意項目（ADR-0035 で映像対象の宣言に使う）
+                    "required_assets": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["type", "description", "source"],
+                            "properties": {
+                                "type": {"type": "string"},
+                                "description": {"type": "string"},
+                                "source": {"enum": ["generate", "source", "provided", "record"]},
+                            },
+                        },
+                    },
                 },
             },
         },
@@ -170,8 +183,14 @@ def _scene(section: str, start: float, end: float, **extra: Any) -> dict[str, An
         "start_seconds": start,
         "end_seconds": end,
         "script_section_id": section,
+        # ADR-0035: 各シーンは映像対象を required_assets の generate 1件で宣言する
+        "required_assets": [{"type": "diagram", "description": "図解", "source": "generate"}],
         **extra,
     }
+
+
+def _assets(subject: str) -> list[dict[str, str]]:
+    return [{"type": subject, "description": "x", "source": "generate"}]
 
 
 def _plan(*scenes: dict[str, Any]) -> str:
@@ -471,6 +490,51 @@ def test_interpret_maps_fields(tmp_path) -> None:
     assert drafts[2].framing is None
 
 
+def test_interpret_maps_the_declared_visual_subject(tmp_path) -> None:
+    from contracts.artifacts import VisualSubject
+
+    plan = _plan(
+        _scene("s1", 0, 5, required_assets=_assets("map")),
+        _scene("s2", 5, 10.5, type="broll", required_assets=_assets("named_person")),
+        _scene("s3", 10.5, 15, type="broll", required_assets=_assets("crowd_distant")),
+    )
+    drafts = _generator(tmp_path).interpret(plan, _script())
+    assert [d.visual_subject for d in drafts] == [
+        VisualSubject.MAP,
+        VisualSubject.NAMED_PERSON,
+        VisualSubject.CROWD_DISTANT,
+    ]
+    scenes = assign_scene_identity(drafts)
+    assert [s["visual_subject"] for s in scenes] == ["map", "named_person", "crowd_distant"]
+
+
+@pytest.mark.parametrize(
+    "assets",
+    [None, [], _assets("portrait_of_ieyasu"), [*_assets("map"), *_assets("site")]],
+    ids=["missing", "empty", "unknown-subject", "two-subjects"],
+)
+def test_an_undecided_visual_subject_is_a_retryable_violation(tmp_path, assets) -> None:
+    second = _scene("s2", 5, 10.5)
+    if assets is None:
+        del second["required_assets"]
+    else:
+        second["required_assets"] = assets
+    with pytest.raises(StoryboardSchemaViolationError, match="scene 2"):
+        _generator(tmp_path).interpret(
+            _plan(_scene("s1", 0, 5), second, _scene("s3", 10.5, 15)), _script()
+        )
+
+
+def test_a_named_person_planned_as_a_portrait_is_a_retryable_violation(tmp_path) -> None:
+    portrait = _scene(
+        "s2", 5, 10.5, type="character_scene", required_assets=_assets("named_person")
+    )
+    with pytest.raises(StoryboardSchemaViolationError, match="scene 2"):
+        _generator(tmp_path).interpret(
+            _plan(_scene("s1", 0, 5), portrait, _scene("s3", 10.5, 15)), _script()
+        )
+
+
 def test_interpreted_drafts_build_a_valid_artifact_that_covers_the_script(tmp_path) -> None:
     script = _script()
     drafts = _generator(tmp_path).interpret(_plan(), script)
@@ -614,11 +678,25 @@ def test_interpret_never_touches_the_filesystem(tmp_path, monkeypatch) -> None:
 
 def test_storyboard_template_constants_and_rules() -> None:
     assert STORYBOARD_PROMPT_TEMPLATE_ID == "storyboard_ja"
-    assert STORYBOARD_PROMPT_TEMPLATE_VERSION == "2"
+    # v3（ADR-0035）: 映像対象を required_assets で宣言させる規則を足した
+    assert STORYBOARD_PROMPT_TEMPLATE_VERSION == "3"
     assert PROMPT_TEMPLATE_ID == "script_ja"
     template = load_prompt_template(STORYBOARD_PROMPT_TEMPLATE_ID)
     for token in ("script_section_id", "コードフェンス", "Web 検索", "承認", "チェックポイント"):
         assert token in template
+
+
+def test_storyboard_template_asks_for_one_visual_subject_per_scene() -> None:
+    """ADR-0035 (1): 映像対象の語彙がテンプレートとずれない（語彙の定義元は contracts）。"""
+    from contracts.artifacts import VisualSubject
+
+    template = load_prompt_template(STORYBOARD_PROMPT_TEMPLATE_ID)
+    assert "required_assets" in template and '"source": "generate"' in template
+    for subject in VisualSubject:
+        assert f"`{subject.value}`" in template, subject
+    # 根拠（実際の拒否理由）と、名前はナレーションで伝えること
+    assert "likenesses of real people" in template
+    assert "ナレーション" in template
 
 
 # --- 固定 commit の本物の blob（ローカルに checkout がある場合だけ） ---------

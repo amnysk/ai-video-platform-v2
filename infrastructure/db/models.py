@@ -27,6 +27,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    false,
     func,
     text,
 )
@@ -41,6 +42,8 @@ from contracts.states import (
     JobStatus,
     JobType,
     ProviderCall,
+    RejectedInput,
+    RejectionCategory,
     ReservationStatus,
 )
 from contracts.topic import TOPIC_MAX_CHARS
@@ -62,14 +65,20 @@ SCENE_ARTIFACT_TYPES: tuple[ArtifactType, ...] = (
     ArtifactType.SCENE_IMAGE,
     ArtifactType.SCENE_VIDEO,
     ArtifactType.SCENE_VOICE,
+    ArtifactType.SCENE_VISUAL_OVERRIDE,
 )
 SCENE_JOB_TYPES: tuple[JobType, ...] = (
     JobType.PRODUCE_SCENE_IMAGE,
     JobType.PRODUCE_SCENE_VIDEO,
     JobType.PRODUCE_SCENE_VOICE,
+    JobType.PLAN_SCENE_ALTERNATIVE,
 )
 #: シーン単位でしか呼ばない provider（scene_id 必須。他は任意）。
-SCENE_PROVIDER_CALLS: tuple[ProviderCall, ...] = (ProviderCall.FAL_IMAGE, ProviderCall.FAL_VIDEO)
+SCENE_PROVIDER_CALLS: tuple[ProviderCall, ...] = (
+    ProviderCall.FAL_IMAGE,
+    ProviderCall.FAL_VIDEO,
+    ProviderCall.CODEX_SCENE_ALTERNATIVE,
+)
 
 
 def _in_list(values: tuple[Enum, ...]) -> str:
@@ -182,6 +191,10 @@ class ArtifactMetadataRow(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     #: この成果物を作った**入力**の指紋（domain/script/identity.py）。
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: ADR-0035: 生成レシピの版（prompt 組み立て規則の版）を除いた入力指紋。レシピの版だけが
+    #: 変わったときに成功済みの成果物を作り直さないための再利用キー。旧行は NULL
+    #: （旧方式の hash を再計算して照合する）。
+    content_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: 同じ (episode_id, artifact_type) 内で単調増加する世代番号。
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     #: NULL なら現行世代。非NULLなら後続世代に降ろされた。
@@ -248,6 +261,13 @@ class ProviderReservationRow(Base):
     )
     failure_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_summary: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    #: この予約が spent したのは provider が**入力そのものを拒否した**（例: content policy
+    #: violation）ためか（ADR-0034）。true なら同じ input_hash のまま次のラウンドへ自動で
+    #: 進まない（``infrastructure.production.paid_job._plan_round``）。回復は人間が入力を
+    #: 直して新しい input_hash を作ることだけ（台帳は append-only。この行は変更しない）。
+    input_rejected_by_provider: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     reserved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -305,17 +325,47 @@ class DailyEpisodeSlotRow(Base):
 
 
 class OperationalAnomalyRow(Base):
-    """運用異常（ADR-0027）。``(kind, anomaly_date)`` で1日1行。通知先は将来ここから読む。"""
+    """運用異常（ADR-0027 / ADR-0031）。
+
+    Schedule 系（``episode_id IS NULL``）は ``(kind, anomaly_date)`` で1日1行。
+    Episode 単位の異常（``episode_id IS NOT NULL``）は ``(kind, anomaly_date, episode_id)`` で
+    Episode ごとに1日1行（ADR-0031: 同日に複数 Episode が問題を起こしても取りこぼさない）。
+    通知先は将来ここから読む。
+    """
 
     __tablename__ = "operational_anomalies"
     __table_args__ = (
         _check("kind", AnomalyKind, "ck_operational_anomalies_kind"),
-        UniqueConstraint("kind", "anomaly_date", name="uq_operational_anomalies_kind_date"),
+        # sqlite_where も渡すのは、単体テストが sqlite の create_all で同じ部分インデックス制約を
+        # 検査するため（SQLite も部分インデックスをサポートする）。postgresql_where と揃えておく。
+        Index(
+            "uq_operational_anomalies_kind_date_schedule",
+            "kind",
+            "anomaly_date",
+            unique=True,
+            postgresql_where=text("episode_id IS NULL"),
+            sqlite_where=text("episode_id IS NULL"),
+        ),
+        Index(
+            "uq_operational_anomalies_kind_date_episode",
+            "kind",
+            "anomaly_date",
+            "episode_id",
+            unique=True,
+            postgresql_where=text("episode_id IS NOT NULL"),
+            sqlite_where=text("episode_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     anomaly_date: Mapped[date] = mapped_column(Date, nullable=False)
+    #: Episode 単位の異常だけ埋まる（ADR-0031）。Schedule 系は NULL のまま
+    episode_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(),
+        ForeignKey("episodes.id", ondelete="SET NULL", name="fk_operational_anomalies_episode_id"),
+        nullable=True,
+    )
     #: 人が読む状況（secret を入れない。INV-20）
     detail: Mapped[dict] = mapped_column(JSON, nullable=False)
     first_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -323,6 +373,33 @@ class OperationalAnomalyRow(Base):
     occurrences: Mapped[int] = mapped_column(Integer, nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProviderAuthIncidentRow(Base):
+    """provider の認可拒否（401/403）の記録（ADR-0030）。
+
+    ``operational_anomalies``（1日1行）とは粒度が違う: こちらは数分単位のバースト検出に使うので
+    1件ずつ行を持つ。``PaidJobRunner.submit`` が予約を作る**前**に、同じ provider の直近の
+    未解決件数を読んで新規 submit を止めるかどうかを決める。
+    """
+
+    __tablename__ = "provider_auth_incidents"
+    __table_args__ = (
+        _check("provider", ProviderCall, "ck_provider_auth_incidents_provider"),
+        Index("ix_provider_auth_incidents_provider_occurred", "provider", "occurred_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: HTTP 由来の拒否だけ埋まる（domain.errors.ProviderUnavailableError.http_status）。
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    episode_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="SET NULL"), nullable=True
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AnalyticsSnapshotRow(Base):
@@ -473,7 +550,50 @@ __all__ = [
     "EpisodeRow",
     "FailureClass",
     "JobRow",
+    "ProviderAuthIncidentRow",
     "ProviderReservationRow",
     "TopicCandidateRow",
     "TopicPlanRow",
 ]
+
+
+class ProviderRejectionRow(Base):
+    """provider による内容の拒否（422 ``content_policy_violation`` 等）の記録（ADR-0035）。
+
+    1回の拒否につき1行（append-only）。``provider_reservations.error_summary`` の文字列から
+    推測せず、拒否の対象（``rejected_input``）と理由を構造化して残す。
+    ``source_media_sha256`` は拒否された入力画像（動画の ``image_url``）の sha256 で、
+    テキストを変えて同じ画像を再送する経路を塞ぐキーになる（INV-32）。
+    """
+
+    __tablename__ = "provider_rejections"
+    __table_args__ = (
+        _check("provider", ProviderCall, "ck_provider_rejections_provider"),
+        _check("rejected_input", RejectedInput, "ck_provider_rejections_rejected_input"),
+        _check("category", RejectionCategory, "ck_provider_rejections_category"),
+        Index("ix_provider_rejections_episode_scene", "episode_id", "scene_id"),
+        Index("ix_provider_rejections_source_media", "provider", "source_media_sha256"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+    )
+    scene_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    reservation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("provider_reservations.id", ondelete="SET NULL"), nullable=True
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    rejected_input: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: 復旧を分岐させる分類（ADR-0035 (8)。``contracts.states.RejectionCategory``）
+    category: Mapped[str] = mapped_column(String(24), nullable=False)
+    source_media_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: provider のエラー種別の JSON 配列（例: ``["content_policy_violation"]``）
+    types: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -1,7 +1,10 @@
 """``scripts/with-maintenance-pause.sh``（ADR-0027）: deploy を maintenance pause で包む。
 
-Test B / B2: コマンドが成功でも失敗でも中断されても、pause は必ず end で戻される。
-ガード CLI は stub に差し替え、呼ばれた順序と終了コードだけを見る。
+コマンドが成功したときだけ end で pause を戻す。失敗・中断（SIGTERM 含む）では
+**戻さない**（壊れた状態のまま自動生成を再開しない、が唯一の目的）。以前このファイルは
+「失敗しても必ず end される」ことを固定していたが、それは deploy 失敗時に自動生成が
+再開してしまう実際のバグだった（R3 で修正）。ガード CLI は stub に差し替え、
+呼ばれた順序と終了コードだけを見る。
 """
 
 from __future__ import annotations
@@ -64,13 +67,13 @@ def test_success_pauses_runs_and_releases_in_order(stub: dict[str, str], tmp_pat
     ]
 
 
-def test_a_failing_deploy_still_releases_the_pause_and_keeps_its_exit_code(
-    stub: dict[str, str],
-) -> None:
-    """Test B2: deploy が失敗しても、pause のまま翌日を迎えない。"""
+def test_a_failing_deploy_does_not_release_the_pause(stub: dict[str, str]) -> None:
+    """R3: 壊れた状態のまま自動生成を再開しない。end は呼ばれず、pause は印付きで残る。"""
     result = _run(stub, "bash", "-c", "exit 7")
     assert result.returncode == 7
-    assert _calls(stub)[-1] == "maintenance end"
+    assert _calls(stub) == ["maintenance begin --reason deploy-workers --ttl 45m"]
+    assert "NOT unpausing" in result.stderr
+    assert "reconcile" in result.stderr
 
 
 def test_an_operator_pause_is_left_alone(stub: dict[str, str]) -> None:
@@ -97,22 +100,25 @@ def test_a_failed_release_fails_the_whole_run_even_if_the_command_succeeded(
     assert "may still be paused" in result.stderr
 
 
-def test_termination_during_the_command_still_releases(stub: dict[str, str]) -> None:
+def test_termination_during_the_command_does_not_release(stub: dict[str, str]) -> None:
+    """R3: SIGTERM は「失敗」と同じ扱い。中断された deploy のまま自動生成を再開しない。"""
     env = {**os.environ, **stub}
     proc = subprocess.Popen(
         [str(WRAPPER), "--reason", "deploy-workers", "--", "sleep", "30"],
         env=env,
         start_new_session=True,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     deadline = time.time() + 10
     while time.time() < deadline and not _calls(stub):
         time.sleep(0.05)
     time.sleep(0.3)  # sleep が始まるのを待つ
     os.killpg(proc.pid, signal.SIGTERM)
-    proc.wait(timeout=10)
-    assert _calls(stub)[-1] == "maintenance end"
+    _, stderr = proc.communicate(timeout=10)
+    assert _calls(stub) == ["maintenance begin --reason deploy-workers"]
     assert proc.returncode != 0
+    assert "NOT unpausing" in stderr
 
 
 def test_missing_arguments_are_a_usage_error() -> None:

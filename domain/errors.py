@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
-from contracts.states import FailureClass
+from dataclasses import dataclass
+
+from contracts.states import FailureClass, RejectedInput, RejectionCategory
 
 
 class DomainError(Exception):
@@ -65,7 +67,24 @@ class ProviderInvocationError(RetryableError):
 
 
 class ProviderUnavailableError(NeedsInputError):
-    """CLI不在・未認証・権限拒否。再実行しても同じだが人間が直せば回復する。"""
+    """CLI不在・未認証・権限拒否。再実行しても同じだが人間が直せば回復する。
+
+    ``http_status`` は HTTP 由来の拒否のときだけ埋める（ADR-0030の診断記録に使う）。
+    CLI不在など HTTP を経由しない場合は ``None`` のままでよい。
+    """
+
+    def __init__(self, message: str, *, http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+
+
+class ProviderCredentialSuspectedOutageError(NeedsInputError):
+    """同じ provider への認可拒否がウィンドウ内で閾値を超えた（ADR-0030）。
+
+    個々の 401/403（``ProviderUnavailableError``）とは別に、共有障害の疑いがある間は
+    その provider への新規 submit 自体を止める（予約 INSERT の前）。人間が確認し
+    provider が回復すれば、次の成功で自動的に解消する。
+    """
 
 
 class UnreconciledReservationError(NeedsInputError):
@@ -118,12 +137,117 @@ class ProviderSubmitAmbiguousError(NeedsInputError):
     """
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderRejection:
+    """provider による内容拒否の構造化した記録（ADR-0035）。
+
+    provider の応答（HTTP 422 の validation error の ``detail[]`` 等）から
+    adapter が組み立てる。``message`` は provider が返した人間向けの理由で、secret は含まない。
+    ``locs`` は ``"body.image_url"`` のようにドットで連結した拒否の位置。
+    """
+
+    types: tuple[str, ...] = ()
+    locs: tuple[str, ...] = ()
+    reason: str | None = None
+    message: str | None = None
+    http_status: int | None = None
+    #: 復旧を分岐させる分類（ADR-0035 (8)）。adapter が provider の error type から決める。
+    category: RejectionCategory = RejectionCategory.UNKNOWN
+
+    @property
+    def rejected_input(self) -> RejectedInput:
+        """拒否の対象。位置が画像なら ``image``、テキストなら ``prompt``、他は ``unknown``。"""
+        if any(loc.endswith("image_url") for loc in self.locs):
+            return RejectedInput.IMAGE
+        if any(loc.endswith("prompt") for loc in self.locs):
+            return RejectedInput.PROMPT
+        return RejectedInput.UNKNOWN
+
+
 class ProviderRejectedError(NeedsInputError):
     """provider が依頼を拒否した（コンテンツポリシー・入力不正）。
 
     同じ入力を再送しても同じ結果になるが、プロンプトや素材を人間が直せば回復するので
-    ``permanent`` にしない（ADR-0017）。
+    ``permanent`` にしない（ADR-0017）。``rejection`` は adapter が provider の応答から
+    組み立てた構造化の記録（ADR-0035）。無ければ ``None``（adapter 内部の入力検査など）。
     """
+
+    def __init__(self, message: str, *, rejection: ProviderRejection | None = None) -> None:
+        super().__init__(message)
+        self.rejection = rejection
+
+
+class ProviderInputFetchError(NeedsInputError):
+    """provider が、こちらの渡した入力（URL のファイル）を取得できなかった（ADR-0035 追補）。
+
+    例: 入力 URL の取得失敗（provider の docs では retryable=false）。入力の**内容**を判定した拒否
+    ではないので ``ProviderRejectedError`` にしない: 画像の再送禁止（INV-32）・代替案の計画・
+    ``input_rejected_by_provider`` の対象外。ADR-0035 (8) / INV-35: そのシーンについて、入力を
+    上げ直した新しい URL で**最大1回だけ**自動再試行する（台帳の新ラウンド。回数は
+    ``provider_rejections`` の ``input_unreachable`` 件数から数える）。
+
+    ``rejection`` は adapter が応答から組み立てた構造化の記録（分類は ``input_unreachable``）。
+    """
+
+    def __init__(self, message: str, *, rejection: ProviderRejection | None = None) -> None:
+        super().__init__(message)
+        self.rejection = rejection or ProviderRejection(
+            category=RejectionCategory.INPUT_UNREACHABLE
+        )
+
+
+class ProviderInputFetchRetryExhaustedError(NeedsInputError):
+    """入力の取得失敗の自動再試行（最大1回）を使い切った（ADR-0035 (8)、INV-35）。
+
+    同じシーンで2回目の取得失敗が記録された後の新ラウンドを、予約を作る**前**に止める
+    （予約も課金も作らない）。``ProviderInputFetchError`` の派生にしない: workflow は
+    型名で「次のラウンドへ進む」を判定するので、ここで止まる型は別名にする。
+    """
+
+
+class SceneAlternativeNotApplicableError(NeedsInputError):
+    """このシーンの失敗は代替映像案で直すものではない（ADR-0035 (8)）。
+
+    代替案の対象は内容方針の拒否（``content_policy``）だけ。入力の検証失敗・分類不能・入力の
+    取得失敗では planner を呼ばずに止まり、人の判断を待つ。
+    """
+
+
+class ProviderRejectedRetryBlockedError(ProviderRejectedError):
+    """同じ input_hash の予約が直前に provider から拒否されている（ADR-0034）。
+
+    ``infrastructure.production.paid_job._plan_round`` は spent 済み予約の
+    ``input_rejected_by_provider`` が true なら、この例外を送出して新しいラウンド
+    （＝同じ入力での再送）を自動で作らない。そのまま再送しても同じ拒否を繰り返し
+    課金だけが増える。台帳は append-only なので予約・Artifact・MinIO 実体は変更しない
+    （INV-15 / ADR-0033 と同じ規律）。回復は人間がプロンプト・素材を直して**新しい
+    input_hash** を作ることだけ。
+    """
+
+
+class SceneAlternativeLimitReachedError(NeedsInputError):
+    """拒否されたシーンの自動の代替案が上限（回数・追加費用）に達した（ADR-0035, INV-34）。
+
+    これ以上は自動で生成しない。人間が代替案を決めるか、上限を見直す。
+    """
+
+
+class SceneAlternativeInfeasibleError(NeedsInputError):
+    """史実を損なわずに provider の方針に合う代替案を作れない、と planner が判断した。
+
+    ADR-0035。理由は planner の出力から例外メッセージに残す。
+    """
+
+
+class SceneAlternativeInvalidError(NeedsInputError):
+    """planner の代替案が検証規則に落ちた（形式不正・禁止された映像対象・前と同じ文面）。
+
+    自動の試行回数を増やさないため、LLM 出力の欠陥でも retryable にしない（ADR-0035）。
+    """
+
+
+class SceneAlternativePlannerUnavailableError(NeedsInputError):
+    """代替案を計画する planner が構成されていない・届かない（ADR-0035）。"""
 
 
 class ProviderJobFailedError(RetryableError):

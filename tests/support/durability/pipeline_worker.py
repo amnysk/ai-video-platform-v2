@@ -13,7 +13,6 @@ import logging
 import os
 from datetime import UTC, datetime
 
-from temporalio.client import Client
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 from contracts.topic_planning import DEFAULT_PLANNER_POLICY
@@ -27,6 +26,7 @@ from tests.support.durability.common import (
 )
 from tests.support.durability.stages import FAKE_STAGES, advance_activity
 from tests.support.fakes import FakeStoryGenerator
+from tests.support.temporal import connect_test_client
 from workers.pipeline.activities import PipelineActivities
 from workers.pipeline.run_worker import build_worker
 from workers.planning.topic_activities import TopicPlannerActivities
@@ -83,7 +83,7 @@ async def main() -> None:
     stage_queue = os.environ[ENV_STAGE_QUEUE]
     assert queue not in {"pipeline"} and stage_queue not in {"script", "upload", "render"}
     factory = schema_session_factory(os.environ[ENV_DB_URL], os.environ[ENV_SCHEMA])
-    client = await Client.connect(os.environ["TEMPORAL_ADDRESS"], namespace="default")
+    client = await connect_test_client()
     activities = PipelineActivities(
         session_factory=factory, paused_env=False, uploads_paused_env=False
     )

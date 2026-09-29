@@ -15,6 +15,7 @@ import pytest
 import yaml
 
 from contracts.pipeline import PIPELINE_TASK_QUEUE
+from contracts.production_activities import SCENE_ALTERNATIVE_TASK_QUEUE
 from contracts.states import (
     PRODUCTION_IMAGE_TASK_QUEUE,
     PRODUCTION_VIDEO_TASK_QUEUE,
@@ -67,6 +68,12 @@ WORKERS: dict[str, tuple[str, set[str], bool]] = {
         True,
     ),
     "pipeline-worker": ("workers.pipeline.run_worker", {PIPELINE_TASK_QUEUE}, False),
+    # ADR-0035: 代替映像案の planner（Codex）
+    "scene-alternative-worker": (
+        "workers.production.scene_alternative.run_worker",
+        {SCENE_ALTERNATIVE_TASK_QUEUE},
+        True,
+    ),
 }
 NEW_WORKERS = [s for s in WORKERS if s != "dummy-worker"]
 
@@ -81,6 +88,7 @@ ACTIVITY_ONLY_MIN_MAX_AGE: dict[str, int] = {
     "production-image-worker": 45 * 60,
     "production-video-worker": 45 * 60,
     "production-voice-worker": 15 * 60,
+    "scene-alternative-worker": 25 * 60,
 }
 CORE_INFRA = ["postgres", "minio", "temporal", "temporal-ui", "api", "dummy-worker"]
 
@@ -284,7 +292,7 @@ def test_no_service_registers_schedule(services) -> None:
     [
         ("FAL_KEY", {"production-image-worker", "production-video-worker"}),
         ("YOUTUBE_", {"upload-worker", "script-worker"}),
-        ("CODEX_", {"script-worker", "storyboard-worker"}),
+        ("CODEX_", {"script-worker", "storyboard-worker", "scene-alternative-worker"}),
     ],
 )
 def test_per_worker_minimal_env(services, prefix, owners) -> None:
@@ -370,7 +378,7 @@ def test_make_refuses_root_uid_on_rootful_docker() -> None:
         assert "check-docker-uid" in line
 
 
-CODEX_WORKERS = {"script-worker", "storyboard-worker"}
+CODEX_WORKERS = {"script-worker", "storyboard-worker", "scene-alternative-worker"}
 
 
 @pytest.mark.parametrize("service", NEW_WORKERS)

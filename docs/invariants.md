@@ -198,3 +198,115 @@ DailyEpisodeWorkflow も無ければ `DAILY_AUTOMATION_NOT_STARTED` を `operati
 / `tests/unit/test_daily_watchdog.py::test_a_paused_schedule_is_detected_and_never_unpaused`
 / `tests/unit/test_daily_watchdog.py::test_slot_present_after_grace_is_healthy_with_no_anomaly`
 / `tests/unit/test_daily_watchdog.py::test_the_anomaly_is_recorded_and_notified_once_per_day`。
+
+## H. 共有障害の抑止（ADR-0030）
+
+### INV-27 確認された provider 資格情報障害は同じ provider への新規課金を止める
+直近のウィンドウ内で同一 provider に対する認可拒否（401/403）が閾値を超えたら、新しい予約を
+作らず `needs_input` で止める。閾値・ウィンドウは `contracts/production_activities.py` の
+単一宣言元を持つ。無関係な provider・Episode の処理は継続する（INV-13 と同じ粒度の思想）。
+済んだ工程の再開（Artifact 再利用・Submitted の引き継ぎ）はこのゲートの対象外
+（provider I/O が要らないため）。
+**機械検査**: `tests/unit/test_paid_job.py::test_prepare_auth_failure_records_incident_and_creates_no_reservation`
+/ `::test_repeated_auth_incidents_suppress_new_submits_for_same_provider`
+/ `::test_auth_outage_gate_is_scoped_to_one_provider`
+/ `::test_successful_prepare_resolves_open_incidents`
+/ `::test_auth_outage_gate_does_not_block_resuming_already_produced_scenes`
+
+### INV-28 provider 呼び出し失敗の診断情報は secret を含まず構造化して残す
+操作種別・HTTP status・provider request id・worker識別子・設定版・発生時刻をログに残す。
+Authorization ヘッダ・token・生の応答本文は出さない（INV-20 の具体化）。
+**機械検査**: `tests/unit/test_fal_storage.py`（`PROVIDER_AUTH_FAILURE` / `PROVIDER_TRANSIENT_FAILURE`
+/ `PROVIDER_REJECTED` の診断フィールドと secret 非漏洩を検査するテスト群）
+
+## I. 自動運転の完走監視（ADR-0031）
+
+### INV-29 watchdog は起動だけでなく進行・完成・投稿を判定する
+`blocked` / `needs_work` からの長期停滞、完成期限超過、投稿期限超過（意図した `UPLOADS_PAUSED`
+を除く）をそれぞれ検出する。Temporal の workflow 実行が `completed` であることを、Episode の
+ドメイン状態と照合せずに成功とみなさない（`PIPELINE_OUTCOME_MISMATCH`）。同日に複数の Episode が
+それぞれ問題を起こしても取りこぼさない（`operational_anomalies` の episode 単位インデックス）。
+**機械検査**: `tests/unit/test_daily_watchdog.py` / `tests/contract/test_operational_anomalies_episode_scope.py`
+
+## J. 途中再開（ADR-0032）
+
+### INV-30 Episodeの統一再開は日次枠を再消費せず、同一Episodeの二重実行を作らない
+再開は `daily_episode_slots` を消費しない（`claim_daily_slot` を呼ばない）。同じ Episode に対する
+二重の再開要求は、決定論的な workflow id（`pipeline_workflow_id`）への Temporal の
+`WorkflowAlreadyStartedError` が構造的に防ぐ（実行と課金が重複しない）。
+read-onlyのdry-run（`GET /episodes/{id}/resume/plan`）はProvider呼び出し・予約作成・workflow起動を
+一切行わない（`WorkflowStarter` を依存に注入しない構造で保証する）。
+**機械検査**: `tests/unit/test_resume_plan.py` / `tests/unit/test_resume_api.py`
+/ `tests/unit/test_pipeline_workflows.py` / `tests/integration/test_episode_resume.py`
+
+## K. Artifact再利用の完全性（ADR-0033）
+
+### INV-31 Artifactの再利用は実体を検証してから行う
+DB行の存在だけで再利用しない。MinIO実体の存在・size・sha256、schema検証可能な型は読み戻し、
+生成設定版（image/video の固定 provider profile id、render の `RENDER_PROFILES`）の互換性を
+確認する。欠落・破損・版不一致は「現行が無い」として扱い、新しいラウンド（regenerate）へ進む。
+検証で破損を検出しても、既存の MinIO object・`artifact_metadata` 行・`provider_reservations` 行を
+自動で削除・変更しない。通常パイプライン（production/render/upload の各Activity）は同じ唯一の
+関数（`infrastructure.artifact.verify.find_and_verify_current`）を経由し、判定を二重化しない。
+**機械検査**: `tests/unit/test_artifact_verification.py` / `tests/unit/test_artifact_verify_io.py`
+/ `tests/unit/test_paid_job.py::test_corrupt_artifact_does_not_bypass_the_unreconciled_reservation_block`
+
+### INV-32 provider に拒否された入力は自動で再送しない ── 同じ入力も、同じ入力画像も
+provider が内容を拒否した入力（同じ `input_hash`、ADR-0034）は新しいラウンドを作らない。加えて、
+拒否の対象が入力画像（`provider_rejections.rejected_input = 'image'`）なら、その画像の sha256 を
+同じ provider へ、テキストを変えても再送しない（予約 INSERT の前に止め、予約も課金も作らない）。
+拒否は adapter が応答から組み立てた構造（対象・理由・種別）で `provider_rejections` に1件ずつ残し、
+`error_summary` の文字列から推測しない（ADR-0035）。
+**機械検査**: `tests/unit/test_paid_job.py::test_rejected_image_is_not_resubmitted_with_different_text`
+/ `::test_content_rejection_is_recorded_structured_with_the_input_image`
+/ `::test_a_different_image_is_not_blocked` / `::test_a_prompt_rejection_does_not_block_the_image`
+/ `::test_provider_rejected_input_blocks_the_next_round`（ADR-0034）
+/ `tests/unit/test_fal_queue.py::test_content_policy_rejection_is_structured_from_the_body`
+
+### INV-33 1シーンの映像の差し替えとレシピ版の変更は、そのシーンと依存成果物以外を再生成・再課金しない
+画像・動画の `input_hash`（方式2、ADR-0035 (4)）はそのシーンの**実効内容**（storyboard のシーン +
+現行の代替映像案 `scene_visual_override`）の指紋を材料にし、別シーンの内容を含まない。代替映像案は
+storyboard の世代を変えないので、差し替えていないシーンの hash は変わらない。prompt 組み立て規則の版
+（`IMAGE_PROMPT_BUILDER_VERSION` / `VIDEO_PROMPT_BUILDER_VERSION`）だけが変わった成功済みの成果物は
+`artifact_metadata.content_fingerprint` で再利用する（生成器・モデルの違いは再利用しない）。
+旧方式（`content_fingerprint` が NULL の本番行・予約）は旧方式の hash を版 1〜現在で再計算して照合し、
+hash の方式が変わっただけで進行中の課金ジョブへ二重 submit したり、provider に拒否された入力を
+再送したりしない。代替映像案のあるシーンでは旧方式の成果物（拒否された元の画像）を再利用しない。
+**機械検査**: `tests/unit/test_scene_identity_v2.py` / `tests/unit/test_scene_identity_reuse.py`
+
+### INV-34 内容拒否からの自動復旧は回数と費用に上限があり、超えたら人間の判断を待つ
+拒否されたシーンの代替映像案は、1シーンあたり `MAX_SCENE_ALTERNATIVES_PER_SCENE`、1 Episode あたり
+`MAX_SCENE_ALTERNATIVES_PER_EPISODE` 回まで、かつ復旧の追加費用（拒否された spent 予約と、代替案の後に
+作り直した fal 予約の `estimated_cost_usd` の合計 + 次の作り直しの見積り）が
+`MAX_RECOVERY_COST_USD_PER_EPISODE` 以下の間だけ自動で作る（定義元は
+`contracts/production_activities.py` の1箇所）。回数・費用は DB から数え、resume でリセットしない。
+上限到達・planner の不成立（理由つき）・規則違反（人物を主題にする・既に試した文面・根拠なし）は
+`needs_input` で止まる。workflow は1回の実行で planner を1シーンの上限回数より多く呼ばない（ADR-0035）。
+**機械検査**: `tests/unit/test_scene_alternative_activity.py::test_scene_limit_stops_automation`
+/ `::test_cost_cap_stops_automation_before_calling_the_planner`
+/ `::test_infeasible_plan_stops_with_the_planners_reason`
+/ `::test_a_person_subject_after_a_likeness_rejection_is_not_saved`
+/ `::test_blocked_again_on_the_same_plan_does_not_loop`
+/ `tests/unit/test_scene_alternative_rules.py::test_limits_stop_automation`
+/ `tests/unit/test_production_scene_recovery_workflow.py::test_workflow_never_asks_the_planner_more_than_the_scene_limit`
+/ `tests/unit/test_scene_alternative_activity.py::test_limits_come_from_the_injected_settings`
+/ `::test_non_content_policy_failures_never_reach_the_planner`（代替案の対象は `content_policy` だけ、ADR-0035 (8)）
+/ `tests/integration/test_input_fetch_retry_e2e.py::test_alternative_limit_from_settings_stops_further_generation`
+
+### INV-35 provider が入力を取得できなかったら、新しい入力 URL で最大1回だけ自動再試行し、2回目で止まる
+provider がこちらの入力（URL のファイル）を取得できなかった失敗（分類 `input_unreachable`。fal の
+`file_download_error`）は内容の拒否ではない。そのシーンについて、入力を上げ直した新しい URL で
+**最大 `INPUT_FETCH_RETRIES_PER_SCENE`（= 1）回だけ**台帳の新ラウンドとして自動で再試行する。回数は
+`provider_rejections` の `input_unreachable` 件数から数え、resume でリセットしない。上限を超えた新ラウンドは
+予約の前に止める（予約も課金も作らない）。成功済みの他シーンは触らない。代替映像案は計画せず、内容拒否の
+復旧回数・費用（INV-34）にも数えない。画像の再送禁止（INV-32）の対象にしない（ADR-0035 (8)）。
+**機械検査**: `tests/unit/test_paid_job.py::test_unreachable_input_is_recorded_but_not_as_a_rejected_input`
+/ `::test_second_fetch_failure_stops_before_reserving_a_third_round`
+/ `::test_image_gate_ignores_unreachable_and_unknown_but_blocks_validation`
+/ `tests/integration/test_production_workflow.py::test_input_fetch_failure_retries_once_with_a_new_round_and_succeeds`
+/ `::test_second_input_fetch_failure_in_the_run_stops_the_episode`
+/ `::test_input_fetch_retry_is_granted_even_with_a_single_round_budget`
+/ `::test_ledger_exhaustion_on_resume_stops_without_another_submit`
+/ `tests/integration/test_input_fetch_retry_e2e.py::test_transient_input_fetch_failure_is_retried_once_with_a_new_url_through_upload`
+/ `::test_second_input_fetch_failure_stops_and_resume_does_not_submit_again`
+/ `tests/contract/test_migration_frozen_vocabulary.py::test_0014_legacy_file_download_error_is_backfilled_as_unreachable_not_rejected`

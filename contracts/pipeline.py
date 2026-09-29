@@ -24,6 +24,7 @@ from contracts.production_activities import (
     DEFAULT_VIDEO_CONCURRENCY,
     DEFAULT_VIDEO_MAX_ROUNDS,
     DEFAULT_VOICE_CONCURRENCY,
+    MAX_SCENE_ALTERNATIVES_PER_SCENE,
 )
 from contracts.render import DEFAULT_RENDER_PROFILE_ID
 from contracts.states import (
@@ -34,6 +35,7 @@ from contracts.states import (
     UPLOAD_WORKFLOW,
     EpisodeStatus,
     Pipeline,
+    ProviderCall,
 )
 from contracts.topic_planning import (
     DEFAULT_CONTENT_PROFILE_ID,
@@ -105,6 +107,19 @@ STAGE_PARKING_STATUS: dict[PipelineStage, EpisodeStatus] = {
     PipelineStage.UPLOAD: EpisodeStatus.UPLOADED,
 }
 
+#: 工程ごとに関わる有料 provider（ADR-0013 の予約台帳）。render は外部呼び出しが無い
+#: （docs/architecture/components.md の worker 表のとおり）。単一宣言元（ADR-0032）。
+#: ``domain/`` はここから import して使う: provider の名前を ``domain/`` に直接書くと
+#: ``tests/architecture/test_layering.py::test_domain_does_not_name_media_providers_or_tools``
+#: に触れる（ADR-0017、domain は provider の名前を知らない）。
+STAGE_PROVIDERS: dict[PipelineStage, tuple[ProviderCall, ...]] = {
+    PipelineStage.SCRIPT: (ProviderCall.CODEX_SCRIPT,),
+    PipelineStage.STORYBOARD: (ProviderCall.CODEX_STORYBOARD,),
+    PipelineStage.PRODUCTION: (ProviderCall.FAL_IMAGE, ProviderCall.FAL_VIDEO),
+    PipelineStage.RENDER: (),
+    PipelineStage.UPLOAD: (ProviderCall.YOUTUBE_UPLOAD,),
+}
+
 
 class DailyOutcome(StrEnum):
     STARTED = "started"
@@ -169,6 +184,9 @@ class ProductionParameters:
     image_max_rounds: int = DEFAULT_IMAGE_MAX_ROUNDS
     video_max_rounds: int = DEFAULT_VIDEO_MAX_ROUNDS
     await_reexecutions: int = DEFAULT_AWAIT_REEXECUTIONS
+    #: 1実行で代替映像案を頼むシーンあたりの上限（ADR-0035 (8)）。設定値から Schedule 入力へ。
+    #: 既定値つき: 旧 Schedule の action input・旧履歴はこの項目なしで decode できる
+    max_scene_alternatives_per_scene: int = MAX_SCENE_ALTERNATIVES_PER_SCENE
 
 
 def _script_workflow() -> tuple[str, str]:
@@ -222,6 +240,9 @@ class DailyEpisodeResult:
 class EpisodePipelineInput:
     episode_id: str
     options: PipelineOptions = field(default_factory=PipelineOptions)
+    #: 途中入場の開始工程（ADR-0032、統一再開エントリポイント）。既定は最初から（SCRIPT）。
+    #: これより前の工程は子 workflow を起動せず、既に完了しているものとして扱う（再課金しない）。
+    start_stage: str = PipelineStage.SCRIPT.value
 
 
 @dataclass

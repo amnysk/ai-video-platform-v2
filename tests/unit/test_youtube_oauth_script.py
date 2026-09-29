@@ -2,29 +2,15 @@
 
 from __future__ import annotations
 
-import importlib.util
 import pathlib
-import sys
-from types import ModuleType
+
+from tests.support.script_loader import load_script_module
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "scripts/youtube-oauth.py"
 
-
-def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("youtube_oauth_script", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    # scripts/ に .pyc を残さない（architecture test が scripts/ を全走査する）
-    previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.dont_write_bytecode = previous
-    return module
-
-
-oauth = _load()
+# scripts/ に .pyc を残さない。ロード中のガードだけでなく、ロード後に
+# sys.modules へ残さないことも重要（tests/support/script_loader.py 参照）。
+oauth = load_script_module("youtube_oauth_script", SCRIPT)
 UPLOAD = "https://www.googleapis.com/auth/youtube.upload"
 READONLY = "https://www.googleapis.com/auth/youtube.readonly"
 ANALYTICS = "https://www.googleapis.com/auth/yt-analytics.readonly"

@@ -38,9 +38,11 @@ declare -A QUEUES=(
   [render-worker]="render"   # compose healthcheck と同じ（media queue は長時間 activity 中に poll が途切れる）
   [upload-worker]="upload"
   [pipeline-worker]="pipeline"
+  [scene-alternative-worker]="production-scene-alternative"
 )
 ALL_WORKERS=(dummy-worker script-worker storyboard-worker production-worker production-image-worker
-  production-voice-worker production-video-worker render-worker upload-worker pipeline-worker)
+  production-voice-worker production-video-worker render-worker upload-worker pipeline-worker
+  scene-alternative-worker)
 
 FAILS=0
 ok() { echo "OK: $*"; }

@@ -31,6 +31,7 @@ from temporalio.worker import Worker
 from contracts.production_activities import (
     IMAGE_AWAIT,
     IMAGE_SUBMIT,
+    PLAN_SCENE_ALTERNATIVE,
     PRODUCTION_ADMIT,
     PRODUCTION_ASSEMBLE_MANIFEST,
     PRODUCTION_MARK_READY,
@@ -41,6 +42,7 @@ from contracts.production_activities import (
     VOICE_GENERATE,
     ImageAwaitRequest,
     ImageSubmitRequest,
+    PlanSceneAlternativeRequest,
     ProductionAdmitRequest,
     ProductionAdmitResult,
     ProductionAssembleRequest,
@@ -63,9 +65,12 @@ from contracts.states import EpisodeStatus, FailureClass
 from domain.errors import (
     MediaValidationError,
     ProductionInputMissingError,
+    ProviderInputFetchError,
+    ProviderInputFetchRetryExhaustedError,
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
+    SceneAlternativePlannerUnavailableError,
 )
 from workers.production.run_inspector import TemporalWorkflowRunInspector
 from workers.production.workflows import (
@@ -120,6 +125,12 @@ class Mocks:
     voice_errors: dict[str, list[ApplicationError]] = field(default_factory=dict)
     #: scene -> await を cancel まで終わらせない
     hang_image_await: set[str] = field(default_factory=set)
+    #: ADR-0035: 代替案の計画を頼まれたシーン（mock は planner 不在の worker と同じ応答）
+    alternative_plans: list[str] = field(default_factory=list)
+    #: (scene, round) -> 動画 submit が投げる例外
+    video_submit_behavior: dict[tuple[str, int], Any] = field(default_factory=dict)
+    #: scene -> 動画 await が順に投げる例外
+    video_await_errors: dict[str, list[ApplicationError]] = field(default_factory=dict)
     delay_seconds: float = 0.0
     inflight: dict[str, int] = field(default_factory=lambda: {"image": 0, "video": 0, "voice": 0})
     max_inflight: dict[str, int] = field(
@@ -225,6 +236,9 @@ class Mocks:
         @activity.defn(name=VIDEO_SUBMIT)
         async def submit(req: VideoSubmitRequest) -> SubmitResult:
             self.video_submits.append((req.scene_id, req.round, req.source_image_artifact_id))
+            behavior = self.video_submit_behavior.get((req.scene_id, req.round))
+            if isinstance(behavior, BaseException):
+                raise behavior
             self._enter("video")
             await asyncio.sleep(self.delay_seconds)
             return SubmitResult(reservation_id=f"v-{req.scene_id}-{req.round}")
@@ -233,6 +247,9 @@ class Mocks:
         async def wait(req: VideoAwaitRequest) -> SceneArtifactResult:
             self.video_awaits.append(req.scene_id)
             try:
+                errors = self.video_await_errors.get(req.scene_id)
+                if errors:
+                    raise errors.pop(0)
                 await asyncio.sleep(self.delay_seconds)
                 return _artifact(f"vid-{req.scene_id}")
             finally:
@@ -256,10 +273,20 @@ class Mocks:
 
         return [generate]
 
+    def alternative_activities(self) -> list[Callable[..., Any]]:
+        @activity.defn(name=PLAN_SCENE_ALTERNATIVE)
+        async def plan(req: PlanSceneAlternativeRequest) -> Any:
+            self.alternative_plans.append(req.scene_id)
+            raise _error(SceneAlternativePlannerUnavailableError, "no planner", non_retryable=True)
+
+        return [plan]
+
 
 @pytest_asyncio.fixture
 async def env() -> Client:
-    return await Client.connect(TEMPORAL_ADDRESS or "", namespace="default")
+    from tests.support.temporal import connect_test_client
+
+    return await connect_test_client(TEMPORAL_ADDRESS)
 
 
 async def _run(
@@ -275,6 +302,7 @@ async def _run(
         "image": f"production-image-test-{suffix}",
         "video": f"production-video-test-{suffix}",
         "voice": f"production-voice-test-{suffix}",
+        "alternative": f"production-alternative-test-{suffix}",
     }
     workers = [
         Worker(
@@ -286,6 +314,7 @@ async def _run(
         Worker(client, task_queue=queues["image"], activities=mocks.image_activities()),
         Worker(client, task_queue=queues["video"], activities=mocks.video_activities()),
         Worker(client, task_queue=queues["voice"], activities=mocks.voice_activities()),
+        Worker(client, task_queue=queues["alternative"], activities=mocks.alternative_activities()),
     ]
     for w in workers:
         await w.__aenter__()
@@ -297,6 +326,7 @@ async def _run(
                 image_task_queue=queues["image"],
                 video_task_queue=queues["video"],
                 voice_task_queue=queues["voice"],
+                scene_alternative_task_queue=queues["alternative"],
                 **overrides,
             ),
             id=f"episode-ep-1-production-{suffix}-{next(_ids)}",
@@ -376,15 +406,81 @@ async def test_retryable_failure_exhausts_image_rounds_then_records_failure(env)
 
 
 async def test_needs_input_stops_without_further_rounds(env) -> None:
+    """内容拒否（needs_input）は同じ入力で次のラウンドへ進まない。
+
+    ADR-0035 以降、``ProviderRejectedError`` はまず代替案の計画を1回だけ頼む。planner が
+    代替案を出せない（ここでは planner の居ない worker と同じ応答）なら、追加の submit をせず
+    blocked で止まる。
+    """
     mocks = Mocks(image_submit_behavior={("sb3", 1): _error(ProviderRejectedError, "policy")})
     result = await _run(env, mocks)
 
+    assert mocks.alternative_plans == ["sb3"]
     assert [r for s, r in mocks.image_submits if s == "sb3"] == [1]
     assert "assemble" not in mocks.calls and "mark_ready" not in mocks.calls
     (failure,) = mocks.failures
     assert failure.failure_class == FailureClass.NEEDS_INPUT.value
     assert failure.retry_exhausted is False
     assert result.status == "blocked"
+
+
+# ------------------------------------------- ADR-0035 (8) / INV-35: 入力の取得失敗の1回再試行
+
+
+def _fetch_error() -> ApplicationError:
+    return _error(ProviderInputFetchError, "file_download_error", non_retryable=True)
+
+
+async def test_input_fetch_failure_retries_once_with_a_new_round_and_succeeds(env) -> None:
+    """取得失敗は次のラウンド（台帳の新しい予約 = 入力を上げ直した新しい URL）へ1回進む。
+
+    planner は呼ばない（内容の問題ではない）。他シーンは触らない。
+    """
+    mocks = Mocks(video_await_errors={"sb2": [_fetch_error()]})
+    result = await _run(env, mocks)
+
+    assert result.status == EpisodeStatus.ASSETS_READY.value
+    assert [r for s, r, _ in mocks.video_submits if s == "sb2"] == [1, 2]
+    assert all(r == 1 for s, r, _ in mocks.video_submits if s != "sb2")
+    assert mocks.alternative_plans == []
+
+
+async def test_second_input_fetch_failure_in_the_run_stops_the_episode(env) -> None:
+    """同じ実行の中で2回目の取得失敗なら止まる（3回目は送らない。台帳側も同じ上限を持つ）。"""
+    mocks = Mocks(video_await_errors={"sb2": [_fetch_error(), _fetch_error()]})
+    result = await _run(env, mocks)
+
+    assert result.status == "blocked"
+    assert [r for s, r, _ in mocks.video_submits if s == "sb2"] == [1, 2]
+    assert mocks.alternative_plans == []
+    (failure,) = mocks.failures
+    assert failure.failure_class == FailureClass.NEEDS_INPUT.value
+    assert "ProviderInputFetchError" in failure.error_summary or "file_download_error" in (
+        failure.error_summary
+    )
+
+
+async def test_input_fetch_retry_is_granted_even_with_a_single_round_budget(env) -> None:
+    """再試行1回は通常のラウンド予算とは別枠（予算1でも取得失敗なら1回だけ取り直す）。"""
+    mocks = Mocks(video_await_errors={"sb2": [_fetch_error()]})
+    result = await _run(env, mocks, video_max_rounds=1)
+
+    assert result.status == EpisodeStatus.ASSETS_READY.value
+    assert [r for s, r, _ in mocks.video_submits if s == "sb2"] == [1, 2]
+
+
+async def test_ledger_exhaustion_on_resume_stops_without_another_submit(env) -> None:
+    """resume で台帳が「再試行を使い切った」と止めたら、その型で止まる（次へ進まない）。"""
+    mocks = Mocks(
+        video_submit_behavior={
+            ("sb2", 1): _error(ProviderInputFetchRetryExhaustedError, "used up", non_retryable=True)
+        }
+    )
+    result = await _run(env, mocks)
+
+    assert result.status == "blocked"
+    assert [r for s, r, _ in mocks.video_submits if s == "sb2"] == [1]
+    assert mocks.alternative_plans == []
 
 
 async def test_await_retry_does_not_submit_again(env) -> None:

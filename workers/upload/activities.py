@@ -108,6 +108,7 @@ from domain.upload.ports import (
     VideoUploader,
 )
 from domain.upload.processing import ProcessingOutcome, classify_processing
+from infrastructure.artifact.verify import find_and_verify_current
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -949,10 +950,15 @@ class UploadActivities:
         called: bool,
     ) -> UploadFinalVideoResult:
         async with self._session_factory() as session:
-            existing = await ArtifactMetadataRepository(session).find_current(
-                episode_id, ArtifactType.UPLOAD_RECEIPT, upload_key
+            # 再利用の唯一のゲート（ADR-0033）: 欠落・破損・版不一致は「現行が無い」に倒す
+            existing = await find_and_verify_current(
+                repo=ArtifactMetadataRepository(session),
+                store=self._store,
+                episode_id=episode_id,
+                artifact_type=ArtifactType.UPLOAD_RECEIPT,
+                input_hash=upload_key,
             )
-        meta = await self._reusable_receipt(existing, outcome.video_id)
+        meta = await self._matching_receipt(existing, outcome.video_id)
         wrote = False
         if meta is None:
             meta = await self._write_receipt(
@@ -976,9 +982,13 @@ class UploadActivities:
             job_id=job_id,
         )
 
-    async def _reusable_receipt(
+    async def _matching_receipt(
         self, existing: ArtifactMetadata | None, video_id: str
     ) -> ArtifactMetadata | None:
+        """``existing`` は ``find_and_verify_current`` を通過済み（完全性は検証済み、ADR-0033）。
+
+        ここは業務判定だけ: 同じ ``upload_key`` の受領が指す video_id が要求と一致するか。
+        """
         if existing is None:
             return None
         try:

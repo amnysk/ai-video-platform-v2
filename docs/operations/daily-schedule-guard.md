@@ -66,7 +66,9 @@ Schedule の再登録（`--apply`）は冪等で、現在の pause を保つ。
 
 ## 5. 異常の読み方
 
-`operational_anomalies`（1日1行）と ERROR ログ `OPERATIONAL_ANOMALY anomaly=<KIND> date=...`。
+`operational_anomalies` — Schedule 系（下表の上5件）は1日1行、Episode 系（下表の残り4件、
+ADR-0031）は **Episode ごとに1日1行**（`episode_id` 列で区別。部分インデックス2本で強制）。
+ログは ERROR `OPERATIONAL_ANOMALY anomaly=<KIND> date=...`。
 
 | kind | 意味 | 対処 |
 |---|---|---|
@@ -75,14 +77,25 @@ Schedule の再登録（`--apply`）は冪等で、現在の pause を保つ。
 | `SCHEDULE_MAINTENANCE_OVERRUN` | maintenance pause が期限を過ぎ、ガードが解除した | deploy が `end` を呼べなかった。deploy 手順を確認 |
 | `SCHEDULE_MISSING` | Schedule が存在しない | `ensure-daily-schedule.py --apply` |
 | `SCHEDULE_NEXT_RUN_INVALID` | 動いているが次回実行が無い・遠い | describe を確認（cron・タイムゾーン） |
+| `EPISODE_STAGE_STALLED`（ADR-0031） | Episode が `blocked` / `needs_work` のまま停滞猶予（既定 `stage_stall_grace_minutes`）を超えた | `detail.reason` / `detail.resumable` を見て、再開可能なら該当工程の POST で再開 |
+| `EPISODE_NOT_COMPLETED_BY_DEADLINE`（ADR-0031） | 作成から完成期限（既定 `completion_deadline_hours`）を超えても `render_ready` 以降に達していない | 停滞中の工程を確認（多くは `EPISODE_STAGE_STALLED` と併発する） |
+| `EPISODE_NOT_UPLOADED_BY_DEADLINE`（ADR-0031） | `render_ready`/`approved` 到達から投稿期限（既定 `upload_deadline_hours`）を超えても `uploaded` に届かない | `UPLOADS_PAUSED` なら意図した停止（このkindは記録されない）。そうでなければ upload worker を確認 |
+| `PIPELINE_OUTCOME_MISMATCH`（ADR-0031） | `EpisodePipelineWorkflow` が Temporal 上は `completed` なのに型付き結果が `outcome=stopped` で、他のどの検査にも映らない | `detail.stopped_stage` / `detail.reason` を見て該当工程を確認。他の episode 系 kind と重複しないよう二重報告は避ける設計 |
 
 ```sql
-select kind, anomaly_date, occurrences, first_detected_at, resolved_at, notified_at
+select kind, anomaly_date, episode_id, occurrences, first_detected_at, resolved_at, notified_at
 from operational_anomalies order by anomaly_date desc, kind;
 ```
 
+`stage_stall_grace_minutes` / `completion_deadline_hours` / `upload_deadline_hours` の既定値は
+`contracts/schedule_guard.py` の単一宣言元（`infrastructure/config.py` の Settings で上書き可能）。
+Shorts 等の尺に固有の値をここ以外に埋め込まない。
+
 通知は `AnomalyNotifier`（`infrastructure/observability/anomaly_notifier.py`）。既定はログのみ。
-Slack / メール等は同じ Protocol を実装して `workers/pipeline/activities.py` で差し替える。
+Slack / メール等は同じ Protocol を実装し、`workers/pipeline/activities.py` の
+`PipelineActivities.notifier_factory` を差し替える（この1箇所が唯一の宣言元）。
+`schedule-guard.py status --json` の `"notifier"` フィールドが `"log_only"` のままなら、
+ログ以外の通知経路が無いことを意味する（`"configured"` になれば差し替え済み）。
 
 ## 6. 制限
 
@@ -90,6 +103,8 @@ Slack / メール等は同じ Protocol を実装して `workers/pipeline/activit
   呼ぶと別系統の監視になる
 - watchdog が判定できる daily の cron は `M H * * *` の形だけ。それ以外は `unsupported_cron` で判定しない
 - 検査は毎時 :35（JST）。始まらなかった日の検知は最長で予定 + 猶予 + 1 時間
+- `EPISODE_STAGE_STALLED` 等の `resumable` は暫定判定（ADR-0031 §4）。ADR-0032（統一再開エントリポイント）の
+  dry-run 判定に置き換わるまでの間だけ、既存の admit 表に基づく簡易判定を使う
 
 ## `make deploy-workers` との配線
 
@@ -109,3 +124,19 @@ Schedule が**運用者の pause（印なし）**のときは deploy だけ実�
   - `with-maintenance-pause.sh` の往復（pause+印 → `maintenance_in_progress` → 終了で unpause）を本番 Schedule で確認
   - `avp-daily-watchdog` を登録・trigger → 9/20 分に `DAILY_AUTOMATION_NOT_STARTED` を記録（事故の検知そのもの）。
     9/20 は Episode を作らない判断なので、運用者が `resolved_at` を手で入れた（記録は残す）
+
+## 2026-09-21〜09-27 の事故（インシデント 8fb66fcb）と切り分け
+
+- 事故: 日次 Schedule は7日間とも正常に始まったが、個々の Episode が作成から約20分で `blocked`
+  に落ちたまま気づかれなかった（`operational_anomalies` にこの期間の Episode 系記録は無し）。
+- 原因の切り分け（2026-09-28、`docs/decisions/0031-daily-watchdog-progress-completion-upload.md`
+  §検証記録に詳細）: 本番（`claude/daily-hardening`）には ADR-0031（本ドキュメント §5 の
+  `EPISODE_STAGE_STALLED` 以下4種）が**デプロイされていなかった**。本番の watchdog は
+  「今日は始まったか」（§1 の起動判定）しか見ておらず、Episode 単位の進行・完成・投稿は
+  一切見ていなかった。ADR-0031 自体の検知ロジックに漏れは無いことを、実際の日付・
+  production 既定値で再現したテスト（`tests/unit/test_daily_watchdog.py::test_incident_8fb66fcb_*`）
+  で確認済み。
+- **導入手順（本節冒頭の §4）を実施し、`avp-daily-watchdog` が ADR-0031 込みでデプロイされて
+  初めて、この種の事故は初回 hourly 検査で検知できる。** デプロイしただけでは終わらない点にも
+  注意: 通知は既定でログのみ（§5末尾）なので、`schedule-guard.py status --json` を定期的に
+  見るか、ログ監視を別途設定しないと、検知はできても人には届かない。

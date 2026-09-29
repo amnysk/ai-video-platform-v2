@@ -160,6 +160,27 @@ class StoryboardVisualKind(StrEnum):
     SCREEN_RECORDING = "screen_recording"
 
 
+class VisualSubject(StrEnum):
+    """シーンが画面の主題として何を映すか（ADR-0035）。platform 所有の語彙。
+
+    Storyboard の時点で決める。``named_person`` は識別できる実在人物（歴史上の人物を含む）を
+    画面に入れることを表し、禁止ではないが顔を主題にしない構図でだけ描く（provider の肖像判定）。
+    ``figure_anonymous`` は名指ししない人物（小さく・背後・遠景）。
+    """
+
+    SITE = "site"
+    MAP = "map"
+    DOCUMENT = "document"
+    ARTIFACT = "artifact"
+    BUILDING = "building"
+    LANDSCAPE = "landscape"
+    CROWD_DISTANT = "crowd_distant"
+    FIGURE_ANONYMOUS = "figure_anonymous"
+    NAMED_PERSON = "named_person"
+    DIAGRAM = "diagram"
+    TEXT_CARD = "text_card"
+
+
 class StoryboardSourceScript(BaseModel):
     """storyboard の入力台本の固定（artifact_id / sha256 / schema_version）。"""
 
@@ -198,6 +219,8 @@ class StoryboardScene(BaseModel):
     framing: str | None = Field(default=None, max_length=120)
     camera_movement: str | None = Field(default=None, max_length=120)
     transition_in: str | None = Field(default=None, max_length=60)
+    #: ADR-0035。旧 storyboard には無い（``None``）。指紋では ``None`` を材料に含めない。
+    visual_subject: VisualSubject | None = None
 
 
 class StoryboardMetadata(BaseModel):
@@ -410,6 +433,82 @@ class ProductionManifest(FrozenModel):
         return self
 
 
+SCENE_VISUAL_OVERRIDE_MAX_RATIONALE_CHARS = 1000
+
+
+class SceneVisualOverrideArtifact(FrozenModel):
+    """provider に拒否されたシーンの代替映像案（ADR-0035）。
+
+    storyboard の世代は変えず、このシーンの映像の項目だけを差し替える（他シーンの同一性を
+    保つため）。時間割・台本との対応は差し替えない。``rationale`` は「なぜ史実を損なわず、
+    なぜ拒否理由に対処しているか」を人間が読むための説明。
+    """
+
+    episode_id: str = Field(min_length=1, max_length=64)
+    type: Literal[ArtifactType.SCENE_VISUAL_OVERRIDE]
+    schema_version: Literal["1.0"]
+    source_storyboard: SourceStoryboardRef
+    scene_id: str = Field(pattern=STORYBOARD_SCENE_ID_PATTERN)
+    #: このシーンの何回目の代替案か（1 始まり）
+    revision: int = Field(ge=1)
+    visual_kind: StoryboardVisualKind
+    visual_subject: VisualSubject
+    visual_description: str = Field(min_length=1, max_length=600)
+    framing: str | None = Field(default=None, max_length=120)
+    camera_movement: str | None = Field(default=None, max_length=120)
+    rationale: str = Field(min_length=1, max_length=SCENE_VISUAL_OVERRIDE_MAX_RATIONALE_CHARS)
+    #: この案が対処する ``provider_rejections`` の行
+    rejection_ids: list[str] = Field(min_length=1)
+    planner: GeneratorMetadata
+
+    @field_validator("rejection_ids")
+    @classmethod
+    def _canonical_rejection_ids(cls, value: list[str]) -> list[str]:
+        for item in value:
+            check_canonical_uuid(item)
+        return value
+
+
+def build_scene_visual_override_artifact(
+    *,
+    episode_id: str,
+    source_storyboard: Any,
+    scene_id: str,
+    revision: int,
+    visual_kind: Any,
+    visual_subject: Any,
+    visual_description: str,
+    framing: str | None,
+    camera_movement: str | None,
+    rationale: str,
+    rejection_ids: list[str],
+    planner: Any,
+) -> dict[str, Any]:
+    """生成側。build の時点で検証を通してから dict を返す。"""
+    return SceneVisualOverrideArtifact.model_validate(
+        {
+            "episode_id": episode_id,
+            "type": ArtifactType.SCENE_VISUAL_OVERRIDE.value,
+            "schema_version": "1.0",
+            "source_storyboard": source_storyboard,
+            "scene_id": scene_id,
+            "revision": revision,
+            "visual_kind": visual_kind,
+            "visual_subject": visual_subject,
+            "visual_description": visual_description,
+            "framing": framing,
+            "camera_movement": camera_movement,
+            "rationale": rationale,
+            "rejection_ids": rejection_ids,
+            "planner": planner,
+        }
+    ).model_dump(mode="json")
+
+
+def parse_scene_visual_override_artifact(payload: dict[str, Any]) -> SceneVisualOverrideArtifact:
+    return SceneVisualOverrideArtifact.model_validate(payload)
+
+
 def _build(model: type[BaseModel], artifact_type: ArtifactType, fields: dict[str, Any]) -> dict:
     artifact = model.model_validate(
         {
@@ -617,6 +716,7 @@ ARTIFACT_MODELS: dict[ArtifactType, type[BaseModel]] = {
     ArtifactType.PRODUCTION_MANIFEST: ProductionManifest,
     ArtifactType.FINAL_VIDEO: FinalVideoArtifact,
     ArtifactType.UPLOAD_RECEIPT: UploadReceiptArtifact,
+    ArtifactType.SCENE_VISUAL_OVERRIDE: SceneVisualOverrideArtifact,
 }
 
 
@@ -706,6 +806,7 @@ AnyArtifact = (
     | ProductionManifest
     | FinalVideoArtifact
     | UploadReceiptArtifact
+    | SceneVisualOverrideArtifact
 )
 
 

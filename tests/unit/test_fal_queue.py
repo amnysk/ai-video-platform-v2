@@ -251,6 +251,35 @@ async def test_result_failures_are_classified(response, error) -> None:
         await _client(lambda request: response).result(_submission())
 
 
+async def test_content_policy_rejection_keeps_the_full_reason_without_cutting_mid_word() -> None:
+    """ADR-0034: 2026-09-26/27 の事故では、旧 500 文字の素朴な str()+slice が構造化 body を
+    丸ごと文字列化してから切っていたため、拒否理由（``msg``）が単語の途中で切れて584文字で
+    読めなくなった。実際に fal が返した形（pydantic validation error のリスト）を使って、
+    ``msg`` と ``ctx.extra_info.reason`` が省略されずに残ることを検査する。
+    """
+    body = {
+        "detail": [
+            {
+                "loc": ["body", "image_url"],
+                "msg": (
+                    "The images or videos provided may contain likenesses of real people "
+                    "or other private information that cannot be processed."
+                ),
+                "type": "content_policy_violation",
+                "ctx": {"extra_info": {"reason": "partner_validation_failed"}},
+            }
+        ]
+    }
+    response = httpx.Response(422, json=body)
+    with pytest.raises(ProviderRejectedError) as excinfo:
+        await _client(lambda request: response).result(_submission())
+    message = str(excinfo.value)
+    assert "likenesses of real people" in message
+    assert "cannot be processed." in message  # 文末まで切れていない
+    assert "partner_validation_failed" in message
+    assert "body.image_url" in message
+
+
 async def test_download_streams_without_api_key_and_enforces_cap() -> None:
     seen: list[httpx.Request] = []
 
@@ -320,3 +349,114 @@ def test_api_read_timeout_is_configurable_and_short_by_default() -> None:
     assert client._api.timeout.read == 30  # noqa: SLF001
     custom = FalQueueClient(KEY, read_timeout_seconds=12)
     assert custom._api.timeout.read == 12 and custom._cdn.timeout.read == 12  # noqa: SLF001
+
+
+async def test_content_policy_rejection_is_structured_from_the_body() -> None:
+    """ADR-0035: 拒否の位置（loc）・理由（ctx.extra_info.reason）・種別を構造化して例外に載せる。
+
+    文字列からの推測（error_summary の解析）をしないための入口。
+    """
+    body = {
+        "detail": [
+            {
+                "loc": ["body", "image_url"],
+                "msg": "may contain likenesses of real people",
+                "type": "content_policy_violation",
+                "ctx": {"extra_info": {"reason": "partner_validation_failed"}},
+            }
+        ]
+    }
+    response = httpx.Response(422, json=body)
+    with pytest.raises(ProviderRejectedError) as excinfo:
+        await _client(lambda request: response).result(_submission())
+    rejection = excinfo.value.rejection
+    assert rejection is not None
+    assert rejection.locs == ("body.image_url",)
+    assert rejection.rejected_input.value == "image"
+    assert rejection.reason == "partner_validation_failed"
+    assert rejection.types == ("content_policy_violation",)
+    assert rejection.message == "may contain likenesses of real people"
+    assert rejection.http_status == 422
+
+
+async def test_submit_rejection_on_the_prompt_is_structured() -> None:
+    body = {
+        "detail": [
+            {"loc": ["body", "prompt"], "msg": "blocked", "type": "content_policy_violation"}
+        ]
+    }
+    with pytest.raises(ProviderRejectedError) as excinfo:
+        await _client(lambda request: httpx.Response(422, json=body)).submit("e/p", {"prompt": "x"})
+    assert excinfo.value.rejection is not None
+    assert excinfo.value.rejection.rejected_input.value == "prompt"
+
+
+async def test_file_download_error_raises_input_fetch_error_not_rejection() -> None:
+    """ADR-0035 追補: 422 file_download_error は「入力を取得できなかった」（fal: retryable=false）。
+
+    内容の拒否（``ProviderRejectedError``）にしない。submit 時の同期 422 でも同じ。
+    """
+    from domain.errors import ProviderInputFetchError
+
+    body = {
+        "detail": [
+            {
+                "loc": ["body", "image_url"],
+                "msg": "Failed to download the file.",
+                "type": "file_download_error",
+            }
+        ]
+    }
+    response = httpx.Response(422, json=body)
+    with pytest.raises(ProviderInputFetchError) as excinfo:
+        await _client(lambda request: response).result(_submission())
+    assert not isinstance(excinfo.value, ProviderRejectedError)
+    assert "file_download_error" in str(excinfo.value)
+
+
+# ------------------------------------------------ ADR-0035 (8): 拒否の分類（status だけで決めない）
+
+
+def _detail(type_: str | None, loc: tuple[str, ...] = ("body", "image_url")) -> dict:
+    item: dict = {"loc": list(loc), "msg": "m"}
+    if type_ is not None:
+        item["type"] = type_
+    return {"detail": [item]}
+
+
+@pytest.mark.parametrize(
+    ("body", "error", "category"),
+    [
+        (_detail("content_policy_violation"), "ProviderRejectedError", "content_policy"),
+        (_detail("file_download_error"), "ProviderInputFetchError", "input_unreachable"),
+        (_detail("image_too_small"), "ProviderRejectedError", "input_validation"),
+        (_detail(None), "ProviderRejectedError", "unknown"),
+        ({"error": "something odd"}, "ProviderRejectedError", "unknown"),
+    ],
+)
+async def test_result_422_is_classified_from_the_body_not_the_status(body, error, category) -> None:
+    """HTTP 422 という status だけで内容方針の拒否と判断しない。body の error type で分類する。
+
+    分類は復旧の分岐そのもの: content_policy だけが代替映像案、input_unreachable は
+    新しい URL で1回だけ再試行、input_validation / unknown は人の判断を待つ。
+    """
+    response = httpx.Response(422, json=body)
+    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - 型名で下で検査する
+        await _client(lambda request: response).result(_submission())
+    assert type(excinfo.value).__name__ == error
+    rejection = excinfo.value.rejection  # type: ignore[attr-defined]
+    assert rejection is not None
+    assert rejection.category.value == category
+
+
+async def test_submit_time_file_download_error_carries_a_structured_rejection() -> None:
+    from domain.errors import ProviderInputFetchError
+
+    with pytest.raises(ProviderInputFetchError) as excinfo:
+        await _client(
+            lambda request: httpx.Response(422, json=_detail("file_download_error"))
+        ).submit("e/p", {"prompt": "x"})
+    rejection = excinfo.value.rejection
+    assert rejection is not None
+    assert rejection.category.value == "input_unreachable"
+    assert rejection.locs == ("body.image_url",)
