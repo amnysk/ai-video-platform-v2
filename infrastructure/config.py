@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -28,6 +30,12 @@ from contracts.render import (
     DEFAULT_RENDER_MIN_FREE_BYTES,
     DEFAULT_RENDER_PROFILE_ID,
     DEFAULT_RENDER_TIMEOUT_SECONDS,
+)
+from contracts.research import (
+    DEFAULT_RESEARCH_PROVIDER,
+    EVIDENCE_REVERIFY_DAYS,
+    TREND_FRESH_HOURS,
+    ResearchProviderMode,
 )
 from contracts.schedule_guard import (
     DEFAULT_BLOCKED_GRACE_MINUTES,
@@ -176,6 +184,18 @@ class Settings(BaseSettings):
     #: True なら planning worker が YouTube Analytics を live で取る（YOUTUBE_* の OAuth を使う）。
     #: False なら保存済み snapshot があればそれ（stale）、無ければ Analytics 無しで企画する
     youtube_analytics_enabled: bool = False
+
+    # --- Research（ADR-0037） ---
+    #: ``fake``（固定コーパス。実ネットワークに出ない）か ``none``（既定。依頼は ``blocked``）。
+    #: 実 Provider は registry に無い（選定は所有者の判断と ADR を待つ）
+    research_provider: ResearchProviderMode = DEFAULT_RESEARCH_PROVIDER
+    #: 鮮度キャッシュの窓（ADR-0037 §5）。既定は ``contracts/research.py`` が唯一の宣言元
+    trend_fresh_hours: int = TREND_FRESH_HOURS
+    evidence_reverify_days: int = EVIDENCE_REVERIFY_DAYS
+    #: 依頼が上限を指定しなかったときに凍結する金額・quota の上限。未設定なら実 Provider の依頼は
+    #: ``blocked``（ADR-0037 §6）。Fake / none には影響しない
+    research_max_cost_usd: Decimal | None = None
+    research_max_youtube_units: int | None = None
 
     @field_validator("topic_strategy_profile_id")
     @classmethod

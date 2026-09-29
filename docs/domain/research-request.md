@@ -76,3 +76,35 @@ Episode の状態機械（INV-8）とは別の表である。表に無い遷移�
 変更後の読み手と書き手は `contracts/research.py`（定義）、`domain/research/*`（読み手）、
 `infrastructure/db/models.py` と migration 0015（DB の制約）、`infrastructure/db/research_repositories.py`
 （書き手）である。本番のコードに読み手は無い（`tests/architecture/test_research_isolation.py`）。
+
+## Gateway・実行器（B2、ADR-0037 §5 / §6 / §8）
+
+| モジュール | 役割 |
+|---|---|
+| `infrastructure/research/gateway.py` | `submit`（冪等・鮮度キャッシュの検証つき再利用・予算の門）/ `resume` / `get` |
+| `infrastructure/research/executor.py` | `execute`（門 → 検索 → 取得 → Handler の合成 → 成果物の書き込み・読み戻し・記録）/ `record_failure` |
+| `domain/research/admission.py` | 予算の門の唯一の判定（`lacks_budget` / `admission_block`） |
+| `domain/research/handlers.py` | 種別ごとの Handler の境界と、計画の上限の切り方（`plan_within_ceiling` / `dedupe_fetch_targets`） |
+
+`blocked_reason.code` と `result_summary.stop_code` の値は `contracts/research.py::ResearchStopCode` だけで
+定義する。
+
+### 読み手・書き手（AGENTS.md §8 の grep 記録、B2）
+
+`grep -rn "<key>" apps/ workers/ domain/ infrastructure/ contracts/ docs/` を B1 の commit（e0566c9）の上で、
+変更の前に実行した結果:
+
+| キー | 件数 | 分類 |
+|---|---|---|
+| `research_provider` / `trend_fresh_hours` / `evidence_reverify_days` | 0 / 0 / 0 | 新規（設定。`infrastructure/config.py` が唯一の宣言元） |
+| `research_max_cost_usd` / `research_max_youtube_units` | 0 / 0 | 新規（設定） |
+| `RESEARCH_PROVIDER` | 1 | 無関係（`infrastructure/research/fake_corpus.py` の docstring が Fake 実行の設定値として言及するだけ。読み手でも書き手でもない） |
+| `TREND_FRESH_HOURS` / `EVIDENCE_REVERIFY_DAYS` | 2 / 2 | 書き手（`contracts/research.py` の定義と `__all__`）。B2 で設定の既定値として読み手が 1 つずつ増える（`infrastructure/config.py`） |
+| `ResearchProviderMode` / `ResearchStopCode` | 0 / 0 | 新規（`contracts/research.py` が唯一の定義） |
+| `budget_not_set` / `provider_not_configured` / `lacks_budget` | 0 / 0 / 0 | 新規（旧ブランチの `BLOCKED_BUDGET_NOT_SET` / `lacks_budget` は移植せず、`ResearchStopCode` と `domain/research/admission.py` に置き直した） |
+| `research_raw_object_key` | 0 | 新規（`domain/research/keys.py`） |
+
+変更後の読み手は `infrastructure/research/{gateway,executor,registry,raw_store}.py`、書き手（定義）は
+`contracts/research.py` と `infrastructure/config.py` と `domain/research/*`。本番のコードに読み手は無い
+（`tests/architecture/test_research_isolation.py`）。`.env.example` は変えていない（設定の既定値で
+`none` = fail-closed になり、既存の設定テストも `.env.example` の項目を要求しない）。

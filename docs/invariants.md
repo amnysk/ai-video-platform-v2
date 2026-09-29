@@ -326,6 +326,8 @@ provider がこちらの入力（URL のファイル）を取得できなかっ�
 / `::test_a_racing_writer_does_not_push_the_count_past_the_ceiling`
 / `tests/contract/test_migration_0015_research.py::test_the_database_rejects_a_second_row_with_the_same_call_seq`
 / `tests/contract/test_migration_0015_research.py::test_the_database_rejects_invalid_ledger_rows`
+/ `tests/unit/test_research_executor.py::test_reaching_the_ledger_ceiling_stops_the_calls_and_finishes_partial`
+/ `tests/unit/test_research_executor.py::test_an_ambiguous_call_is_not_resent_and_blocks_the_request`
 （本物の並行トランザクションでの検査は未移植。PostgreSQL の integration テストは Worker の段で足す）
 
 ### INV-37 Research は本番の表と課金コードに触れず、Episode 本番工程は Research を待たない
@@ -337,4 +339,5 @@ import しない。Research の結果が `completed` でなければ、呼び出
 **機械検査**: `tests/architecture/test_research_isolation.py`
 / `tests/contract/test_migration_0015_research.py::test_upgrade_adds_only_research_tables_and_leaves_production_tables_alone`
 / `tests/contract/test_migration_0015_research.py::test_research_tables_only_reference_research_tables`
+/ `tests/architecture/test_research_isolation.py::test_research_execution_does_not_wire_a_real_provider`
 （企画・台本への opt-in 接続が既定 OFF で出力を変えないことの検査は、接続を入れる段（ADR-0037 §7）で足す）

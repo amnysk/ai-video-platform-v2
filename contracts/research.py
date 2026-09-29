@@ -5,7 +5,8 @@
 Research は本番の Episode 工程とは別の永続化を持つ（ADR-0037。本番の ``JobType`` /
 ``ArtifactType`` / ``ProviderCall``（``contracts/states.py``）には値を足さない）。ここに置くもの:
 
-- 語彙: 依頼の種別・状態、外部呼び出しの種別（台帳の枠）と状態、research の成果物の型
+- 語彙: 依頼の種別・状態、外部呼び出しの種別（台帳の枠）と状態、research の成果物の型、
+  止めた理由のコード（``ResearchStopCode``）、Provider の設定値（``ResearchProviderMode``）
 - 版・既定値（鮮度・検索/取得の上限と天井）
 - 依頼 ``ResearchRequestSpec``: **種別（kind）で判別する union**。Trend にしか無い項目と
   Evidence にしか無い項目を型で分け、``extra="forbid"`` で越境を拒否する
@@ -23,7 +24,7 @@ import unicodedata
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import (
     AwareDatetime,
@@ -98,6 +99,44 @@ class ResearchArtifactType(StrEnum):
     RESEARCH_EVIDENCE = "research_evidence"
     # 台本の主張を Evidence と照合した結果（ADR-0038 で使う。Episode の Artifact ではない）
     RESEARCH_SCRIPT_VERIFICATION = "research_script_verification"
+
+
+class ResearchStopCode(StrEnum):
+    """調査を止めた・縮めた理由のコード（ADR-0037 §6 / §8）。**唯一の定義**。
+
+    ``blocked`` の ``blocked_reason.code`` と、``ResearchResult.stop_code``
+    （``partial`` / ``failed`` の理由）に入る。人と API が読む値で、DB の CHECK には載せない。
+    """
+
+    #: Provider が ``none`` / 未設定。外部を呼ばずに止める
+    PROVIDER_NOT_CONFIGURED = "provider_not_configured"
+    #: 実 Provider なのに ``max_cost_usd`` / ``max_youtube_units`` のどちらかが未設定
+    BUDGET_NOT_SET = "budget_not_set"
+    #: その種別（Trend / Evidence）の Handler が登録されていない
+    HANDLER_NOT_AVAILABLE = "handler_not_available"
+    #: 呼び出し台帳の件数・金額・quota の上限に達した（INV-36）
+    CALL_BUDGET_EXHAUSTED = "call_budget_exhausted"
+    DEADLINE_EXCEEDED = "deadline_exceeded"
+    RATE_LIMITED = "rate_limited"
+    QUOTA_EXHAUSTED = "quota_exhausted"
+    #: 認証・認可の拒否（人手でしか直らない）
+    PROVIDER_AUTH = "provider_auth"
+    #: dispatch 済みで結果の無い呼び出しがある。再送しない・解放しない（人手照合）
+    AMBIGUOUS_CALL = "ambiguous_call"
+    #: どの検索も使える結果を返さなかった（恒久的な失敗）
+    NO_USABLE_RESULTS = "no_usable_results"
+    #: Activity の retry を使い切った・想定外の失敗（Worker が記録する）
+    EXECUTION_FAILED = "execution_failed"
+
+
+# ------------------------------------------------------------------ Provider の設定値
+
+#: ``RESEARCH_PROVIDER`` の値。registry が組めるのはこの 2 つだけ
+#: （実 Provider は所有者の判断と ADR を待つ）。
+ResearchProviderMode = Literal["fake", "none"]
+RESEARCH_PROVIDER_MODES: tuple[str, ...] = get_args(ResearchProviderMode)
+#: 既定は ``none``（依頼は ``blocked``。fail-closed）
+DEFAULT_RESEARCH_PROVIDER: ResearchProviderMode = "none"
 
 
 # ------------------------------------------------------------------ 版（request_hash に入る）
@@ -463,6 +502,8 @@ class ResearchResult(FrozenModel):
     coverage: ResearchCoverage
     warnings: Annotated[tuple[str, ...], Field(max_length=50)] = ()
     usage: ResearchUsage = Field(default_factory=ResearchUsage)
+    #: 止めた・縮めた理由（``completed`` なら ``None``）。ADR-0037 §8
+    stop_code: ResearchStopCode | None = None
 
     @field_validator("request_id")
     @classmethod
@@ -492,8 +533,10 @@ __all__ = [
     "DEFAULT_MAX_FETCHES",
     "DEFAULT_MAX_FOLLOWUP_ROUNDS",
     "DEFAULT_MAX_SEARCHES",
+    "DEFAULT_RESEARCH_PROVIDER",
     "EVIDENCE_REVERIFY_DAYS",
     "PROVIDER_CONFIG_VERSION",
+    "RESEARCH_PROVIDER_MODES",
     "RESEARCH_POLICY_VERSION",
     "RESEARCH_PROMPT_VERSION",
     "RESEARCH_SCHEMA_VERSION",
@@ -511,10 +554,12 @@ __all__ = [
     "ResearchCoverage",
     "ResearchKind",
     "ResearchLimits",
+    "ResearchProviderMode",
     "ResearchRequestBase",
     "ResearchRequestSpec",
     "ResearchResult",
     "ResearchStatus",
+    "ResearchStopCode",
     "ResearchSubmit",
     "ResearchUsage",
     "TimeWindow",

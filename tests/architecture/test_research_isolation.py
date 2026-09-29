@@ -212,3 +212,45 @@ def test_the_episode_production_path_does_not_import_research() -> None:
                 for name in sorted(n for n in names if n.startswith("Research")):
                     violations.append(f"{path.relative_to(REPO)}: imports {name}")
     assert not violations, "INV-37:\n" + "\n".join(violations)
+
+
+#: Gateway・実行器（B2）。検査対象が空で自明に通るのを防ぐ。
+EXECUTION_MODULES: tuple[str, ...] = (
+    "domain/research/admission.py",
+    "domain/research/handlers.py",
+    "infrastructure/research/gateway.py",
+    "infrastructure/research/executor.py",
+    "infrastructure/research/registry.py",
+    "infrastructure/research/raw_store.py",
+)
+#: 実 Provider（実ネットワークに出る Adapter）。registry / Gateway / 実行器は組まない・import しない
+#: （実 Provider の配線は所有者の判断と ADR を待つ。ADR-0037 §6）。
+REAL_PROVIDER_MODULES: tuple[str, ...] = (
+    "infrastructure.research.http_fetcher",
+    "infrastructure.research.url_guard",
+    "infrastructure.youtube.search",
+)
+REAL_PROVIDER_NAMES: frozenset[str] = frozenset(
+    {"HttpContentFetcher", "UrlGuard", "YouTubeSearchProvider"}
+)
+
+
+def test_the_research_execution_modules_exist() -> None:
+    for rel in EXECUTION_MODULES:
+        assert (REPO / rel).is_file(), rel
+
+
+def test_research_execution_does_not_wire_a_real_provider() -> None:
+    """registry が知っているのは ``fake`` と ``none`` だけ。実行器は Port（注入）だけを呼ぶ。"""
+    violations: list[str] = []
+    for rel in EXECUTION_MODULES:
+        path = REPO / rel
+        for module, names in _imports(path):
+            if any(_under(module, m) for m in REAL_PROVIDER_MODULES):
+                violations.append(f"{rel}: imports {module}")
+            for name in sorted(names & REAL_PROVIDER_NAMES):
+                violations.append(f"{rel}: imports {name}")
+        for value in _non_docstring_strings(path):
+            if any(name in value for name in REAL_PROVIDER_NAMES):
+                violations.append(f"{rel}: names {value[:80]!r}")
+    assert not violations, "ADR-0037 §6:\n" + "\n".join(violations)

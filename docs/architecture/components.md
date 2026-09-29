@@ -64,6 +64,10 @@
 |---|---|
 | `db/` | SQLAlchemy モデル、マイグレーション（Alembic）、リポジトリ実装 |
 | `db/research_repositories.py` | Research の依頼・外部呼び出し台帳・成果物（`research_*` の表）。本番の表・`repositories.py`・課金コードに触れない（ADR-0037 / INV-37。設計: [research-request.md](../domain/research-request.md)） |
+| `research/gateway.py` | Research の受け付け（冪等）、鮮度キャッシュ（再利用前に成果物の本体を読み戻して sha256 を照合）、予算の門（Provider 未設定・実 Provider の上限未設定は呼ぶ前に `blocked`）、`blocked` の再開（ADR-0037 §5 / §6 / §8.1） |
+| `research/executor.py` | Research の実行器（Temporal 非依存）。外部呼び出しは `reserve → dispatch → spent` で `research_calls` を通し、上限で止めて `partial`、一時障害は retryable、成否不明は送り直さない。成果物は書く → 読み戻す → 記録（ADR-0037 §8.2 / INV-36） |
+| `research/registry.py` | `RESEARCH_PROVIDER`（`fake` / `none`。既定 `none`）から Provider・Handler・見積もりを組む。実 Provider は組まない（ADR-0037 §6） |
+| `research/raw_store.py` | 外部呼び出しの生データ（`research/{request_id}/raw/`）。再実行が同じ呼び出しを送り直さないための証拠 |
 | `storage/` | MinIO クライアント、Artifactの put/get、キー規約 |
 | `temporal/` | Temporal への接続（`connect.py`）、Daily Schedule の定義（`schedules.py`）、worker の health（`poller_check.py`）、実行の点検（`run_inspector.py`）。workflow 名と task queue 名は `contracts/`（`pipeline.py` / `states.py` / `topic_planning.py`） |
 | `providers/` | fal.ai / YouTube / LLM の adapter。**必ずProtocolの背後に置く** |
