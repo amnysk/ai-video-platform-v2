@@ -373,7 +373,7 @@ def test_0014_legacy_file_download_error_is_not_backfilled_as_a_rejection() -> N
         "ProviderRejectedError: fal job failed: HTTP 422 types=['file_download_error']: "
         "[{'loc': ['body', 'image_url'], 'msg': 'Failed to download the file. Please check if "
         "the URL is accessible and try again.', 'type': 'file_download_error', "
-        "'url': 'https://docs.fal.ai/errors#file_download_error', "
-        "'input': 'https://v3b.fal.media/files/b/x/y.png'}]"
+        "'url': 'https://provider-docs.example/errors#file_download_error', "
+        "'input': 'https://provider-cdn.example/files/b/x/y.png'}]"
     )
     assert migration.classify_legacy_rejection(summary) is None

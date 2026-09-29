@@ -178,7 +178,7 @@ class ProviderRejectedError(NeedsInputError):
 class ProviderInputFetchError(NeedsInputError):
     """provider が、こちらの渡した入力（URL のファイル）を取得できなかった（ADR-0035 追補）。
 
-    fal の 422 ``file_download_error``（docs: retryable=false）。入力の**内容**を判定した拒否
+    例: 入力 URL の取得失敗（provider の docs では retryable=false）。入力の**内容**を判定した拒否
     ではないので ``ProviderRejectedError`` にしない: 画像の再送禁止（INV-32）・代替案の計画・
     ``input_rejected_by_provider`` の対象外。同じ実行の中では再送しない（needs_input）。人が
     resume すれば新しいラウンドとして取り直せる（画像は prepare で上げ直される）。

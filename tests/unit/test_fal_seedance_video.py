@@ -225,8 +225,8 @@ FILE_DOWNLOAD_ERROR_BODY = {
                 "Failed to download the file. Please check if the URL is accessible and try again."
             ),
             "type": "file_download_error",
-            "url": "https://docs.fal.ai/errors#file_download_error",
-            "input": "https://v3b.fal.media/files/b/x/y.png",
+            "url": "https://provider-docs.example/errors#file_download_error",
+            "input": "https://provider-cdn.example/files/b/x/y.png",
         }
     ]
 }
