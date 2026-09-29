@@ -122,3 +122,25 @@ fal 公式では「入力 URL を取得できなかった」で内容の判定�
 本番ダンプへの適用結果（読み取りのみで取得したダンプ、隔離環境で実行）: 0010→0014 を適用、
 `dedcf315` sb4 / `ec44fadd` sb2 だけが補完され、`54392404` sb5 は補完されない。downgrade 0010 →
 upgrade 0014 の往復も通る。
+
+## ADR-0035 (8): 拒否の分類と入力取得失敗の1回再試行（2026-09-29、所有者採用の本番仕様）
+
+所有者の決定: HTTP 422 という status だけで内容方針と判断しない／`file_download_error` は入力 URL の
+取得失敗として、新しい URL で1回だけ自動再試行し、2回目で止める／代替案の上限は設定値。
+
+| テスト（層） | 守るもの / 落ちたら何が起きているか |
+|---|---|
+| `test_fal_queue.py::test_result_422_is_classified_from_the_body_not_the_status`（unit、5ケース） | adapter の分類表。内容方針・取得失敗・入力検証・型なし・`error` だけ、を body から分類する。落ちれば 422 が一律に内容方針扱いになり、映像の差し替えが無関係な失敗で走る。型なしの 422 が一時障害として無限に再 await されていた既存挙動もここで止めた |
+| `test_fal_queue.py::test_submit_time_file_download_error_carries_a_structured_rejection`（unit） | submit 時の同期 422 でも取得失敗は構造化されて届く（回数を数える材料が消えない） |
+| `test_fal_seedance_video.py::test_file_download_error_is_not_a_content_rejection`（unit、更新） | 本番で実際に返った本文のまま、poll が `input_unreachable` + 分類つきの拒否で届ける。旧版は「拒否の記録を持たない」を固定していたが、回数を DB から数える仕様（(8)）に変えたため更新 |
+| `test_paid_job.py::test_unreachable_input_is_recorded_but_not_as_a_rejected_input`（unit、旧 `..._spent_but_not_marked_...` を置換） | 取得失敗は分類つきで拒否台帳に残るが、`input_rejected_by_provider` は立てない。1回目の後は新ラウンドが許され、`prepare` で入力を上げ直す（同じ壊れた URL を使わない）。旧版は「台帳に載せない」を固定していた（(8) で変更） |
+| `test_paid_job.py::test_second_fetch_failure_stops_before_reserving_a_third_round`（unit） | INV-35 の台帳側の上限。2回目の取得失敗の後は prepare も submit も予約も起きない。落ちれば resume のたびに有料の再試行が増える |
+| `test_paid_job.py::test_image_gate_ignores_unreachable_and_unknown_but_blocks_validation`（unit） | INV-32 の画像ゲートは画像を判定した拒否だけ。取得失敗・分類不能で画像を再送禁止にするとシーンが二度と作れない |
+| `test_scene_alternative_activity.py::test_non_content_policy_failures_never_reach_the_planner`（unit、3ケース） | 代替案は内容方針だけ。workflow は型名で計画を頼むので、分類で絞るのは Activity（レビュー指摘）。入力検証・分類不能・取得失敗では planner を呼ばない |
+| `test_scene_alternative_activity.py::test_limits_come_from_the_injected_settings`（unit） | 上限は設定値が Activity に届く（1シーン1回・費用上限を小さくして止まる） |
+| `test_production_defaults_single_source.py::test_scene_recovery_limits_have_one_default_and_reach_the_workflow_and_schedule`（unit） | 既定値は contracts の1箇所で、Settings・workflow 入力・Schedule 入力・pipeline の起動が一致し、設定値が workflow 入力まで届く（workflow の中で Settings を読まない。レビュー指摘） |
+| `test_production_api.py`（既存を拡張） | API から起動する production にも上限の設定値が届く |
+| `test_migration_frozen_vocabulary.py::test_0014_legacy_file_download_error_is_backfilled_as_unreachable_not_rejected`（contract、旧 `..._is_not_backfilled_...` を置換） | 本番の3行目（54392404 sb5）を `input_unreachable` として補完し、再送禁止を立てない（resume でちょうど1回取り直せる）。旧版は「補完しない」を固定していた（(8) で変更） |
+| `test_migration_frozen_vocabulary.py::test_0014_rejection_categories_match_the_contract`（contract） | DB の CHECK と契約の語彙が一致 |
+| `test_production_workflow.py::test_input_fetch_failure_retries_once_with_a_new_round_and_succeeds` ほか3件（integration、mock Activity） | workflow の分岐: 取得失敗で1回だけ次のラウンドへ、2回目で停止、ラウンド予算1でも1回は取り直す、台帳が使い切りを返したらその型で止まる。いずれも planner を呼ばない |
+| `test_input_fetch_retry_e2e.py` の4件（integration、本物の Production・Render・Upload） | fault injection の連続シナリオ: 一時的な取得失敗 → 新しい URL で再試行 → private Upload 1回・二重投稿なし・日次枠1行・他シーン不変／2回とも取得失敗 → 構造化した停止理由・**入場した** resume でも追加 submit なし（最初の版は resume が別 workflow id で入場できず空振りで合格していたので `admitted` を検査に加えた）／型なし 422 → planner なしで停止／代替案の上限（設定値1）で停止。**変異確認**: `INPUT_FETCH_RETRIES_PER_SCENE` を 0 にすると再試行成功のシナリオが落ちる |

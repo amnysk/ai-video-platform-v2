@@ -289,3 +289,24 @@ hash の方式が変わっただけで進行中の課金ジョブへ二重 submi
 / `::test_blocked_again_on_the_same_plan_does_not_loop`
 / `tests/unit/test_scene_alternative_rules.py::test_limits_stop_automation`
 / `tests/unit/test_production_scene_recovery_workflow.py::test_workflow_never_asks_the_planner_more_than_the_scene_limit`
+/ `tests/unit/test_scene_alternative_activity.py::test_limits_come_from_the_injected_settings`
+/ `::test_non_content_policy_failures_never_reach_the_planner`（代替案の対象は `content_policy` だけ、ADR-0035 (8)）
+/ `tests/integration/test_input_fetch_retry_e2e.py::test_alternative_limit_from_settings_stops_further_generation`
+
+### INV-35 provider が入力を取得できなかったら、新しい入力 URL で最大1回だけ自動再試行し、2回目で止まる
+provider がこちらの入力（URL のファイル）を取得できなかった失敗（分類 `input_unreachable`。fal の
+`file_download_error`）は内容の拒否ではない。そのシーンについて、入力を上げ直した新しい URL で
+**最大 `INPUT_FETCH_RETRIES_PER_SCENE`（= 1）回だけ**台帳の新ラウンドとして自動で再試行する。回数は
+`provider_rejections` の `input_unreachable` 件数から数え、resume でリセットしない。上限を超えた新ラウンドは
+予約の前に止める（予約も課金も作らない）。成功済みの他シーンは触らない。代替映像案は計画せず、内容拒否の
+復旧回数・費用（INV-34）にも数えない。画像の再送禁止（INV-32）の対象にしない（ADR-0035 (8)）。
+**機械検査**: `tests/unit/test_paid_job.py::test_unreachable_input_is_recorded_but_not_as_a_rejected_input`
+/ `::test_second_fetch_failure_stops_before_reserving_a_third_round`
+/ `::test_image_gate_ignores_unreachable_and_unknown_but_blocks_validation`
+/ `tests/integration/test_production_workflow.py::test_input_fetch_failure_retries_once_with_a_new_round_and_succeeds`
+/ `::test_second_input_fetch_failure_in_the_run_stops_the_episode`
+/ `::test_input_fetch_retry_is_granted_even_with_a_single_round_budget`
+/ `::test_ledger_exhaustion_on_resume_stops_without_another_submit`
+/ `tests/integration/test_input_fetch_retry_e2e.py::test_transient_input_fetch_failure_is_retried_once_with_a_new_url_through_upload`
+/ `::test_second_input_fetch_failure_stops_and_resume_does_not_submit_again`
+/ `tests/contract/test_migration_frozen_vocabulary.py::test_0014_legacy_file_download_error_is_backfilled_as_unreachable_not_rejected`

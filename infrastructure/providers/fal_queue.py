@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from contracts.states import RejectionCategory
 from domain.errors import (
     MediaValidationError,
     ProviderInputFetchError,
@@ -79,6 +80,21 @@ CONTENT_POLICY_ERROR_TYPE = "content_policy_violation"
 #: 入力の内容ではなく、入力 URL のファイルを provider が取得できなかった（docs: retryable=false）。
 #: 拒否（``REJECTED_ERROR_TYPES``）とは区別する（ADR-0035 追補、2026-09-29 の実例）。
 INPUT_FETCH_ERROR_TYPE = "file_download_error"
+
+
+def rejection_category(types: list[str] | tuple[str, ...]) -> RejectionCategory:
+    """fal の error type → 復旧の分類（ADR-0035 (8)）。HTTP status だけでは決めない。
+
+    fal 固有の型名はここ（adapter）だけが知る（INV-6）。複数の型が並んだら内容方針を優先する
+    （内容の拒否を取得失敗として再送すると、同じ判定を繰り返して費用だけが増える）。
+    """
+    if CONTENT_POLICY_ERROR_TYPE in types:
+        return RejectionCategory.CONTENT_POLICY
+    if INPUT_FETCH_ERROR_TYPE in types:
+        return RejectionCategory.INPUT_UNREACHABLE
+    if any(t in REJECTED_ERROR_TYPES for t in types):
+        return RejectionCategory.INPUT_VALIDATION
+    return RejectionCategory.UNKNOWN
 
 
 class FalQueueState(StrEnum):
@@ -244,6 +260,7 @@ def _rejection(body: Any, types: list[str], status: int) -> ProviderRejection:
         reason=reasons[0] if reasons else None,
         message=message,
         http_status=status,
+        category=rejection_category(types),
     )
 
 
@@ -335,9 +352,11 @@ class FalQueueClient:
                     f"fal submit not accepted (retryable): HTTP {status}: {_short(body)}"
                 )
             types = _error_types_from_body(body)
-            if INPUT_FETCH_ERROR_TYPE in types and CONTENT_POLICY_ERROR_TYPE not in types:
+            rejection = _rejection(body, types, status)
+            if rejection.category is RejectionCategory.INPUT_UNREACHABLE:
                 raise ProviderInputFetchError(
-                    f"fal submit input not fetchable: HTTP {status} types={types}: {_short(body)}"
+                    f"fal submit input not fetchable: HTTP {status} types={types}: {_short(body)}",
+                    rejection=rejection,
                 )
             raise ProviderRejectedError(
                 f"fal submit rejected: HTTP {status} types={types}: {_short(body)}",
@@ -394,8 +413,14 @@ class FalQueueClient:
         header_type = response.headers.get("x-fal-error-type")
         if header_type:
             types.append(header_type)
-        has_error = bool(types) or (isinstance(body, dict) and body.get("error") is not None)
         status = response.status_code
+        has_error = (
+            bool(types)
+            or (isinstance(body, dict) and body.get("error") is not None)
+            # 型の無い validation error（422 + detail[]）も「ジョブが失敗した」応答。一時障害として
+            # 再 await し続けず、分類不能（unknown）として止める（ADR-0035 (8)）
+            or (status == 422 and isinstance(body, dict) and isinstance(body.get("detail"), list))
+        )
 
         if not has_error and status < 400:
             if not isinstance(body, dict):
@@ -405,14 +430,16 @@ class FalQueueClient:
             self._raise_poll_http_error(response, body, what="result")
 
         summary = f"fal job failed: HTTP {status} types={types}: {_short(body)}"
-        if CONTENT_POLICY_ERROR_TYPE in types:
-            raise ProviderRejectedError(summary, rejection=_rejection(body, types, status))
-        if INPUT_FETCH_ERROR_TYPE in types:
-            raise ProviderInputFetchError(summary)
+        rejection = _rejection(body, types, status)
+        if rejection.category is RejectionCategory.CONTENT_POLICY:
+            raise ProviderRejectedError(summary, rejection=rejection)
+        if rejection.category is RejectionCategory.INPUT_UNREACHABLE:
+            raise ProviderInputFetchError(summary, rejection=rejection)
         if _retryable_header(response) is True:
             raise ProviderJobFailedError(summary)
-        if status == 422 or any(t in REJECTED_ERROR_TYPES for t in types):
-            raise ProviderRejectedError(summary, rejection=_rejection(body, types, status))
+        # 422 でも分類できなければ ``unknown``（内容方針とは扱わない。代替案の対象外）
+        if status == 422 or rejection.category is RejectionCategory.INPUT_VALIDATION:
+            raise ProviderRejectedError(summary, rejection=rejection)
         # runner / timeout / downstream / 未知の error_type
         raise ProviderJobFailedError(summary)
 

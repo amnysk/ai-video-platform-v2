@@ -31,6 +31,7 @@ from contracts.states import (
     JobType,
     ProviderCall,
     RejectedInput,
+    RejectionCategory,
     ReservationStatus,
 )
 from contracts.topic_planning import (
@@ -1996,6 +1997,15 @@ class ProviderRejectionRecord:
     message: str | None
     http_status: int | None
     occurred_at: datetime
+    #: 復旧を分岐させる分類（ADR-0035 (8)）
+    category: RejectionCategory = RejectionCategory.UNKNOWN
+
+
+#: 画像そのものを判定した拒否（INV-32 の画像ゲートの対象）。取得失敗・分類不能は含めない。
+IMAGE_JUDGEMENT_CATEGORIES: tuple[RejectionCategory, ...] = (
+    RejectionCategory.CONTENT_POLICY,
+    RejectionCategory.INPUT_VALIDATION,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2028,6 +2038,7 @@ def _to_rejection(row: ProviderRejectionRow) -> ProviderRejectionRecord:
         message=row.message,
         http_status=row.http_status,
         occurred_at=row.occurred_at,
+        category=RejectionCategory(row.category),
     )
 
 
@@ -2061,6 +2072,7 @@ class ProviderRejectionRepository:
             reservation_id=_as_uuid(reservation_id) if reservation_id else None,
             input_hash=input_hash,
             rejected_input=rejection.rejected_input.value,
+            category=rejection.category.value,
             source_media_sha256=source_media_sha256,
             types=json.dumps(list(rejection.types)),
             reason=(rejection.reason or None) and rejection.reason[:128],
@@ -2096,14 +2108,47 @@ class ProviderRejectionRepository:
     async def find_rejected_image(
         self, provider: ProviderCall, source_media_sha256: str
     ) -> ProviderRejectionRecord | None:
-        """この provider が画像そのもの（``rejected_input='image'``）を拒否した記録（INV-32）。"""
+        """この provider が画像そのもの（``rejected_input='image'``）を拒否した記録（INV-32）。
+
+        画像を**判定した**拒否（content_policy / input_validation）だけ。取得失敗
+        （input_unreachable）や分類不能（unknown）では画像を再送禁止にしない（ADR-0035 (8)）。
+        """
         stmt = (
             select(ProviderRejectionRow)
             .where(
                 ProviderRejectionRow.provider == provider.value,
                 ProviderRejectionRow.rejected_input == RejectedInput.IMAGE.value,
+                ProviderRejectionRow.category.in_([c.value for c in IMAGE_JUDGEMENT_CATEGORIES]),
                 ProviderRejectionRow.source_media_sha256 == source_media_sha256,
             )
+            .order_by(ProviderRejectionRow.occurred_at)
+            .limit(1)
+        )
+        row = (await self._session.scalars(stmt)).first()
+        return _to_rejection(row) if row else None
+
+    async def count_input_unreachable(
+        self, episode_id: uuid.UUID | str, provider: ProviderCall, scene_id: str | None
+    ) -> int:
+        """このシーンで provider が入力を取得できなかった回数（INV-35 の再試行判定）。"""
+        stmt = (
+            select(func.count())
+            .select_from(ProviderRejectionRow)
+            .where(
+                ProviderRejectionRow.episode_id == _as_uuid(episode_id),
+                ProviderRejectionRow.provider == provider.value,
+                ProviderRejectionRow.scene_id == scene_id,
+                ProviderRejectionRow.category == RejectionCategory.INPUT_UNREACHABLE.value,
+            )
+        )
+        return int(await self._session.scalar(stmt) or 0)
+
+    async def find_for_reservation(
+        self, reservation_id: uuid.UUID | str
+    ) -> ProviderRejectionRecord | None:
+        stmt = (
+            select(ProviderRejectionRow)
+            .where(ProviderRejectionRow.reservation_id == _as_uuid(reservation_id))
             .order_by(ProviderRejectionRow.occurred_at)
             .limit(1)
         )

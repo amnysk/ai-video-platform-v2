@@ -66,6 +66,13 @@ AUTH_INCIDENT_WINDOW_MINUTES = 10
 #: ウィンドウ内でこの件数以上の未解決 incident があれば、新規 submit を止める（予約 INSERT の前）。
 AUTH_INCIDENT_SUPPRESSION_THRESHOLD = 3
 
+# ------------------------------------------------ 入力の取得失敗の自動再試行（ADR-0035 (8)）
+
+#: provider がこちらの入力（URL のファイル）を取得できなかったとき、そのシーンで入力を上げ直して
+#: 自動で再試行してよい回数（INV-35）。回数は ``provider_rejections`` の ``input_unreachable``
+#: 件数から数え、resume でリセットしない。2回目の取得失敗で止まる。
+INPUT_FETCH_RETRIES_PER_SCENE = 1
+
 
 # ------------------------------------------- provider の内容拒否からの復旧（ADR-0035, INV-34）
 
@@ -318,6 +325,8 @@ PLAN_SCENE_ALTERNATIVE = "production_plan_scene_alternative"
 SCENE_ALTERNATIVE_TASK_QUEUE = "production-scene-alternative"
 #: 既存の実行履歴の再生を壊さないための patch id
 SCENE_ALTERNATIVE_PATCH_ID = "scene-alternative-recovery-v1"
+#: 入力の取得失敗で次のラウンドへ1回進む分岐（ADR-0035 (8)、INV-35）の patch id
+INPUT_FETCH_RETRY_PATCH_ID = "input-fetch-retry-v1"
 
 
 @dataclass

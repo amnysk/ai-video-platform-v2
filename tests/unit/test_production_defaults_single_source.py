@@ -34,3 +34,36 @@ def test_settings_workflow_input_and_contract_defaults_agree() -> None:
         == wf.await_reexecutions
         == pa.DEFAULT_AWAIT_REEXECUTIONS
     )
+
+
+def test_scene_recovery_limits_have_one_default_and_reach_the_workflow_and_schedule() -> None:
+    """ADR-0035 (8): 内容拒否からの復旧の上限は設定値。既定値は contracts の1箇所。
+
+    workflow の中では Settings を読まない（非決定的）。1実行で planner を呼ぶシーンの上限は
+    workflow の入力（``max_scene_alternatives_per_scene``）で渡し、Schedule・API・pipeline の
+    どこから起動しても同じ設定値が届く。DB 側の判定（Activity）も同じ設定値を使う。
+    """
+    from contracts.pipeline import PipelineOptions, PipelineStage, ProductionParameters
+    from infrastructure.temporal.schedules import daily_episode_input_from_settings
+    from workers.pipeline.workflows import _stage_request
+
+    defaults = {name: f.default for name, f in Settings.model_fields.items()}
+    assert (
+        defaults["production_max_scene_alternatives_per_scene"]
+        == ProductionWorkflowInput(episode_id="e").max_scene_alternatives_per_scene
+        == ProductionParameters().max_scene_alternatives_per_scene
+        == pa.MAX_SCENE_ALTERNATIVES_PER_SCENE
+    )
+    assert (
+        defaults["production_max_scene_alternatives_per_episode"]
+        == pa.MAX_SCENE_ALTERNATIVES_PER_EPISODE
+    )
+    assert defaults["production_max_recovery_cost_usd"] == pa.MAX_RECOVERY_COST_USD_PER_EPISODE
+
+    settings = Settings(production_max_scene_alternatives_per_scene=1)
+    wf_input = daily_episode_input_from_settings(settings)
+    assert wf_input.options.production.max_scene_alternatives_per_scene == 1
+    _name, _id, arg = _stage_request(
+        PipelineStage.PRODUCTION, "e", PipelineOptions(production=wf_input.options.production)
+    )
+    assert arg["max_scene_alternatives_per_scene"] == 1

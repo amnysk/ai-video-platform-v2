@@ -24,6 +24,7 @@ from contracts.production_activities import (
     DEFAULT_VIDEO_CONCURRENCY,
     DEFAULT_VIDEO_MAX_ROUNDS,
     DEFAULT_VOICE_CONCURRENCY,
+    MAX_SCENE_ALTERNATIVES_PER_SCENE,
 )
 from contracts.render import DEFAULT_RENDER_PROFILE_ID
 from contracts.states import (
@@ -183,6 +184,9 @@ class ProductionParameters:
     image_max_rounds: int = DEFAULT_IMAGE_MAX_ROUNDS
     video_max_rounds: int = DEFAULT_VIDEO_MAX_ROUNDS
     await_reexecutions: int = DEFAULT_AWAIT_REEXECUTIONS
+    #: 1実行で代替映像案を頼むシーンあたりの上限（ADR-0035 (8)）。設定値から Schedule 入力へ。
+    #: 既定値つき: 旧 Schedule の action input・旧履歴はこの項目なしで decode できる
+    max_scene_alternatives_per_scene: int = MAX_SCENE_ALTERNATIVES_PER_SCENE
 
 
 def _script_workflow() -> tuple[str, str]:

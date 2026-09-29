@@ -136,6 +136,7 @@ def test_starter_passes_round_and_reawait_budgets_from_settings() -> None:
         production_image_max_rounds=4,
         production_video_max_rounds=1,
         production_await_reexecutions=2,
+        production_max_scene_alternatives_per_scene=1,
     )
     starter = TemporalWorkflowStarter(client, "q", settings)  # type: ignore[arg-type]
     asyncio.run(starter.start_production_workflow(episode_id="e"))
@@ -145,6 +146,8 @@ def test_starter_passes_round_and_reawait_budgets_from_settings() -> None:
         1,
         2,
     )
+    # ADR-0035 (8): 1実行で planner を呼ぶシーンの上限も設定値から workflow 入力へ
+    assert arg["max_scene_alternatives_per_scene"] == 1
 
 
 async def test_post_production_for_unknown_episode_is_404(api) -> None:

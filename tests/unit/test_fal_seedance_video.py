@@ -255,6 +255,10 @@ async def test_file_download_error_is_not_a_content_rejection() -> None:
     gen, _ = _generator(routes)
     status = await gen.poll(ref)  # type: ignore[arg-type]
     assert isinstance(status, JobFailed)
-    assert status.rejected is False and status.rejection is None
+    assert status.rejected is False
     assert status.input_unreachable is True
     assert "file_download_error" in status.message
+    # ADR-0035 (8): 取得失敗も構造化して届く（拒否台帳に分類つきで残し、再試行回数を数える）
+    assert status.rejection is not None
+    assert status.rejection.category.value == "input_unreachable"
+    assert status.rejection.locs == ("body.image_url",)

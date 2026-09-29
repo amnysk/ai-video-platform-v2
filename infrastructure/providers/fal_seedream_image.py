@@ -88,7 +88,7 @@ class FalSeedreamImageGenerator:
         except ProviderRejectedError as exc:
             return JobFailed(message=str(exc), rejected=True, rejection=exc.rejection)
         except ProviderInputFetchError as exc:
-            return JobFailed(message=str(exc), input_unreachable=True)
+            return JobFailed(message=str(exc), input_unreachable=True, rejection=exc.rejection)
         except ProviderJobFailedError as exc:
             return JobFailed(message=str(exc))
         if not _image_url(result):

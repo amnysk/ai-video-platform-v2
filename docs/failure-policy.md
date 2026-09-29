@@ -67,6 +67,9 @@
 | `SceneAlternativeInfeasibleError`（ADR-0035） | `needs_input` | 史実を損なわずに方針に合う案を作れない、と planner が理由つきで判断した |
 | `SceneAlternativeInvalidError`（ADR-0035） | `needs_input` | planner の案が規則に落ちた（形式不正・人物を主題にした・既に試した文面）、記録された拒否が無い、または同じ案のまま再び止まった。LLM 出力の欠陥でも retryable にしない（自動の試行を増やさない） |
 | `SceneAlternativePlannerUnavailableError`（ADR-0035） | `needs_input` | planner が構成されていない・失敗した。planner worker が居なければ計画 Activity は schedule_to_close（1時間）で timeout し、同じく needs_input |
+| `SceneAlternativeNotApplicableError`（ADR-0035 (8)） | `needs_input` | そのシーンの未対処の失敗に内容方針（`content_policy`）以外の分類（`input_validation` / `unknown` / `input_unreachable`）がある。映像を差し替えても直らないので planner を呼ばない |
+| `ProviderInputFetchError`（ADR-0035 (8)） | `needs_input` | provider がこちらの入力（URL のファイル）を取得できなかった（分類 `input_unreachable`。内容の判定ではない）。予約は spent、`input_rejected_by_provider` は立てない、拒否台帳に分類つきで残す。workflow は入力を上げ直す次のラウンドへ**1回だけ**進む（INV-35） |
+| `ProviderInputFetchRetryExhaustedError`（ADR-0035 (8)） | `needs_input` | そのシーンの取得失敗が再試行を含めて2回記録された後の新ラウンドを、予約の**前**に止めた（予約も課金も作らない。resume でも同じ） |
 | `ProviderJobFailedError` | `retryable` | provider 側ジョブの失敗。次ラウンド（新しい予約）で再生成 |
 | `ProviderPollDeadlineError` | `retryable` | 完了待ちの期限切れ。ジョブの状態は不明なので**同じ予約で再 await**（再送しない。上限を使い切ったら記録して止まる） |
 | `MediaValidationError` | `retryable` | 生成メディアが形式・解像度・尺の規則を満たさない |
@@ -108,6 +111,20 @@ ADR-0030 の時間窓ベースの抑止が別に扱う）。
 回数・費用の上限は計画 Activity が DB から数えるので resume でリセットされない（INV-34）。
 上の4つの `SceneAlternative*Error` はそのシーンを `needs_input` で止める（兄弟は既存どおり
 cancel される）。403（`ProviderUnavailableError`）は内容の問題ではないので対象外。
+
+**拒否の分類（ADR-0035 (8)）**: HTTP 422 という status だけで内容方針の拒否とは判断しない。
+adapter が応答の error type から `RejectionCategory` を決め（fal の型名はここだけが知る）、
+`provider_rejections.category` に残す。復旧は分類で分岐する:
+
+| 分類 | 例（fal の error type） | 復旧 |
+|---|---|---|
+| `content_policy` | `content_policy_violation` | そのシーンだけ代替映像案（上記、INV-34 の上限つき） |
+| `input_unreachable` | `file_download_error` | 入力を上げ直した新しい URL で最大1回だけ自動再試行、2回目で停止（INV-35）。代替案の回数・費用には数えない |
+| `input_validation` | `image_too_small` など既知の入力検証 | 停止（人の判断）。画像の再送禁止（INV-32）の対象 |
+| `unknown` | 型なしの 422 など | 停止（人の判断）。画像の再送禁止の対象外 |
+
+計画 Activity は workflow から型名で呼ばれるが、分類が `content_policy` 以外なら planner を呼ばずに
+`SceneAlternativeNotApplicableError` で止まる（`ProviderRejectedError` は検証失敗・分類不能でも同じ型のため）。
 
 Activity 境界の写像（画像・音声・動画共通、`infrastructure/production/activity_errors.py`）:
 

@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 
 from contracts.artifacts import StoryboardScene, VisualSubject
-from contracts.states import RejectedInput
+from contracts.states import RejectedInput, RejectionCategory
 from domain.errors import SceneAlternativeInvalidError, SceneAlternativeLimitReachedError
 from domain.production.scene_alternative import (
     CostEntry,
@@ -32,6 +32,7 @@ LIKENESS = RejectionFact(
     types=("content_policy_violation",),
     reason="partner_validation_failed",
     message="may contain likenesses of real people",
+    category=RejectionCategory.CONTENT_POLICY,
 )
 SCENE = StoryboardScene.model_validate(
     {

@@ -55,6 +55,10 @@ async def main() -> None:
         store=store,
         bucket=settings.minio_bucket,
         planner=planner,
+        # 上限は設定値（ADR-0035 (8)、INV-34）。既定は contracts の1箇所
+        max_alternatives_per_scene=settings.production_max_scene_alternatives_per_scene,
+        max_alternatives_per_episode=settings.production_max_scene_alternatives_per_episode,
+        max_recovery_cost_usd=settings.production_max_recovery_cost_usd,
     )
     logger.info(
         "scene alternative worker listening on task queue %s (codex=%s, profile=%s)",

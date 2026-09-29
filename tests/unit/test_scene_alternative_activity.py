@@ -12,12 +12,14 @@ import pytest
 
 from contracts.artifacts import parse_scene_visual_override_artifact
 from contracts.production_activities import PlanSceneAlternativeRequest
-from contracts.states import ArtifactType, ProviderCall
+from contracts.states import ArtifactType, ProviderCall, RejectionCategory
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.errors import (
+    ProviderRejection,
     SceneAlternativeInfeasibleError,
     SceneAlternativeInvalidError,
     SceneAlternativeLimitReachedError,
+    SceneAlternativeNotApplicableError,
     SceneAlternativePlannerUnavailableError,
 )
 from infrastructure.db.repositories import (
@@ -71,7 +73,7 @@ async def _seed(session_factory, store, *, rejected_cost="0.97"):
     return episode.id, storyboard.id
 
 
-async def _reject(session_factory, episode_id, scene_id, *, cost="0.97"):
+async def _reject(session_factory, episode_id, scene_id, *, cost="0.97", rejection=None):
     """動画の予約が spent + 拒否された状態（paid_job が残すのと同じ形）。"""
     async with session_factory() as session:
         reservations = ProviderReservationRepository(session)
@@ -97,16 +99,16 @@ async def _reject(session_factory, episode_id, scene_id, *, cost="0.97"):
             provider=ProviderCall.FAL_VIDEO,
             reservation_id=spent.id,
             input_hash=spent.input_hash,
-            rejection=LIKENESS_REJECTION,
+            rejection=rejection or LIKENESS_REJECTION,
             source_media_sha256="i" * 64,
         )
         await session.commit()
     return record
 
 
-def _activities(session_factory, store, planner):
+def _activities(session_factory, store, planner, **limits):
     return SceneAlternativeActivities(
-        session_factory=session_factory, store=store, bucket="b", planner=planner
+        session_factory=session_factory, store=store, bucket="b", planner=planner, **limits
     )
 
 
@@ -277,3 +279,80 @@ async def test_scene_without_a_recorded_rejection_is_not_planned(
         await _activities(session_factory, artifact_store, FakeSceneAlternativePlanner()).plan(
             _request(episode_id, storyboard_id, scene_id="sb1")
         )
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        RejectionCategory.INPUT_VALIDATION,
+        RejectionCategory.UNKNOWN,
+        RejectionCategory.INPUT_UNREACHABLE,
+    ],
+)
+async def test_non_content_policy_failures_never_reach_the_planner(
+    session_factory, artifact_store, category
+) -> None:
+    """ADR-0035 (8): 代替映像案の対象は内容方針の拒否だけ。
+
+    workflow は例外の**型名**で計画を頼む（``ProviderRejectedError`` は input_validation /
+    unknown の 422 でも同じ型）。分類で絞るのはここ。入力の検証失敗（image_too_small 等）・
+    分類不能の 422・入力の取得失敗で映像を差し替えても直らないので、planner を呼ばずに
+    理由つきで止まる。
+    """
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).create(topic="t")
+        await session.commit()
+    script = await _put(
+        session_factory,
+        artifact_store,
+        episode.id,
+        ArtifactType.SCRIPT,
+        sample_script(episode.id).model_dump(mode="json"),
+    )
+    storyboard = await _put(
+        session_factory,
+        artifact_store,
+        episode.id,
+        ArtifactType.STORYBOARD,
+        sample_storyboard(
+            episode.id, script_artifact_id=script.id, script_sha256=script.sha256
+        ).model_dump(mode="json"),
+    )
+    rejection = ProviderRejection(
+        types=("whatever",), locs=("body.image_url",), http_status=422, category=category
+    )
+    await _reject(session_factory, episode.id, "sb2", rejection=rejection)
+    planner = FakeSceneAlternativePlanner()
+    with pytest.raises(SceneAlternativeNotApplicableError, match=category.value):
+        await _activities(session_factory, artifact_store, planner).plan(
+            _request(episode.id, storyboard.id)
+        )
+    assert planner.contexts == []
+
+
+async def test_limits_come_from_the_injected_settings(session_factory, artifact_store) -> None:
+    """上限は設定値（Settings → worker → Activity）。ハードコードの既定値は contracts に1箇所。"""
+    episode_id, storyboard_id = await _seed(session_factory, artifact_store, rejected_cost="0.01")
+    planner = FakeSceneAlternativePlanner()
+    activities = _activities(
+        session_factory,
+        artifact_store,
+        planner,
+        max_alternatives_per_scene=1,
+        max_alternatives_per_episode=3,
+        max_recovery_cost_usd=5.0,
+    )
+    await activities.plan(_request(episode_id, storyboard_id))
+    await _reject(session_factory, episode_id, "sb2", cost="0.01")
+    with pytest.raises(SceneAlternativeLimitReachedError, match="limit 1"):
+        await activities.plan(_request(episode_id, storyboard_id, seen_revision=1))
+    assert len(planner.contexts) == 1
+
+    tight_cost = _activities(
+        session_factory, artifact_store, FakeSceneAlternativePlanner(), max_recovery_cost_usd=0.001
+    )
+    other_episode, other_storyboard = await _seed(
+        session_factory, artifact_store, rejected_cost="0.01"
+    )
+    with pytest.raises(SceneAlternativeLimitReachedError, match="cap"):
+        await tight_cost.plan(_request(other_episode, other_storyboard))

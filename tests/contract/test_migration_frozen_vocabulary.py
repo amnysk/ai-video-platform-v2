@@ -356,17 +356,23 @@ def test_0014_legacy_rejection_classification_reads_both_summary_formats() -> No
         assert got["reason"] == "partner_validation_failed"
         assert got["http_status"] == 422
         assert got["types"] == '["content_policy_violation"]'
+        assert got["category"] == "content_policy"
     prompt = migration.classify_legacy_rejection("ProviderRejectedError: x (at body.prompt)")
     assert prompt["rejected_input"] == "prompt"
     unknown = migration.classify_legacy_rejection("ProviderRejectedError: HTTP 400 bad input")
     assert unknown["rejected_input"] == "unknown" and unknown["reason"] is None
+    assert unknown["category"] == "unknown"
 
 
-def test_0014_legacy_file_download_error_is_not_backfilled_as_a_rejection() -> None:
+def test_0014_legacy_file_download_error_is_backfilled_as_unreachable_not_rejected() -> None:
     """本番に実在する3行目（Episode 54392404 sb5、2026-09-29）は 422 だが内容の拒否ではない。
 
-    fal が入力 URL を取得できなかった（file_download_error）。これを拒否として補完すると、
+    fal が入力 URL を取得できなかった（file_download_error）。これを内容の拒否として補完すると、
     無関係な画像を再送禁止にし、resume しても取り直せず、代替案の計画まで走る。
+
+    ADR-0035 (8) 以降は ``input_unreachable`` として台帳に1行入れる（再試行回数 INV-35 を
+    ここから数える: resume するとちょうど1回だけ入力を上げ直して取り直す）。旧版は「補完しない
+    （None）」を固定していたが、回数を DB から数える仕様に変えたため変更した。
     """
     migration = _load_0014()
     summary = (
@@ -376,4 +382,14 @@ def test_0014_legacy_file_download_error_is_not_backfilled_as_a_rejection() -> N
         "'url': 'https://provider-docs.example/errors#file_download_error', "
         "'input': 'https://provider-cdn.example/files/b/x/y.png'}]"
     )
-    assert migration.classify_legacy_rejection(summary) is None
+    got = migration.classify_legacy_rejection(summary)
+    assert got["category"] == "input_unreachable"
+    assert got["rejected_input"] == "image"
+    assert got["types"] == '["file_download_error"]'
+
+
+def test_0014_rejection_categories_match_the_contract() -> None:
+    from contracts.states import RejectionCategory
+
+    migration = _load_0014()
+    assert {c.value for c in RejectionCategory} == set(migration.REJECTION_CATEGORIES)
