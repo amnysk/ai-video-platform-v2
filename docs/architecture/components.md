@@ -63,6 +63,7 @@
 | モジュール | 責務 |
 |---|---|
 | `db/` | SQLAlchemy モデル、マイグレーション（Alembic）、リポジトリ実装 |
+| `db/research_repositories.py` | Research の依頼・外部呼び出し台帳・成果物（`research_*` の表）。本番の表・`repositories.py`・課金コードに触れない（ADR-0037 / INV-37。設計: [research-request.md](../domain/research-request.md)） |
 | `storage/` | MinIO クライアント、Artifactの put/get、キー規約 |
 | `temporal/` | Temporal への接続（`connect.py`）、Daily Schedule の定義（`schedules.py`）、worker の health（`poller_check.py`）、実行の点検（`run_inspector.py`）。workflow 名と task queue 名は `contracts/`（`pipeline.py` / `states.py` / `topic_planning.py`） |
 | `providers/` | fal.ai / YouTube / LLM の adapter。**必ずProtocolの背後に置く** |

@@ -34,6 +34,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from contracts.operations import OperationalSwitch
+from contracts.research import (
+    ResearchArtifactType,
+    ResearchCall,
+    ResearchCallStatus,
+    ResearchKind,
+    ResearchStatus,
+)
 from contracts.schedule_guard import AnomalyKind
 from contracts.states import (
     ArtifactType,
@@ -597,3 +604,153 @@ class ProviderRejectionRow(Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+# ------------------------------------------------------------------ Research（ADR-0037）
+#
+# Research の永続化は本番の表（jobs / 成果物メタデータ / 予約台帳）と**分離**する。ここから本番の
+# 表への FK は張らず、本番の表もここを指さない（INV-37）。語彙は contracts/research.py が唯一の
+# 宣言元で、migration 0015 が literal で凍結する。
+
+
+class ResearchRequestRow(Base):
+    """調査依頼（ADR-0037 §2）。``id = uuid5(RESEARCH_NAMESPACE, idempotency_key)``。"""
+
+    __tablename__ = "research_requests"
+    __table_args__ = (
+        _check("kind", ResearchKind, "ck_research_requests_kind"),
+        _check("status", ResearchStatus, "ck_research_requests_status"),
+        UniqueConstraint("idempotency_key", name="uq_research_requests_idempotency_key"),
+        Index("ix_research_requests_request_hash", "request_hash"),
+        Index("ix_research_requests_status_created_at", "status", "created_at"),
+        Index("ix_research_requests_channel_kind", "channel_id", "kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    requester: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: 参照であって所有ではない。FK を張らない（Episode の寿命を Research が縛らない。INV-37）
+    episode_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    limits: Mapped[dict] = mapped_column(JSON, nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_config_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    blocked_reason: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ResearchCallRow(Base):
+    """Research の外部呼び出し台帳（ADR-0037 §4 / INV-36）。
+
+    ``UNIQUE(request_id, provider_call, call_seq)`` と ``call_seq >= 1`` によって、1 依頼・1 種別の
+    行数は採番の上限（``call_ceiling``）を DB の上でも超えられない。行は消さない。
+    """
+
+    __tablename__ = "research_calls"
+    __table_args__ = (
+        _check("provider_call", ResearchCall, "ck_research_calls_provider_call"),
+        _check("status", ResearchCallStatus, "ck_research_calls_status"),
+        CheckConstraint("call_seq >= 1", name="ck_research_calls_call_seq_positive"),
+        CheckConstraint(
+            "(status = 'reserved' AND settled_at IS NULL) "
+            "OR (status <> 'reserved' AND settled_at IS NOT NULL)",
+            name="ck_research_calls_settled",
+        ),
+        CheckConstraint(
+            "status <> 'abandoned' OR dispatched_at IS NULL",
+            name="ck_research_calls_abandoned_not_dispatched",
+        ),
+        CheckConstraint(
+            "estimated_cost_usd IS NULL OR estimated_cost_usd >= 0",
+            name="ck_research_calls_cost_non_negative",
+        ),
+        CheckConstraint(
+            "quota_units IS NULL OR quota_units >= 0",
+            name="ck_research_calls_quota_non_negative",
+        ),
+        UniqueConstraint(
+            "request_id", "provider_call", "call_seq", name="uq_research_calls_call_seq"
+        ),
+        UniqueConstraint("idempotency_key", name="uq_research_calls_idempotency_key"),
+        Index("ix_research_calls_request_input", "request_id", "provider_call", "input_hash"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("research_requests.id", ondelete="RESTRICT"), nullable=False
+    )
+    provider_call: Mapped[str] = mapped_column(String(16), nullable=False)
+    call_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    quota_units: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reserved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    #: 呼び出しの直前に commit する境界。NULL なら「送っていない」証拠
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_summary: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+
+class ResearchArtifactRow(Base):
+    """research 所有の成果物（ADR-0037 §5）。本体は ArtifactStore の ``research/`` 配下。
+
+    ``(request_id, artifact_type)`` ごとに現行世代（``superseded_at IS NULL``）は常に1本。
+    """
+
+    __tablename__ = "research_artifacts"
+    __table_args__ = (
+        _check("artifact_type", ResearchArtifactType, "ck_research_artifacts_type"),
+        CheckConstraint("version >= 1", name="ck_research_artifacts_version_positive"),
+        CheckConstraint("size_bytes >= 0", name="ck_research_artifacts_size_non_negative"),
+        UniqueConstraint(
+            "request_id", "artifact_type", "sha256", name="uq_research_artifacts_content"
+        ),
+        UniqueConstraint(
+            "request_id", "artifact_type", "version", name="uq_research_artifacts_version"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("research_requests.id", ondelete="RESTRICT"), nullable=False
+    )
+    artifact_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    bucket: Mapped[str] = mapped_column(String(63), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+Index(
+    "uq_research_artifacts_current",
+    ResearchArtifactRow.request_id,
+    ResearchArtifactRow.artifact_type,
+    unique=True,
+    sqlite_where=text("superseded_at IS NULL"),
+    postgresql_where=text("superseded_at IS NULL"),
+)

@@ -310,3 +310,31 @@ provider がこちらの入力（URL のファイル）を取得できなかっ�
 / `tests/integration/test_input_fetch_retry_e2e.py::test_transient_input_fetch_failure_is_retried_once_with_a_new_url_through_upload`
 / `::test_second_input_fetch_failure_stops_and_resume_does_not_submit_again`
 / `tests/contract/test_migration_frozen_vocabulary.py::test_0014_legacy_file_download_error_is_backfilled_as_unreachable_not_rejected`
+
+## L. Research（ADR-0037）
+
+### INV-36 Research 依頼の外部呼び出しは、依頼ごとの上限を超えない
+1 つの Research 依頼が行う外部呼び出し（検索・本文取得・評価）は、依頼を受けた時点で凍結した
+`limits` から決まる種別ごとの上限（`contracts.research.call_ceiling`）を超えない。呼び出しは
+`research_calls` に呼ぶ前に予約し、`reserved` / `spent` / `abandoned` のどの行も枠を数え、
+`call_seq` は再利用しない。アプリの採番に誤りがあっても、DB の `UNIQUE(request_id, provider_call, call_seq)`
+と `call_seq >= 1` が上限より多い行を拒否する。dispatch した呼び出しは `abandoned` にできない。
+**機械検査**: `tests/unit/test_research_call_ledger.py::test_the_ceiling_stops_the_next_reservation_before_insert`
+/ `::test_abandoned_and_spent_calls_still_count_and_seq_is_never_reused`
+/ `::test_re_reserving_the_same_key_returns_the_same_call_and_uses_no_budget`
+/ `::test_the_database_rejects_a_duplicate_call_seq`
+/ `::test_a_racing_writer_does_not_push_the_count_past_the_ceiling`
+/ `tests/contract/test_migration_0015_research.py::test_the_database_rejects_a_second_row_with_the_same_call_seq`
+/ `tests/contract/test_migration_0015_research.py::test_the_database_rejects_invalid_ledger_rows`
+（本物の並行トランザクションでの検査は未移植。PostgreSQL の integration テストは Worker の段で足す）
+
+### INV-37 Research は本番の表と課金コードに触れず、Episode 本番工程は Research を待たない
+Research は `jobs` / `artifact_metadata` / `provider_reservations` / `provider_rejections` に書かず、
+本番のリポジトリ（`infrastructure/db/repositories.py`）と課金コード（`infrastructure/production/`、
+`PaidJobRunner`）を import しない。research の表は research の表だけを FK で指し、本番の表は research の表を
+指さない。本番の工程（production / render / upload / storyboard / pipeline / 課金）は Research を
+import しない。Research の結果が `completed` でなければ、呼び出し側は「調査なし」として調査前の挙動で続ける。
+**機械検査**: `tests/architecture/test_research_isolation.py`
+/ `tests/contract/test_migration_0015_research.py::test_upgrade_adds_only_research_tables_and_leaves_production_tables_alone`
+/ `tests/contract/test_migration_0015_research.py::test_research_tables_only_reference_research_tables`
+（企画・台本への opt-in 接続が既定 OFF で出力を変えないことの検査は、接続を入れる段（ADR-0037 §7）で足す）
