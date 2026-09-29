@@ -181,6 +181,13 @@ literal で重複している。新しい worker は `contracts.production_activ
 
 ## 機械検査
 
-INV-32〜34 は実装コミットで `docs/invariants.md` に追加し、同じコミットでテストを書く。
-連続試験（fake provider・隔離環境）: 通常生成 → 1シーンだけ 422 → 代替案 → そのシーンだけ
-再生成 → Render → private Upload。成功済みシーンの submit 回数・日次枠・投稿回数が増えないこと。
+INV-32〜34 は `docs/invariants.md`（各項の機械検査欄にテスト名）。連続試験（fake provider・隔離環境）:
+
+- `tests/integration/test_scene_rejection_recovery_e2e.py::test_only_the_rejected_scene_is_replanned_and_regenerated_through_private_upload`
+  — 通常生成 → 1シーンだけ 422（await・`body.image_url`）→ 代替案 → そのシーンだけ画像から
+  再生成 → Render → private Upload。成功済みシーンの submit 回数・日次枠・投稿回数が増えないこと
+- `tests/integration/test_incident_recovery_e2e.py::test_422_rejection_then_recipe_version_bump_rebills_nothing_and_never_resends_the_image`
+  — 版上げだけでは何も再課金せず、拒否された画像も送らず、planner 不在なら止まること
+
+テストごとの設計根拠: `docs/testing/scene-rejection-recovery-rationale.md` /
+`scene-identity-rationale.md` / `storyboard-visual-subject-rationale.md`。

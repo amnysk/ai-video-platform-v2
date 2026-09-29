@@ -31,6 +31,7 @@ from temporalio.worker import Worker
 from contracts.production_activities import (
     IMAGE_AWAIT,
     IMAGE_SUBMIT,
+    PLAN_SCENE_ALTERNATIVE,
     PRODUCTION_ADMIT,
     PRODUCTION_ASSEMBLE_MANIFEST,
     PRODUCTION_MARK_READY,
@@ -41,6 +42,7 @@ from contracts.production_activities import (
     VOICE_GENERATE,
     ImageAwaitRequest,
     ImageSubmitRequest,
+    PlanSceneAlternativeRequest,
     ProductionAdmitRequest,
     ProductionAdmitResult,
     ProductionAssembleRequest,
@@ -66,6 +68,7 @@ from domain.errors import (
     ProviderJobFailedError,
     ProviderPollDeadlineError,
     ProviderRejectedError,
+    SceneAlternativePlannerUnavailableError,
 )
 from workers.production.run_inspector import TemporalWorkflowRunInspector
 from workers.production.workflows import (
@@ -120,6 +123,8 @@ class Mocks:
     voice_errors: dict[str, list[ApplicationError]] = field(default_factory=dict)
     #: scene -> await を cancel まで終わらせない
     hang_image_await: set[str] = field(default_factory=set)
+    #: ADR-0035: 代替案の計画を頼まれたシーン（mock は planner 不在の worker と同じ応答）
+    alternative_plans: list[str] = field(default_factory=list)
     delay_seconds: float = 0.0
     inflight: dict[str, int] = field(default_factory=lambda: {"image": 0, "video": 0, "voice": 0})
     max_inflight: dict[str, int] = field(
@@ -256,6 +261,14 @@ class Mocks:
 
         return [generate]
 
+    def alternative_activities(self) -> list[Callable[..., Any]]:
+        @activity.defn(name=PLAN_SCENE_ALTERNATIVE)
+        async def plan(req: PlanSceneAlternativeRequest) -> Any:
+            self.alternative_plans.append(req.scene_id)
+            raise _error(SceneAlternativePlannerUnavailableError, "no planner", non_retryable=True)
+
+        return [plan]
+
 
 @pytest_asyncio.fixture
 async def env() -> Client:
@@ -277,6 +290,7 @@ async def _run(
         "image": f"production-image-test-{suffix}",
         "video": f"production-video-test-{suffix}",
         "voice": f"production-voice-test-{suffix}",
+        "alternative": f"production-alternative-test-{suffix}",
     }
     workers = [
         Worker(
@@ -288,6 +302,7 @@ async def _run(
         Worker(client, task_queue=queues["image"], activities=mocks.image_activities()),
         Worker(client, task_queue=queues["video"], activities=mocks.video_activities()),
         Worker(client, task_queue=queues["voice"], activities=mocks.voice_activities()),
+        Worker(client, task_queue=queues["alternative"], activities=mocks.alternative_activities()),
     ]
     for w in workers:
         await w.__aenter__()
@@ -299,6 +314,7 @@ async def _run(
                 image_task_queue=queues["image"],
                 video_task_queue=queues["video"],
                 voice_task_queue=queues["voice"],
+                scene_alternative_task_queue=queues["alternative"],
                 **overrides,
             ),
             id=f"episode-ep-1-production-{suffix}-{next(_ids)}",
@@ -378,9 +394,16 @@ async def test_retryable_failure_exhausts_image_rounds_then_records_failure(env)
 
 
 async def test_needs_input_stops_without_further_rounds(env) -> None:
+    """内容拒否（needs_input）は同じ入力で次のラウンドへ進まない。
+
+    ADR-0035 以降、``ProviderRejectedError`` はまず代替案の計画を1回だけ頼む。planner が
+    代替案を出せない（ここでは planner の居ない worker と同じ応答）なら、追加の submit をせず
+    blocked で止まる。
+    """
     mocks = Mocks(image_submit_behavior={("sb3", 1): _error(ProviderRejectedError, "policy")})
     result = await _run(env, mocks)
 
+    assert mocks.alternative_plans == ["sb3"]
     assert [r for s, r in mocks.image_submits if s == "sb3"] == [1]
     assert "assemble" not in mocks.calls and "mark_ready" not in mocks.calls
     (failure,) = mocks.failures

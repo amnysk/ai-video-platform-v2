@@ -64,10 +64,15 @@ from infrastructure.db.repositories import (
 from infrastructure.production.paid_job import PaidJobRunner, Submitted
 from infrastructure.temporal.watchdog import TemporalPipelineOutcomeChecker, run_daily_watchdog
 from tests.support.db import assert_destructive_allowed, require_test_database_url
-from tests.support.production import FakeImageGenerator, FakeVideoGenerator
+from tests.support.production import (
+    LIKENESS_REJECTION,
+    FakeImageGenerator,
+    FakeVideoGenerator,
+)
 from tests.support.schedule_control import FakeScheduleControl
 from tests.support.storyboard import BUCKET, record_script
 from workers.production.activities import ProductionActivities
+from workers.production.scene_recovery_activities import SceneAlternativeActivities
 from workers.production.workflows import ProductionWorkflow, ProductionWorkflowInput
 from workers.production_image.activities import ImageProductionActivities
 from workers.production_video.activities import VideoProductionActivities
@@ -168,7 +173,8 @@ class FaultyVideoGenerator(FakeVideoGenerator):
         self.submits_by_scene[scene] = self.submits_by_scene.get(scene, 0) + 1
         if scene in self.reject_scenes:
             raise ProviderRejectedError(
-                f"fal job failed: HTTP 422 types=['content_policy_violation'] for {scene}"
+                f"fal job failed: HTTP 422 types=['content_policy_violation'] for {scene}",
+                rejection=LIKENESS_REJECTION,
             )
         return await super().submit(request)
 
@@ -266,6 +272,8 @@ class Stack:
     tmp_path: Path
     image: SceneAwareImageGenerator
     video: FaultyVideoGenerator
+    #: ADR-0035 の代替案 planner。``None`` なら計画せず needs_input（本番で worker が居ない状態）
+    planner: Any = None
 
     async def run(self, episode_id: str):
         from infrastructure.media.probe import PillowAvMediaProbe
@@ -273,7 +281,8 @@ class Stack:
 
         suffix = uuid.uuid4().hex[:10]
         queues = {
-            k: f"incident-e2e-{k}-{suffix}" for k in ("production", "image", "video", "voice")
+            k: f"incident-e2e-{k}-{suffix}"
+            for k in ("production", "image", "video", "voice", "alternative")
         }
         f, s = self.factory, self.store
         runner = PaidJobRunner(session_factory=f, store=s, workdir=_workdir(self.tmp_path / "work"))
@@ -301,6 +310,13 @@ class Stack:
             Worker(self.client, task_queue=queues["image"], activities=image.all_activities()),
             Worker(self.client, task_queue=queues["video"], activities=video.all_activities()),
             Worker(self.client, task_queue=queues["voice"], activities=voice.all_activities()),
+            Worker(
+                self.client,
+                task_queue=queues["alternative"],
+                activities=SceneAlternativeActivities(
+                    session_factory=f, store=s, bucket=BUCKET, planner=self.planner
+                ).all_activities(),
+            ),
         ]
         for w in workers:
             await w.__aenter__()
@@ -316,6 +332,7 @@ class Stack:
                     image_task_queue=queues["image"],
                     video_task_queue=queues["video"],
                     voice_task_queue=queues["voice"],
+                    scene_alternative_task_queue=queues["alternative"],
                 ),
                 id=f"episode-{episode_id}-production",
                 task_queue=queues["production"],
@@ -408,26 +425,22 @@ async def test_sb6_403_blocks_then_recovery_resumes_only_sb6_without_recharging(
     assert videos_final == set(SIX_SCENES)
 
 
-async def test_422_content_policy_rejection_blocks_same_input_retry_then_version_bump_mitigation(
+async def test_422_rejection_then_recipe_version_bump_rebills_nothing_and_never_resends_the_image(
     client, factory, store, tmp_path, monkeypatch
 ) -> None:
-    """2026-09-26/27型の事故(ADR-0034): 422はsubmit後の拒否で予約は既にspent。
+    """2026-09-26/27 型の拒否に、ADR-0034 の緩和（prompt 版を上げる）だけを当てた場合（ADR-0035）。
 
-    (1) 拒否されたシーンは同一input_hashで自動再送されない（``ProviderRejectedRetryBlockedError``、
-        再課金なし）。
-    (2) 実際の緩和策（``VIDEO_PROMPT_BUILDER_VERSION`` を上げてプロンプト文面を変える）を適用して
-        resumeすると、拒否されたシーン自身は新しい input_hash で回復する。
+    旧版のこの試験は「版を上げると全6シーンが再送・再課金される」を**既知のギャップとして**
+    assert していた。ADR-0035（INV-33 / INV-32）でそれは不具合になったので、次を固定する:
 
-    **この試験が実証する制約（想定どおりの動作ではなく、実装を読んでから検証した事実）**:
-    ``VideoProductionActivities._generation_profile_id`` は
-    ``generator.generation_profile_id + "+" + motion.motion_profile_id`` であり、
-    ``motion_profile_id`` は ``domain.production.prompting.VIDEO_PROMPT_BUILDER_VERSION``
-    （モジュール全体で共有）を読む。したがって版を上げる緩和策は、同じ
-    ``VideoProductionActivities`` インスタンスが扱う**全シーン**の ``video_input_hash`` を
-    変える。``find_and_verify_current`` / ``find_latest_for_input`` は ``input_hash`` 完全一致
-    でしか既存を見つけないため（ADR-0033/0034）、既に成功していたシーンも「現行が無い」
-    ＝新規ラウンドとして扱われ、**再送・再課金される**。これは422対応（ADR-0034）が想定していた
-    「拒否されたシーンだけを直す」を満たさない残存ギャップとして、この試験で確定させる。
+    (1) 拒否（``body.image_url``）の後、planner が居なければ計画せず needs_input で止まる
+        （同じ入力の自動再送もしない）
+    (2) prompt 版だけを上げて再実行しても、成功済みの sb1〜sb5 は画像・動画とも再送しない
+        （``content_fingerprint`` で再利用）
+    (3) sb6 は版の違いで動画の input_hash が変わっても、**拒否された同じ画像**なので送らない
+        （テキストだけ変えた再送の禁止）。人の判断（または代替案）を待つ
+
+    代替案で完成まで進む側は ``test_scene_rejection_recovery_e2e.py`` が担う。
     """
     episode_id = await _seed(factory, store)
     image = SceneAwareImageGenerator(pending_polls=1, cost_usd=0.04)
@@ -446,39 +459,22 @@ async def test_422_content_policy_rejection_blocks_same_input_retry_then_version
     }
     assert videos_so_far == {"sb1", "sb2", "sb3", "sb4", "sb5"}
 
-    # ---- (1) 緩和なしで再実行: 同一 input_hash では自動再送されない（ADR-0034のretry-block）
-    submits_before_bare_rerun = dict(video.submits_by_scene)
-    bare_rerun = await stack.run(episode_id)
-    assert bare_rerun.status == EpisodeStatus.BLOCKED.value, bare_rerun
-    assert bare_rerun.failure_class == "needs_input"
-    assert video.submits_by_scene == submits_before_bare_rerun, (
-        "sb6 は同一入力のまま自動再送されてはいけない（ADR-0034 のretry-block）"
-    )
-
-    # ---- (2) 実際の緩和策を適用: プロンプト組み立て規則の版を上げる（ADR-0034 が実際に行った変更）
+    # ---- ADR-0034 の緩和だけを当てる: prompt 組み立て規則の版を上げ、provider も拒否をやめる
     import domain.production.prompting as prompting
 
-    monkeypatch.setattr(prompting, "VIDEO_PROMPT_BUILDER_VERSION", "3")
+    monkeypatch.setattr(prompting, "VIDEO_PROMPT_BUILDER_VERSION", "99")
+    monkeypatch.setattr(prompting, "IMAGE_PROMPT_BUILDER_VERSION", "99")
     video.reject_scenes = set()
-    submits_before_mitigation = dict(video.submits_by_scene)
+    image_before = dict(image.submits_by_scene)
+    video_before = dict(video.submits_by_scene)
 
-    mitigated = await stack.run(episode_id)
+    again = await stack.run(episode_id)
 
-    assert mitigated.status == EpisodeStatus.ASSETS_READY.value, mitigated
-    resubmitted_scenes = {
-        scene
-        for scene, count in video.submits_by_scene.items()
-        if count > submits_before_mitigation.get(scene, 0)
-    }
-    # sb6（拒否されたシーン）は新しい input_hash で新規 submit されるはず
-    assert "sb6" in resubmitted_scenes
-    # **既知のギャップ**: version bump は VideoProductionActivities 共有の motion_profile_id を
-    # 通じて全シーンの input_hash を変えるため、sb1〜sb5 も未実施として再送・再課金される。
-    # このアサーションが将来 False になったら（誰かが per-scene な緩和に直したら）このテストと
-    # 上のdocstringを更新すること。
-    assert resubmitted_scenes == set(SIX_SCENES), (
-        f"resubmitted={resubmitted_scenes}; ADR-0034のprompt-version緩和策は全シーン共有の"
-        "motion_profile_idを変えるため、既に成功していたシーンも再送・再課金される既知のギャップ"
+    assert again.status == EpisodeStatus.BLOCKED.value, again
+    assert again.failure_class == "needs_input"
+    assert image.submits_by_scene == image_before, "成功済みの画像を版の違いだけで作り直した"
+    assert video.submits_by_scene == video_before, (
+        "版の違いだけで成功済みの動画を再送したか、拒否された画像を文面だけ変えて再送した"
     )
 
 

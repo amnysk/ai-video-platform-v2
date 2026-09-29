@@ -92,3 +92,16 @@ Temporal の決定論の中で「どのシーンの何を呼び直すか」を�
 | テスト | 守るもの |
 |---|---|
 | `test_await_time_content_rejection_records_the_input_image_and_blocks_it` | 本番の 422 は submit ではなく **await（result 取得）** で返る。各担当の単体テストは submit 側と paid_job 単体で画像キーを検査していたが、動画 Activity が `await_output` に入力画像の sha256 を渡していなかったため、本番の経路では拒否行の `source_media_sha256` が NULL になり、INV-32 の画像ゲートが一度も効かない状態だった。Activity を通して「await で拒否 → 画像キーが残る → 文面を変えた同じ画像の submit が予約前に止まる（provider への submit は1回のまま）」を固定する。Activity と PaidJobRunner の境界の配線なので、両方を本物で通す unit にした |
+
+## 連続シナリオ（integration。実 PostgreSQL / MinIO / Temporal、provider・planner・描画・投稿は fake）
+
+隔離: DB は一時スキーマ、Temporal はテスト専用 namespace `avp-test`、MinIO は `artifacts-test`。
+本番の worker は namespace `default` だけを poll するので、本物の Production / Render / Upload
+workflow を試験専用 queue で動かしても本番の provider へ到達しない（`test_episode_resume.py` の
+docstring にある「本物の stage を通すと本番 worker が拾う」懸念は、r3-isolation 以前の前提）。
+
+| テスト | 守るもの |
+|---|---|
+| `test_scene_rejection_recovery_e2e.py::test_only_the_rejected_scene_is_replanned_and_regenerated_through_private_upload` | ADR-0035 の目的そのもの。fake は実際の拒否に合わせ、**動画の await で** `body.image_url` を理由に拒否し、判定は画像の sha256 で決まる（テキストを変えても同じ画像なら拒否）。画像生成器はプロンプトで絵が変わる。1回の Production 実行で: sb1〜sb5 の画像・動画 submit は各1回のまま、sb6 だけ画像から作り直して動画が2回目で成功、拒否された画像は再送されない、代替案は1回・人物を主題にしない・根拠と拒否 id つき、manifest は作り直した sb6 を指す。続けて本物の Render・private Upload が1回ずつ、Upload の再実行で二重投稿しない、日次枠は1行のまま。回数（fake の呼び出し）と台帳（`provider_reservations`・`provider_rejections`・Artifact）の両方で見る。**変異確認**: 動画 Activity の await に画像 sha を渡す1行を戻すと、この試験は拒否行の画像キーが NULL で落ちる |
+| `test_incident_recovery_e2e.py::test_422_rejection_then_recipe_version_bump_rebills_nothing_and_never_resends_the_image` | 旧版は「prompt 版を上げると全6シーン再送」を**既知のギャップとして assert** していた（`8a8c499`）。ADR-0035（INV-33/INV-32）でそれは不具合になったので、同じ状況（sb6 が画像を理由に拒否、ADR-0034 の緩和＝版上げだけを当てる）で「成功済みシーンの画像・動画を1件も再送しない」「拒否された同じ画像を文面だけ変えて送らない」「planner が居なければ needs_input で止まる」を固定する。仕様変更は ADR-0035 で承認 |
+| `test_production_workflow.py::test_needs_input_stops_without_further_rounds`（既存を更新） | mock の Activity 群に代替案の計画 Activity（planner 不在の worker と同じく `SceneAlternativePlannerUnavailableError`）を足し、「内容拒否はまず計画を**1回だけ**頼み、代替案が無ければ追加 submit せず blocked」を固定した。更新しないと、ADR-0035 の復旧 Activity に応答する worker が居ないため workflow が計画待ちで終わらなかった（本番で planner worker を配線し忘れた場合の挙動そのもので、`scene-alternative-worker` を compose に置いた理由でもある）。元の意図「同じ入力で次のラウンドへ進まない」は保っている |
