@@ -29,6 +29,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 RESEARCH_PATHS: tuple[str, ...] = (
     "contracts/research.py",
     "contracts/research_evidence.py",
+    "contracts/research_trend.py",
     "domain/research",
     "infrastructure/research",
     "infrastructure/db/research_repositories.py",
@@ -41,6 +42,7 @@ RESEARCH_PATHS: tuple[str, ...] = (
 RESEARCH_MODULE_PREFIXES: tuple[str, ...] = (
     "contracts.research",
     "contracts.research_evidence",
+    "contracts.research_trend",
     "domain.research",
     "infrastructure.research",
     "infrastructure.db.research_repositories",

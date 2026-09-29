@@ -102,8 +102,11 @@ disputed > insufficient）。規則は旧 ADR-0032 §2 と同じ意味: 抜粋�
 ### 6. 既存テストの変更（この ADR が承認する）
 
 - `tests/unit/test_research_registry.py` の `test_no_kind_specific_handler_is_registered_yet`（B2）を
-  `tests/unit/test_research_registry.py::test_only_the_evidence_handler_is_registered` に置き換えた。旧テストの docstring 自身が「後続の段で登録
+  `test_only_the_evidence_handler_is_registered` に置き換えた。旧テストの docstring 自身が「後続の段で登録
   する」と予告していた仕様の変更で、Trend が未登録であることは引き続き検査する（緩めていない）。
+  （追記 2026-09-30: B5 で Trend を登録したので、ADR-0039 §6 がこのテストを
+  `tests/unit/test_research_registry.py::test_exactly_the_evidence_and_trend_handlers_are_registered`
+  に置き換えた。）
 - `tests/architecture/test_research_isolation.py` の検査対象に新しいモジュールを**足した**（検査が広がる側）。
 
 **読み手・書き手（AGENTS.md §8 の grep 記録、B4）**: `git grep -n "<key>" 8e0f8cb -- apps workers domain

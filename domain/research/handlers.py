@@ -11,13 +11,16 @@ Research の**共通の骨格**（予約・予算・検索と本文取得の実�
 - 上限は Handler を信用しない: 実行器が ``plan_within_ceiling`` / ``dedupe_fetch_targets`` で切る
 - 「根拠が見つからなかった」は例外ではなく成果物の中身（実行状態と評価は別。ADR-0037 §3）
 
-拡張点（後続の段）:
+拡張点:
 - Evidence の Handler（ADR-0038）と Trend の Handler（ADR-0039）はこの Protocol を実装し、
   ``infrastructure/research/registry.py::build_handlers`` に登録する
 - LLM による評価（``ResearchCall.ASSESS``）は、実行器の「評価」の段が同じ台帳を通して行う
   （ADR-0038）。評価を使う Handler は ``AssessingHandler``（``plan_assessments``）も実装し、
   実行器が評価した結果を ``SynthesisContext.assessments`` で受け取る。``synthesize`` の中で
   外部を呼ばない
+- Trend の解釈（``TrendInterpreter``。ADR-0039）も同じ ``ResearchCall.ASSESS`` の台帳・枠を通る。
+  解釈を使う Handler は ``InterpretingHandler``（``plan_interpretation``）を実装し、結果を
+  ``SynthesisContext.interpretations`` で受け取る
 """
 
 from __future__ import annotations
@@ -36,8 +39,10 @@ from contracts.research import (
     TrendResearchRequest,
 )
 from contracts.research_evidence import AssessmentProposal
+from contracts.research_trend import InterpretationProposal
 from domain.research.evidence_ports import AssessClaim, Passage
 from domain.research.ports import FetchedContent, SearchHit, SearchQuery, SearchResults
+from domain.research.trend_ports import CandidateFact, InterpretContext, ObservationFact
 from domain.research.urls import normalize_url
 
 __all__ = [
@@ -49,6 +54,9 @@ __all__ = [
     "FetchTarget",
     "FetchedSource",
     "HandlerOutput",
+    "InterpretationOutcome",
+    "InterpretationTask",
+    "InterpretingHandler",
     "ResearchHandler",
     "ResearchSpec",
     "SearchRound",
@@ -119,6 +127,26 @@ class AssessmentOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class InterpretationTask:
+    """Trend の解釈 1 回（解釈器への 1 呼び出し。台帳の ``assess`` 1 行。ADR-0039）。"""
+
+    #: 依頼の中で一意・決定的
+    task_id: str
+    observations: tuple[ObservationFact, ...]
+    candidates: tuple[CandidateFact, ...]
+    context: InterpretContext
+
+
+@dataclass(frozen=True, slots=True)
+class InterpretationOutcome:
+    """解釈 1 回の結果。失敗・未実行は ``proposal=None`` と理由コード（``error``）。"""
+
+    task_id: str
+    proposal: InterpretationProposal | None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SynthesisContext:
     """``synthesize`` に渡す実行の事実。判断に使うが、成果物の内容そのものではない。"""
 
@@ -134,6 +162,10 @@ class SynthesisContext:
     assessments: tuple[AssessmentOutcome, ...] = ()
     #: 上限・期限・停止・評価器なしで**実行しなかった**評価の ``task_id``
     assessments_skipped: tuple[str, ...] = ()
+    #: 実行器が台帳を通して行った解釈の結果（``InterpretingHandler`` だけが使う。ADR-0039）
+    interpretations: tuple[InterpretationOutcome, ...] = ()
+    #: 期限・停止・解釈器なしで**実行しなかった**解釈の ``task_id``
+    interpretations_skipped: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +224,20 @@ class AssessingHandler(ResearchHandler, Protocol):
         fetched: Sequence[FetchedSource],
     ) -> tuple[AssessmentTask, ...]:
         """行いたい評価を優先順で返す（決定的）。上限を超えた分は実行器が落とす。"""
+        ...
+
+
+@runtime_checkable
+class InterpretingHandler(ResearchHandler, Protocol):
+    """解釈器（``ResearchCall.ASSESS``。Trend の ``TrendInterpreter``）を使う Handler。"""
+
+    def plan_interpretation(
+        self,
+        spec: ResearchSpec,
+        rounds: Sequence[SearchRound],
+        fetched: Sequence[FetchedSource],
+    ) -> InterpretationTask | None:
+        """行いたい解釈（決定的）。解釈する観測が無ければ ``None``（解釈器を呼ばない）。"""
         ...
 
 

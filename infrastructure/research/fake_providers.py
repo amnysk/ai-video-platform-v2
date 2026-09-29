@@ -57,11 +57,14 @@ class FakeSearchProvider(_FaultInjection):
         *,
         clock: Callable[[], datetime] | None = None,
         youtube_cost_units: int = YOUTUBE_FULL_SEARCH_UNITS,
+        stat_observed_at: datetime | None = None,
     ) -> None:
         super().__init__()
         self._corpus = corpus or default_corpus()
         self._clock = clock or (lambda: FIXED_NOW)
         self._youtube_cost_units = youtube_cost_units
+        #: 統計を「観測した」時刻。既定は固定値。同じ動画の別時点の観測を作るときに変える
+        self._stat_observed_at = stat_observed_at or OBSERVED_AT
         self.calls: list[SearchQuery] = []
 
     def fail_with_429(self, times: int = 1) -> None:
@@ -73,7 +76,9 @@ class FakeSearchProvider(_FaultInjection):
         self.calls.append(query)  # 失敗した呼び出しも「呼んだ」履歴に残す
         self._maybe_fail()
         matched = self._corpus.search(query)
-        hits = tuple(self._hit(doc, query) for doc in matched[: query.max_results])
+        hits = tuple(
+            self._hit(doc, query, self._stat_observed_at) for doc in matched[: query.max_results]
+        )
         return SearchResults(
             query=query,
             hits=hits,
@@ -84,7 +89,7 @@ class FakeSearchProvider(_FaultInjection):
         )
 
     @staticmethod
-    def _hit(doc: CorpusDocument, query: SearchQuery) -> SearchHit:
+    def _hit(doc: CorpusDocument, query: SearchQuery, observed_at: datetime) -> SearchHit:
         extras: dict[str, str] = {}
         # 指定した値を残すだけ。人気・言語・視聴者層を断定しない
         if query.region_code:
@@ -92,7 +97,7 @@ class FakeSearchProvider(_FaultInjection):
         if query.language:
             extras["requested_relevance_language"] = query.language
         stats = tuple(
-            StatObservation(metric, value, "count", OBSERVED_AT)
+            StatObservation(metric, value, "count", observed_at)
             for metric, value in (
                 ("view_count", doc.view_count),
                 ("like_count", doc.like_count),

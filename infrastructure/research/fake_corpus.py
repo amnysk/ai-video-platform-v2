@@ -16,11 +16,15 @@ Evidence / Trend の**難しい場合**を 1 件ずつ持つ。
 - 異説を述べる資料（``TANEGASHIMA_DISSENT``）
 
 **誤りを含む資料**（``MEIJI_WRONG_YEAR`` / ``*_ALL``）は検査用の意図的な誤りで、事実ではない。
+
+YouTube の資料の ``channel_id`` は本物と同じ形（``UC`` + 22 文字。``contracts/upload.py`` の
+``YOUTUBE_CHANNEL_ID_PATTERN``）。Trend の契約はこの形でない channel id を参照に載せない
+（ADR-0039）。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from domain.research.ports import FetchErrorKind, SearchKind, SearchQuery
@@ -129,6 +133,21 @@ def _d(year: int, month: int, day: int) -> datetime:
 
 def default_corpus() -> ResearchCorpus:
     return ResearchCorpus(_DOCUMENTS)
+
+
+def with_view_counts(corpus: ResearchCorpus, view_counts: dict[str, int]) -> ResearchCorpus:
+    """同じ動画の**別の時点**の観測を作る。``view_counts`` は URL → 累積再生数。
+
+    Trend の差分（``views_per_hour_delta``）の検査用。
+
+    ``FakeSearchProvider(corpus, stat_observed_at=...)`` と組み合わせて、同じ動画の 2 時点を作る。
+    """
+    return ResearchCorpus(
+        tuple(
+            replace(doc, view_count=view_counts[doc.url]) if doc.url in view_counts else doc
+            for doc in corpus.documents
+        )
+    )
 
 
 _DOCUMENTS: tuple[CorpusDocument, ...] = (
@@ -304,7 +323,7 @@ _DOCUMENTS: tuple[CorpusDocument, ...] = (
         published_at=_d(2026, 8, 10),
         keywords=("関ヶ原",),
         video_id="sekigahara01",
-        channel_id="UC_hist_1",
+        channel_id="UChist100000000000000000",
         channel_title="歴史ちゃんねる",
         view_count=152_000,
         like_count=4_300,
@@ -321,7 +340,7 @@ _DOCUMENTS: tuple[CorpusDocument, ...] = (
         published_at=_d(2026, 8, 25),
         keywords=("関ヶ原",),
         video_id="sekigahara02",
-        channel_id="UC_hist_2",
+        channel_id="UChist200000000000000000",
         channel_title="日本史ショート",
         view_count=980_000,
         like_count=31_000,
@@ -338,7 +357,7 @@ _DOCUMENTS: tuple[CorpusDocument, ...] = (
         published_at=_d(2026, 7, 1),
         keywords=("鉄砲伝来", "鉄砲"),
         video_id="tanegashima01",
-        channel_id="UC_hist_1",
+        channel_id="UChist100000000000000000",
         channel_title="歴史ちゃんねる",
         view_count=42_000,
         like_count=900,
@@ -355,7 +374,7 @@ _DOCUMENTS: tuple[CorpusDocument, ...] = (
         published_at=_d(2026, 9, 1),
         keywords=("明治維新",),
         video_id="meiji01",
-        channel_id="UC_hist_3",
+        channel_id="UChist300000000000000000",
         channel_title="近代史ラボ",
         view_count=310_000,
         like_count=8_800,

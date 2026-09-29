@@ -1,6 +1,6 @@
 # research-worker の運用
 
-Status: **Accepted (2026-09-29)**（ADR-0037 §8.5、Evidence は ADR-0038）
+Status: **Accepted (2026-09-30)**（ADR-0037 §8.5、Evidence は ADR-0038、Trend は ADR-0039）
 
 Research（Trend / Evidence）の依頼を実行する常駐 worker。**補助機能**であり、Episode の日次・pipeline・
 企画・台本・制作・投稿はこの worker を起動しない・待たない（INV-37）。research-worker が止まっていても、
@@ -32,11 +32,13 @@ Provider が未設定でも、Episode の工程は変わらずに進む。
 - `.env` の `RESEARCH_PROVIDER` は api と research-worker の**両方**が読む。片方だけ変えると、受け付けか実行の
   どちらかの門で `blocked` になる（安全側）。変えたら両方を作り直す:
   `docker compose --profile core up -d api research-worker`。
-- **Evidence の Handler はある**（ADR-0038）。`fake` では Fake 検索・Fake 取得・Fake 評価器
-  （`FakeEvidenceAssessor`）で `research_evidence` の成果物まで作る。**Trend の Handler はまだ無い**
-  （ADR-0039 で入る）。Trend の依頼は workflow が走って `blocked`（`handler_not_available`）で終わる。
-- 評価器（LLM）は `fake` のときだけ組まれる。実 LLM は配線していない。評価の呼び出しも台帳
-  （`research_calls` の `assess` 行、枠は `max_assessments`）を通る（INV-36）。
+- **Evidence と Trend の Handler がある**（ADR-0038 / ADR-0039）。`fake` では Evidence は Fake 検索・Fake 取得・
+  Fake 評価器（`FakeEvidenceAssessor`）で `research_evidence` を、Trend は Fake 検索・Fake 解釈器
+  （`FakeTrendInterpreter`）で `research_trend` を作る（Trend は本文を取得しない）。
+- 評価器・解釈器（LLM）は `fake` のときだけ組まれる。実 LLM は配線していない。評価・解釈の呼び出しも台帳
+  （`research_calls` の `assess` 行、枠は `max_assessments`）を通る（INV-36）。Trend の解釈は 1 依頼 1 回。
+- **Trend の定期更新（Schedule）は無い**（ADR-0039。本番の Schedule と watchdog を変えないため）。Trend は
+  依頼を出したときだけ新しくなる。古くなった Trend の監視（anomaly）も無い。
 
 ## 3. 依頼の流れと状態
 
@@ -70,9 +72,11 @@ scripts/smoke-workers.sh                                           # research-wo
 1. `.env` を `RESEARCH_PROVIDER=fake` にし、`docker compose --profile core up -d api research-worker`。
 2. `POST /research/requests`（本体は `contracts/research.py` の `EvidenceResearchSubmit` / `TrendResearchSubmit`。
    `idempotency_key` 必須）。202 の `workflow_id` が `research-{request_id}` なら起動した。
-3. `GET /research/requests/{request_id}` で状態を見る。Evidence は `completed` か `partial`、Trend は
-   `blocked`（`handler_not_available`）で終わる（§2）。成果物は MinIO の
-   `research/{request_id}/research_evidence/{sha256}.json`。
+3. `GET /research/requests/{request_id}` で状態を見る。Evidence・Trend とも `completed` か `partial` で終わる。
+   成果物は MinIO の `research/{request_id}/research_evidence/{sha256}.json` /
+   `research/{request_id}/research_trend/{sha256}.json`。Fake のコーパスの YouTube 動画は 2026-07〜09 公開
+   なので、Trend を Fake で試すときは `as_of` をその近く（例: `2026-08-30T00:00:00Z`）にし、`time_window` を
+   数か月とる（外すと検索が空になる）。
 4. 試し終えたら `RESEARCH_PROVIDER=none` に戻す。
 
 同じ `idempotency_key` の再 POST は同じ依頼を返す（`queued` のままなら同じ workflow id で起動し直す。
@@ -90,6 +94,22 @@ scripts/smoke-workers.sh                                           # research-wo
   一覧に残るが根拠（`supports` / `qualifies`）にはならない。
 - 取得 1 件の一時障害（timeout・5xx）は依頼全体の retry になり、続けば `failed`（ADR-0037 §8.2 の規則。
   ADR-0038 Consequences に記録）。
+
+### Trend の結果の読み方（ADR-0039）
+
+- `observations` は**事実**（Provider が返した値と、そこから計算した値。どれも `observed_at` つき）。
+  `interpretations` / `suggested_angles` は**仮説**で、必ず観測 ID を根拠に持つ。
+- 増加速度は `growth_observation.metric` を見る: `views_per_hour_delta` は同じ動画を 2 時点で観測した差分、
+  `lifetime_average_views_per_hour` は公開からの平均（**参考値**。直近の伸びではない）。
+- 取れなかった値は `status: unknown` と `unknown_reason`（0 ではない）。**総合スコア・順位は無い**。
+- 形式は依頼の値（`format_basis: requested`・`format_confidence: low`）。動画の長さから Shorts とは判定していない。
+  `audience_hypothesis` は仮説（`measured: false`）。`region` は視聴可能地域の絞り込み。
+- `partial`: 解釈器が無い（`stop_code: assessor_not_available`）・解釈の提案を採用しなかった（`warnings` の
+  `interpreter proposal rejected`）・検索の失敗・統計の欠け・`call_budget_exhausted`。観測は残るが、
+  **呼び出し側は `completed` 以外を「Trend 無し」として扱う**。
+- 読み口 `ResearchGateway.latest_trend(channel_id, region, language)` は、最新の `completed` の Trend を
+  保存物の sha256 を照合してから返す。照合できなければ `None`（古い Trend に戻らない）。まだ API や企画工程からは
+  呼ばれない（Topic Planner への接続は B6。既定 OFF）。
 
 ### 台本の照合（ADR-0038 §4）
 

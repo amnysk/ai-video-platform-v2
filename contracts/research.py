@@ -118,8 +118,9 @@ class ResearchStopCode(StrEnum):
     BUDGET_NOT_SET = "budget_not_set"
     #: その種別（Trend / Evidence）の Handler が登録されていない
     HANDLER_NOT_AVAILABLE = "handler_not_available"
-    #: 評価器（``EvidenceAssessor``）が組まれていない。評価できなかった claim は ``insufficient``
-    #: のまま、依頼は ``partial``（合格にしない。ADR-0038）
+    #: 評価器（``EvidenceAssessor`` / ``TrendInterpreter``）が組まれていない。評価できなかった
+    #: claim は ``insufficient`` のまま・Trend は観測だけで解釈を持たないまま、依頼は
+    #: ``partial``（合格にしない。ADR-0038 / ADR-0039）
     ASSESSOR_NOT_AVAILABLE = "assessor_not_available"
     #: 呼び出し台帳の件数・金額・quota の上限に達した（INV-36）
     CALL_BUDGET_EXHAUSTED = "call_budget_exhausted"
@@ -155,8 +156,12 @@ PROVIDER_CONFIG_VERSION = "provider-config-1"
 
 # ------------------------------------------------------------------ 鮮度（再利用の窓。ADR-0037 §5）
 
-#: この時間以内に完了した同じ意味の Trend は再利用する。
+#: この時間以内に完了した同じ意味の Trend は再利用する。読む側（ADR-0039 §2）はこの時間以内の観測を
+#: ``fresh`` とする（どちらも設定値 ``trend_fresh_hours`` の既定値）。
 TREND_FRESH_HOURS = 24
+#: 観測からこの日数までの Trend は ``stale``（日時つき）として読める。それより古い Trend は ``none``
+#: （「Trend 無し」。ADR-0039 §2）。
+TREND_STALE_MAX_DAYS = 7
 #: Evidence の再確認期限（史実の有効期限ではなく、資料の再取得を促す運用値）。
 EVIDENCE_REVERIFY_DAYS = 30
 
@@ -623,6 +628,7 @@ __all__ = [
     "RESEARCH_WORKFLOW",
     "RESEARCH_WORKFLOW_NAME",
     "TREND_FRESH_HOURS",
+    "TREND_STALE_MAX_DAYS",
     "ClaimImportance",
     "ClaimInput",
     "ClaimKind",

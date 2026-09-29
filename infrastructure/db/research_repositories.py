@@ -332,6 +332,31 @@ class ResearchRequestRepository:
         )
         return [_to_request(row) for row in result.scalars()]
 
+    async def list_completed(
+        self, kind: ResearchKind, channel_id: str, *, limit: int = 50
+    ) -> list[ResearchRequest]:
+        """``channel_id`` の ``completed`` の依頼を新しい順（``as_of`` → ``finished_at``）に。
+
+        ``partial`` は合格ではないので含めない。種別固有の条件（Trend の地域・言語）と成果物の
+        検証は呼び出し側（``ResearchGateway.latest_trend``）が行う。ADR-0039 §4。
+        """
+        result = await self._session.execute(
+            select(ResearchRequestRow)
+            .where(
+                ResearchRequestRow.kind == kind.value,
+                ResearchRequestRow.channel_id == channel_id,
+                ResearchRequestRow.status == ResearchStatus.COMPLETED.value,
+            )
+            .order_by(
+                ResearchRequestRow.as_of.desc(),
+                ResearchRequestRow.finished_at.desc(),
+                ResearchRequestRow.id,
+            )
+            .limit(limit)
+            .execution_options(populate_existing=True)
+        )
+        return [_to_request(row) for row in result.scalars()]
+
     async def find_reusable(
         self, request_hash: str, not_older_than: datetime
     ) -> ResearchRequest | None:

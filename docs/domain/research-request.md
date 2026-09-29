@@ -57,7 +57,7 @@ Episode の状態機械（INV-8）とは別の表である。表に無い遷移�
 
 | クラス | メソッド |
 |---|---|
-| `ResearchRequestRepository` | `create_or_get` / `get` / `get_by_idempotency_key` / `mark_running` / `finish` / `resume` / `list_unstarted` / `find_reusable` |
+| `ResearchRequestRepository` | `create_or_get` / `get` / `get_by_idempotency_key` / `mark_running` / `finish` / `resume` / `list_unstarted` / `find_reusable` / `list_completed`（B5。Trend の読み口 `ResearchGateway.latest_trend` が使う。ADR-0039 §4） |
 | `ResearchCallRepository` | `reserve` / `mark_dispatched` / `mark_spent` / `mark_abandoned` / `list_for_request` / `find_ambiguous` |
 | `ResearchArtifactRepository` | `record` / `find_current` / `list_current` |
 

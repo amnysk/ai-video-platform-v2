@@ -48,6 +48,14 @@ reserved + dispatch 前                  呼んでいない証拠。その行で
 成果物の資料（``sources[].url``）は、この実行で取得した ``final_url`` に属することを確かめてから
 保存する（Handler を信用しない。外れたら ``ResearchOutputInvalidError``）。
 
+解釈（ADR-0039）: ``InterpretingHandler`` の ``plan_interpretation`` が計画した Trend の
+解釈 1 回を、評価と同じ台帳（``ResearchCall.ASSESS``。枠は ``max_assessments``。INV-36）と
+同じ書き込み順序で解釈器に送る。入力 hash は観測・候補・依頼の文脈の正準 JSON。
+解釈器が組まれていなければ呼ばずに
+``assessor_not_available`` で止め（``partial``）、Trend は観測だけになる。Trend の成果物は契約
+（``TrendArtifact``）を通し、候補の参照 URL がこの実行の検索結果の URL に属することを
+確かめてから保存する。
+
 成果物: 正準 JSON を ``research/{request_id}/{type}/{sha256}.json`` に ``put_json`` → 読み戻して
 sha256 を照合 → ``research_artifacts`` に記録 → 依頼を ``completed`` / ``partial`` に進める（記録と
 状態は同じ commit）。照合が合わなければ記録しない（``ResearchArtifactReadbackError``。retryable）。
@@ -68,6 +76,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from contracts.research import (
     ResearchArtifactRef,
+    ResearchArtifactType,
     ResearchCall,
     ResearchCallStatus,
     ResearchCoverage,
@@ -80,6 +89,7 @@ from contracts.research import (
     parse_research_spec,
 )
 from contracts.research_evidence import AssessmentProposal, parse_evidence_artifact
+from contracts.research_trend import InterpretationProposal, parse_trend_artifact
 from contracts.states import FailureClass
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.errors import NeedsInputError, PermanentError, RetryableError, TransientError
@@ -104,6 +114,9 @@ from domain.research.handlers import (
     FetchedSource,
     FetchTarget,
     HandlerOutput,
+    InterpretationOutcome,
+    InterpretationTask,
+    InterpretingHandler,
     ResearchHandler,
     ResearchSpec,
     SearchRound,
@@ -115,6 +128,7 @@ from domain.research.handlers import (
 from domain.research.keys import research_artifact_object_key
 from domain.research.ports import FetchedContent, SearchQuery, SearchResults
 from domain.research.status import RESEARCH_TERMINAL_STATUSES
+from domain.research.trend_ports import TrendInterpreter, interpretation_input_payload
 from domain.research.urls import normalize_url
 from infrastructure.db.research_repositories import (
     ResearchArtifactRepository,
@@ -132,6 +146,7 @@ from infrastructure.research.errors import (
 from infrastructure.research.raw_store import (
     ASSESS_CODEC,
     FETCH_CODEC,
+    INTERPRET_CODEC,
     SEARCH_CODEC,
     RawCodec,
     ResearchRawStore,
@@ -149,6 +164,7 @@ __all__ = [
     "ResearchExecutor",
     "assessment_hash",
     "call_idempotency_key",
+    "interpretation_hash",
     "query_hash",
     "url_hash",
 ]
@@ -196,6 +212,12 @@ def url_hash(url: str) -> str:
 def assessment_hash(task: AssessmentTask) -> str:
     """評価の入力 hash（claim と passage。同じ入力は同じ呼び出しに戻る）。"""
     return sha256_hex(canonical_json_bytes(assessment_input_payload(task.claim, task.passages)))
+
+
+def interpretation_hash(task: InterpretationTask) -> str:
+    """解釈の入力 hash（観測・候補・文脈。同じ入力は同じ呼び出しに戻る）。"""
+    payload = interpretation_input_payload(task.observations, task.candidates, task.context)
+    return sha256_hex(canonical_json_bytes(payload))
 
 
 def call_idempotency_key(
@@ -460,6 +482,18 @@ class ResearchExecutor:
             return await self._finish_without_artifact(loaded, ResearchStatus.BLOCKED, assess_stop)
         failures += assess_failures
 
+        (
+            interpreted,
+            skipped_interpretations,
+            interpret_failures,
+            interpret_stop,
+        ) = await self._interpret_all(loaded, handler, rounds, sources, started)
+        if interpret_stop is not None and interpret_stop.code is ResearchStopCode.AMBIGUOUS_CALL:
+            return await self._finish_without_artifact(
+                loaded, ResearchStatus.BLOCKED, interpret_stop
+            )
+        failures += interpret_failures
+
         ctx = SynthesisContext(
             request_id=loaded.request.id,
             as_of=spec.as_of,
@@ -468,17 +502,25 @@ class ResearchExecutor:
             failures=tuple(failures),
             assessments=tuple(assessments),
             assessments_skipped=tuple(skipped_assessments),
+            interpretations=tuple(interpreted),
+            interpretations_skipped=tuple(skipped_interpretations),
         )
         output = handler.synthesize(spec, ctx, rounds, sources)
         self._check_sources(handler, output, sources)
-        stop = search_stop or fetch_stop or assess_stop
+        self._check_trend(handler, output, rounds)
+        stop = search_stop or fetch_stop or assess_stop or interpret_stop
         if stop is None and plan_cut:
             stop = _stop(
                 ResearchStopCode.CALL_BUDGET_EXHAUSTED,
                 "the plan had more searches than max_searches",
             )
         degraded = bool(
-            skipped_searches or skipped_fetches or skipped_assessments or failures or stop
+            skipped_searches
+            or skipped_fetches
+            or skipped_assessments
+            or skipped_interpretations
+            or failures
+            or stop
         )
         status = (
             ResearchStatus.PARTIAL if degraded or not output.complete else ResearchStatus.COMPLETED
@@ -599,6 +641,98 @@ class ResearchExecutor:
             invoke=invoke,
             classify_value=lambda _proposal: "",
         )
+
+    async def _interpret_all(
+        self,
+        loaded: _Loaded,
+        handler: ResearchHandler,
+        rounds: Sequence[SearchRound],
+        sources: Sequence[FetchedSource],
+        started: datetime,
+    ) -> tuple[list[InterpretationOutcome], list[str], list[str], StopReason | None]:
+        """(解釈の結果, 実行しなかった解釈, 穴の理由コード, 止めた理由)。ADR-0039。"""
+        if not isinstance(handler, InterpretingHandler):
+            return [], [], [], None
+        task = handler.plan_interpretation(loaded.spec, rounds, sources)
+        if task is None:
+            return [], [], [], None
+        if not TASK_ID_PATTERN.match(task.task_id):
+            raise ResearchOutputInvalidError(
+                "the handler planned an invalid interpretation task id"
+            )
+        interpreter = self._providers.interpreter
+        if interpreter is None:
+            stop = _stop(
+                ResearchStopCode.ASSESSOR_NOT_AVAILABLE,
+                "no trend interpreter is configured; the trend keeps observations only",
+            )
+            return [], [task.task_id], [], stop
+        if self._past_deadline(started, loaded.limits):
+            stop = _stop(ResearchStopCode.DEADLINE_EXCEEDED, "research deadline passed")
+            return [], [task.task_id], [], stop
+        outcome = await self._interpret(loaded, task, interpreter)
+        if isinstance(outcome, _Done):
+            return [InterpretationOutcome(task.task_id, outcome.value)], [], [], None
+        if isinstance(outcome, _Failed):
+            failed = InterpretationOutcome(task.task_id, None, error=outcome.code)
+            return [failed], [], [f"interpret:{task.task_id}:{outcome.code}"], None
+        return [], [task.task_id], [], outcome.reason
+
+    async def _interpret(
+        self, loaded: _Loaded, task: InterpretationTask, interpreter: TrendInterpreter
+    ) -> _CallOutcome[InterpretationProposal]:
+        async def invoke() -> InterpretationProposal:
+            proposal: Any = await interpreter.interpret(
+                task.observations, task.candidates, task.context
+            )
+            data = (
+                proposal.model_dump() if isinstance(proposal, InterpretationProposal) else proposal
+            )
+            try:
+                return InterpretationProposal.model_validate(data)
+            except ValidationError as exc:  # 型に無い欄（総合スコア・観測の捏造）等。修復しない
+                raise ResearchOutputInvalidError(
+                    "interpreter output does not match the proposal schema"
+                ) from exc
+
+        return await self._run_call(
+            loaded,
+            call=ResearchCall.ASSESS,
+            input_hash=interpretation_hash(task),
+            provider_label=str(getattr(interpreter, "name", self._providers.mode)),
+            quota_units=None,
+            codec=INTERPRET_CODEC,
+            invoke=invoke,
+            classify_value=lambda _proposal: "",
+        )
+
+    @staticmethod
+    def _check_trend(
+        handler: ResearchHandler, output: HandlerOutput, rounds: Sequence[SearchRound]
+    ) -> None:
+        """Trend の成果物は契約を通し、参照 URL はこの実行の検索結果の URL だけ（ADR-0039）。"""
+        if handler.artifact_type is not ResearchArtifactType.RESEARCH_TREND:
+            return
+        try:
+            artifact = parse_trend_artifact(dict(output.artifact))
+        except ValidationError as exc:
+            raise ResearchOutputInvalidError("trend artifact violates its contract") from exc
+        searched = {
+            normalize_url(hit.url)
+            for r in rounds
+            if r.results is not None
+            for hit in r.results.hits
+        }
+        stray = [
+            ref.url
+            for candidate in artifact.candidates
+            for ref in candidate.references
+            if normalize_url(ref.url) not in searched
+        ]
+        if stray:
+            raise ResearchOutputInvalidError(
+                f"trend references were not found by this run's searches: {', '.join(stray)[:200]}"
+            )
 
     @staticmethod
     def _check_sources(

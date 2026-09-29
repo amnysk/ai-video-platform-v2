@@ -9,6 +9,8 @@ import pytest
 from pydantic import ValidationError
 
 from contracts.research import RESEARCH_PROVIDER_MODES, ResearchKind
+from domain.research.evidence_handler import EvidenceHandler
+from domain.research.trend_handler import TrendHandler
 from infrastructure.config import Settings
 from infrastructure.research.fake_providers import FakeContentFetcher, FakeSearchProvider
 from infrastructure.research.quota_costs import YOUTUBE_FULL_SEARCH_UNITS
@@ -65,13 +67,19 @@ def test_the_provider_config_version_separates_fake_results_from_other_modes() -
     assert provider_config_version("fake").endswith("+fake")
 
 
-def test_only_the_evidence_handler_is_registered() -> None:
-    """Evidence の Handler は ADR-0038 で登録した。Trend は後続の段（ADR-0039）で登録する。
+def test_exactly_the_evidence_and_trend_handlers_are_registered() -> None:
+    """Evidence（ADR-0038）と Trend（ADR-0039）の Handler だけが、設定に依らず登録される。
 
-    未登録の種別（Trend）は実行器が ``blocked``（``handler_not_available``）にする。
+    ``none`` の依頼は Handler があっても実行器の門で先に ``blocked`` になる。種別と Handler の
+    対応（``kind`` / ``artifact_type``）も固定する。
     """
     for mode in ("fake", "none"):
-        assert set(build_handlers(_settings(research_provider=mode))) == {ResearchKind.EVIDENCE}
+        handlers = build_handlers(_settings(research_provider=mode))
+        assert set(handlers) == {ResearchKind.EVIDENCE, ResearchKind.TREND}
+        assert isinstance(handlers[ResearchKind.EVIDENCE], EvidenceHandler)
+        assert isinstance(handlers[ResearchKind.TREND], TrendHandler)
+        for kind, handler in handlers.items():
+            assert handler.kind is kind
 
 
 def test_the_cost_model_estimates_youtube_quota_from_the_shared_constant() -> None:

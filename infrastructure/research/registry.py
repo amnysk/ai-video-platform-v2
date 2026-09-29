@@ -6,11 +6,12 @@
   ここで組まない。``tests/architecture/test_research_isolation.py`` が検査する）。実 Provider を
   足すときは所有者の判断と ADR を先に置き、``provider_is_real`` が真になるので金額・quota の上限が
   必須になる（ADR-0037 §6）
-- 種別ごとの Handler: Evidence（ADR-0038。``EvidenceHandler``。純粋な判断だけなので設定に依らず
-  登録する。``none`` の依頼は実行器の門で先に ``blocked``）。Trend（ADR-0039）はまだ無く、
-  実行器は Handler の無い種別の依頼を ``blocked``（``handler_not_available``）にする
-- LLM 向けの Port（ADR-0038）: ``fake`` は ``FakeEvidenceAssessor`` / ``FakeClaimExtractor``、
-  ``none`` は組まない。実 LLM は配線しない（評価は台帳 ``ResearchCall.ASSESS`` を通る）
+- 種別ごとの Handler: Evidence（ADR-0038。``EvidenceHandler``）と Trend（ADR-0039。
+  ``TrendHandler``）。どちらも純粋な判断だけなので設定に依らず登録する（``none`` の依頼は
+  実行器の門で先に ``blocked``）
+- LLM 向けの Port（ADR-0038 / ADR-0039）: ``fake`` は ``FakeEvidenceAssessor`` /
+  ``FakeClaimExtractor`` / ``FakeTrendInterpreter``、``none`` は組まない。実 LLM は配線しない
+  （評価・解釈は台帳 ``ResearchCall.ASSESS`` を通る）
 """
 
 from __future__ import annotations
@@ -28,9 +29,12 @@ from domain.research.evidence_handler import EvidenceHandler
 from domain.research.evidence_ports import ClaimExtractor, EvidenceAssessor
 from domain.research.handlers import ResearchHandler
 from domain.research.ports import ContentFetcher, SearchKind, SearchProvider
+from domain.research.trend_handler import TrendHandler
+from domain.research.trend_ports import TrendInterpreter
 from infrastructure.config import Settings
 from infrastructure.research.fake_evidence import FakeClaimExtractor, FakeEvidenceAssessor
 from infrastructure.research.fake_providers import FakeContentFetcher, FakeSearchProvider
+from infrastructure.research.fake_trend import FakeTrendInterpreter
 from infrastructure.research.quota_costs import YOUTUBE_FULL_SEARCH_UNITS
 
 __all__ = [
@@ -87,6 +91,9 @@ class ResearchProviders:
     #: Evidence の評価器（ADR-0038）。``None`` なら評価せず、評価が要る claim は ``insufficient``
     #: のまま依頼は ``partial``（``assessor_not_available``）。合格にしない
     assessor: EvidenceAssessor | None = None
+    #: Trend の解釈器（ADR-0039）。``None`` なら解釈せず、Trend は観測だけの ``partial``
+    #: （``assessor_not_available``）。合格にしない
+    interpreter: TrendInterpreter | None = None
 
     @property
     def configured(self) -> bool:
@@ -120,14 +127,15 @@ def build_providers(settings: Settings) -> ResearchProviders:
             fetcher=FakeContentFetcher(),
             is_real=provider_is_real(mode),
             assessor=FakeEvidenceAssessor(),
+            interpreter=FakeTrendInterpreter(),
         )
     return ResearchProviders(mode=mode, search=None, fetcher=None, is_real=provider_is_real(mode))
 
 
 def build_handlers(settings: Settings) -> Mapping[ResearchKind, ResearchHandler]:
-    """種別ごとの Handler。Evidence は ADR-0038、Trend は ADR-0039 の段で足す。"""
+    """種別ごとの Handler（Evidence は ADR-0038、Trend は ADR-0039）。"""
     del settings
-    return {ResearchKind.EVIDENCE: EvidenceHandler()}
+    return {ResearchKind.EVIDENCE: EvidenceHandler(), ResearchKind.TREND: TrendHandler()}
 
 
 def build_claim_extractor(settings: Settings) -> ClaimExtractor | None:
