@@ -4,6 +4,8 @@
 #   run-e2e.sh build            worker イメージ（この worktree の Dockerfile）と test-runner を作る
 #   run-e2e.sh up               postgres / temporal / minio / namespace / migrate を用意する
 #   run-e2e.sh run [args...]    test-runner で pytest（既定: tests/integration 全部）
+#   run-e2e.sh tool [--secrets DIR] [--name N] cmd...
+#                               一時コンテナ（label avp.logging=app）で cmd を実行（loggen 等）
 #   run-e2e.sh ps | logs        状態・ログ
 #   run-e2e.sh down             コンテナ・network・volume を消す（この project だけ）
 #
@@ -89,11 +91,32 @@ case "$cmd" in
     echo "run: container=$name rc=$rc elapsed=$(( $(date +%s) - start ))s"
     exit "$rc"
     ;;
+  tool)
+    ensure_secrets
+    secrets_dir=""
+    name="$PROJECT-tool-$(date -u +%Y%m%dT%H%M%SZ)"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --secrets) secrets_dir="$(cd "$2" && pwd)"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        *) break ;;
+      esac
+    done
+    [ "$#" -gt 0 ] || { echo "tool: コマンドを指定する" >&2; exit 2; }
+    if [ -n "$secrets_dir" ]; then
+      APPTEST_SECRETS_DIR="$secrets_dir" dc run -T --no-deps --name "$name" tool "$@"
+    else
+      # /dev/null の bind を避けるため secrets 無しは空ディレクトリを渡す
+      empty="$STATE/empty"; install -d -m 700 "$empty"
+      APPTEST_SECRETS_DIR="$empty" dc run -T --no-deps --name "$name" tool "$@"
+    fi
+    echo "tool: container=$name"
+    ;;
   ps) ensure_secrets; dc ps -a ;;
   logs) ensure_secrets; dc logs "$@" ;;
   down)
     ensure_secrets
-    dc --profile runner down -v --remove-orphans
+    dc --profile runner --profile tools down -v --remove-orphans
     # run で作った one-off コンテナ（--rm しない）も project label で消す
     ids="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT")"
     [ -z "$ids" ] || docker rm -f $ids >/dev/null
