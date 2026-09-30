@@ -1,0 +1,132 @@
+# Fluent Bit 5.1.2（ADR-0040 §1/§5/§6）。値の根拠は docs/observability/platform.md §3。
+# 環境変数は compose.logging.yaml が渡す。パスワードだけは secret ファイルの env から（env では渡さない）。
+includes:
+  - /fluent-bit/etc/secret/secret.yaml
+
+service:
+  flush: 1
+  log_level: info
+  # 監視: /api/v1/health /api/v2/health /api/v1/storage /api/v2/metrics/prometheus
+  # （internal network の中だけ。ホストからは scripts/fb-metrics.sh）
+  http_server: on
+  http_listen: 0.0.0.0
+  http_port: 2020
+  health_check: on
+  hc_errors_count: 5
+  hc_retry_failure_count: 5
+  hc_period: 60
+  storage.path: /fb-state/buffer
+  storage.sync: normal
+  storage.checksum: off
+  storage.metrics: on
+  storage.max_chunks_up: 64
+  storage.backlog.mem_limit: 16M
+  # 再送の間隔（有限 retry と組で「許容停止時間」を決める。ADR-0040 §5）
+  scheduler.base: 5
+  scheduler.cap: 300
+
+parsers:
+  # アプリの1行 JSON。時刻は Lua が @timestamp から決める（parser には読ませない）
+  - name: avp_app_json
+    format: json
+
+pipeline:
+  inputs:
+    - name: tail
+      tag: docker.*
+      # ローテーション済み（.1 …）も含める: Collector 停止中の rotation を inode で続きから読む
+      path: /containers/*/*-json.log*
+      multiline.parser: docker
+      db: /fb-state/tail.db
+      db.locking: true
+      # 導入時だけ false で位置 DB を作る（既存の大きなログを全量取り込まない）
+      read_from_head: ${AVP_LOG_READ_FROM_HEAD}
+      buffer_chunk_size: 64k
+      buffer_max_size: 256k
+      skip_long_lines: on
+      refresh_interval: 5
+      rotate_wait: 30
+      mem_buf_limit: 32M
+      storage.type: filesystem
+
+  filters:
+    # compose project の完全一致で絞り、app / infra を決める
+    - name: lua
+      match: docker.*
+      script: /fluent-bit/etc/avp/lua/avp_collector.lua
+      call: avp_route
+
+    - name: rewrite_tag
+      match: docker.*
+      rule:
+        - $_avp_route ^app$ avp.app false
+        - $_avp_route ^infra$ avp.infra false
+      emitter_name: avp_route_emitter
+      emitter_storage.type: filesystem
+      emitter_mem_buf_limit: 16M
+
+    - name: parser
+      match: avp.app
+      key_name: log
+      parser: avp_app_json
+      reserve_data: on
+      preserve_key: off
+
+    - name: lua
+      match: avp.app
+      script: /fluent-bit/etc/avp/lua/avp_collector.lua
+      call: avp_app
+      type_array_key: collector_errors
+
+    - name: lua
+      match: avp.infra
+      script: /fluent-bit/etc/avp/lua/avp_collector.lua
+      call: avp_infra
+      type_array_key: collector_errors
+
+  outputs:
+    - name: opensearch
+      alias: avp_app
+      match: avp.app
+      host: ${AVP_LOGGING_OPENSEARCH_HOST}
+      port: ${AVP_LOGGING_OPENSEARCH_PORT}
+      # 書き込み先は固定値（レコードの値で index を決めない）
+      index: avp-app-${AVP_LOGGING_ENV}-write
+      write_operation: create
+      id_key: event_id
+      suppress_type_name: on
+      http_user: avp_fluentbit
+      http_passwd: ${AVP_OS_WRITER_PASSWORD}
+      tls: on
+      tls.verify: on
+      tls.verify_hostname: on
+      tls.ca_file: /fluent-bit/etc/secret/ca.pem
+      buffer_size: 4M
+      compress: gzip
+      trace_error: off
+      trace_output: off
+      retry_limit: 72
+      storage.total_limit_size: ${AVP_LOG_STORAGE_LIMIT}
+
+    - name: opensearch
+      alias: avp_infra
+      match: avp.infra
+      host: ${AVP_LOGGING_OPENSEARCH_HOST}
+      port: ${AVP_LOGGING_OPENSEARCH_PORT}
+      index: avp-infra-${AVP_LOGGING_ENV}-write
+      write_operation: create
+      # event_id を持たない行。内容（時刻込み）の hash を _id にして再送の重複を抑える
+      generate_id: on
+      suppress_type_name: on
+      http_user: avp_fluentbit
+      http_passwd: ${AVP_OS_WRITER_PASSWORD}
+      tls: on
+      tls.verify: on
+      tls.verify_hostname: on
+      tls.ca_file: /fluent-bit/etc/secret/ca.pem
+      buffer_size: 4M
+      compress: gzip
+      trace_error: off
+      trace_output: off
+      retry_limit: 72
+      storage.total_limit_size: ${AVP_LOG_STORAGE_LIMIT}
