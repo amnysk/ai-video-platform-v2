@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from contracts.logging import (
+from contracts.log_contract import (
     LOG_FIELD_NAMES,
     LOG_FIELDS,
     REQUIRED_APP_FIELDS,
@@ -45,3 +45,11 @@ def test_every_field_is_documented() -> None:
     doc = (REPO / "docs" / "observability" / "log-contract.md").read_text(encoding="utf-8")
     missing = [f.name for f in LOG_FIELDS if f"`{f.name}`" not in doc]
     assert not missing, f"log-contract.md に載っていないフィールド: {missing}"
+
+
+def test_rejection_categories_are_spelled_the_same() -> None:
+    """ErrorCategory は RejectionCategory の値を写している。食い違いを止める（AGENTS.md §8）。"""
+    from contracts.log_contract import ErrorCategory
+    from contracts.states import RejectionCategory
+
+    assert {c.value for c in RejectionCategory} <= {c.value for c in ErrorCategory}

@@ -5,7 +5,9 @@
 mapping との一致は contract test が検査する。
 
 ここにあるのは語彙と上限だけで、振る舞い（整形・安全化・文脈の引き回し）は持たない。
-ログは検索用の副本であり、業務状態・課金・冪等性の根拠にしない（INV-38）。
+ログは検索用の副本であり、業務状態・課金・冪等性の自動判断に使わない（INV-38）。
+
+モジュール名を ``logging`` にしないのは、実行位置によって標準ライブラリを隠し得るため。
 """
 
 from __future__ import annotations
@@ -70,9 +72,11 @@ LOG_FIELDS: tuple[LogField, ...] = (
     LogField("episode_id", _T.KEYWORD),
     LogField("scene_id", _T.KEYWORD),
     LogField("scene_revision", _T.INTEGER),
+    LogField("storyboard_artifact_id", _T.KEYWORD),
     LogField("stage", _T.KEYWORD),
     LogField("job_id", _T.KEYWORD),
     LogField("research_request_id", _T.KEYWORD),
+    LogField("research_call_id", _T.KEYWORD),
     # --- Temporal
     LogField("workflow_id", _T.KEYWORD),
     LogField("run_id", _T.KEYWORD),
@@ -128,10 +132,41 @@ LOG_FIELDS: tuple[LogField, ...] = (
     LogField("compose_service", _T.KEYWORD, origin=_C),
     LogField("compose_project", _T.KEYWORD, origin=_C),
     LogField("collector_errors", _T.KEYWORD, origin=_C),
+    LogField("host_name", _T.KEYWORD, origin=_C),
 )
 
 LOG_FIELD_NAMES: frozenset[str] = frozenset(f.name for f in LOG_FIELDS)
 REQUIRED_APP_FIELDS: tuple[str, ...] = tuple(f.name for f in LOG_FIELDS if f.always)
+
+
+# --------------------------------------------------------------------------- 設定キー（env）
+
+#: compose のサービス名と同じ値（``service_name``）
+ENV_SERVICE_NAME = "AVP_SERVICE_NAME"
+#: ``environment``（``Environment`` の値）
+ENV_ENVIRONMENT = "AVP_ENVIRONMENT"
+#: ``json``（既定）| ``text``（rollback 用。従来の basicConfig 形式）
+ENV_LOG_FORMAT = "AVP_LOG_FORMAT"
+#: 既定 ``INFO``
+ENV_LOG_LEVEL = "AVP_LOG_LEVEL"
+#: イメージに焼いた git revision（既存。Dockerfile の ENV と同じ名前）
+ENV_GIT_REVISION = "AVP_GIT_REVISION"
+
+#: Collector がアプリの JSON 系統として扱うコンテナの label（json-file の ``labels`` で各行に載る）
+APP_LOG_LABEL = "avp.logging"
+APP_LOG_LABEL_VALUE = "app"
+#: event_name を持たない記録の既定値、未設定値の表記
+UNKNOWN = "unknown"
+#: 発行側がイベントのフィールドを載せる LogRecord の属性名（``extra={"avp": {...}}``）。
+#: LogRecord の予約属性（``message`` 等）と衝突させないため1キーにまとめる。
+RECORD_EXTRA_KEY = "avp"
+
+
+class Environment(StrEnum):
+    PROD = "prod"
+    DEV = "dev"
+    TEST = "test"
+    UNKNOWN = "unknown"
 
 
 class LogLevel(StrEnum):
@@ -184,6 +219,12 @@ class ProviderOperation(StrEnum):
     UPLOAD_MEDIA = "upload_media"
     #: YouTube の処理状態確認
     PROCESSING_CHECK = "processing_check"
+    #: YouTube の動画状態の問い合わせ・自チャンネル確認・marker による既存動画検索
+    QUERY_STATUS = "query_status"
+    CHANNEL_LOOKUP = "channel_lookup"
+    FIND_EXISTING = "find_existing"
+    #: OAuth access token の更新
+    OAUTH_REFRESH = "oauth_refresh"
     #: 検索・本文取得（Research）
     SEARCH = "search"
     FETCH = "fetch"
@@ -201,10 +242,15 @@ class Outcome(StrEnum):
     AMBIGUOUS = "ambiguous"
     STATE_CHANGED = "state_changed"
     RESUMED = "resumed"
+    #: Temporal の cancel（兄弟 Activity の打ち切り等）
+    CANCELLED = "cancelled"
 
 
 class ErrorCategory(StrEnum):
     """**推定**分類。観測事実（``http_status`` / ``error_code``）とは別に持つ。
+
+    ``CONTENT_POLICY`` / ``INPUT_VALIDATION`` / ``INPUT_UNREACHABLE`` / ``UNKNOWN`` の値は
+    ``contracts.states.RejectionCategory`` と同じ文字列（一致は contract test が検査する）。
 
     既存の制御（再試行・422 fallback・needs_input）を決めるものではない（ログ専用）。
     根拠は ``classification_basis`` に残す。HTTP 403 だけでは ``ACCESS_DENIED`` であって
@@ -327,18 +373,29 @@ MESSAGE_MAX_BYTES = 2048
 ERROR_MESSAGE_MAX_BYTES = 1024
 #: attributes を JSON にした大きさ
 ATTRIBUTES_MAX_BYTES = 4096
-#: 1イベント（1行・改行を除く）。Docker json-file は 16KiB を超える行を分割する（partial）ので、
-#: 外側の JSON 包装とエスケープの増分を見込んで下回らせる
+#: 1イベント（1行・改行を除く。``ensure_ascii=False`` で直列化した後の UTF-8 bytes）。
+#: Docker json-file はアプリが書いた生の行を 16384 bytes で partial に分割するので、それを下回らせる
+#: （余裕は Collector 側の tail buffer とエスケープ増分のため）
 EVENT_MAX_BYTES = 12288
-#: keyword 1値の上限（mapping の ignore_above と同じ値）
+#: keyword 1値の上限（mapping の ignore_above と同じ値）。発行側はこれを超える値を切り詰め
+#: ``truncated=true`` にする（検索できない値を黙って残さない）
 KEYWORD_MAX_CHARS = 512
+#: JSON でない行（``log_source=unstructured``）を Collector が切り詰める上限
+UNSTRUCTURED_LINE_MAX_BYTES = 4096
 
 #: 秘密を置き換えた印
 REDACTED = "[REDACTED]"
 
 
 __all__ = [
+    "APP_LOG_LABEL",
+    "APP_LOG_LABEL_VALUE",
     "ATTRIBUTES_MAX_BYTES",
+    "ENV_ENVIRONMENT",
+    "ENV_GIT_REVISION",
+    "ENV_LOG_FORMAT",
+    "ENV_LOG_LEVEL",
+    "ENV_SERVICE_NAME",
     "ERROR_MESSAGE_MAX_BYTES",
     "EVENT_MAX_BYTES",
     "EXCEPTION_STACK_MAX_BYTES",
@@ -347,10 +404,14 @@ __all__ = [
     "LOG_FIELD_NAMES",
     "LOG_SCHEMA_VERSION",
     "MESSAGE_MAX_BYTES",
+    "RECORD_EXTRA_KEY",
     "REDACTED",
     "REQUIRED_APP_FIELDS",
     "RESPONSE_EXCERPT_MAX_BYTES",
+    "UNKNOWN",
+    "UNSTRUCTURED_LINE_MAX_BYTES",
     "ClassificationBasis",
+    "Environment",
     "ErrorCategory",
     "EventName",
     "FieldOrigin",
