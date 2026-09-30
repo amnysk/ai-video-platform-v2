@@ -63,3 +63,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0037](./0037-research-foundation-separate-persistence.md) | Research の依頼・外部呼び出し台帳・成果物を本番の表から分離して永続化する | Accepted |
 | [0038](./0038-evidence-research-and-script-verification.md) | Evidence Research と台本の照合を research の成果物として実装する | Accepted |
 | [0039](./0039-trend-research.md) | Trend Research を research の成果物として実装し、検証つきで読み出せるようにする | Accepted |
+| [0040](./0040-structured-logs-and-opensearch-search-replica.md) | 構造化 JSON ログと OpenSearch の検索用副本（ログは業務判断に使わない） | Proposed |
