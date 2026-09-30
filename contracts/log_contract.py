@@ -230,6 +230,19 @@ class ProviderOperation(StrEnum):
     FETCH = "fetch"
 
 
+class ProviderLabel(StrEnum):
+    """台帳の外の呼び出しの ``provider``。台帳の呼び出しは ``ProviderCall`` の値を使う。"""
+
+    FAL_STORAGE = "fal_storage"
+    YOUTUBE_ANALYTICS = "youtube_analytics"
+    YOUTUBE_OAUTH = "youtube_oauth"
+    PIPER = "piper"
+    OPENMONTAGE = "openmontage"
+    #: Research の検索・本文取得（provider 固有名は ``provider_endpoint``）
+    RESEARCH_SEARCH = "research_search"
+    RESEARCH_FETCH = "research_fetch"
+
+
 class Outcome(StrEnum):
     STARTED = "started"
     SUCCEEDED = "succeeded"
@@ -421,5 +434,6 @@ __all__ = [
     "LogSource",
     "LogStage",
     "Outcome",
+    "ProviderLabel",
     "ProviderOperation",
 ]

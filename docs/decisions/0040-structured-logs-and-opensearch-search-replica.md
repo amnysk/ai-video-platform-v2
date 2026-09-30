@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed → 設計再レビュー待ち（2026-09-30。設計レビュー: 独立レビュー D-1〜D-20、producer A-1〜A-18、consumer B-1〜B-12
+Accepted（2026-09-30。設計レビューと独立再確認: 独立レビュー D-1〜D-20、producer A-1〜A-18、consumer B-1〜B-12
 を反映。実装レビューの結果は docs/observability/review-log.md）
 
 ## Context
@@ -122,10 +122,12 @@ ingested_at）→ Dashboards`。
   追いつき（位置 DB の offset とファイルサイズの差）を見る手順を runbook に入れる。
 - 出力: `write_operation create`、`id_key event_id`、`suppress_type_name on`（OpenSearch 3.x は `_type`
   を 400 で拒否）、`buffer_size 4M`（応答が溢れると部分失敗を解析できず chunk 全体を再送する）、
-  `retry_limit 8`（有限。不正1件による永久滞留を防ぐ）、`trace_error off`（応答に値のプレビューが入る）。
+  `retry_limit 72`・`scheduler.base 5`・`scheduler.cap 300`（有限。不正1件による永久滞留を防ぐ。400 は Lua の型検査で実質ゼロにする前提）、`trace_error off`（応答に値のプレビューが入る）。
   採用版は bulk の item ごとに 2xx/409 を成功扱いにし、失敗 item だけを再送する（ソースと実測）。
   400 と 429 は区別されない。上限を超えた record は破棄され `dropped_records_total`・
   `retries_failed_total` に出る。
+- **許容できる OpenSearch 停止時間**は retry 上限と buffer 上限の短い方で決まる。上の設定で約6時間（backoff の cap 300秒 × 72 回。jitter あり）、buffer 1GiB は現在の出力量なら数日分なので、retry 側が律速する。これを超える停止では古い record から破棄される（`dropped_records_total` で検知）。長く止めるときは Fluent Bit も止める（位置 DB から再開でき、rotation 一巡までは欠損しない）。実測で調整する。
+- tail: `buffer_max_size 256k`、`skip_long_lines on`（既定 32k を超える行でファイルの監視が止まるのを防ぐ。Docker は `<` を `\u003c` に escape するので包装後の行は生の行より膨らむ）。skip は `long_line_skipped` 系の metrics で監視する。
 - buffer: filesystem、`storage.total_limit_size` 1GiB（超えたら古い chunk から破棄）、メモリ上限つき。
   **有限バッファでは無欠損と無停止を同時に保証できない**ので、業務を止めない側を選び、破棄・再送・
   滞留を監視する。
@@ -168,7 +170,7 @@ ingested_at）→ Dashboards`。
 - データは NVMe 上の named volume（MinIO の HDD と I/O を競合させない）。
 - swap が満杯の現状では、**本番ホストへの共存は隔離試験での実測と、次の運用閾値を条件とする**:
   MemAvailable が 2GiB を下回ったら Dashboards を止め、1.5GiB を下回ったら OpenSearch を止める
-  （Fluent Bit はバッファに溜め、上限を超えれば破棄する）。確認スクリプトが MemAvailable を報告する。
+  （Fluent Bit はバッファに溜め、上限を超えれば破棄する）。確認スクリプトが MemAvailable を報告し、systemd timer から `--enforce-memory` 付きで動かすと閾値で `avp2-logging` project のコンテナ**だけ**を止める（アプリには触れない。既定は報告のみ）。
   条件を満たせない場合は `deploy/logging` をそのまま別ホストで動かし、本番ホストには Fluent Bit だけを
   置く（`OPENSEARCH_HOST` を差し替えるだけの構成にする）。
 

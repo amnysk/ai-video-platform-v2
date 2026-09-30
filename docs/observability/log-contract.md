@@ -55,7 +55,7 @@ ADR-0040。語彙・型・上限・設定キーの**唯一の宣言元**は
 | `correlation_id` | keyword | 予約のみ。v1 では発行しない（resume は決定的な `workflow_id` で結合できる） |
 | `trace_id` / `span_id` | keyword | 将来の Traces 用（W3C 形式）。**実在する値がある時だけ**。v1 では発行しない |
 | `http_method` / `http_route` | keyword | API のメソッドと route template（`/episodes/{episode_id}/resume`。実 path・query ではない） |
-| `provider` | keyword | 予約台帳の呼び出しは `ProviderCall` の値（`fal_image` 等、台帳の `provider` 列と同じ）。台帳外の呼び出しは adapter が定める固定ラベル（`fal_storage`、`youtube_analytics`、`youtube_oauth`、Research の provider ラベル）|
+| `provider` | keyword | 予約台帳の呼び出しは `ProviderCall` の値（`fal_image` 等、台帳の `provider` 列と同じ）。台帳外の呼び出しは `ProviderLabel`（`fal_storage`、`youtube_analytics`、`youtube_oauth`、`piper`、`openmontage`、`research_search`、`research_fetch`）|
 | `provider_operation` | keyword | `ProviderOperation`（submit/status/result/download/input_upload/storage_token/…） |
 | `provider_endpoint` | keyword | provider のモデル・endpoint 名（`fal-ai/bytedance/seedream/...`）。URL ではない |
 | `provider_request_id` | keyword | provider が返したジョブ ID（fal の `request_id`）。**受け取った後だけ**。YouTube の video id は入れず `attributes.video_id` |
@@ -202,7 +202,7 @@ ADR-0040。語彙・型・上限・設定キーの**唯一の宣言元**は
    infra 系統へ）: logging 設定前の起動失敗・native クラッシュの stderr、migrate の alembic、
    サードパーティのコンテナ（postgres・temporal・minio）。CLI provider（Codex・Piper・git）の stderr を
    例外文に含む既存の経路は、パターンに当たらない prompt 断片を含み得る。長さ上限が唯一の防御で、
-   これは残るリスクとして扱う。
+   fal の例外文も、既存の `fal_queue._short()` が応答本文の先頭（最大800字）を含め得る（構造化できない応答の fallback）。これらは §7.3 のパターン置換と長さ上限だけで守られ、**残るリスク**として扱う（既存の例外文・DB の `error_summary` は変えない）。
 7. stack: 例外 chain の**各例外**について型・メッセージと、frame の先頭・末尾を残す（原因
    `__cause__`/`__context__` が先に並ぶので、全体の末尾だけを残すと根本原因が消える）。
    `ExceptionGroup` と `__notes__` も同じ。全体は `EXCEPTION_STACK_MAX_BYTES` 以下。

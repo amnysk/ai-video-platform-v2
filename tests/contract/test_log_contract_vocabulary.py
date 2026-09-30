@@ -37,7 +37,7 @@ def test_required_fields_are_written_by_the_app() -> None:
 def test_every_event_name_is_documented() -> None:
     """EventName を足して log-contract.md の一覧を更新し忘れる片側更新を防ぐ（AGENTS.md §7）。"""
     doc = (REPO / "docs" / "observability" / "log-contract.md").read_text(encoding="utf-8")
-    missing = [e.value for e in EventName if e.value not in doc]
+    missing = [e.value for e in EventName if f"`{e.value}`" not in doc]
     assert not missing, f"log-contract.md に載っていない event_name: {missing}"
 
 
@@ -53,3 +53,13 @@ def test_rejection_categories_are_spelled_the_same() -> None:
     from contracts.states import RejectionCategory
 
     assert {c.value for c in RejectionCategory} <= {c.value for c in ErrorCategory}
+
+
+def test_provider_labels_do_not_collide_with_ledger_providers() -> None:
+    from contracts.log_contract import ProviderLabel
+    from contracts.states import ProviderCall
+
+    assert not {p.value for p in ProviderLabel} & {p.value for p in ProviderCall}
+    doc = (REPO / "docs" / "observability" / "log-contract.md").read_text(encoding="utf-8")
+    missing = [p.value for p in ProviderLabel if f"`{p.value}`" not in doc]
+    assert not missing, f"log-contract.md に載っていない provider ラベル: {missing}"
