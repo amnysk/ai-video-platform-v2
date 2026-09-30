@@ -1,0 +1,193 @@
+# 隔離 app スタック（ADR-0040 の検証用。本番ではない）。
+#
+# 目的: 本番の compose project `avp2`（postgres:5432 / temporal:7233 / minio:9000 …）と、その volume・
+# network に一切触れずに、既存の integration テスト（e2e を含む）を走らせる。テストの stdout は
+# json-file に落ち、`avp.logging=app` label 付きなので、Fluent Bit（deploy/logging の compose）が
+# 同じ経路で拾える。
+#
+# 起動・実行・片付けは run-e2e.sh 経由（秘密の生成・image のビルド・namespace の用意をまとめる）:
+#   deploy/logging/test/run-e2e.sh up | run [pytest 引数...] | down
+#
+# 安全の囲い:
+# - ホストへポートを公開しない。network は `internal: true`（外部へ出られない）。
+#   fal.ai・YouTube に物理的に到達しない（INV-18）。FAL_KEY 等は渡さない。
+# - project 名は AVP_APPTEST_PROJECT（既定 avp2-oslog-c）。`avp2` は run-e2e.sh が拒否する。
+# - パスワードは run-e2e.sh が実行時に生成し repo 外のファイルに置く（ここには既定値を書かない）。
+# - コードは worktree を read-only で /src に mount して使う（image を焼き直さずに A/B の merge 後の
+#   コードを試せる）。image は依存（site-packages）と実行環境だけを担う。
+name: ${AVP_APPTEST_PROJECT:-avp2-oslog-c}
+
+x-db-env: &db-env
+  POSTGRES_USER: avp
+  POSTGRES_PASSWORD: ${APPTEST_PG_PASSWORD:?run-e2e.sh up で生成する}
+  POSTGRES_DB: avp
+
+# ADR-0040 §1: json-file（ローテーション付き）と labels。本番の app compose に足すものと同じ形。
+x-app-logging: &app-logging
+  driver: json-file
+  options:
+    max-size: ${APPTEST_LOG_MAX_SIZE:-20m}
+    max-file: "${APPTEST_LOG_MAX_FILE:-5}"
+    labels: avp.logging,com.docker.compose.service,com.docker.compose.project
+
+# サードパーティ（postgres・temporal・minio）: label 無し＝Collector は unstructured（infra 系統）へ
+x-infra-logging: &infra-logging
+  driver: json-file
+  options:
+    max-size: ${APPTEST_LOG_MAX_SIZE:-20m}
+    max-file: "${APPTEST_LOG_MAX_FILE:-5}"
+    labels: com.docker.compose.service,com.docker.compose.project
+
+x-runner: &runner
+  image: ${APPTEST_RUNNER_IMAGE:-avp2-oslog-c-runner:test}
+  user: "${AVP_UID:-1000}:${AVP_GID:-1000}"
+  init: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  working_dir: /src
+  # ビルド時に焼いた time-skipping test server を tmpfs の /tmp へ写してから実行する
+  # （network が internal なので SDK は取得できない。Dockerfile.test-runner 参照）
+  entrypoint:
+    - sh
+    - -c
+    - cp -a /opt/temporal-testsrv/. /tmp/ 2>/dev/null; mkdir -p /tmp/home; exec "$$@"
+    - --
+  labels:
+    avp.logging: app
+  logging: *app-logging
+  networks: [apptest]
+  tmpfs:
+    - /tmp:size=${APPTEST_TMP_SIZE:-2g},mode=1777,exec
+  volumes:
+    - type: bind
+      source: ${APPTEST_SRC:?run-e2e.sh が worktree の絶対パスを渡す}
+      target: /src
+      read_only: true
+  environment:
+    # アプリの接続先（隔離スタック内の avp）。テストはこれと別の *_test にだけ破壊的操作をする（ADR-0021）
+    DATABASE_URL: postgresql+psycopg://avp:${APPTEST_PG_PASSWORD}@postgres:5432/avp
+    TEST_DATABASE_URL: postgresql+psycopg://avp:${APPTEST_PG_PASSWORD}@postgres:5432/avp_test
+    TEMPORAL_ADDRESS: temporal:7233
+    TEMPORAL_NAMESPACE: default
+    TEST_TEMPORAL_NAMESPACE: avp-test
+    MINIO_ENDPOINT: http://minio:9000
+    MINIO_ACCESS_KEY: apptest
+    MINIO_SECRET_KEY: ${APPTEST_MINIO_PASSWORD:?run-e2e.sh up で生成する}
+    MINIO_BUCKET: artifacts
+    TEST_MINIO_BUCKET: artifacts-test
+    AI_VIDEO_WORK_ROOT: /tmp/avp-work
+    # 有料 provider・YouTube の鍵は渡さない（空で明示。.env は run-e2e.sh が存在を拒否する）
+    FAL_KEY: ""
+    YOUTUBE_CLIENT_ID: ""
+    YOUTUBE_CLIENT_SECRET: ""
+    # ログ契約（contracts/log_contract.py の ENV_*）。A の実装前は読まれない
+    AVP_SERVICE_NAME: ${APPTEST_SERVICE_NAME:-test-runner}
+    AVP_ENVIRONMENT: test
+    AVP_LOG_FORMAT: ${APPTEST_LOG_FORMAT:-json}
+    AVP_LOG_LEVEL: ${APPTEST_LOG_LEVEL:-INFO}
+    AVP_GIT_REVISION: ${APPTEST_GIT_REVISION:-unknown}
+    PYTHONPATH: /src
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONUNBUFFERED: "1"
+    HOME: /tmp/home
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment: *db-env
+    logging: *infra-logging
+    networks: [apptest]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # avp_test を初回起動時に作る（本番と同じ init を再利用。ADR-0021）
+      - ${APPTEST_SRC}/deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U avp"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  minio:
+    image: minio/minio:latest
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: apptest
+      MINIO_ROOT_PASSWORD: ${APPTEST_MINIO_PASSWORD}
+    logging: *infra-logging
+    networks: [apptest]
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: avp
+      POSTGRES_PWD: ${APPTEST_PG_PASSWORD}
+      POSTGRES_SEEDS: postgres
+    logging: *infra-logging
+    networks: [apptest]
+    healthcheck:
+      test: ["CMD-SHELL", "temporal operator cluster health --address temporal:7233 | grep -qx SERVING"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  # integration 専用 namespace（ADR-0021 追補。`make temporal-test-namespace` と同じ操作）
+  temporal-namespace:
+    image: temporalio/auto-setup:latest
+    depends_on:
+      temporal: {condition: service_healthy}
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        temporal operator namespace describe --namespace avp-test --address temporal:7233 >/dev/null 2>&1
+        || temporal operator namespace create --namespace avp-test --retention 24h --address temporal:7233
+    logging: *infra-logging
+    networks: [apptest]
+    restart: "no"
+
+  # 隔離スタックの app DB（avp）へ migration を当てる（本番の migrate と同じ操作）
+  migrate:
+    <<: *runner
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DATABASE_URL: postgresql+psycopg://avp:${APPTEST_PG_PASSWORD}@postgres:5432/avp
+      AVP_SERVICE_NAME: migrate
+      AVP_ENVIRONMENT: test
+      PYTHONPATH: /src
+      PYTHONDONTWRITEBYTECODE: "1"
+      HOME: /tmp/home
+    command: ["alembic", "-c", "/src/alembic.ini", "upgrade", "head"]
+    restart: "no"
+
+  # pytest を回す。`run-e2e.sh run` が `docker compose run` で起動する（up では起動しない）。
+  # -s: テストと worker の stdout をそのまま json-file へ流す（Collector が拾う）。
+  test-runner:
+    <<: *runner
+    profiles: [runner]
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      temporal-namespace: {condition: service_completed_successfully}
+      migrate: {condition: service_completed_successfully}
+    command: ["pytest", "tests/integration", "-p", "no:cacheprovider", "-s", "-q", "-rs"]
+
+networks:
+  apptest:
+    # 外部へ出られない（有料 provider・YouTube に到達しない）
+    internal: true
+
+volumes:
+  pgdata:
+  miniodata:
