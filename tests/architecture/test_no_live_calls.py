@@ -275,6 +275,8 @@ FAL_ADAPTER_IMPORTERS = frozenset(
         #: 定数を読むだけでクライアントは作らない
         "infrastructure/logging/redaction.py",
         "tests/unit/test_log_redaction.py",
+        #: adapter が観測した provider.call.* の内容（MockTransport。実ネットワークに出ない）
+        "tests/unit/test_log_provider_calls.py",
     }
 )
 

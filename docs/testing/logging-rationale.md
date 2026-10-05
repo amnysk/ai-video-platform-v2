@@ -117,3 +117,14 @@ repository のメソッドが session に積み、`after_commit` で出す（`in
 | `test_resume_and_reuse_are_visible` | 既存の予約の再開（再 submit しない）がログで見える |
 | `test_failed_job_spends_conservatively_and_is_logged` | provider のジョブ失敗は conservative の spent として残る |
 | `test_an_unreconciled_reservation_blocks_and_is_logged` | 未照合の予約が新ラウンドを止めた判断（`reservation.blocked`）を、止めた予約の ID つきで残す |
+
+## 外部呼び出し（`tests/unit/test_log_provider_calls.py`、unit: MockTransport）
+
+| テスト | 守るもの |
+|---|---|
+| `test_403_is_access_denied_from_the_status_alone_and_keeps_its_status` | 2026-09-22 以降の 403 で欠けていた診断（どの操作・status・provider の request id）。403 だけでは `access_denied` / `http_status_only`（credentials と断定しない）。例外に `http_status` を持たせても型・制御は同じ |
+| `test_422_content_policy_uses_the_provider_error_type` | 422 の分類は既存の `RejectionCategory` をそのまま使い、`response_excerpt` は許可した項目だけ（prompt を含む `input` は入れない） |
+| `test_file_download_error_on_result_is_input_unreachable` | file_download_error を内容の拒否と区別する（INV-35 の再試行と照合できる） |
+| `test_5xx_submit_is_ambiguous` | 受理されたか分からない submit を `outcome=ambiguous` で残す（再送しない判断の根拠と照合） |
+| `test_a_poll_is_debug_and_carries_the_raw_status` | poll の1回は DEBUG（INFO で溢れさせない） |
+| `test_storage_403_keeps_the_existing_line_and_adds_fields` | ADR-0030 の既存の診断行の文言を変えずに、同じ1記録へフィールドを足す（既存テストは記録数1を見ている） |
