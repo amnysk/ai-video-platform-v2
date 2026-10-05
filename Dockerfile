@@ -40,6 +40,8 @@ CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 FROM base AS app
 ARG GIT_REVISION=unknown
 LABEL org.opencontainers.image.revision="${GIT_REVISION}"
+# ログの git_sha（ADR-0040。worker stage と同じ ARG 由来。api / migrate が使う）
+ENV AVP_GIT_REVISION="${GIT_REVISION}"
 
 # ---------------------------------------------------------------------------
 # 常駐 Worker 共通イメージ（ADR-0024）。script / storyboard / production* / render / upload / pipeline

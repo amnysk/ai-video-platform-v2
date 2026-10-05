@@ -26,6 +26,7 @@ from infrastructure.analytics.youtube_analytics import (
 )
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
 from infrastructure.providers.process import SubprocessRunner
 from infrastructure.storage.artifact_store import ArtifactStore
@@ -142,7 +143,6 @@ async def log_analytics_scope_status(provider: YouTubeAnalyticsProvider) -> None
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings()
 
     client = await connect_with_retry(settings)
@@ -203,6 +203,7 @@ async def main() -> None:
         )
         async with Worker(
             client,
+            interceptors=worker_interceptors(),
             task_queue=SCRIPT_TASK_QUEUE,
             workflows=research.workflows,
             activities=[

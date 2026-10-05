@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Protocol
 
+from contracts.log_contract import EventName, LogStage
 from contracts.schedule_guard import AnomalyKind
+from infrastructure.logging.emit import emit
 
 logger = logging.getLogger("avp.anomaly")
 
@@ -35,10 +37,21 @@ class LoggingAnomalyNotifier:
     """既定の通知。固定キー ``anomaly=<KIND>`` で grep / ログ監視できる。"""
 
     async def notify(self, notice: AnomalyNotice) -> None:
-        logger.error(
+        # 文言（OPERATIONAL_ANOMALY anomaly=）は維持する（運用の grep が使う / ADR-0040）
+        emit(
+            logger,
+            EventName.ANOMALY_RECORDED,
+            logging.ERROR,
             "OPERATIONAL_ANOMALY anomaly=%s date=%s occurrences=%d detail=%s",
             notice.kind.value,
             notice.anomaly_date.isoformat(),
             notice.occurrences,
             notice.detail,
+            stage=LogStage.WATCHDOG.value,
+            attributes={
+                "anomaly": notice.kind.value,
+                "date": notice.anomaly_date.isoformat(),
+                "occurrences": notice.occurrences,
+                "detail": notice.detail,
+            },
         )

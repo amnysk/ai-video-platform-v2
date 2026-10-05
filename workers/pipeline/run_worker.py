@@ -15,6 +15,7 @@ from temporalio.worker import Worker
 from contracts.pipeline import PIPELINE_TASK_QUEUE
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.temporal.connect import connect_with_retry
 from workers.pipeline.activities import PipelineActivities
 from workers.pipeline.watchdog import DailyWatchdogWorkflow
@@ -28,6 +29,7 @@ def build_worker(
 ) -> Worker:
     return Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=task_queue,
         workflows=[DailyEpisodeWorkflow, EpisodePipelineWorkflow, DailyWatchdogWorkflow],
         activities=activities.activities(),
@@ -35,7 +37,6 @@ def build_worker(
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings()
     client = await connect_with_retry(settings)
     activities = PipelineActivities(

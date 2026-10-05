@@ -9,6 +9,7 @@ retry は workflow のラウンドとして予約台帳を通す。
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -17,6 +18,7 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
+    from contracts.log_contract import EventName, Outcome
     from contracts.states import DEFAULT_MAX_ATTEMPTS, STORYBOARD_WORKFLOW, FailureClass
     from domain.errors import (
         NON_RETRYABLE_ERROR_TYPE_NAMES,
@@ -30,6 +32,21 @@ with workflow.unsafe.imports_passed_through():
         RecordFailureRequest,
         StoryboardActivities,
     )
+
+
+def _event(level: int, event: EventName, msg: str, *args: object, **fields: object) -> None:
+    """業務イベント（ADR-0040 / INV-40）。replay 中は SDK の logger が抑止する。
+
+    Workflow は ``infrastructure`` を import しない。``extra`` は ``"avp"`` の1キーだけで、
+    event_id は sandbox の外の整形器が決定的に導く。ログの故障で workflow task を落とさない。
+    """
+    try:
+        payload = {k: v for k, v in fields.items() if v is not None}
+        payload["event_name"] = event.value
+        workflow.logger.log(level, msg, *args, extra={"avp": payload})
+    except Exception:
+        pass
+
 
 STATE_ACTIVITY_TIMEOUT = timedelta(seconds=30)
 #: 生成は数分かかりうる。adapter 側の subprocess timeout より**長く**取る。
@@ -85,9 +102,27 @@ class StoryboardWorkflow:
             retry_policy=STATE_RETRY_POLICY,
         )
         if not admit.admitted:
+            _event(
+                logging.INFO,
+                EventName.STAGE_SKIPPED,
+                "storyboard not admitted status=%s",
+                admit.status,
+                stage="storyboard",
+                episode_id=request.episode_id,
+                outcome=Outcome.SKIPPED.value,
+                attributes={"status": admit.status},
+            )
             return StoryboardWorkflowResult(
                 episode_id=request.episode_id, status=admit.status, admitted=False
             )
+        _event(
+            logging.INFO,
+            EventName.STAGE_STARTED,
+            "storyboard started",
+            stage="storyboard",
+            episode_id=request.episode_id,
+            outcome=Outcome.STARTED.value,
+        )
 
         job_id: str = await workflow.execute_activity_method(
             StoryboardActivities.create_job,
@@ -120,6 +155,18 @@ class StoryboardWorkflow:
                 ),
                 start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
                 retry_policy=STATE_RETRY_POLICY,
+            )
+            _event(
+                logging.INFO,
+                EventName.STAGE_SUCCEEDED,
+                "storyboard succeeded status=%s round=%s",
+                ready.status,
+                round_number,
+                stage="storyboard",
+                episode_id=request.episode_id,
+                job_id=job_id,
+                outcome=Outcome.SUCCEEDED.value,
+                attributes={"rounds_used": round_number, "reused": result.reused},
             )
             return StoryboardWorkflowResult(
                 episode_id=request.episode_id,
@@ -161,6 +208,24 @@ class StoryboardWorkflow:
             ),
             start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
             retry_policy=STATE_RETRY_POLICY,
+        )
+        _event(
+            logging.WARNING,
+            EventName.STAGE_BLOCKED
+            if outcome.episode_status == "blocked"
+            else EventName.STAGE_FAILED,
+            "storyboard %s class=%s",
+            outcome.episode_status,
+            failure_class.value,
+            stage="storyboard",
+            episode_id=request.episode_id,
+            job_id=job_id,
+            failure_class=failure_class.value,
+            error_message=summary,
+            outcome=(
+                Outcome.BLOCKED if outcome.episode_status == "blocked" else Outcome.FAILED
+            ).value,
+            attributes={"status": outcome.episode_status},
         )
         return StoryboardWorkflowResult(
             episode_id=request.episode_id, status=outcome.episode_status, owned=outcome.owned

@@ -59,6 +59,13 @@ from typing import Any, Protocol
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from contracts.log_contract import (
+    ClassificationBasis,
+    ErrorCategory,
+    EventName,
+    Outcome,
+    ProviderOperation,
+)
 from contracts.production_activities import (
     AUTH_INCIDENT_SUPPRESSION_THRESHOLD,
     AUTH_INCIDENT_WINDOW_MINUTES,
@@ -92,6 +99,9 @@ from infrastructure.db.repositories import (
     ProviderReservation,
     ProviderReservationRepository,
 )
+from infrastructure.logging.context import log_context
+from infrastructure.logging.emit import emit
+from infrastructure.logging.ledger import reservation_fields
 from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.workdir import WorkDirectory
 
@@ -243,6 +253,13 @@ class PaidJobRunner:
     async def submit(
         self, spec: PaidJobSpec, generator: AsyncJobGenerator, request: Any
     ) -> SubmitOutcome:
+        # ログの文脈（ADR-0040 / log-contract §5）。adapter は観測した値だけを足す
+        with log_context(**_spec_fields(spec)):
+            return await self._submit(spec, generator, request)
+
+    async def _submit(
+        self, spec: PaidJobSpec, generator: AsyncJobGenerator, request: Any
+    ) -> SubmitOutcome:
         reservation: ProviderReservation | None = None
         prepared = False
         for _ in range(_RESERVE_ATTEMPTS):
@@ -264,6 +281,17 @@ class PaidJobRunner:
                     legacy_input_hashes=spec.legacy_input_hashes,
                 )
                 if existing is not None:
+                    emit(
+                        logger,
+                        EventName.ARTIFACT_REUSED,
+                        logging.INFO,
+                        "reusing current artifact %s for scene %s",
+                        existing.id,
+                        spec.scene_id,
+                        artifact_id=existing.id,
+                        artifact_type=existing.artifact_type.value,
+                        outcome=Outcome.REUSED.value,
+                    )
                     return Reused(artifact=existing)
 
                 reservations = ProviderReservationRepository(session)
@@ -275,9 +303,16 @@ class PaidJobRunner:
                     spec.scene_id,
                     (spec.input_hash, *spec.legacy_input_hashes),
                 )
-                plan = _plan_round(latest)
+                try:
+                    plan = _plan_round(latest)
+                except (UnreconciledReservationError, ProviderRejectedRetryBlockedError) as exc:
+                    _blocked(latest, exc)
+                    raise
                 if isinstance(plan, Submitted):
+                    _resumed(latest, "await")
                     return plan
+                if isinstance(plan, ProviderReservation):
+                    _resumed(plan, "dispatch")
                 if isinstance(plan, int) and latest is not None:
                     await self._check_input_fetch_retry(spec, latest)
                 if isinstance(plan, ProviderReservation):
@@ -299,6 +334,7 @@ class PaidJobRunner:
                     if row.idempotency_key != key
                 ]
                 if stale:
+                    _blocked(stale[0], None)
                     raise UnreconciledReservationError(
                         f"unreconciled reservation {stale[0].id} blocks a new "
                         f"{spec.provider.value} call for scene {spec.scene_id}"
@@ -351,6 +387,16 @@ class PaidJobRunner:
                 f"after {_RESERVE_ATTEMPTS} concurrent attempts"
             )
 
+        with log_context(reservation_id=reservation.id, provider_attempt=reservation.round):
+            return await self._dispatch_and_submit(spec, generator, request, reservation)
+
+    async def _dispatch_and_submit(
+        self,
+        spec: PaidJobSpec,
+        generator: AsyncJobGenerator,
+        request: Any,
+        reservation: ProviderReservation,
+    ) -> Submitted:
         async with self._session_factory() as session:
             await ProviderReservationRepository(session).mark_dispatched(reservation.id)
             await session.commit()
@@ -363,13 +409,21 @@ class PaidJobRunner:
             )
             raise
         except Exception as exc:
-            logger.warning(
+            emit(
+                logger,
+                EventName.LOG_RECORD,
+                logging.WARNING,
                 "paid submit ambiguous; reservation left dispatched without ref "
                 "reservation=%s episode=%s scene=%s error=%s",
                 reservation.id,
                 spec.episode_id,
                 spec.scene_id,
                 type(exc).__name__,
+                provider_operation=ProviderOperation.SUBMIT.value,
+                outcome=Outcome.AMBIGUOUS.value,
+                error_type=type(exc).__name__,
+                error_category=ErrorCategory.SUBMIT_AMBIGUOUS.value,
+                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
             )
             if isinstance(exc, ProviderSubmitAmbiguousError):
                 raise
@@ -377,13 +431,20 @@ class PaidJobRunner:
                 f"paid submit outcome unknown: {type(exc).__name__}: {exc}"
             ) from exc
 
-        # 参照が消えると回収できないので、commit 前にログにも残す（secret ではない）
-        logger.info(
+        # 参照が消えると回収できないので、commit 前にログにも残す（secret ではない）。
+        # 課金の確定ではなく provider の応答の観測（log-contract §9 の例外）
+        emit(
+            logger,
+            EventName.PROVIDER_CALL_SUCCEEDED,
+            logging.INFO,
             "paid submit accepted reservation=%s episode=%s scene=%s ref=%s",
             reservation.id,
             spec.episode_id,
             spec.scene_id,
             ref,
+            provider_operation=ProviderOperation.SUBMIT.value,
+            provider_request_id=_provider_request_id(ref),
+            outcome=Outcome.SUCCEEDED.value,
         )
         async with self._session_factory() as session:
             await ProviderReservationRepository(session).record_provider_job_ref(
@@ -416,6 +477,35 @@ class PaidJobRunner:
         provider が内容を拒否したとき ``provider_rejections`` に残す（INV-32 の鍵。ADR-0035）。
         """
         reservation = await self._load(reservation_id)
+        fields = reservation_fields(reservation)
+        fields.pop("reservation_status", None)  # 時点の値なので文脈には持たない
+        with log_context(**fields):
+            return await self._await_output(
+                reservation,
+                generator,
+                poll_interval_seconds=poll_interval_seconds,
+                deadline_seconds=deadline_seconds,
+                max_bytes=max_bytes,
+                heartbeat=heartbeat,
+                sleep=sleep,
+                clock=clock,
+                source_media_sha256=source_media_sha256,
+            )
+
+    async def _await_output(
+        self,
+        reservation: ProviderReservation,
+        generator: AsyncJobGenerator,
+        *,
+        poll_interval_seconds: float,
+        deadline_seconds: float | None,
+        max_bytes: int | None,
+        heartbeat: Callable[..., None] | None,
+        sleep: Callable[[float], Awaitable[None]],
+        clock: Callable[[], float],
+        source_media_sha256: str | None,
+    ) -> PaidOutput:
+        reservation_id = reservation.id
         raw_key = raw_output_key(reservation.episode_id, reservation.id)
 
         if reservation.outcome_artifact_id is not None:
@@ -452,11 +542,26 @@ class PaidJobRunner:
         ref = ProviderJobRef(reservation.provider_job_ref)
         started = clock()
         polls = 0
+        last_state: str | None = None
         while True:
             polls += 1
             if heartbeat is not None:
                 heartbeat({"reservation_id": reservation.id, "polls": polls})
             status = await generator.poll(ref)
+            # この Activity 試行の最初の観測と、状態が変わった時だけ INFO（log-contract §6）
+            state = _job_state(status)
+            if state != last_state:
+                emit(
+                    logger,
+                    EventName.PROVIDER_JOB_STATE_CHANGED,
+                    logging.INFO,
+                    "provider job %s after %s poll(s)",
+                    state,
+                    polls,
+                    outcome=Outcome.STATE_CHANGED.value,
+                    attributes={"state": state, "previous_state": last_state, "polls": polls},
+                )
+                last_state = state
             if isinstance(status, JobFailed):
                 error: Exception
                 if status.rejected:
@@ -658,6 +763,20 @@ class PaidJobRunner:
                 provider, since=since
             )
         if count >= AUTH_INCIDENT_SUPPRESSION_THRESHOLD:
+            emit(
+                logger,
+                EventName.PROVIDER_CALL_SUPPRESSED,
+                logging.WARNING,
+                "suppressing new %s submits: %s unresolved auth incident(s)",
+                provider.value,
+                count,
+                provider=provider.value,
+                outcome=Outcome.BLOCKED.value,
+                error_type=ProviderCredentialSuspectedOutageError.__name__,
+                error_category=ErrorCategory.SUPPRESSED_BY_INCIDENT.value,
+                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                attributes={"unresolved_incidents": count},
+            )
             raise ProviderCredentialSuspectedOutageError(
                 f"{provider.value}: {count} unresolved auth incidents in the last "
                 f"{AUTH_INCIDENT_WINDOW_MINUTES} minutes; suppressing new submits until "
@@ -743,7 +862,32 @@ class PaidJobRunner:
             failures = await rejections.count_input_unreachable(
                 spec.episode_id, spec.provider, spec.scene_id
             )
+        if failures <= INPUT_FETCH_RETRIES_PER_SCENE:
+            emit(
+                logger,
+                EventName.SCENE_INPUT_REFETCH,
+                logging.INFO,
+                "provider could not fetch the input for scene %s; re-uploading (%s/%s)",
+                spec.scene_id,
+                failures,
+                INPUT_FETCH_RETRIES_PER_SCENE,
+                outcome=Outcome.STARTED.value,
+                error_category=ErrorCategory.INPUT_UNREACHABLE.value,
+                attributes={"failures": failures, "limit": INPUT_FETCH_RETRIES_PER_SCENE},
+            )
         if failures > INPUT_FETCH_RETRIES_PER_SCENE:
+            emit(
+                logger,
+                EventName.RESERVATION_BLOCKED,
+                logging.WARNING,
+                "input re-upload retry used up for scene %s (%s failures)",
+                spec.scene_id,
+                failures,
+                outcome=Outcome.BLOCKED.value,
+                error_type=ProviderInputFetchRetryExhaustedError.__name__,
+                error_category=ErrorCategory.INPUT_UNREACHABLE.value,
+                attributes={"failures": failures, "limit": INPUT_FETCH_RETRIES_PER_SCENE},
+            )
             raise ProviderInputFetchRetryExhaustedError(
                 f"{spec.provider.value} could not fetch the input for scene {spec.scene_id} "
                 f"{failures} time(s); the automatic re-upload retry "
@@ -767,12 +911,85 @@ class PaidJobRunner:
                 spec.provider, spec.source_media_sha256
             )
         if rejected is not None:
+            emit(
+                logger,
+                EventName.RESERVATION_BLOCKED,
+                logging.WARNING,
+                "input image was rejected before (rejection %s); not resubmitting",
+                rejected.id,
+                outcome=Outcome.BLOCKED.value,
+                error_type=ProviderRejectedRetryBlockedError.__name__,
+                attributes={"rejection_id": rejected.id, "reason": rejected.reason},
+            )
             raise ProviderRejectedRetryBlockedError(
                 f"{spec.provider.value} rejected this input image before "
                 f"(rejection {rejected.id}, reason={rejected.reason or 'unknown'}); "
                 "resubmitting the same image with different text would repeat the rejection. "
                 "The scene needs a different image."
             )
+
+
+def _spec_fields(spec: PaidJobSpec) -> dict[str, Any]:
+    return {
+        "episode_id": spec.episode_id,
+        "scene_id": spec.scene_id,
+        "provider": spec.provider.value,
+        "input_hash": spec.input_hash,
+        "job_id": spec.job_id,
+        # PaidJobSpec.round は run ごとの試行番号（台帳ラウンドではない / log-contract §3）
+        "attributes": {"run_attempt": spec.round},
+    }
+
+
+def _provider_request_id(ref: str) -> str | None:
+    """provider job 参照（JSON）の ``request_id``。読めなければ付けない（推測しない）。"""
+    try:
+        value = json.loads(ref).get("request_id")
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _job_state(status: JobStatus) -> str:
+    if isinstance(status, JobPending):
+        return "pending"
+    if isinstance(status, JobFailed):
+        return "failed"
+    return "succeeded"
+
+
+def _resumed(row: ProviderReservation | None, phase: str) -> None:
+    if row is None:
+        return
+    emit(
+        logger,
+        EventName.RESERVATION_RESUMED,
+        logging.INFO,
+        "resuming reservation %s (round %s) at %s",
+        row.id,
+        row.round,
+        phase,
+        **reservation_fields(row),
+        outcome=Outcome.RESUMED.value,
+        attributes={"phase": phase},
+    )
+
+
+def _blocked(row: ProviderReservation | None, exc: BaseException | None) -> None:
+    fields = reservation_fields(row) if row is not None else {}
+    emit(
+        logger,
+        EventName.RESERVATION_BLOCKED,
+        logging.WARNING,
+        "new round blocked by reservation %s",
+        fields.get("reservation_id"),
+        **fields,
+        outcome=Outcome.BLOCKED.value,
+        error_type=type(exc).__name__ if exc is not None else UnreconciledReservationError.__name__,
+        error_category=ErrorCategory.UNRECONCILED_RESERVATION.value
+        if not isinstance(exc, ProviderRejectedRetryBlockedError)
+        else None,
+    )
 
 
 def _plan_round(latest: ProviderReservation | None) -> Submitted | ProviderReservation | int:

@@ -15,6 +15,7 @@ Activity は**名前**で呼ぶ（``contracts.render_activities``）。実装を
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -25,6 +26,7 @@ from temporalio.exceptions import TimeoutError as TemporalTimeoutError
 from temporalio.workflow import ActivityCancellationType
 
 with workflow.unsafe.imports_passed_through():
+    from contracts.log_contract import EventName, Outcome
     from contracts.render import (
         DEFAULT_RENDER_HEARTBEAT_TIMEOUT_SECONDS,
         DEFAULT_RENDER_PROFILE_ID,
@@ -55,6 +57,21 @@ with workflow.unsafe.imports_passed_through():
     from domain.errors import NON_RETRYABLE_ERROR_TYPE_NAMES, failure_class_from_type_name
 
 WORKFLOW_NAME, TASK_QUEUE = RENDER_WORKFLOW
+
+
+def _event(level: int, event: EventName, msg: str, *args: object, **fields: object) -> None:
+    """業務イベント（ADR-0040 / INV-40）。replay 中は SDK の logger が抑止する。
+
+    Workflow は ``infrastructure`` を import しない。``extra`` は ``"avp"`` の1キーだけで、
+    event_id は sandbox の外の整形器が決定的に導く。ログの故障で workflow task を落とさない。
+    """
+    try:
+        payload = {k: v for k, v in fields.items() if v is not None}
+        payload["event_name"] = event.value
+        workflow.logger.log(level, msg, *args, extra={"avp": payload})
+    except Exception:
+        pass
+
 
 STATE_ACTIVITY_TIMEOUT = timedelta(seconds=30)
 #: 状態系 Activity は Episode を ``in_progress`` から出す唯一の経路なので DB の一時障害で諦めない
@@ -165,9 +182,27 @@ class RenderWorkflow:
             retry_policy=STATE_RETRY_POLICY,
         )
         if not admit.admitted:
+            _event(
+                logging.INFO,
+                EventName.STAGE_SKIPPED,
+                "render not admitted status=%s",
+                admit.status,
+                stage="render",
+                episode_id=request.episode_id,
+                outcome=Outcome.SKIPPED.value,
+                attributes={"status": admit.status},
+            )
             return RenderWorkflowResult(
                 episode_id=request.episode_id, status=admit.status, admitted=False
             )
+        _event(
+            logging.INFO,
+            EventName.STAGE_STARTED,
+            "render started",
+            stage="render",
+            episode_id=request.episode_id,
+            outcome=Outcome.STARTED.value,
+        )
         timeout = admit.render_timeout_seconds or DEFAULT_RENDER_TIMEOUT_SECONDS
         try:
             return await self._admitted(request, timeout)
@@ -247,6 +282,16 @@ class RenderWorkflow:
             schedule_to_close_timeout=STATE_SCHEDULE_TO_CLOSE,
             retry_policy=STATE_RETRY_POLICY,
         )
+        _event(
+            logging.INFO,
+            EventName.STAGE_SUCCEEDED,
+            "render succeeded status=%s",
+            ready.status,
+            stage="render",
+            episode_id=request.episode_id,
+            outcome=Outcome.SUCCEEDED.value,
+            attributes={"status": ready.status, "owned": ready.owned},
+        )
         return RenderWorkflowResult(
             episode_id=request.episode_id,
             status=ready.status,
@@ -273,6 +318,23 @@ class RenderWorkflow:
             start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
             schedule_to_close_timeout=STATE_SCHEDULE_TO_CLOSE,
             retry_policy=STATE_RETRY_POLICY,
+        )
+        blocked = outcome.episode_status == "blocked"
+        _event(
+            logging.WARNING,
+            EventName.STAGE_BLOCKED if blocked else EventName.STAGE_FAILED,
+            "render %s class=%s",
+            "blocked" if blocked else "failed",
+            failure.failure_class.value,
+            stage="render",
+            episode_id=request.episode_id,
+            failure_class=failure.failure_class.value,
+            error_message=failure.summary,
+            outcome=(Outcome.BLOCKED if blocked else Outcome.FAILED).value,
+            attributes={
+                "status": outcome.episode_status,
+                "retry_exhausted": failure.retry_exhausted,
+            },
         )
         return RenderWorkflowResult(
             episode_id=request.episode_id,

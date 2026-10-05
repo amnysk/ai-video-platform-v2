@@ -15,7 +15,8 @@ Accepted（2026-09-30。設計レビューと独立再確認: 独立レビュー
   （ローテーション無し）**。最大のコンテナログは約 77MB。
 - アプリログは `logging.basicConfig(level=INFO)` の非構造テキスト（13か所で個別に初期化）。
   uvicorn は CLI 起動で独自の handler（access log は query 付き path）。Temporal Core（Rust）のログは
-  Python logging を通らず stderr に出る（`LoggingConfig.default` の `forwarding=None`）。
+  Python logging を通らず console に直接出る（`LoggingConfig.default` の `forwarding=None`。
+  実測では stdout に ANSI 色つきの非 JSON 行。2026-10-05 訂正、当初「stderr」と記載）。
 - 2026-09-22 以降の 403（ADR-0030）では診断が DB の `error_summary` 文字列頼みで、どの試行・
   どのシーン・どの操作（submit / storage token）かをログから辿れなかった。
 - 既存の監視: DB の `operational_anomalies` と watchdog（ADR-0027/0031）、`avp.anomaly` logger。
