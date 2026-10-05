@@ -13,11 +13,11 @@ Critical なし。3271 passed（unit/contract/architecture）。
 | I-2 | Medium | A | emit() 外の引数計算が未保護（youtube uploader `_observe`/`_error_reasons` が except 節内で例外を置換し得る）。`record_upload_session` にログ用の DB 読み取り追加（§9 違反）→削除 | 修正（87cbe34、A）。D の再確認待ち |
 | I-3 | Medium | A | INV-40 の旧履歴 replay が Production/Render/Upload/Storyboard/Pipeline に無い。01eb0ee で履歴 fixture を採り Replayer で検査 | 修正（caf691f、A）。D の再確認待ち |
 | I-4 | Medium | A | stack を安全化前に切り詰めている（formatter.py:171-188→303）。block ごとに sanitize→切詰 | 修正（d1bcbc5、A）。D の再確認待ち |
-| I-5 | Medium | B | `AVP_ENVIRONMENT` 既定 dev のため prod index に dev が入る。既定を外し unknown、deploy 手順に prod 明記、check-pipeline で不一致検出 | 未修正 |
-| I-6 | Low | B | check-pipeline の lag を系統別に、curl のパスワードを argv に出さない | 未修正 |
-| I-7 | Low | B/契約 | infra フィールド集合を contracts へ、Lua の unstructured 出力 ⊆ infra mapping を test で固定 | 未修正 |
+| I-5 | Medium | B | `AVP_ENVIRONMENT` 既定 dev のため prod index に dev が入る。既定を外し unknown、deploy 手順に prod 明記、check-pipeline で不一致検出 | 修正（4f72c42, 3a570c9）。D の再確認待ち |
+| I-6 | Low | B | check-pipeline の lag を系統別に、curl のパスワードを argv に出さない | 修正（3a570c9）。D の再確認待ち |
+| I-7 | Low | B/契約 | infra フィールド集合を contracts へ、Lua の unstructured 出力 ⊆ infra mapping を test で固定 | 修正（56bf259）。D の再確認待ち |
 | I-8 | Low | A | workflow の `_event()` 重複、stage 文字列 ⊆ LogStage を AST テストで固定 | 修正（4b6a114、A）。D の再確認待ち |
-| I-9 | Low | B | one-shot が pki/ 全体（秘密鍵含む）を mount | 未修正 |
+| I-9 | Low | B | one-shot が pki/ 全体（秘密鍵含む）を mount | 修正（838ce5d、追加修正 dbca5de: securityadmin の DAC_READ_SEARCH）。D の再確認待ち |
 | I-10 | Low | A/B | Dockerfile app stage の CMD を `python -m apps.api.serve` に | 修正（935ced0、A）。D の再確認待ち |
 
 ## 未実施
