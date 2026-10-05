@@ -73,3 +73,18 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
   `.000999…` になり 1ms 早い時刻が保存された（隔離環境で実測）。stdout も同じ切り捨ての iso8601 で検査する。
 - **追加の安全化と切り詰め**: 整形器の取りこぼし（`Authorization: Bearer …`、DSN の userinfo）が
   OpenSearch へ届かないこと、unstructured 行が `UNSTRUCTURED_LINE_MAX_BYTES` 以下になることを固定する。
+
+## 4. `tests/contract/test_compose_logging.py`（と `test_research_worker_compose.py` の変更）
+
+- **全サービスが json-file を max-size 20m × max-file 5 でローテーションし、`labels`/`tag` で attrs を
+  付ける**: 現状は全コンテナがローテーション無し（最大 約77MB）。attrs が無い行は Collector が compose project
+  で絞れず捨てる。`mode: non-blocking` は黙って欠損するので blocking のままであることも固定する。
+- **アプリ（app / worker イメージ）のサービスだけが `avp.logging=app` を持ち、`AVP_SERVICE_NAME` が
+  compose のサービス名**: label がずれると postgres 等の行が app の mapping に入り、逆にアプリの行が
+  infra へ流れて検索できなくなる。`service_name` と `compose_service` が一致することで照合できる。
+- **API の起動コマンド**: uvicorn の CLI 起動は独自の handler と query 付きの access log を出す
+  （ADR-0040 §1）。モジュール `apps.api.serve` は担当A が作るので、ここでは存在を検査しない。
+- `test_research_worker_compose.py` は research-worker の env を「app-env ＋ provider の設定だけ」に
+  固定している（秘密の混入を止める検査）。ADR-0040 §3（Accepted）でアプリの各サービスに
+  `AVP_SERVICE_NAME`（秘密ではない）を足すので、許可する集合にそれを加え、値がサービス名であることを検査する。
+  `AVP_ENVIRONMENT`・`AVP_LOG_FORMAT` は `x-core-env` 経由なので既存の「app-env と同じ集合」に含まれる。
