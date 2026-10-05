@@ -90,6 +90,8 @@
 | `test_nothing_imports_opensearch` | アプリは stdout にしか書かない（ADR-0040 §1。OpenSearch の停止が業務に届かない） |
 | `test_log_extra_uses_only_the_avp_key` | `workflow.logger` の `extra=` のキーは `"avp"` だけ（予約属性と衝突すると `makeRecord` が KeyError を投げ、業務へ伝播する）。Workflow の外では `extra=` を直接書かず `emit()` を使う: 直接の `logger.warning(extra=...)` はロガーの故障をそのまま業務の例外にする（故障注入のテストで実際に `test_paid_job` が落ちた） |
 | `test_every_emission_outside_workflows_is_guarded_with_its_arguments` | `emit()`/`defer()` の try は呼ばれた後しか握れない。引数の計算（分類・行→フィールド・`str(exc)`）が except 節の中で投げると業務の例外が置き換わる（レビュー I-2。YouTube uploader の `_observe` が実例）。発行は前処理ごと `with log_guard():` の中に置く。Workflow は `_event` が握るので対象外 |
+| `test_workflow_event_names_and_stages_are_contract_vocabulary` | Workflow は infrastructure を import できず `stage="production"` 等を文字列で書く。`_event` の event_name は `EventName`、`stage` は `LogStage`（`PipelineStage` ⊆ `LogStage` も）であること（レビュー I-8。食い違うと Dashboards の絞り込みから黙って漏れる。`stage="rendering"` に変えると落ちることを確認） |
+| `test_workflow_event_helpers_are_identical` | 各 workflow module の `_event` は同一（1つだけ直す片側更新を止める。共有できないことによる重複の代償） |
 | `test_every_event_name_has_a_documented_emission_point` | `docs/observability/emission-points.md` の表と、実コードの `EventName.X` の参照を突き合わせる。表で「未発行」と書いたものだけが発行箇所を持たなくてよい（発行を足して表を忘れる・表だけ直す片側更新を止める） |
 
 ## 故障注入（`tests/unit/test_log_fault_injection.py`）— INV-38
