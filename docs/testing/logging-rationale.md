@@ -62,3 +62,36 @@
 | `test_cancel_is_recorded_as_cancelled_and_propagates` | 兄弟 Activity の cancel を失敗と区別する（`outcome=cancelled`） |
 | `test_a_broken_logger_does_not_change_the_activity_outcome` | ロガーが壊れても Activity の結果・例外は同じ（INV-38） |
 | `test_two_episodes_in_parallel_do_not_mix` | 実 Worker で2つの Episode を並列に走らせても文脈が混ざらない |
+
+## 接続（`tests/unit/test_log_wiring.py`、`tests/unit/test_log_api.py`、unit）
+
+| テスト | 守るもの |
+|---|---|
+| `test_worker_entry_emits_service_started_and_stopped` / `test_worker_entry_emits_start_failed_for_an_early_crash` | 起動・停止・起動失敗のイベント。既存の文言（`starting revision=`）は変えない |
+| `test_cli_configures_logging_once_before_running` | 初期化は起動点の1か所（各 worker の `basicConfig` を消したので、ここが抜けるとログが一切出ない） |
+| `test_api_serve_uses_the_common_setup_and_no_uvicorn_logging` | API は uvicorn の既定のログ設定（stderr・独自書式・access log）を使わない |
+| `test_core_forwarding_is_only_installed_after_configure` / `test_connect_installs_forwarding_before_the_first_connect` | Core の転送は最初の接続より前。logging を設定しないプロセス（テスト・スクリプト）では既定の Runtime を変えない |
+| `test_worker_interceptors_is_the_single_entry` | 本番とテストの Worker が同じ入口から interceptor を取る |
+| `test_health_is_logged_at_debug` | 死活監視の叩く `/healthz` を INFO で溢れさせない |
+| `test_route_template_episode_id_and_request_id` | route は template（実 path・query を出さない）、path の `episode_id`、`X-Request-ID` の引き継ぎ、resume の requested→started |
+| `test_rejected_resume_is_logged_with_the_status` / `test_already_running_resume_is_rejected_with_409` | resume の拒否（404・409・二重起動）を status つきで残す |
+| `test_unsafe_request_ids_are_replaced` | 受信ヘッダの任意の文字列を keyword に入れない |
+| `test_an_exception_is_logged_and_reraised_unchanged` | middleware は例外を記録して同じオブジェクトを再送出（応答・例外を変えない） |
+| `test_lifespan_logs_service_started_and_stopped` | API の起動・停止 |
+
+## 境界（`tests/architecture/test_logging_boundaries.py`）
+
+| テスト | 守るもの |
+|---|---|
+| `test_every_worker_gets_the_activity_logging_interceptor` | 全 `run_worker.py` の `Worker(...)` が `interceptors=worker_interceptors()`。付け忘れた worker の Activity は文脈なしになる |
+| `test_logging_is_configured_only_at_the_entry_points` | `basicConfig`・httpx のレベル設定を各 worker に戻さない（二重の handler、query 付き URL の INFO） |
+| `test_workflow_modules_do_not_import_infrastructure` | INV-40。sandbox 内で `infrastructure.logging` が再 import されると handler が分裂し workflow task が失敗する（実測） |
+| `test_nothing_imports_opensearch` | アプリは stdout にしか書かない（ADR-0040 §1。OpenSearch の停止が業務に届かない） |
+| `test_log_extra_uses_only_the_avp_key` | `extra=` のキーは `"avp"` だけ。予約属性と衝突すると `makeRecord` が KeyError を投げ、業務へ伝播する |
+
+## 故障注入（`tests/unit/test_log_fault_injection.py`）— INV-38
+
+| テスト | 守るもの |
+|---|---|
+| `test_the_fault_injection_really_breaks_emission` | 注入（`tests/support/json_log_plugin.break_logging`）が実際に発行を壊していること。効いていなければ次の検査は空振り |
+| `test_ledger_suites_pass_unchanged_with_broken_logging` | 既存の台帳・有料 submit/await・fal adapter のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |

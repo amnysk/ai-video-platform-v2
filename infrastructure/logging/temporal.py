@@ -219,4 +219,18 @@ class ActivityLoggingInterceptor(Interceptor):
         return _LoggingActivityInbound(super().intercept_activity(next))
 
 
-__all__ = ["ACTIVITY_INPUT_FIELDS", "ActivityLoggingInterceptor", "input_fields"]
+def worker_interceptors() -> list[Interceptor]:
+    """全 Worker が ``Worker(..., interceptors=worker_interceptors())`` で使う唯一の入口。
+
+    本番の run_worker もテストの Worker も同じ関数から取る（差し込み方は
+    docs/observability/emission-points.md）。
+    """
+    return [ActivityLoggingInterceptor()]
+
+
+__all__ = [
+    "ACTIVITY_INPUT_FIELDS",
+    "ActivityLoggingInterceptor",
+    "input_fields",
+    "worker_interceptors",
+]

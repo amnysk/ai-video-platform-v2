@@ -23,6 +23,7 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from contracts.research import RESEARCH_WORKFLOW, ResearchWorkflowInput, research_workflow_id
 from infrastructure.config import Settings
+from infrastructure.logging.setup import ensure_core_log_forwarding
 
 __all__ = ["ResearchWorkflowStarter", "TemporalResearchStarter", "start_research_workflow"]
 
@@ -54,6 +55,7 @@ class TemporalResearchStarter:
 
     @classmethod
     async def connect(cls, settings: Settings) -> TemporalResearchStarter:  # pragma: no cover
+        ensure_core_log_forwarding()  # ADR-0040 §1: Core のログを整形器へ
         client = await Client.connect(
             settings.temporal_address, namespace=settings.temporal_namespace
         )

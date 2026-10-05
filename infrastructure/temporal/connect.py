@@ -13,6 +13,7 @@ from typing import Any
 from temporalio.client import Client
 
 from infrastructure.config import Settings
+from infrastructure.logging.setup import ensure_core_log_forwarding
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,8 @@ async def connect_with_retry(
     max_delay: float = 30.0,
     max_attempts: int | None = None,
 ) -> Client:
+    # Temporal Core のログを整形器へ転送する Runtime を、最初の接続より前に置く（ADR-0040 §1）
+    ensure_core_log_forwarding()
     attempt = 0
     delay = initial_delay
     while True:

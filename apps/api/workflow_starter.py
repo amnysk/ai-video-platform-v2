@@ -26,6 +26,7 @@ from contracts.states import (
     Pipeline,
 )
 from infrastructure.config import Settings
+from infrastructure.logging.setup import ensure_core_log_forwarding
 
 
 class WorkflowStarter(Protocol):
@@ -70,6 +71,7 @@ class TemporalWorkflowStarter:
 
     @classmethod
     async def connect(cls, settings: Settings) -> TemporalWorkflowStarter:
+        ensure_core_log_forwarding()  # ADR-0040 §1: Core のログを整形器へ
         client = await Client.connect(
             settings.temporal_address, namespace=settings.temporal_namespace
         )

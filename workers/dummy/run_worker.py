@@ -12,6 +12,7 @@ from temporalio.worker import Worker
 
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
 from workers.dummy.activities import DummyActivities
@@ -21,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings()
 
     client = await connect_with_retry(settings)
@@ -37,6 +37,7 @@ async def main() -> None:
     logger.info("dummy worker listening on task queue %s", settings.temporal_task_queue)
     async with Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=settings.temporal_task_queue,
         workflows=[EpisodeSkeletonWorkflow],
         activities=activities.all_activities(),

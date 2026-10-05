@@ -33,6 +33,8 @@ THIRD_PARTY_LEVELS: dict[str, int] = {
 }
 
 _HANDLER_NAME = "avp-stdout"
+#: ``configure_logging()`` が呼ばれたか（connect 側の転送はこのプロセスで設定済みの時だけ）
+_state: dict[str, bool] = {"configured": False, "forward": False}
 
 
 def _level(env: Mapping[str, str]) -> int:
@@ -132,9 +134,21 @@ def configure_logging(
     configure_temporal_loggers()
     # 許可 host を起動時に一度だけ導く（Workflow スレッドで初めて adapter を import しない）
     allowed_hosts()
+    _state["configured"] = True
+    _state["forward"] = forward_temporal_core
     if forward_temporal_core:
         install_core_log_forwarding()
     return handler
+
+
+def ensure_core_log_forwarding() -> None:
+    """Temporal へ接続する直前に呼ぶ（``connect_with_retry``・API / Research の starter）。
+
+    ``configure_logging()`` を済ませたプロセスでだけ転送を置く（テストや logging を設定しない
+    スクリプトでは既定の Runtime を変えない）。既に置いてあれば何もしない。
+    """
+    if _state["configured"] and _state["forward"]:
+        install_core_log_forwarding()
 
 
 def configure_uvicorn_loggers() -> None:
@@ -152,5 +166,6 @@ __all__ = [
     "configure_logging",
     "configure_temporal_loggers",
     "configure_uvicorn_loggers",
+    "ensure_core_log_forwarding",
     "install_core_log_forwarding",
 ]
