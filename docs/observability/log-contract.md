@@ -84,6 +84,15 @@ ADR-0040。語彙・型・上限・設定キーの**唯一の宣言元**は
 | `stream` / `container_name` / `compose_service` / `compose_project` / `host_name` | keyword | Docker json-file の `attrs` と Collector のホスト名（Collector 側。Docker socket は使わない） |
 | `collector_errors` | keyword（配列） | Collector が型検査で `attributes.collector_moved` へ退避したフィールド名、`@timestamp_replaced` 等（Collector 側）|
 
+### 2.0 infra（unstructured）系統のフィールド
+
+`log_source=unstructured` の文書（JSON でない行・stderr・label の無いコンテナ）が持つのは
+`contracts.log_contract.INFRA_FIELD_NAMES` だけ: Collector 側のフィールド全部（`ingested_at`・`log_source`・
+`stream`・`container_name`・`compose_service`・`compose_project`・`collector_errors`・`host_name`）と、
+Collector が行から作る `@timestamp`（Docker の時刻）・`message`（安全化し `UNSTRUCTURED_LINE_MAX_BYTES` で
+切り詰めた行）・`truncated`・`redaction_applied`。infra の mapping はこの集合から生成し、Collector が書くキーが
+その部分集合であることを integration test（`tests/integration/test_logging_collector_lua.py`）で固定する。
+
 ### 2.1 観測事実と推定
 
 - 観測: `http_status`、`error_type`、`error_code`、`response_excerpt`、`failure_class`、`retryable`。

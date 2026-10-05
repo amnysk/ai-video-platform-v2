@@ -18,6 +18,8 @@ Fluent Bit 5.1.2、2026-09-30）。
   同名フィールドの型が食い違うと Dashboards が conflict として扱う。
 - **Lua の型表と label 定数**: Collector の振り分け（`avp.logging=app`）と型修復は Lua の表を読む。
   表と契約がずれると、アプリの行が infra 系統へ流れる・正しい値が退避される。
+- **infra の mapping は契約の `INFRA_FIELD_NAMES` と一致し、生成器はその集合を自前で持たない**（I-7）:
+  集合が生成器にあると、契約を読む側（Collector の Lua・検索側）と別の場所に同じ真実が散る（AGENTS.md §8）。
 - **`--check` の終了コード**: CI や手元で drift を検出する手段として使えることを固定する。
 
 ## 2. `tests/contract/test_logging_platform_config.py`
@@ -71,6 +73,8 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
   JSON でない行・退避した行には Collector が `collector-…` の ID を付ける。
 - **ミリ秒の丸め**: 出力側は record 時刻の `tv_nsec` を切り捨ててミリ秒を書く。`.001` を double にすると
   `.000999…` になり 1ms 早い時刻が保存された（隔離環境で実測）。stdout も同じ切り捨ての iso8601 で検査する。
+- **Lua が書くキーは行き先の mapping の部分集合**（I-7）: `dynamic: false` なので、mapping に無いキーを
+  Collector が書いても黙って検索できないだけで、どこもエラーにならない。
 - **追加の安全化と切り詰め**: 整形器の取りこぼし（`Authorization: Bearer …`、DSN の userinfo）が
   OpenSearch へ届かないこと、unstructured 行が `UNSTRUCTURED_LINE_MAX_BYTES` 以下になることを固定する。
 

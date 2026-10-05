@@ -19,6 +19,8 @@ import yaml
 from contracts.log_contract import (
     APP_LOG_LABEL,
     APP_LOG_LABEL_VALUE,
+    INFRA_FIELD_NAMES,
+    LOG_FIELD_NAMES,
     REDACTED,
     UNSTRUCTURED_LINE_MAX_BYTES,
 )
@@ -208,3 +210,13 @@ def test_routing_repair_and_sanitize(tmp_path: Path) -> None:
     assert broken["collector_errors"] == ["json_parse_failed"]
     assert broken["event_id"].startswith("collector-")
     assert broken["event_id"] != long_id["event_id"]
+
+    # Lua が書くキーは、行き先の mapping にあるものだけ（dynamic:false で黙って検索できなく
+    # ならない。I-7）。
+    # date は stdout 出力が付ける時刻（OpenSearch には @timestamp として出力側が書く）
+    for r in got:
+        keys = set(r) - {"date"}
+        if r.get("log_source") == "unstructured" and "event_id" not in r:
+            assert keys <= INFRA_FIELD_NAMES, keys - INFRA_FIELD_NAMES
+        else:
+            assert keys <= LOG_FIELD_NAMES, keys - LOG_FIELD_NAMES
