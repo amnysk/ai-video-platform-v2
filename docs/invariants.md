@@ -409,4 +409,9 @@ sandbox の外の整形器が `uuid5(workflow_id:run_id:history_length:seq:event
 / `tests/architecture/test_logging_boundaries.py::test_workflow_modules_do_not_import_infrastructure`
 / `tests/unit/test_log_formatter.py::test_workflow_event_id_is_deterministic_and_every_input_matters`
 / `tests/unit/test_log_formatter.py::test_workflow_event_id_does_not_collide_across_a_grid`
+/ `tests/unit/test_log_old_history_replay.py::test_old_history_replays_deterministically_and_emits_nothing`
+（ログ導入前 01eb0ee のコードで採った Production（代替映像案の成功・上限を含む）・Render・Upload・Storyboard・
+EpisodePipeline・Daily の履歴を、今のコードの Replayer で replay。非決定にならず1件も発行しない）
+/ `tests/unit/test_log_old_history_replay.py::test_the_old_histories_cover_every_stage_workflow`
+/ `tests/architecture/test_logging_boundaries.py::test_workflow_event_names_and_stages_are_contract_vocabulary`
 / `tests/unit/test_pipeline_workflows.py`（既存の履歴 fixture の replay がログ発行を足した後も通る）

@@ -166,3 +166,28 @@ formatter.build 275 / ledger.defer 282 / ledger.after_commit 216 / call_observat
 | テスト | 守るもの |
 |---|---|
 | `test_the_app_image_defaults_to_the_logging_entry_point` | app イメージの既定 CMD は `python -m apps.api.serve`（レビュー I-10）。compose は command を上書きするが、command を書かずに起動した時だけ uvicorn の CLI のログ設定（stderr・query 付き access log）に戻るのを防ぐ |
+
+## ログ導入前の履歴の replay（`tests/unit/test_log_old_history_replay.py`）— INV-40・レビュー I-3
+
+稼働中の workflow は導入前のコードで始まった履歴を持ったまま新しい worker に拾われる。新しく始めた
+workflow の replay（`test_log_workflow_replay.py`）だけでは、旧履歴との非決定は見つからない。
+
+| テスト | 守るもの |
+|---|---|
+| `test_old_history_replays_deterministically_and_emits_nothing` | 01eb0ee（ログ導入前）で採った履歴21本（Production: 代替映像案で作り直し・代替案の上限・音声ゲートの失敗・成功／Render・Upload: 成功・blocked・入場不可・cancel・処理待ち／Storyboard: 成功・blocked・入場不可／EpisodePipeline: 完了・途中再開・upload gate・停止・子の二重起動／Daily）が今のコードで非決定にならず、replay 中は1件も発行しない。workflow に `workflow.sleep` を足すと4本が落ちることを確認（検査が効いている） |
+| `test_the_old_histories_cover_every_stage_workflow` | fixture が消えて検査が空振りしない |
+
+履歴の採り方（再現手順）:
+
+```bash
+git worktree add --detach .worktrees/tmp-pre-logging 01eb0ee
+cp tests/support/history_capture_plugin.py .worktrees/tmp-pre-logging/tests/support/
+cd .worktrees/tmp-pre-logging
+AVP_CAPTURE_HISTORY_DIR=/tmp/histories <venv>/bin/python -m pytest -p tests.support.history_capture_plugin \
+  tests/unit/test_production_scene_recovery_workflow.py tests/unit/test_production_voice_gate.py \
+  tests/unit/test_render_workflow.py tests/unit/test_upload_workflow.py \
+  tests/unit/test_pipeline_workflows.py tests/integration/test_storyboard_workflow.py
+cd - && git worktree remove .worktrees/tmp-pre-logging
+```
+
+（`tests/integration/test_storyboard_workflow.py` は time-skipping server と SQLite だけで動く。）
