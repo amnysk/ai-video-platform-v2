@@ -63,3 +63,13 @@ def test_provider_labels_do_not_collide_with_ledger_providers() -> None:
     doc = (REPO / "docs" / "observability" / "log-contract.md").read_text(encoding="utf-8")
     missing = [p.value for p in ProviderLabel if f"`{p.value}`" not in doc]
     assert not missing, f"log-contract.md に載っていない provider ラベル: {missing}"
+
+
+def test_infra_fields_are_contract_fields_with_collector_fields() -> None:
+    """infra（unstructured）系統のフィールド集合も契約が唯一の宣言元（I-7）。"""
+    from contracts.log_contract import INFRA_FIELD_NAMES
+
+    collector = {f.name for f in LOG_FIELDS if f.origin is FieldOrigin.COLLECTOR}
+    assert INFRA_FIELD_NAMES <= LOG_FIELD_NAMES
+    assert collector <= INFRA_FIELD_NAMES
+    assert {"@timestamp", "message", "truncated", "redaction_applied"} <= INFRA_FIELD_NAMES

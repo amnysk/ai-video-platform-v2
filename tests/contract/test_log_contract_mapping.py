@@ -21,7 +21,6 @@ from contracts.log_contract import (
     APP_LOG_LABEL_VALUE,
     KEYWORD_MAX_CHARS,
     LOG_FIELDS,
-    FieldOrigin,
     FieldType,
 )
 
@@ -81,12 +80,12 @@ def test_app_mapping_type_rules(field) -> None:
         assert m == {"type": field.type.value, "ignore_malformed": True}
 
 
-def test_infra_mapping_is_a_subset_with_collector_fields() -> None:
+def test_infra_mapping_is_exactly_the_contract_infra_fields() -> None:
+    from contracts.log_contract import INFRA_FIELD_NAMES
+
     app = _properties(ROOT / "deploy/logging/opensearch/templates/avp-app-mappings.json")
     infra = _properties(ROOT / "deploy/logging/opensearch/templates/avp-infra-mappings.json")
-    collector = {f.name for f in LOG_FIELDS if f.origin is FieldOrigin.COLLECTOR}
-    assert collector <= set(infra)
-    assert {"@timestamp", "message", "truncated", "redaction_applied"} <= set(infra)
+    assert set(infra) == INFRA_FIELD_NAMES
     for name, m in infra.items():
         assert app[name] == m, f"{name}: app と infra で型が違う"
 
@@ -99,6 +98,12 @@ def test_lua_type_table_matches_contract() -> None:
     assert f"app_label = {json.dumps(APP_LOG_LABEL)}" in lua
     assert f"app_label_value = {json.dumps(APP_LOG_LABEL_VALUE)}" in lua
     assert f"keyword_max_chars = {KEYWORD_MAX_CHARS}," in lua
+
+
+def test_generator_reads_the_infra_set_from_the_contract() -> None:
+    """生成器が infra の集合を自前で持たない（AGENTS.md §8、I-7）。"""
+    src = (ROOT / "scripts" / "gen_log_mapping.py").read_text(encoding="utf-8")
+    assert "INFRA_FIELD_NAMES" in src and "INFRA_APP_NAMED_FIELDS" not in src
 
 
 def test_check_mode_reports_drift(gen: ModuleType, tmp_path, monkeypatch) -> None:

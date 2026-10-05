@@ -2,13 +2,15 @@
 # ログ基盤の確認（ADR-0040 §5/§7）。OpenSearch の**外**から、ホストで動かす。異常があれば非0で終了する。
 #
 #   deploy/logging/scripts/check-pipeline.sh [--env prod] [--project avp2-logging]
-#       [--secrets-dir DIR] [--os-url URL] [--max-lag-min 60] [--max-chunks 2000]
+#       [--secrets-dir DIR] [--os-url URL] [--max-lag-min 60] [--max-lag-infra-min 60]
+#       [--max-chunks 2000]
 #       [--state-dir DIR] [--enforce-memory]
 #
 # 見るもの:
 #   Fluent Bit  health、開いたファイル数（0 = containers/ が読めていない。無音の失敗）、破棄・再送失敗・
 #               長すぎる行の skip（前回からの増分）、filesystem buffer の chunk 数
-#   OpenSearch  到達性・cluster の状態、最終 ingested_at と lag、index サイズ、ディスク使用率
+#   OpenSearch  到達性・cluster の状態、系統（app / infra）ごとの最終 ingested_at と lag、
+#               index の env と文書の environment の食い違い（直近24時間）、index サイズ、ディスク使用率
 #   証明書      CA・ノード証明書の残り日数（30日未満で異常）
 #   ホスト      Docker root のディスク、MemAvailable（ADR-0040 §7 の閾値）
 #
@@ -16,7 +18,8 @@
 #   止めるのは --project のコンテナだけ（アプリの project には触れない）。既定は報告だけ。
 #
 # 資格情報: 読み取り専用ユーザー avp_viewer のパスワード <secrets-dir>/viewer.pw と CA <secrets-dir>/pki/ca.pem
-#   （init-secrets.sh が作る。0600）。admin 証明書は使わない。
+#   （init-secrets.sh が作る。0600）。admin 証明書は使わない。パスワードは curl の argv に出さず、
+#   0600 の一時 config（curl -K）で渡す。
 # 「ログが無い」で未実行と判断しない。lag の異常は収集停止・buffer 待ち・業務が動いていない、を区別できない。
 set -uo pipefail
 
@@ -25,6 +28,7 @@ PROJECT="avp2-logging"
 SECRETS_DIR=""
 OS_URL="https://127.0.0.1:${AVP_LOGGING_OS_PORT:-9200}"
 MAX_LAG_MIN=60
+MAX_LAG_INFRA_MIN=60
 MAX_CHUNKS=2000
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/avp-logging"
 ENFORCE=0
@@ -41,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --secrets-dir) SECRETS_DIR="$2"; shift 2 ;;
     --os-url) OS_URL="$2"; shift 2 ;;
     --max-lag-min) MAX_LAG_MIN="$2"; shift 2 ;;
+    --max-lag-infra-min) MAX_LAG_INFRA_MIN="$2"; shift 2 ;;
     --max-chunks) MAX_CHUNKS="$2"; shift 2 ;;
     --state-dir) STATE_DIR="$2"; shift 2 ;;
     --enforce-memory) ENFORCE=1; shift ;;
@@ -122,13 +127,41 @@ else
 fi
 
 # ---------------------------------------------------------------- OpenSearch
+# パスワードを argv（ps で見える）に出さない。0600 の一時 config を curl -K で読ませる
+CURL_CFG=""
+cleanup() { [[ -n "$CURL_CFG" ]] && rm -f "$CURL_CFG"; }
+trap cleanup EXIT
 os_get() {
-  curl -s --max-time 15 --cacert "$CA" -u "avp_viewer:$(cat "$VIEWER_PW_FILE")" \
+  curl -s --max-time 15 --cacert "$CA" -K "$CURL_CFG" \
     -H 'Content-Type: application/json' "$OS_URL$1" "${@:2}"
+}
+# 系統ごとの最終 ingested_at からの経過（分）。-1 = 文書なし、-2 = 読めない
+lag_of() {
+  os_get "/avp-$1-$ENV_NAME-*/_search" -X POST \
+    -d '{"size":0,"aggs":{"last":{"max":{"field":"ingested_at"}}}}' | python3 -c '
+import json, sys, time
+v = json.load(sys.stdin)["aggregations"]["last"]["value"]
+print(-1 if v is None else int((time.time() * 1000 - v) / 60000))' 2>/dev/null || echo -2
+}
+check_lag() {
+  local series="$1" max="$2" lag
+  lag="$(lag_of "$series")"
+  if [[ "$lag" -eq -2 ]]; then
+    fail "opensearch[$series]: 最終 ingested_at を読めない"
+  elif [[ "$lag" -eq -1 ]]; then
+    fail "opensearch[$series]: 文書が1件も無い"
+  elif [[ "$lag" -gt "$max" ]]; then
+    fail "opensearch[$series]: 最終取り込みから ${lag} 分（> ${max}。収集停止・buffer 待ち・業務停止を区別できない。DB・Temporal と照合）"
+  else
+    ok "opensearch[$series]: 最終取り込みから ${lag} 分"
+  fi
 }
 if [[ ! -r "$VIEWER_PW_FILE" || ! -r "$CA" ]]; then
   fail "資格情報が読めない: $VIEWER_PW_FILE / $CA"
 else
+  CURL_CFG="$(mktemp)"
+  chmod 600 "$CURL_CFG"
+  printf 'user = "avp_viewer:%s"\n' "$(cat "$VIEWER_PW_FILE")" >"$CURL_CFG"
   status="$(os_get '/_cluster/health' | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' 2>/dev/null)"
   case "$status" in
     green|yellow) ok "opensearch: cluster $status" ;;
@@ -136,19 +169,21 @@ else
     *) fail "opensearch: cluster $status" ;;
   esac
   if [[ -n "$status" ]]; then
-    lag="$(os_get "/avp-app-$ENV_NAME-*,avp-infra-$ENV_NAME-*/_search" -X POST \
-      -d '{"size":0,"aggs":{"last":{"max":{"field":"ingested_at"}}}}' | python3 -c '
-import json, sys, time
-v = json.load(sys.stdin)["aggregations"]["last"]["value"]
-print(-1 if v is None else int((time.time() * 1000 - v) / 60000))' 2>/dev/null || echo -2)"
-    if [[ "$lag" -eq -2 ]]; then
-      fail "opensearch: 最終 ingested_at を読めない"
-    elif [[ "$lag" -eq -1 ]]; then
-      fail "opensearch: 文書が1件も無い"
-    elif [[ "$lag" -gt "$MAX_LAG_MIN" ]]; then
-      fail "opensearch: 最終取り込みから ${lag} 分（> ${MAX_LAG_MIN}。収集停止・buffer 待ち・業務停止を区別できない。DB・Temporal と照合）"
+    # app と infra を別に見る（temporal 等の infra の行で app の停止が隠れないように。I-6）
+    check_lag app "$MAX_LAG_MIN"
+    check_lag infra "$MAX_LAG_INFRA_MIN"
+    # index の env（Collector の AVP_LOGGING_ENV）と文書の environment（アプリの AVP_ENVIRONMENT）の
+    # 食い違い。本番の .env に AVP_ENVIRONMENT=prod が無いと unknown 等で入る（I-5）
+    mismatch="$(os_get "/avp-app-$ENV_NAME-*/_count" -X POST -d "{\"query\":{\"bool\":{
+      \"filter\":[{\"range\":{\"ingested_at\":{\"gte\":\"now-24h\"}}}],
+      \"must_not\":[{\"term\":{\"environment\":\"$ENV_NAME\"}}]}}}" |
+      python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' 2>/dev/null || echo -1)"
+    if [[ "$mismatch" -lt 0 ]]; then
+      fail "opensearch[app]: environment の食い違いを数えられない"
+    elif [[ "$mismatch" -gt 0 ]]; then
+      fail "opensearch[app]: 直近24時間に environment≠$ENV_NAME の文書が $mismatch 件（アプリの .env の AVP_ENVIRONMENT を確認）"
     else
-      ok "opensearch: 最終取り込みから ${lag} 分"
+      ok "opensearch[app]: 直近24時間の environment はすべて $ENV_NAME"
     fi
     os_get "/_cat/indices/avp-*-$ENV_NAME-*?h=index,docs.count,store.size&s=index" | sed 's/^/      /'
     disk="$(os_get '/_cat/allocation?h=disk.percent' | tr -dc '0-9\n' | head -n1)"

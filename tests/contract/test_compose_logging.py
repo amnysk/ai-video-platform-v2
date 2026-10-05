@@ -68,7 +68,9 @@ def test_app_services_are_labelled_and_identify_themselves(services) -> None:
         assert _labels(svc).get(APP_LOG_LABEL) == APP_LOG_LABEL_VALUE, name
         env = svc.get("environment") or {}
         assert env.get(ENV_SERVICE_NAME) == name, f"{name}: service_name は compose のサービス名"
-        assert env.get(ENV_ENVIRONMENT) == "${AVP_ENVIRONMENT:-dev}", name
+        # 既定値を持たない（I-5: 既定 dev だと本番の行が prod の index に dev で入った）。未設定は
+        # 空文字で渡り、整形器が unknown にする
+        assert env.get(ENV_ENVIRONMENT) == "${AVP_ENVIRONMENT:-}", name
         assert env.get(ENV_LOG_FORMAT) == "${AVP_LOG_FORMAT:-json}", name
 
 
@@ -86,3 +88,13 @@ def test_infra_services_are_not_labelled_app(services) -> None:
 def test_api_runs_the_logging_aware_entrypoint(services) -> None:
     """uvicorn の CLI 起動は独自の handler と query 付きの access log を出す（ADR-0040 §1）。"""
     assert services["api"]["command"] == ["python", "-m", "apps.api.serve"]
+
+
+def test_the_formatter_maps_an_empty_environment_to_unknown() -> None:
+    """compose が空文字を渡したとき、environment は unknown になる（推測値で埋めない）。"""
+    from contracts.log_contract import ENV_ENVIRONMENT, UNKNOWN
+    from infrastructure.logging.formatter import ServiceIdentity
+
+    assert ServiceIdentity.from_env({ENV_ENVIRONMENT: ""}).environment == UNKNOWN
+    assert ServiceIdentity.from_env({}).environment == UNKNOWN
+    assert ServiceIdentity.from_env({ENV_ENVIRONMENT: "prod"}).environment == "prod"

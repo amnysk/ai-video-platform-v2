@@ -36,6 +36,7 @@ if str(ROOT) not in sys.path:
 from contracts.log_contract import (  # noqa: E402
     APP_LOG_LABEL,
     APP_LOG_LABEL_VALUE,
+    INFRA_FIELD_NAMES,
     KEYWORD_MAX_CHARS,
     LOG_FIELDS,
     LOG_SCHEMA_VERSION,
@@ -54,16 +55,6 @@ LUA_TYPES_PATH = ROOT / "deploy/logging/fluent-bit/lua/contract_types.lua"
 
 #: 時間軸に使うフィールド（ignore_malformed にしない）
 TIME_FIELD = "@timestamp"
-
-#: unstructured（infra 系統）の行が持つ、アプリ由来の名前のフィールド。Collector が
-#: ``message``（切り詰め済みの行）・``@timestamp``（Docker の時刻）・``truncated``・
-#: ``redaction_applied`` を書く。Collector 由来のフィールドは全部持つ。
-INFRA_APP_NAMED_FIELDS: tuple[str, ...] = (
-    TIME_FIELD,
-    "message",
-    "truncated",
-    "redaction_applied",
-)
 
 _NUMERIC_OR_DATE = {FieldType.DATE, FieldType.INTEGER, FieldType.LONG, FieldType.DOUBLE}
 
@@ -92,11 +83,8 @@ def field_mapping(field: LogField) -> dict[str, Any]:
 
 
 def infra_fields() -> tuple[LogField, ...]:
-    return tuple(
-        f
-        for f in LOG_FIELDS
-        if f.origin is FieldOrigin.COLLECTOR or f.name in INFRA_APP_NAMED_FIELDS
-    )
+    # 集合は契約が持つ（contracts.log_contract.INFRA_FIELD_NAMES）。順序は LOG_FIELDS に揃える
+    return tuple(f for f in LOG_FIELDS if f.name in INFRA_FIELD_NAMES)
 
 
 def _component(fields: tuple[LogField, ...], series: str) -> dict[str, Any]:
