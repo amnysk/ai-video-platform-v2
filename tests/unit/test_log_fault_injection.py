@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -15,7 +16,7 @@ from pathlib import Path
 
 from contracts.log_contract import EventName
 from infrastructure.logging import emit
-from tests.support.json_log_plugin import BREAK_LOGGING_ENV, break_logging
+from tests.support.json_log_plugin import BREAK_LOGGING_ENV, FAULT_REPORT_ENV, break_logging
 
 REPO = Path(__file__).resolve().parents[2]
 #: 予約台帳・有料 submit/await・provider adapter・画像/動画/代替案/Upload の Activity。
@@ -50,8 +51,27 @@ def test_the_fault_injection_really_breaks_emission() -> None:
     assert len(seen) == 1
 
 
-def test_ledger_suites_pass_unchanged_with_broken_logging() -> None:
-    env = {**os.environ, BREAK_LOGGING_ENV: "1"}
+#: 注入点ごとに「実際に発火した」回数の下限（0 なら注入が業務の経路に届いていない）
+REQUIRED_FAULT_POINTS = (
+    "make_record.INFO",
+    "make_record.WARNING",
+    "formatter.build",
+    "ledger.defer",
+    "ledger.after_commit",
+    "call_observation",
+    "reservation_fields",
+)
+
+
+def test_ledger_suites_pass_unchanged_with_broken_logging(tmp_path) -> None:
+    """注入は INFO の発行・整形器・commit 後の発行・adapter の観測まで届いていなければ意味がない。
+
+    レビュー I-1: 以前は logger が INFO 無効のままで、emit() がレベル判定で先に return し、
+    壊した makeRecord に1度も届いていなかった。ここでは root を DEBUG・JSON handler つきにして
+    走らせ、注入点ごとの発火回数を数えて 0 でないことを確かめる。
+    """
+    report = tmp_path / "faults.json"
+    env = {**os.environ, BREAK_LOGGING_ENV: "1", FAULT_REPORT_ENV: str(report)}
     done = subprocess.run(
         [
             sys.executable,
@@ -73,3 +93,6 @@ def test_ledger_suites_pass_unchanged_with_broken_logging() -> None:
     )
     assert done.returncode == 0, done.stdout[-4000:]
     assert " passed" in done.stdout
+    fired = json.loads(report.read_text(encoding="utf-8"))
+    missing = [p for p in REQUIRED_FAULT_POINTS if fired.get(p, 0) == 0]
+    assert not missing, (missing, fired)

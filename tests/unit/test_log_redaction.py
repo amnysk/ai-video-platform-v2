@@ -344,3 +344,26 @@ def test_temporal_core_logs_are_forwarded_not_written_to_stderr() -> None:
     core = [e for e in events if e["logger"].startswith("temporalio.core")]
     assert core, [e["logger"] for e in events]
     assert all(e["service_name"] == "probe" for e in events)
+
+
+def test_secrets_straddling_the_stack_cut_are_still_removed() -> None:
+    """stack は安全化してから切る（レビュー I-4）。切り詰めの切れ目で JWT・鍵が途中で切れると、
+    パターンに当たらない断片がそのまま残る。切れ目がどこに来ても当たるよう、秘密を短い間隔で並べる。"""
+    from infrastructure.logging.formatter import format_exception_chain
+
+    unit = f"x{JWT} {PRIVATE_KEY} {FAL_KEY} "
+    signature = JWT.rsplit(".", 1)[1]
+    with pytest.raises(RuntimeError) as caught:
+        try:
+            raise ValueError(unit * 120)
+        except ValueError as inner:
+            raise RuntimeError(unit * 120) from inner
+    for limit in (1500, 2600, 4000, 8192):
+        text, cut = format_exception_chain(caught.value, limit=limit)
+        assert cut
+        for start in range(0, len(signature) - 12):
+            assert signature[start : start + 12] not in text, (limit, start)
+        assert "MIIEow" not in text and "ab" * 16 not in text, limit
+    line = _line(_record("failed", exc=caught.value))
+    assert signature[:12] not in line and signature[-12:] not in line
+    assert json.loads(line)["redaction_applied"] is True

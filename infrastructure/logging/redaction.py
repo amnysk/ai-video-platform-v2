@@ -62,7 +62,7 @@ _AUTH_SCHEME_RE = re.compile(r"(?i)\b(Bearer|Basic|Key)\s+(?!\[REDACTED\])[A-Za-
 _FAL_KEY_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9a-fA-F]{32}\b"
 )
-_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")
 _GOOGLE_TOKEN_RE = re.compile(r"(?:\bya29\.[A-Za-z0-9._-]+|(?<![\w/])1//[A-Za-z0-9._-]{10,})")
 _OPENAI_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}")
 #: 文中の ``api_key=…`` / ``"access_token": "…"`` の形（値だけ伏せ、キー名は残す）

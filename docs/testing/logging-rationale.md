@@ -32,6 +32,7 @@
 | `test_value_patterns_are_replaced` | §7.3 の値のパターン（Bearer・fal key・JWT・private key・DSN・Google token・`sk-`・`key=value`・SQLAlchemy の `[parameters: …]`・長い base64） |
 | `test_allowed_hosts_are_derived_from_the_adapter_constants` | 許可 host は adapter の定数から導く（写しを持たない / AGENTS §8）。capability URL の host（`v3.fal.media`）は含まない |
 | `test_allowed_host_keeps_path_but_drops_query_and_userinfo` / `test_other_hosts_are_shrunk_to_a_hash` | URL の query（YouTube の `upload_id` 等）を落とし、署名つき URL の path を縮約する |
+| `test_secrets_straddling_the_stack_cut_are_still_removed` | stack は例外ごとの block を**安全化してから**切る（レビュー I-4）。先に切ると、切れ目で JWT・鍵が途中で切れてパターンに当たらない断片が残る。秘密を短い間隔で並べて、どの上限の切れ目でも断片が残らないことを見る。JWT は前に英数字が付いても当てる（`\b` を外した） |
 | `test_sanitize_is_idempotent_on_already_redacted_text` | 既存の adapter の伏せ字処理の出力に重ねても壊れない（ADR-0040 §3） |
 | `test_message_attributes_and_exception_text_are_cleaned` | message・attributes・response_excerpt・例外 chain の文字列の全部を通す |
 | `test_third_party_logger_goes_through_the_same_formatter` | 第三者 logger（sqlalchemy・httpx）も同じ整形器。httpx の INFO は出さない |
@@ -88,6 +89,9 @@
 | `test_workflow_modules_do_not_import_infrastructure` | INV-40。sandbox 内で `infrastructure.logging` が再 import されると handler が分裂し workflow task が失敗する（実測） |
 | `test_nothing_imports_opensearch` | アプリは stdout にしか書かない（ADR-0040 §1。OpenSearch の停止が業務に届かない） |
 | `test_log_extra_uses_only_the_avp_key` | `workflow.logger` の `extra=` のキーは `"avp"` だけ（予約属性と衝突すると `makeRecord` が KeyError を投げ、業務へ伝播する）。Workflow の外では `extra=` を直接書かず `emit()` を使う: 直接の `logger.warning(extra=...)` はロガーの故障をそのまま業務の例外にする（故障注入のテストで実際に `test_paid_job` が落ちた） |
+| `test_every_emission_outside_workflows_is_guarded_with_its_arguments` | `emit()`/`defer()` の try は呼ばれた後しか握れない。引数の計算（分類・行→フィールド・`str(exc)`）が except 節の中で投げると業務の例外が置き換わる（レビュー I-2。YouTube uploader の `_observe` が実例）。発行は前処理ごと `with log_guard():` の中に置く。Workflow は `_event` が握るので対象外 |
+| `test_workflow_event_names_and_stages_are_contract_vocabulary` | Workflow は infrastructure を import できず `stage="production"` 等を文字列で書く。`_event` の event_name は `EventName`、`stage` は `LogStage`（`PipelineStage` ⊆ `LogStage` も）であること（レビュー I-8。食い違うと Dashboards の絞り込みから黙って漏れる。`stage="rendering"` に変えると落ちることを確認） |
+| `test_workflow_event_helpers_are_identical` | 各 workflow module の `_event` は同一（1つだけ直す片側更新を止める。共有できないことによる重複の代償） |
 | `test_every_event_name_has_a_documented_emission_point` | `docs/observability/emission-points.md` の表と、実コードの `EventName.X` の参照を突き合わせる。表で「未発行」と書いたものだけが発行箇所を持たなくてよい（発行を足して表を忘れる・表だけ直す片側更新を止める） |
 
 ## 故障注入（`tests/unit/test_log_fault_injection.py`）— INV-38
@@ -95,7 +99,7 @@
 | テスト | 守るもの |
 |---|---|
 | `test_the_fault_injection_really_breaks_emission` | 注入（`tests/support/json_log_plugin.break_logging`）が実際に発行を壊していること。効いていなければ次の検査は空振り |
-| `test_ledger_suites_pass_unchanged_with_broken_logging` | 既存の台帳・有料 submit/await・fal adapter・画像/動画/代替案/Upload の Activity のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |
+| `test_ledger_suites_pass_unchanged_with_broken_logging`（レビュー I-1 で強化） | 既存の台帳・有料 submit/await・fal adapter・画像/動画/代替案/Upload の Activity のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |
 
 ## commit 後のイベント（`tests/unit/test_log_ledger.py`、unit: SQLite）— log-contract §9
 
@@ -144,3 +148,46 @@ repository のメソッドが session に積み、`after_commit` で出す（`in
 | テスト | 守るもの |
 |---|---|
 | `test_workflow_events_are_emitted_once_and_replay_emits_nothing` | 本物の `DailyEpisodeWorkflow`/`EpisodePipelineWorkflow`（sandbox あり）をキャッシュ無しの Worker（毎 task で履歴を頭から replay）で走らせても、工程のイベントは1回ずつ。全記録の `event_id` が一意で、Workflow の記録は uuid5 の導出値。取った履歴を Replayer にかけると非決定にならず、1件も発行しない。ログ発行を足したことで稼働中の workflow の履歴と食い違わないことの検査でもある（既存の replay test・履歴 fixture も通る） |
+
+### レビュー I-1 の後の故障注入（2026-10-06）
+
+以前の注入は logger が INFO 無効のまま走っており、`emit()` がレベル判定で先に return するため、壊した
+`makeRecord` に1度も届いていなかった（担当D の実測: `paid_job` の `isEnabledFor(INFO)` が False、root level 30）。
+今は子プロセスで root を DEBUG・JSON handler つき（`configure_logging(stream=devnull)`）にし、注入点
+（`makeRecord`（INFO/WARNING 別）・`JsonFormatter.build`・`ledger._queue`（2回に1回）・`ledger._flush_pending`・
+`CallObservation._base`・`reservation_fields`）ごとの発火回数を `AVP_TEST_FAULT_REPORT` に書き、0 でないことを
+assert する。実測（8 suites・184 tests、全件 pass）: make_record.INFO 276 / make_record.WARNING 17 /
+formatter.build 275 / ledger.defer 282 / ledger.after_commit 216 / call_observation 54 / reservation_fields 518。
+強化した注入で初めて、`reservation_fields` と `CallObservation._base` の故障が業務の例外になる経路
+（`await_output` の文脈作成・`_defer_reservation`・`CallObservation.succeeded`）が見つかり、I-2 と同じ形で直した。
+
+## API の起動点（`tests/contract/test_api_entrypoint.py`）
+
+| テスト | 守るもの |
+|---|---|
+| `test_the_app_image_defaults_to_the_logging_entry_point` | app イメージの既定 CMD は `python -m apps.api.serve`（レビュー I-10）。compose は command を上書きするが、command を書かずに起動した時だけ uvicorn の CLI のログ設定（stderr・query 付き access log）に戻るのを防ぐ |
+
+## ログ導入前の履歴の replay（`tests/unit/test_log_old_history_replay.py`）— INV-40・レビュー I-3
+
+稼働中の workflow は導入前のコードで始まった履歴を持ったまま新しい worker に拾われる。新しく始めた
+workflow の replay（`test_log_workflow_replay.py`）だけでは、旧履歴との非決定は見つからない。
+
+| テスト | 守るもの |
+|---|---|
+| `test_old_history_replays_deterministically_and_emits_nothing` | 01eb0ee（ログ導入前）で採った履歴21本（Production: 代替映像案で作り直し・代替案の上限・音声ゲートの失敗・成功／Render・Upload: 成功・blocked・入場不可・cancel・処理待ち／Storyboard: 成功・blocked・入場不可／EpisodePipeline: 完了・途中再開・upload gate・停止・子の二重起動／Daily）が今のコードで非決定にならず、replay 中は1件も発行しない。workflow に `workflow.sleep` を足すと4本が落ちることを確認（検査が効いている） |
+| `test_the_old_histories_cover_every_stage_workflow` | fixture が消えて検査が空振りしない |
+
+履歴の採り方（再現手順）:
+
+```bash
+git worktree add --detach .worktrees/tmp-pre-logging 01eb0ee
+cp tests/support/history_capture_plugin.py .worktrees/tmp-pre-logging/tests/support/
+cd .worktrees/tmp-pre-logging
+AVP_CAPTURE_HISTORY_DIR=/tmp/histories <venv>/bin/python -m pytest -p tests.support.history_capture_plugin \
+  tests/unit/test_production_scene_recovery_workflow.py tests/unit/test_production_voice_gate.py \
+  tests/unit/test_render_workflow.py tests/unit/test_upload_workflow.py \
+  tests/unit/test_pipeline_workflows.py tests/integration/test_storyboard_workflow.py
+cd - && git worktree remove .worktrees/tmp-pre-logging
+```
+
+（`tests/integration/test_storyboard_workflow.py` は time-skipping server と SQLite だけで動く。）

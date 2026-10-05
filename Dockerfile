@@ -30,7 +30,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # alembic.ini の script_location が相対パスなので、ソースも /app に置いたまま使う。
 ENV PYTHONPATH=/app
 
-CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 共通の JSON ログ設定で起動する（ADR-0040 §1。uvicorn の CLI のログ設定を使わない）
+CMD ["python", "-m", "apps.api.serve"]
 
 # ---------------------------------------------------------------------------
 # api / migrate / dummy-worker が使う最終イメージ（compose の target: app）。
