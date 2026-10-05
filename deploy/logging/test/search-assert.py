@@ -28,6 +28,7 @@
     search-assert.py version --expect 3.8.0
     search-assert.py snapshot --out before.json                         # bootstrap 再実行の差分用
     search-assert.py lag --max-seconds 120                              # 最新 ingested_at の遅れ
+    search-assert.py agg --term container_name=x --by episode_id,event_name --table
 """
 
 from __future__ import annotations
@@ -345,6 +346,31 @@ def cmd_snapshot(args) -> dict:
     return {"out": args.out, "indices": snap["indices"]}
 
 
+def cmd_agg(args) -> dict:
+    """``--by a,b,c`` の組ごとの件数（composite aggregation。欠けた値は ``-``）。調査・照合用。"""
+    fields = args.by.split(",")
+    q = build_query(args.term, args.since)
+    sources = [{f: {"terms": {"field": f, "missing_bucket": True}}} for f in fields]
+    rows: list[dict] = []
+    after = None
+    while True:
+        comp: dict[str, Any] = {"size": 1000, "sources": sources}
+        if after:
+            comp["after"] = after
+        body = {"size": 0, "query": q, "aggs": {"c": {"composite": comp}}}
+        res = request("POST", f"/{_index()}/_search", body)["aggregations"]["c"]
+        for b in res["buckets"]:
+            key = {f: ("-" if b["key"][f] is None else b["key"][f]) for f in fields}
+            rows.append({**key, "n": b["doc_count"]})
+        after = res.get("after_key")
+        if not res["buckets"] or not after:
+            break
+    if args.table:
+        for r in rows:
+            print("\t".join(str(r[f]) for f in [*fields, "n"]))
+    return {"rows": len(rows)} if args.table else {"rows": rows}
+
+
 def cmd_lag(args) -> dict:
     body = {"size": 0, "aggs": {"m": {"max": {"field": "ingested_at"}}}}
     res = request("POST", f"/{_index()}/_search", body)
@@ -417,6 +443,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--prefix", default="avp-")
     p.set_defaults(fn=cmd_snapshot)
+
+    p = with_query(sub.add_parser("agg"))
+    p.add_argument("--by", required=True, help="カンマ区切りのフィールド")
+    p.add_argument("--table", action="store_true", help="TSV で出す")
+    p.set_defaults(fn=cmd_agg)
 
     p = sub.add_parser("lag")
     p.add_argument("--max-seconds", type=float)

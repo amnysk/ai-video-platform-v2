@@ -68,3 +68,12 @@ fb_fs() {  # Fluent Bit（distroless・tmpfs の buffer）のファイルを、p
   local fb; fb="$(container_of "$FLUENTBIT_SERVICE")"
   docker run --rm --pid "container:$fb" --network none --user 0:0 "${@:2}" busybox:1.36 sh -c "$1"
 }
+
+catchup() {  # 位置 DB を複製して、対象 project の json-file の未読 bytes を出す（catchup.py）
+  local tmp; tmp="$(mktemp -d)"
+  # WAL モードなので -wal / -shm も一緒に複製する
+  fb_fs 'cd /proc/1/root/fb-state && tar cf - tail.db*' | tar xf - -C "$tmp"
+  "$PY" "$TEST_DIR/catchup.py" --db "$tmp/tail.db" --containers "$AVP_LOG_CONTAINERS_DIR" \
+    --project "${1:-$AVP_LOG_TARGET_PROJECT}" "${@:2}"
+  local rc=$?; rm -rf "$tmp"; return $rc
+}
