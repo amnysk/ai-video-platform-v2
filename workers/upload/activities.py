@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
 
 from contracts.artifacts import ScriptArtifact, parse_script_artifact
+from contracts.log_contract import EventName, LogStage, Outcome
 from contracts.render import FinalVideoArtifact
 from contracts.states import (
     JOB_TERMINAL_STATUSES,
@@ -116,6 +117,7 @@ from infrastructure.db.repositories import (
     ProviderReservation,
     ProviderReservationRepository,
 )
+from infrastructure.logging.emit import emit
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
 from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.temporal.run_inspector import WorkflowRunInspector
@@ -374,6 +376,18 @@ class UploadActivities:
         secrets: list[str] = []
         attempt = _attempt()
         token = admission_token(request.workflow_id, request.run_id)
+        emit(
+            logger,
+            EventName.UPLOAD_STARTED,
+            logging.INFO,
+            "upload started episode=%s job=%s",
+            request.episode_id,
+            job_id,
+            episode_id=request.episode_id,
+            job_id=job_id,
+            stage=LogStage.UPLOAD.value,
+            outcome=Outcome.STARTED.value,
+        )
         try:
             return await self._upload(request.episode_id, job_id, attempt, token, secrets)
         except asyncio.CancelledError:
@@ -389,6 +403,22 @@ class UploadActivities:
             )
             if not isinstance(translated, UploadOwnershipLostError):
                 await self._mark_job_failed(job_id, translated)
+            emit(
+                logger,
+                EventName.UPLOAD_FAILED,
+                logging.WARNING,
+                "upload failed episode=%s job=%s error=%s",
+                request.episode_id,
+                job_id,
+                type(translated).__name__,
+                episode_id=request.episode_id,
+                job_id=job_id,
+                stage=LogStage.UPLOAD.value,
+                outcome=Outcome.FAILED.value,
+                error_type=type(translated).__name__,
+                # session URI は scrub 済み（sanitize_error）の文だけを出す
+                error_message=str(translated),
+            )
             raise_activity_error(translated, details=(job_id,))
         finally:
             self._cleanup(request.episode_id, job_id, attempt)
@@ -417,6 +447,7 @@ class UploadActivities:
         if latest is not None and latest.status is ReservationStatus.SPENT:
             # (a) 投稿済み。YouTube を呼ばない
             outcome = _spent_outcome(latest)
+            _reused_existing(episode_id, job_id, latest.id, outcome, "ledger")
             return await self._finish(
                 episode_id, job_id, final, metadata, upload_key, latest, outcome, called=False
             )
@@ -431,6 +462,7 @@ class UploadActivities:
         if reservation.status is ReservationStatus.SPENT:
             # round 2 の事前照合で見つかった / 並行する試行が先に記録した
             outcome = _spent_outcome(reservation)
+            _reused_existing(episode_id, job_id, reservation.id, outcome, "reserve")
         else:
             outcome = await self._drive(
                 episode_id,
@@ -448,11 +480,20 @@ class UploadActivities:
                     reservation.id, outcome.video_id, reconciled_by=outcome.reconciled_by
                 )
                 await session.commit()
-        logger.info(
+        emit(
+            logger,
+            EventName.UPLOAD_SUCCEEDED,
+            logging.INFO,
             "uploaded episode=%s video=%s reconciled_by=%s",
             episode_id,
             outcome.video_id,
             outcome.reconciled_by,
+            episode_id=episode_id,
+            job_id=job_id,
+            reservation_id=reservation.id,
+            stage=LogStage.UPLOAD.value,
+            outcome=Outcome.SUCCEEDED.value,
+            attributes={"video_id": outcome.video_id, "reconciled_by": outcome.reconciled_by},
         )
         return await self._finish(
             episode_id, job_id, final, metadata, upload_key, reservation, outcome, called=True
@@ -1163,6 +1204,30 @@ def _read_chunk(path: Path, offset: int, length: int) -> bytes:
     with path.open("rb") as handle:
         handle.seek(offset)
         return handle.read(length)
+
+
+def _reused_existing(
+    episode_id: str, job_id: str, reservation_id: str, outcome: _Outcome, where: str
+) -> None:
+    """既に投稿済みの動画を使い、YouTube へ送らない（INV-14 / log-contract §3）。"""
+    emit(
+        logger,
+        EventName.UPLOAD_REUSED_EXISTING,
+        logging.INFO,
+        "upload already recorded episode=%s video=%s; not uploading again",
+        episode_id,
+        outcome.video_id,
+        episode_id=episode_id,
+        job_id=job_id,
+        reservation_id=reservation_id,
+        stage=LogStage.UPLOAD.value,
+        outcome=Outcome.REUSED.value,
+        attributes={
+            "video_id": outcome.video_id,
+            "reconciled_by": outcome.reconciled_by,
+            "found_at": where,
+        },
+    )
 
 
 def _spent_outcome(reservation: ProviderReservation) -> _Outcome:

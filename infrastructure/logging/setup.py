@@ -26,10 +26,13 @@ CORE_LOGGER = "temporalio.core"
 
 #: 第三者 logger の既定レベル（log-contract §6）。httpx/httpcore は URL の query を INFO で出すので
 #: WARNING（既存 INV-20 の対策を一か所へ寄せる）。
+#: SQL の DEBUG/INFO は行の値（session URI・prompt）を出すので、AVP_LOG_LEVEL=DEBUG でも WARNING。
 THIRD_PARTY_LEVELS: dict[str, int] = {
     "httpx": logging.WARNING,
     "httpcore": logging.WARNING,
     "temporalio": logging.INFO,
+    "sqlalchemy.engine": logging.WARNING,
+    "aiosqlite": logging.WARNING,
 }
 
 _HANDLER_NAME = "avp-stdout"

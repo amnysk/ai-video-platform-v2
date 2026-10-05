@@ -128,3 +128,12 @@ repository のメソッドが session に積み、`after_commit` で出す（`in
 | `test_5xx_submit_is_ambiguous` | 受理されたか分からない submit を `outcome=ambiguous` で残す（再送しない判断の根拠と照合） |
 | `test_a_poll_is_debug_and_carries_the_raw_status` | poll の1回は DEBUG（INFO で溢れさせない） |
 | `test_storage_403_keeps_the_existing_line_and_adds_fields` | ADR-0030 の既存の診断行の文言を変えずに、同じ1記録へフィールドを足す（既存テストは記録数1を見ている） |
+
+## Activity の業務イベント（`tests/unit/test_log_activity_events.py`、unit）
+
+| テスト | 守るもの |
+|---|---|
+| `test_upload_started_succeeded_then_reused_existing` | Upload の開始・成功と、再実行で既存動画を使った（YouTube を呼ばない）ことが動画 ID つきで見える。INFO 運用で session URI が出ない。DEBUG の SQL ログは行の値（session URI）を出すことを実測したので、`sqlalchemy.engine`・`aiosqlite` は `AVP_LOG_LEVEL=DEBUG` でも WARNING に固定する |
+| `test_render_validation_reports_failed_checks` | Render の技術検査のどの項目が落ちたか（判定は `domain.render.qa` のまま） |
+| `test_research_finished_carries_the_research_request_id` | Research の依頼 ID は `research_request_id`（API の `request_id` と混ぜない） |
+| `test_anomaly_keeps_the_grep_key_and_adds_the_event` | 運用の grep が使う `OPERATIONAL_ANOMALY anomaly=` の文言を維持したまま `anomaly.recorded` にする |

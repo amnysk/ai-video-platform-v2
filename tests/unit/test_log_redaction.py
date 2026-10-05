@@ -218,7 +218,10 @@ def _configure(stream: io.StringIO) -> None:
 def restore_logging():
     root = logging.getLogger()
     saved = (list(root.handlers), root.level, sys.excepthook, logging.raiseExceptions)
-    levels = {n: logging.getLogger(n).level for n in ("httpx", "httpcore", "temporalio")}
+    levels = {
+        n: logging.getLogger(n).level
+        for n in ("httpx", "httpcore", "temporalio", "sqlalchemy.engine", "aiosqlite")
+    }
     yield
     root.handlers[:] = saved[0]
     root.setLevel(saved[1])
@@ -275,6 +278,8 @@ def test_configure_logging_does_not_stack_handlers(restore_logging) -> None:
     _configure(stream)
     assert len(logging.getLogger().handlers) == 1
     assert logging.getLogger("httpx").level == logging.WARNING
+    # SQL のログは行の値を出すので DEBUG 運用でも出さない
+    assert logging.getLogger("sqlalchemy.engine").level == logging.WARNING
 
 
 def test_text_format_is_available_for_rollback_and_still_sanitizes(restore_logging) -> None:
