@@ -137,3 +137,9 @@ repository のメソッドが session に積み、`after_commit` で出す（`in
 | `test_render_validation_reports_failed_checks` | Render の技術検査のどの項目が落ちたか（判定は `domain.render.qa` のまま） |
 | `test_research_finished_carries_the_research_request_id` | Research の依頼 ID は `research_request_id`（API の `request_id` と混ぜない） |
 | `test_anomaly_keeps_the_grep_key_and_adds_the_event` | 運用の grep が使う `OPERATIONAL_ANOMALY anomaly=` の文言を維持したまま `anomaly.recorded` にする |
+
+## Workflow（`tests/unit/test_log_workflow_replay.py`、unit: time-skipping server）— INV-40
+
+| テスト | 守るもの |
+|---|---|
+| `test_workflow_events_are_emitted_once_and_replay_emits_nothing` | 本物の `DailyEpisodeWorkflow`/`EpisodePipelineWorkflow`（sandbox あり）をキャッシュ無しの Worker（毎 task で履歴を頭から replay）で走らせても、工程のイベントは1回ずつ。全記録の `event_id` が一意で、Workflow の記録は uuid5 の導出値。取った履歴を Replayer にかけると非決定にならず、1件も発行しない。ログ発行を足したことで稼働中の workflow の履歴と食い違わないことの検査でもある（既存の replay test・履歴 fixture も通る） |
