@@ -174,3 +174,48 @@ def test_every_event_name_has_a_documented_emission_point() -> None:
         if not unemitted and event.value not in emitted:
             problems.append(f"{event.value}: 表にあるがコードに発行箇所が無い")
     assert not problems, "\n".join(problems)
+
+
+#: 発行の呼び出し。引数の組み立てごと ``with log_guard():`` の中に置く（レビュー I-2）
+GUARDED_CALLS = {"emit", "defer"}
+
+
+def _guarded(stack: list[ast.AST]) -> bool:
+    for node in stack:
+        if isinstance(node, ast.With | ast.AsyncWith) and any(
+            ast.unparse(item.context_expr) == "log_guard()" for item in node.items
+        ):
+            return True
+    return False
+
+
+def test_every_emission_outside_workflows_is_guarded_with_its_arguments() -> None:
+    """``emit(...)`` / ``defer(...)`` の**引数の計算**は emit の try の外で起きる。
+
+    except 節の中の発行で引数の計算が例外を投げると、業務の例外が置き換わる（INV-38）。
+    そこで発行は ``with log_guard():``（``contextlib.suppress(Exception)``）の中に置き、
+    発行のための前処理（分類・行→フィールド等）も同じ block に入れる。
+    ``infrastructure/logging`` 自身と Workflow（``_event`` が握る）は対象外。
+    """
+    bad: list[str] = []
+    for path in _py("apps", "workers", "infrastructure"):
+        rel = path.relative_to(REPO).as_posix()
+        if rel.startswith("infrastructure/logging/"):
+            continue
+        source = path.read_text(encoding="utf-8")
+        if "@workflow.defn" in source:
+            continue
+
+        def walk(node: ast.AST, stack: list[ast.AST], rel: str = rel) -> None:
+            for child in ast.iter_child_nodes(node):
+                if (
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Name)
+                    and child.func.id in GUARDED_CALLS
+                    and not _guarded(stack)
+                ):
+                    bad.append(f"{rel}:{child.lineno} {child.func.id}(...) outside log_guard()")
+                walk(child, [*stack, child])
+
+        walk(_tree(path), [])
+    assert not bad, "\n".join(bad)

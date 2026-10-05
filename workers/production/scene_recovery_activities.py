@@ -79,7 +79,7 @@ from infrastructure.db.repositories import (
     ProviderReservation,
     ProviderReservationRepository,
 )
-from infrastructure.logging.emit import emit
+from infrastructure.logging.emit import emit, log_guard
 from infrastructure.storage.artifact_store import ArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -308,20 +308,21 @@ class SceneAlternativeActivities:
             )
             await ProviderReservationRepository(session).attach_artifact(reservation.id, meta.id)
             await session.commit()
-        emit(
-            logger,
-            EventName.LOG_RECORD,
-            logging.INFO,
-            "scene alternative planned episode=%s scene=%s revision=%s subject=%s",
-            request.episode_id,
-            request.scene_id,
-            revision,
-            plan.visual_subject.value,
-            scene_revision=revision,
-            artifact_id=meta.id,
-            artifact_type=ArtifactType.SCENE_VISUAL_OVERRIDE.value,
-            stage=LogStage.SCENE_RECOVERY.value,
-        )
+        with log_guard():
+            emit(
+                logger,
+                EventName.LOG_RECORD,
+                logging.INFO,
+                "scene alternative planned episode=%s scene=%s revision=%s subject=%s",
+                request.episode_id,
+                request.scene_id,
+                revision,
+                plan.visual_subject.value,
+                scene_revision=revision,
+                artifact_id=meta.id,
+                artifact_type=ArtifactType.SCENE_VISUAL_OVERRIDE.value,
+                stage=LogStage.SCENE_RECOVERY.value,
+            )
         return _outcome(meta, parse_scene_visual_override_artifact(artifact), newly_planned=True)
 
     # ------------------------------------------------------------------ planner と台帳

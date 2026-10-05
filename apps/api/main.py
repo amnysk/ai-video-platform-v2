@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from apps.api.routers import episodes, research
 from contracts.log_contract import EventName, Outcome
 from infrastructure.logging.asgi import RequestLoggingMiddleware
-from infrastructure.logging.emit import emit
+from infrastructure.logging.emit import emit, log_guard
 
 logger = logging.getLogger("avp.api")
 
@@ -19,23 +19,25 @@ logger = logging.getLogger("avp.api")
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ADR-0040: service.started / service.stopped（ログの設定は起動点 apps.api.serve が行う）
-    emit(
-        logger,
-        EventName.SERVICE_STARTED,
-        logging.INFO,
-        "api started",
-        outcome=Outcome.STARTED.value,
-    )
+    with log_guard():
+        emit(
+            logger,
+            EventName.SERVICE_STARTED,
+            logging.INFO,
+            "api started",
+            outcome=Outcome.STARTED.value,
+        )
     try:
         yield
     finally:
-        emit(
-            logger,
-            EventName.SERVICE_STOPPED,
-            logging.INFO,
-            "api stopped",
-            outcome=Outcome.SUCCEEDED.value,
-        )
+        with log_guard():
+            emit(
+                logger,
+                EventName.SERVICE_STOPPED,
+                logging.INFO,
+                "api stopped",
+                outcome=Outcome.SUCCEEDED.value,
+            )
 
 
 def create_app() -> FastAPI:

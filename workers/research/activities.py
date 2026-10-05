@@ -31,7 +31,7 @@ from contracts.research import (
     ResearchRecordFailureRequest,
     ResearchWorkflowOutput,
 )
-from infrastructure.logging.emit import emit
+from infrastructure.logging.emit import emit, log_guard
 from infrastructure.research.executor import ResearchExecution, ResearchExecutor
 
 logger = logging.getLogger(__name__)
@@ -53,25 +53,28 @@ def _activity_heartbeat(*details: Any) -> None:
 
 def _finished(output: ResearchWorkflowOutput, *, error_type: str | None = None) -> None:
     """状態の正本は DB（``research_requests``）。ここは照合用の写し（ADR-0040）。"""
-    emit(
-        logger,
-        EventName.RESEARCH_REQUEST_FINISHED,
-        logging.INFO,
-        "research request %s finished status=%s",
-        output.request_id,
-        output.status,
-        research_request_id=output.request_id,
-        stage=LogStage.RESEARCH.value,
-        outcome=Outcome.SUCCEEDED.value if output.status == "completed" else Outcome.FAILED.value,
-        error_type=error_type,
-        attributes={
-            "status": output.status,
-            "stop_code": output.stop_code,
-            "searches": output.searches,
-            "fetches": output.fetches,
-            "artifacts": len(output.artifact_refs),
-        },
-    )
+    with log_guard():
+        emit(
+            logger,
+            EventName.RESEARCH_REQUEST_FINISHED,
+            logging.INFO,
+            "research request %s finished status=%s",
+            output.request_id,
+            output.status,
+            research_request_id=output.request_id,
+            stage=LogStage.RESEARCH.value,
+            outcome=Outcome.SUCCEEDED.value
+            if output.status == "completed"
+            else Outcome.FAILED.value,
+            error_type=error_type,
+            attributes={
+                "status": output.status,
+                "stop_code": output.stop_code,
+                "searches": output.searches,
+                "fetches": output.fetches,
+                "artifacts": len(output.artifact_refs),
+            },
+        )
 
 
 def to_output(execution: ResearchExecution) -> ResearchWorkflowOutput:
@@ -114,16 +117,17 @@ class ResearchActivities:
 
     @activity.defn(name=RESEARCH_EXECUTE_ACTIVITY)
     async def execute(self, request: ResearchExecuteRequest) -> ResearchWorkflowOutput:
-        emit(
-            logger,
-            EventName.RESEARCH_REQUEST_STARTED,
-            logging.INFO,
-            "research request %s started",
-            request.request_id,
-            research_request_id=request.request_id,
-            stage=LogStage.RESEARCH.value,
-            outcome=Outcome.STARTED.value,
-        )
+        with log_guard():
+            emit(
+                logger,
+                EventName.RESEARCH_REQUEST_STARTED,
+                logging.INFO,
+                "research request %s started",
+                request.request_id,
+                research_request_id=request.request_id,
+                stage=LogStage.RESEARCH.value,
+                outcome=Outcome.STARTED.value,
+            )
         execution = await self._beating(self._executor.execute(request.request_id))
         output = to_output(execution)
         _finished(output)

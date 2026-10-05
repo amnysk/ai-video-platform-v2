@@ -100,7 +100,7 @@ from infrastructure.db.repositories import (
     ProviderReservationRepository,
 )
 from infrastructure.logging.context import log_context
-from infrastructure.logging.emit import emit
+from infrastructure.logging.emit import emit, log_guard
 from infrastructure.logging.ledger import reservation_fields
 from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.workdir import WorkDirectory
@@ -281,17 +281,18 @@ class PaidJobRunner:
                     legacy_input_hashes=spec.legacy_input_hashes,
                 )
                 if existing is not None:
-                    emit(
-                        logger,
-                        EventName.ARTIFACT_REUSED,
-                        logging.INFO,
-                        "reusing current artifact %s for scene %s",
-                        existing.id,
-                        spec.scene_id,
-                        artifact_id=existing.id,
-                        artifact_type=existing.artifact_type.value,
-                        outcome=Outcome.REUSED.value,
-                    )
+                    with log_guard():
+                        emit(
+                            logger,
+                            EventName.ARTIFACT_REUSED,
+                            logging.INFO,
+                            "reusing current artifact %s for scene %s",
+                            existing.id,
+                            spec.scene_id,
+                            artifact_id=existing.id,
+                            artifact_type=existing.artifact_type.value,
+                            outcome=Outcome.REUSED.value,
+                        )
                     return Reused(artifact=existing)
 
                 reservations = ProviderReservationRepository(session)
@@ -409,22 +410,23 @@ class PaidJobRunner:
             )
             raise
         except Exception as exc:
-            emit(
-                logger,
-                EventName.LOG_RECORD,
-                logging.WARNING,
-                "paid submit ambiguous; reservation left dispatched without ref "
-                "reservation=%s episode=%s scene=%s error=%s",
-                reservation.id,
-                spec.episode_id,
-                spec.scene_id,
-                type(exc).__name__,
-                provider_operation=ProviderOperation.SUBMIT.value,
-                outcome=Outcome.AMBIGUOUS.value,
-                error_type=type(exc).__name__,
-                error_category=ErrorCategory.SUBMIT_AMBIGUOUS.value,
-                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
-            )
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.LOG_RECORD,
+                    logging.WARNING,
+                    "paid submit ambiguous; reservation left dispatched without ref "
+                    "reservation=%s episode=%s scene=%s error=%s",
+                    reservation.id,
+                    spec.episode_id,
+                    spec.scene_id,
+                    type(exc).__name__,
+                    provider_operation=ProviderOperation.SUBMIT.value,
+                    outcome=Outcome.AMBIGUOUS.value,
+                    error_type=type(exc).__name__,
+                    error_category=ErrorCategory.SUBMIT_AMBIGUOUS.value,
+                    classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                )
             if isinstance(exc, ProviderSubmitAmbiguousError):
                 raise
             raise ProviderSubmitAmbiguousError(
@@ -433,19 +435,20 @@ class PaidJobRunner:
 
         # 参照が消えると回収できないので、commit 前にログにも残す（secret ではない）。
         # 課金の確定ではなく provider の応答の観測（log-contract §9 の例外）
-        emit(
-            logger,
-            EventName.PROVIDER_CALL_SUCCEEDED,
-            logging.INFO,
-            "paid submit accepted reservation=%s episode=%s scene=%s ref=%s",
-            reservation.id,
-            spec.episode_id,
-            spec.scene_id,
-            ref,
-            provider_operation=ProviderOperation.SUBMIT.value,
-            provider_request_id=_provider_request_id(ref),
-            outcome=Outcome.SUCCEEDED.value,
-        )
+        with log_guard():
+            emit(
+                logger,
+                EventName.PROVIDER_CALL_SUCCEEDED,
+                logging.INFO,
+                "paid submit accepted reservation=%s episode=%s scene=%s ref=%s",
+                reservation.id,
+                spec.episode_id,
+                spec.scene_id,
+                ref,
+                provider_operation=ProviderOperation.SUBMIT.value,
+                provider_request_id=_provider_request_id(ref),
+                outcome=Outcome.SUCCEEDED.value,
+            )
         async with self._session_factory() as session:
             await ProviderReservationRepository(session).record_provider_job_ref(
                 reservation.id, ref
@@ -477,8 +480,10 @@ class PaidJobRunner:
         provider が内容を拒否したとき ``provider_rejections`` に残す（INV-32 の鍵。ADR-0035）。
         """
         reservation = await self._load(reservation_id)
-        fields = reservation_fields(reservation)
-        fields.pop("reservation_status", None)  # 時点の値なので文脈には持たない
+        fields: dict[str, Any] = {}
+        with log_guard():  # 文脈が作れなくても await は進める（INV-38）
+            fields = reservation_fields(reservation)
+            fields.pop("reservation_status", None)  # 時点の値なので文脈には持たない
         with log_context(**fields):
             return await self._await_output(
                 reservation,
@@ -551,16 +556,17 @@ class PaidJobRunner:
             # この Activity 試行の最初の観測と、状態が変わった時だけ INFO（log-contract §6）
             state = _job_state(status)
             if state != last_state:
-                emit(
-                    logger,
-                    EventName.PROVIDER_JOB_STATE_CHANGED,
-                    logging.INFO,
-                    "provider job %s after %s poll(s)",
-                    state,
-                    polls,
-                    outcome=Outcome.STATE_CHANGED.value,
-                    attributes={"state": state, "previous_state": last_state, "polls": polls},
-                )
+                with log_guard():
+                    emit(
+                        logger,
+                        EventName.PROVIDER_JOB_STATE_CHANGED,
+                        logging.INFO,
+                        "provider job %s after %s poll(s)",
+                        state,
+                        polls,
+                        outcome=Outcome.STATE_CHANGED.value,
+                        attributes={"state": state, "previous_state": last_state, "polls": polls},
+                    )
                 last_state = state
             if isinstance(status, JobFailed):
                 error: Exception
@@ -763,20 +769,21 @@ class PaidJobRunner:
                 provider, since=since
             )
         if count >= AUTH_INCIDENT_SUPPRESSION_THRESHOLD:
-            emit(
-                logger,
-                EventName.PROVIDER_CALL_SUPPRESSED,
-                logging.WARNING,
-                "suppressing new %s submits: %s unresolved auth incident(s)",
-                provider.value,
-                count,
-                provider=provider.value,
-                outcome=Outcome.BLOCKED.value,
-                error_type=ProviderCredentialSuspectedOutageError.__name__,
-                error_category=ErrorCategory.SUPPRESSED_BY_INCIDENT.value,
-                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
-                attributes={"unresolved_incidents": count},
-            )
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.PROVIDER_CALL_SUPPRESSED,
+                    logging.WARNING,
+                    "suppressing new %s submits: %s unresolved auth incident(s)",
+                    provider.value,
+                    count,
+                    provider=provider.value,
+                    outcome=Outcome.BLOCKED.value,
+                    error_type=ProviderCredentialSuspectedOutageError.__name__,
+                    error_category=ErrorCategory.SUPPRESSED_BY_INCIDENT.value,
+                    classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                    attributes={"unresolved_incidents": count},
+                )
             raise ProviderCredentialSuspectedOutageError(
                 f"{provider.value}: {count} unresolved auth incidents in the last "
                 f"{AUTH_INCIDENT_WINDOW_MINUTES} minutes; suppressing new submits until "
@@ -863,31 +870,33 @@ class PaidJobRunner:
                 spec.episode_id, spec.provider, spec.scene_id
             )
         if failures <= INPUT_FETCH_RETRIES_PER_SCENE:
-            emit(
-                logger,
-                EventName.SCENE_INPUT_REFETCH,
-                logging.INFO,
-                "provider could not fetch the input for scene %s; re-uploading (%s/%s)",
-                spec.scene_id,
-                failures,
-                INPUT_FETCH_RETRIES_PER_SCENE,
-                outcome=Outcome.STARTED.value,
-                error_category=ErrorCategory.INPUT_UNREACHABLE.value,
-                attributes={"failures": failures, "limit": INPUT_FETCH_RETRIES_PER_SCENE},
-            )
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.SCENE_INPUT_REFETCH,
+                    logging.INFO,
+                    "provider could not fetch the input for scene %s; re-uploading (%s/%s)",
+                    spec.scene_id,
+                    failures,
+                    INPUT_FETCH_RETRIES_PER_SCENE,
+                    outcome=Outcome.STARTED.value,
+                    error_category=ErrorCategory.INPUT_UNREACHABLE.value,
+                    attributes={"failures": failures, "limit": INPUT_FETCH_RETRIES_PER_SCENE},
+                )
         if failures > INPUT_FETCH_RETRIES_PER_SCENE:
-            emit(
-                logger,
-                EventName.RESERVATION_BLOCKED,
-                logging.WARNING,
-                "input re-upload retry used up for scene %s (%s failures)",
-                spec.scene_id,
-                failures,
-                outcome=Outcome.BLOCKED.value,
-                error_type=ProviderInputFetchRetryExhaustedError.__name__,
-                error_category=ErrorCategory.INPUT_UNREACHABLE.value,
-                attributes={"failures": failures, "limit": INPUT_FETCH_RETRIES_PER_SCENE},
-            )
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.RESERVATION_BLOCKED,
+                    logging.WARNING,
+                    "input re-upload retry used up for scene %s (%s failures)",
+                    spec.scene_id,
+                    failures,
+                    outcome=Outcome.BLOCKED.value,
+                    error_type=ProviderInputFetchRetryExhaustedError.__name__,
+                    error_category=ErrorCategory.INPUT_UNREACHABLE.value,
+                    attributes={"failures": failures, "limit": INPUT_FETCH_RETRIES_PER_SCENE},
+                )
             raise ProviderInputFetchRetryExhaustedError(
                 f"{spec.provider.value} could not fetch the input for scene {spec.scene_id} "
                 f"{failures} time(s); the automatic re-upload retry "
@@ -911,16 +920,17 @@ class PaidJobRunner:
                 spec.provider, spec.source_media_sha256
             )
         if rejected is not None:
-            emit(
-                logger,
-                EventName.RESERVATION_BLOCKED,
-                logging.WARNING,
-                "input image was rejected before (rejection %s); not resubmitting",
-                rejected.id,
-                outcome=Outcome.BLOCKED.value,
-                error_type=ProviderRejectedRetryBlockedError.__name__,
-                attributes={"rejection_id": rejected.id, "reason": rejected.reason},
-            )
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.RESERVATION_BLOCKED,
+                    logging.WARNING,
+                    "input image was rejected before (rejection %s); not resubmitting",
+                    rejected.id,
+                    outcome=Outcome.BLOCKED.value,
+                    error_type=ProviderRejectedRetryBlockedError.__name__,
+                    attributes={"rejection_id": rejected.id, "reason": rejected.reason},
+                )
             raise ProviderRejectedRetryBlockedError(
                 f"{spec.provider.value} rejected this input image before "
                 f"(rejection {rejected.id}, reason={rejected.reason or 'unknown'}); "
@@ -930,6 +940,14 @@ class PaidJobRunner:
 
 
 def _spec_fields(spec: PaidJobSpec) -> dict[str, Any]:
+    """文脈が作れなくても submit は進める（INV-38）。"""
+    try:
+        return _spec_fields_unsafe(spec)
+    except Exception:
+        return {}
+
+
+def _spec_fields_unsafe(spec: PaidJobSpec) -> dict[str, Any]:
     return {
         "episode_id": spec.episode_id,
         "scene_id": spec.scene_id,
@@ -961,35 +979,39 @@ def _job_state(status: JobStatus) -> str:
 def _resumed(row: ProviderReservation | None, phase: str) -> None:
     if row is None:
         return
-    emit(
-        logger,
-        EventName.RESERVATION_RESUMED,
-        logging.INFO,
-        "resuming reservation %s (round %s) at %s",
-        row.id,
-        row.round,
-        phase,
-        **reservation_fields(row),
-        outcome=Outcome.RESUMED.value,
-        attributes={"phase": phase},
-    )
+    with log_guard():
+        emit(
+            logger,
+            EventName.RESERVATION_RESUMED,
+            logging.INFO,
+            "resuming reservation %s (round %s) at %s",
+            row.id,
+            row.round,
+            phase,
+            **reservation_fields(row),
+            outcome=Outcome.RESUMED.value,
+            attributes={"phase": phase},
+        )
 
 
 def _blocked(row: ProviderReservation | None, exc: BaseException | None) -> None:
-    fields = reservation_fields(row) if row is not None else {}
-    emit(
-        logger,
-        EventName.RESERVATION_BLOCKED,
-        logging.WARNING,
-        "new round blocked by reservation %s",
-        fields.get("reservation_id"),
-        **fields,
-        outcome=Outcome.BLOCKED.value,
-        error_type=type(exc).__name__ if exc is not None else UnreconciledReservationError.__name__,
-        error_category=ErrorCategory.UNRECONCILED_RESERVATION.value
-        if not isinstance(exc, ProviderRejectedRetryBlockedError)
-        else None,
-    )
+    with log_guard():
+        fields = reservation_fields(row) if row is not None else {}
+        emit(
+            logger,
+            EventName.RESERVATION_BLOCKED,
+            logging.WARNING,
+            "new round blocked by reservation %s",
+            fields.get("reservation_id"),
+            **fields,
+            outcome=Outcome.BLOCKED.value,
+            error_type=type(exc).__name__
+            if exc is not None
+            else UnreconciledReservationError.__name__,
+            error_category=ErrorCategory.UNRECONCILED_RESERVATION.value
+            if not isinstance(exc, ProviderRejectedRetryBlockedError)
+            else None,
+        )
 
 
 def _plan_round(latest: ProviderReservation | None) -> Submitted | ProviderReservation | int:

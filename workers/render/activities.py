@@ -105,7 +105,7 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
 )
-from infrastructure.logging.emit import emit
+from infrastructure.logging.emit import emit, log_guard
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
 from infrastructure.render.binary import file_sha256
 from infrastructure.storage.artifact_store import ArtifactStore
@@ -989,22 +989,23 @@ __all__ = [
 
 def _log_validation(episode_id: str, checks: Sequence[Any], phase: str) -> None:
     """Render の尺・音声等の技術検査の結果（ADR-0040）。判定は ``domain.render.qa`` のまま。"""
-    failed = [c for c in checks if not c.passed]
-    emit(
-        logger,
-        EventName.RENDER_VALIDATION_FAILED if failed else EventName.RENDER_VALIDATION_PASSED,
-        logging.WARNING if failed else logging.INFO,
-        "render validation %s (%s): %s of %s check(s) failed",
-        "failed" if failed else "passed",
-        phase,
-        len(failed),
-        len(checks),
-        episode_id=episode_id,
-        stage=LogStage.RENDER.value,
-        outcome=(Outcome.FAILED if failed else Outcome.SUCCEEDED).value,
-        attributes={
-            "phase": phase,
-            "failed_checks": [{"check": c.check, "detail": c.detail} for c in failed][:20],
-            "checks": [c.check for c in checks][:50],
-        },
-    )
+    with log_guard():
+        failed = [c for c in checks if not c.passed]
+        emit(
+            logger,
+            EventName.RENDER_VALIDATION_FAILED if failed else EventName.RENDER_VALIDATION_PASSED,
+            logging.WARNING if failed else logging.INFO,
+            "render validation %s (%s): %s of %s check(s) failed",
+            "failed" if failed else "passed",
+            phase,
+            len(failed),
+            len(checks),
+            episode_id=episode_id,
+            stage=LogStage.RENDER.value,
+            outcome=(Outcome.FAILED if failed else Outcome.SUCCEEDED).value,
+            attributes={
+                "phase": phase,
+                "failed_checks": [{"check": c.check, "detail": c.detail} for c in failed][:20],
+                "checks": [c.check for c in checks][:50],
+            },
+        )
