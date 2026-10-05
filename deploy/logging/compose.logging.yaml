@@ -1,6 +1,246 @@
-# ログ基盤（ADR-0040）。アプリとは別の compose project。サービスは次の commit で揃える。
+# ログ基盤（ADR-0040）。アプリ（project avp2）とは別の compose project。止めても消してもアプリは変わらない。
+# 手順は docs/observability/platform.md §6。版と digest は VERSIONS.md。
+#
+#   docker compose -f deploy/logging/compose.logging.yaml [-p <project>] <command>
+#
+# 差し替えられる値（既定は本番用）: AVP_LOGGING_ENV / AVP_LOGGING_SECRETS_DIR / AVP_LOG_CONTAINERS_DIR /
+# AVP_LOG_TARGET_PROJECT / AVP_LOG_HOST_NAME / AVP_LOG_READ_FROM_HEAD / AVP_LOG_STORAGE_LIMIT /
+# AVP_LOGGING_OS_PORT / AVP_LOGGING_OSD_PORT / AVP_LOGGING_OS_HEAP / AVP_LOGGING_OS_MEM_LIMIT /
+# AVP_LOGGING_OPENSEARCH_HOST / AVP_LOGGING_OPENSEARCH_PORT（.env.example）
 name: avp2-logging
 
+x-os-image: &os-image opensearchproject/opensearch:3.8.0@sha256:fafe3fc3587088674669235575aa166228c48bdb940294a8cdbbc1da75236a40
+x-osd-image: &osd-image opensearchproject/opensearch-dashboards:3.8.0@sha256:7fb7ec1b33f1ef49796dc31180f17f227361263c15bb19c56a8a6e5a38852bbd
+x-fb-image: &fb-image fluent/fluent-bit:5.1.2@sha256:d792375ca8e53be72fc25716c28f291f32c6fc6f4f31d12d0d14bc78cefe9226
+
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+# ログ基盤自身の json-file もローテーションする。project が違うので Fluent Bit は拾わない
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+# one-shot（setup / dashboards-setup profile）。秘密を読むためにコンテナ内 root（= ホストの所有者）で動く
+x-oneshot: &oneshot
+  <<: *hardened
+  user: "0:0"
+  restart: "no"
+  logging: *logging
+
 services:
+  opensearch:
+    <<: *hardened
+    image: *os-image
+    restart: unless-stopped
+    # sentinel が無い（security-init 前・空の volume）なら起動しない
+    entrypoint: ["bash", "-c"]
+    command:
+      - >-
+        test -f data/.avp-logging-sentinel && test -f config/certs/node.pem ||
+        { echo 'missing sentinel or certs: run the setup profile first' >&2; exit 78; };
+        exec ./opensearch-docker-entrypoint.sh opensearch
+    environment:
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_PERFORMANCE_ANALYZER_AGENT_CLI: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms${AVP_LOGGING_OS_HEAP:-1g} -Xmx${AVP_LOGGING_OS_HEAP:-1g}"
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    mem_limit: ${AVP_LOGGING_OS_MEM_LIMIT:-2560m}
+    memswap_limit: ${AVP_LOGGING_OS_MEM_LIMIT:-2560m}
+    # OOM のとき本番 worker より先に落ちる
+    oom_score_adj: 800
+    volumes:
+      - osdata:/usr/share/opensearch/data
+      - ./opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      - ./opensearch/security/config.yml:/usr/share/opensearch/config/opensearch-security/config.yml:ro
+      - ./opensearch/security/roles.yml:/usr/share/opensearch/config/opensearch-security/roles.yml:ro
+      - ./opensearch/security/roles_mapping.yml:/usr/share/opensearch/config/opensearch-security/roles_mapping.yml:ro
+      - type: volume
+        source: osconf
+        target: /usr/share/opensearch/config/certs
+        read_only: true
+        volume: {subpath: certs}
+      - type: volume
+        source: osconf
+        target: /usr/share/opensearch/config/opensearch-security/internal_users.yml
+        read_only: true
+        volume: {subpath: security/internal_users.yml}
+    ports:
+      - "127.0.0.1:${AVP_LOGGING_OS_PORT:-9200}:9200"
+    networks: [internal, edge]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -s -o /dev/null -w '%{http_code}' --cacert config/certs/ca.pem
+          https://localhost:9200/ | grep -qE '^(200|401)$'
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    logging: *logging
+
+  fluent-bit-guard:
+    <<: *hardened
+    image: *os-image
+    user: "0:0"
+    restart: "no"
+    entrypoint: ["bash", "/scripts/volume-guard.sh"]
+    environment:
+      AVP_LOG_READ_FROM_HEAD: ${AVP_LOG_READ_FROM_HEAD:-true}
+    volumes:
+      - fbstate:/fb-state:ro
+      - ${AVP_LOG_CONTAINERS_DIR:-${HOME}/.local/share/docker/containers}:/containers:ro
+      - ./scripts:/scripts:ro
+    network_mode: none
+    logging: *logging
+
   fluent-bit:
-    image: fluent/fluent-bit:5.1.2@sha256:d792375ca8e53be72fc25716c28f291f32c6fc6f4f31d12d0d14bc78cefe9226
+    <<: *hardened
+    image: *fb-image
+    restart: unless-stopped
+    # containers/ の ro mount は全コンテナの config.v2.json（秘密の env）も読める（ADR-0040 §6）。
+    # uid 1000 では1ファイルも読めず無音になるので、コンテナ内 root（= ホストの所有者）で動かす
+    user: "0:0"
+    read_only: true
+    depends_on:
+      fluent-bit-guard: {condition: service_completed_successfully}
+    command: ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/avp/fluent-bit.yaml"]
+    environment:
+      AVP_LOGGING_ENV: ${AVP_LOGGING_ENV:-prod}
+      AVP_LOG_TARGET_PROJECT: ${AVP_LOG_TARGET_PROJECT:-avp2}
+      AVP_LOG_HOST_NAME: ${AVP_LOG_HOST_NAME:-unknown}
+      AVP_LOG_READ_FROM_HEAD: ${AVP_LOG_READ_FROM_HEAD:-true}
+      AVP_LOG_STORAGE_LIMIT: ${AVP_LOG_STORAGE_LIMIT:-1G}
+      AVP_LOGGING_OPENSEARCH_HOST: ${AVP_LOGGING_OPENSEARCH_HOST:-opensearch}
+      AVP_LOGGING_OPENSEARCH_PORT: ${AVP_LOGGING_OPENSEARCH_PORT:-9200}
+    mem_limit: 256m
+    memswap_limit: 256m
+    oom_score_adj: 600
+    volumes:
+      - ${AVP_LOG_CONTAINERS_DIR:-${HOME}/.local/share/docker/containers}:/containers:ro
+      - ./fluent-bit:/fluent-bit/etc/avp:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/fluent-bit-secret.yaml:/fluent-bit/etc/secret/secret.yaml:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/ca.pem:/fluent-bit/etc/secret/ca.pem:ro
+      - fbstate:/fb-state
+    tmpfs: [/tmp]
+    # OpenSearch 向けの internal network だけ（外への経路を持たない）。metrics は scripts/fb-metrics.sh で見る
+    networks: [internal]
+    logging: *logging
+
+  dashboards:
+    <<: *hardened
+    image: *osd-image
+    profiles: [dashboards]
+    restart: unless-stopped
+    entrypoint: ["bash", "-c"]
+    command:
+      - >-
+        test -f config/opensearch_dashboards.keystore ||
+        { echo 'missing keystore: run the dashboards-setup profile first' >&2; exit 78; };
+        exec ./opensearch-dashboards-docker-entrypoint.sh opensearch-dashboards
+    depends_on:
+      opensearch: {condition: service_healthy}
+    mem_limit: 1g
+    memswap_limit: 1g
+    oom_score_adj: 900
+    volumes:
+      - ./dashboards/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+      - type: volume
+        source: osdconf
+        target: /usr/share/opensearch-dashboards/config/opensearch_dashboards.keystore
+        read_only: true
+        volume: {subpath: opensearch_dashboards.keystore}
+      - type: volume
+        source: osconf
+        target: /usr/share/opensearch-dashboards/config/certs
+        read_only: true
+        volume: {subpath: certs}
+    ports:
+      - "127.0.0.1:${AVP_LOGGING_OSD_PORT:-5601}:5601"
+    networks: [internal, edge]
+    logging: *logging
+
+  # ---------------------------------------------------------------- one-shot（setup）
+  security-init:
+    <<: *oneshot
+    image: *os-image
+    profiles: [setup]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    entrypoint: ["bash", "/scripts/security-init.sh"]
+    volumes:
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}:/secrets:ro
+      - ./opensearch/security:/tmpl:ro
+      - ./scripts:/scripts:ro
+      - osconf:/osconf
+      - osdata:/usr/share/opensearch/data
+      - fbstate:/fb-state
+    network_mode: none
+
+  bootstrap:
+    <<: *oneshot
+    image: *os-image
+    profiles: [setup]
+    entrypoint: ["python3", "/scripts/bootstrap.py"]
+    environment:
+      AVP_LOGGING_ENV: ${AVP_LOGGING_ENV:-prod}
+      OPENSEARCH_URL: https://opensearch:9200
+    volumes:
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki:/secrets/pki:ro
+      - ./opensearch:/deploy:ro
+      - ./scripts:/scripts:ro
+    networks: [internal]
+
+  securityadmin:
+    <<: *oneshot
+    image: *os-image
+    profiles: [setup]
+    entrypoint: ["bash", "/scripts/securityadmin.sh"]
+    volumes:
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki:/secrets/pki:ro
+      - ./opensearch:/deploy:ro
+      - ./scripts:/scripts:ro
+      - osconf:/osconf:ro
+    networks: [internal]
+
+  # ---------------------------------------------------------------- one-shot（dashboards-setup）
+  dashboards-keystore:
+    <<: *oneshot
+    image: *osd-image
+    profiles: [dashboards-setup]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    entrypoint: ["bash", "/scripts/dashboards-keystore.sh"]
+    volumes:
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}:/secrets:ro
+      - ./scripts:/scripts:ro
+      - osdconf:/osdconf
+    network_mode: none
+
+  dashboards-import:
+    <<: *oneshot
+    image: *osd-image
+    profiles: [dashboards-setup]
+    entrypoint: ["bash", "/scripts/dashboards-import.sh"]
+    volumes:
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}:/secrets:ro
+      - ./dashboards:/deploy/dashboards:ro
+      - ./scripts:/scripts:ro
+    networks: [internal]
+
+networks:
+  # Fluent Bit ↔ OpenSearch ↔ Dashboards。外への経路なし
+  internal:
+    internal: true
+  # 127.0.0.1 への公開用（OpenSearch と Dashboards だけ）
+  edge: {}
+
+volumes:
+  # NVMe（Docker root）上の named volume。MinIO の HDD とは別
+  osdata:
+  osconf:
+  osdconf:
+  fbstate:
