@@ -9,7 +9,8 @@ x-core-env: &core-env
   TEMPORAL_ADDRESS: temporal:7233
   TEMPORAL_NAMESPACE: default
   # ADR-0040: 構造化ログ（service_name は各サービスの AVP_SERVICE_NAME）。text は rollback 用
-  AVP_ENVIRONMENT: ${AVP_ENVIRONMENT:-dev}
+  # 既定値を持たない（未設定は整形器が unknown にする）。本番の .env には AVP_ENVIRONMENT=prod（I-5）
+  AVP_ENVIRONMENT: ${AVP_ENVIRONMENT:-}
   AVP_LOG_FORMAT: ${AVP_LOG_FORMAT:-json}
 
 x-app-env: &app-env

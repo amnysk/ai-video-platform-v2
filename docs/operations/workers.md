@@ -54,7 +54,9 @@ poll したことを Temporal に問い合わせる。
 2. `.env` を `.env.example` から作り、「常駐 Worker」節を埋める（`COMPOSE_PROFILES=core` を含む）。
    コンテナ内のパスは compose に固定してあり、`.env` には **host 側の置き場**（`AVP_FFMPEG_DIR` /
    `OPENMONTAGE_HOST_PATH` / `PIPER_VOICES_HOST_DIR` / `YOUTUBE_TOKEN_HOST_DIR` など）だけを書く。
-   秘密（`FAL_KEY` / `YOUTUBE_CLIENT_SECRET` 等）は `.env` にだけ置き、compose には書かない
+   秘密（`FAL_KEY` / `YOUTUBE_CLIENT_SECRET` 等）は `.env` にだけ置き、compose には書かない。
+   **本番の `.env` には `AVP_ENVIRONMENT=prod`**（ADR-0040。compose は既定値を持たず、未設定のログは
+   `environment=unknown` になる）
 3. **rootless Docker なら `AVP_UID=0` / `AVP_GID=0`**。rootless では host uid 1000 がコンテナの root に写るため、
    コンテナ uid 1000 では host の 0600 ファイル（refresh token、`~/.codex/config.toml`）を読めない。
    コンテナ root は host 上では非特権の uid 1000 のまま。**rootful Docker では使わない**
