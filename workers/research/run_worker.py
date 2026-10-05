@@ -24,6 +24,7 @@ from temporalio.worker import Worker
 from contracts.research import RESEARCH_TASK_QUEUE
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.research.executor import ResearchExecutor
 from infrastructure.research.registry import (
     build_cost_model,
@@ -70,6 +71,7 @@ def build_worker(
 ) -> Worker:
     return Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=task_queue,
         workflows=[ResearchWorkflow],
         activities=list(activities_override or activities.all_activities()),
@@ -77,7 +79,6 @@ def build_worker(
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings()
     client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)

@@ -1,0 +1,31 @@
+# OpenSearch 3.8.0（ADR-0040 §4/§6/§7）。根拠は docs/observability/platform.md。
+cluster.name: avp2-logging
+node.name: opensearch
+network.host: 0.0.0.0
+discovery.type: single-node
+# rootless では memlock が 8MiB に制限され memory_lock は使えない（swap は memswap_limit で止める）
+bootstrap.memory_lock: false
+
+# alias 名・typo の index を暗黙に作らせない。system index には影響しない（実測）
+action.auto_create_index: "-avp-*,+*"
+
+# --- security plugin（demo 設定は使わない。DISABLE_INSTALL_DEMO_CONFIG=true）
+plugins.security.ssl.transport.pemcert_filepath: certs/node.pem
+plugins.security.ssl.transport.pemkey_filepath: certs/node.key
+plugins.security.ssl.transport.pemtrustedcas_filepath: certs/ca.pem
+plugins.security.ssl.transport.enforce_hostname_verification: false
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.http.pemcert_filepath: certs/node.pem
+plugins.security.ssl.http.pemkey_filepath: certs/node.key
+plugins.security.ssl.http.pemtrustedcas_filepath: certs/ca.pem
+# 初回だけ config/opensearch-security/*.yml から security index を作る。以後の変更は securityadmin
+plugins.security.allow_default_init_securityindex: true
+plugins.security.allow_unsafe_democertificates: false
+# DN は RFC2253 の順（scripts/init-secrets.sh が -subj "/OU=.../CN=..." で作る）
+plugins.security.authcz.admin_dn:
+  - "CN=avp2-logging-admin,OU=avp2-logging"
+plugins.security.nodes_dn:
+  - "CN=opensearch,OU=avp2-logging"
+plugins.security.audit.type: noop
+plugins.security.restapi.roles_enabled: []
+plugins.security.system_indices.enabled: true

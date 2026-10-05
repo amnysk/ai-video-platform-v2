@@ -18,6 +18,7 @@ from contracts.states import RENDER_MEDIA_TASK_QUEUE, RENDER_TASK_QUEUE
 from domain.errors import RenderEngineUnavailableError
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.render.ffmpeg_engine import FfmpegRenderEngine
 from infrastructure.storage.minio_store import MinioArtifactStore
@@ -69,6 +70,7 @@ def build_workers(
     """
     state = Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=RENDER_TASK_QUEUE,
         workflows=[RenderWorkflow],
         activities=activities.state_activities(),
@@ -76,6 +78,7 @@ def build_workers(
     )
     media = Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=RENDER_MEDIA_TASK_QUEUE,
         activities=activities.media_activities(),
         max_concurrent_activities=max(1, settings.render_concurrency),
@@ -85,7 +88,6 @@ def build_workers(
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings()
     engine = build_engine(settings)
     client = await connect_with_retry(settings)

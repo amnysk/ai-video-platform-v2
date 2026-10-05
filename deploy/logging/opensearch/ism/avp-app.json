@@ -1,0 +1,25 @@
+{
+  "policy": {
+    "description": "ADR-0040 §4: avp-app-* rollover at 5gb primary shard or 7d, delete 14d after rollover",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [
+          {"rollover": {"min_primary_shard_size": "5gb", "min_index_age": "7d"}}
+        ],
+        "transitions": [
+          {"state_name": "delete", "conditions": {"min_rollover_age": "14d"}}
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [{"delete": {}}],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {"index_patterns": ["avp-app-*"], "priority": 100}
+    ]
+  }
+}

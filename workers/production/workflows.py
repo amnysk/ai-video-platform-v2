@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -38,6 +39,7 @@ from temporalio.exceptions import TimeoutError as TemporalTimeoutError
 from temporalio.workflow import ActivityCancellationType
 
 with workflow.unsafe.imports_passed_through():
+    from contracts.log_contract import EventName, Outcome
     from contracts.production_activities import (
         AWAIT_HEARTBEAT_TIMEOUT_SECONDS,
         AWAIT_MAX_ATTEMPTS,
@@ -110,6 +112,21 @@ with workflow.unsafe.imports_passed_through():
     )
 
 WORKFLOW_NAME, TASK_QUEUE = PRODUCTION_WORKFLOW
+
+
+def _event(level: int, event: EventName, msg: str, *args: object, **fields: object) -> None:
+    """業務イベント（ADR-0040 / INV-40）。replay 中は SDK の logger が抑止する。
+
+    Workflow は ``infrastructure`` を import しない。``extra`` は ``"avp"`` の1キーだけで、
+    event_id は sandbox の外の整形器が決定的に導く。ログの故障で workflow task を落とさない。
+    """
+    try:
+        payload = {k: v for k, v in fields.items() if v is not None}
+        payload["event_name"] = event.value
+        workflow.logger.log(level, msg, *args, extra={"avp": payload})
+    except Exception:
+        pass
+
 
 STATE_ACTIVITY_TIMEOUT = timedelta(seconds=30)
 #: マニフェストはシーン Artifact を全件読むので状態系より長く取る。
@@ -325,9 +342,27 @@ class ProductionWorkflow:
             retry_policy=STATE_RETRY_POLICY,
         )
         if not admit.admitted:
+            _event(
+                logging.INFO,
+                EventName.STAGE_SKIPPED,
+                "production not admitted status=%s",
+                admit.status,
+                stage="production",
+                episode_id=episode_id,
+                outcome=Outcome.SKIPPED.value,
+                attributes={"status": admit.status},
+            )
             return ProductionWorkflowResult(
                 episode_id=episode_id, status=admit.status, admitted=False
             )
+        _event(
+            logging.INFO,
+            EventName.STAGE_STARTED,
+            "production started",
+            stage="production",
+            episode_id=episode_id,
+            outcome=Outcome.STARTED.value,
+        )
         try:
             return await self._admitted(request)
         except asyncio.CancelledError:
@@ -426,6 +461,16 @@ class ProductionWorkflow:
         result.status = ready.status
         result.owned = ready.owned
         result.manifest = manifest
+        _event(
+            logging.INFO,
+            EventName.STAGE_SUCCEEDED,
+            "production succeeded status=%s",
+            ready.status,
+            stage="production",
+            episode_id=episode_id,
+            outcome=Outcome.SUCCEEDED.value,
+            attributes={"status": ready.status, "owned": ready.owned},
+        )
         return result
 
     # ------------------------------------------------------------------ 並行制作
@@ -547,6 +592,20 @@ class ProductionWorkflow:
                 if not recovery or failure.error_type not in SCENE_REJECTION_ERROR_TYPE_NAMES:
                     raise
                 if plans >= request.max_scene_alternatives_per_scene:
+                    _event(
+                        logging.WARNING,
+                        EventName.SCENE_ALTERNATIVE_RESULT,
+                        "scene %s still rejected after %s alternative(s)",
+                        work.scene_id,
+                        plans,
+                        stage="scene_recovery",
+                        episode_id=request.episode_id,
+                        scene_id=work.scene_id,
+                        scene_revision=seen_revision,
+                        error_type=failure.error_type,
+                        outcome=Outcome.BLOCKED.value,
+                        attributes={"reason": "limit", "plans_in_this_run": plans},
+                    )
                     raise _StageFailure(
                         FailureClass.NEEDS_INPUT,
                         f"scene {work.scene_id} was still rejected after {plans} alternative(s) "
@@ -554,14 +613,62 @@ class ProductionWorkflow:
                         retry_exhausted=False,
                         error_type=failure.error_type,
                     ) from failure
-                workflow.logger.info(
+                _event(
+                    logging.INFO,
+                    EventName.SCENE_ALTERNATIVE_STARTED,
                     "scene %s rejected by the provider (%s); planning an alternative",
                     work.scene_id,
                     failure.error_type,
+                    stage="scene_recovery",
+                    episode_id=request.episode_id,
+                    scene_id=work.scene_id,
+                    storyboard_artifact_id=plan.storyboard_artifact_id,
+                    scene_revision=seen_revision,
+                    error_type=failure.error_type,
+                    outcome=Outcome.STARTED.value,
+                    attributes={"plans_in_this_run": plans},
                 )
-                outcome = await self._plan_alternative(request, plan, work.scene_id, seen_revision)
+                try:
+                    outcome = await self._plan_alternative(
+                        request, plan, work.scene_id, seen_revision
+                    )
+                except _StageFailure as planned_failure:
+                    _event(
+                        logging.WARNING,
+                        EventName.SCENE_ALTERNATIVE_RESULT,
+                        "scene %s alternative not planned (%s)",
+                        work.scene_id,
+                        planned_failure.error_type,
+                        stage="scene_recovery",
+                        episode_id=request.episode_id,
+                        scene_id=work.scene_id,
+                        storyboard_artifact_id=plan.storyboard_artifact_id,
+                        error_type=planned_failure.error_type,
+                        failure_class=planned_failure.failure_class.value,
+                        outcome=Outcome.BLOCKED.value,
+                    )
+                    raise
                 plans += 1
                 seen_revision = outcome.revision
+                _event(
+                    logging.INFO,
+                    EventName.SCENE_ALTERNATIVE_RESULT,
+                    "scene %s alternative revision %s (new=%s)",
+                    work.scene_id,
+                    outcome.revision,
+                    outcome.newly_planned,
+                    stage="scene_recovery",
+                    episode_id=request.episode_id,
+                    scene_id=work.scene_id,
+                    storyboard_artifact_id=plan.storyboard_artifact_id,
+                    scene_revision=outcome.revision,
+                    artifact_id=outcome.override_artifact_id,
+                    outcome=Outcome.SUCCEEDED.value,
+                    attributes={
+                        "newly_planned": outcome.newly_planned,
+                        "visual_subject": outcome.visual_subject,
+                    },
+                )
 
     async def _plan_alternative(
         self,
@@ -641,12 +748,19 @@ class ProductionWorkflow:
                 request.image_task_queue,
             )
 
+        log_fields = {
+            "stage": "production",
+            "episode_id": request.episode_id,
+            "scene_id": scene_id,
+            "storyboard_artifact_id": plan.storyboard_artifact_id,
+        }
         image = await _rounds(
             request.image_max_rounds,
             request.await_reexecutions,
             image_slots,
             image_submit,
             image_await,
+            {**log_fields, "stage": "image"},
         )
         result.images[scene_id] = image
 
@@ -692,6 +806,7 @@ class ProductionWorkflow:
             video_slots,
             video_submit,
             video_await,
+            {**log_fields, "stage": "video"},
         )
 
     # ------------------------------------------------------------------ 失敗
@@ -715,6 +830,7 @@ class ProductionWorkflow:
             schedule_to_close_timeout=STATE_SCHEDULE_TO_CLOSE,
             retry_policy=STATE_RETRY_POLICY,
         )
+        _stage_settled(request.episode_id, outcome.episode_status, failure)
         return ProductionWorkflowResult(
             episode_id=request.episode_id,
             status=outcome.episode_status,
@@ -745,6 +861,7 @@ async def _rounds(
     slots: asyncio.Semaphore,
     submit: Callable[[int], Awaitable[SubmitResult]],
     wait: Callable[[str], Awaitable[SceneArtifactResult]],
+    log_fields: dict[str, Any] | None = None,
 ) -> SceneArtifactResult:
     """1メディア分の試行ループ。
 
@@ -777,10 +894,15 @@ async def _rounds(
                 if _input_fetch_retry(err, fetch_retries):
                     fetch_retries += 1
                     limit = max(limit, attempt + 1)
-                    workflow.logger.info(
+                    _event(
+                        logging.INFO,
+                        EventName.SCENE_INPUT_REFETCH,
                         "production submit %s: provider could not fetch the input; "
                         "re-uploading for one more round",
                         attempt,
+                        **(log_fields or {}),
+                        outcome=Outcome.STARTED.value,
+                        attributes={"run_attempt": attempt, "at": "submit"},
                     )
                     continue
                 if not retryable or attempt >= limit:
@@ -811,10 +933,15 @@ async def _rounds(
                     if _input_fetch_retry(err, fetch_retries):
                         fetch_retries += 1
                         limit = max(limit, attempt + 1)
-                        workflow.logger.info(
+                        _event(
+                            logging.INFO,
+                            EventName.SCENE_INPUT_REFETCH,
                             "production attempt %s: provider could not fetch the input; "
                             "re-uploading for one more round",
                             attempt,
+                            **(log_fields or {}),
+                            outcome=Outcome.STARTED.value,
+                            attributes={"run_attempt": attempt, "at": "await"},
                         )
                         break
                     if _await_failure_ends_job(err) and attempt < limit:
@@ -842,3 +969,22 @@ __all__ = [
     "ProductionWorkflowInput",
     "ProductionWorkflowResult",
 ]
+
+
+def _stage_settled(episode_id: str, episode_status: str, failure: _StageFailure) -> None:
+    """失敗の記録の後。blocked（人手待ち）か failed かは記録した Episode の状態で分ける。"""
+    blocked = episode_status == "blocked"
+    _event(
+        logging.WARNING,
+        EventName.STAGE_BLOCKED if blocked else EventName.STAGE_FAILED,
+        "production %s class=%s",
+        "blocked" if blocked else "failed",
+        failure.failure_class.value,
+        stage="production",
+        episode_id=episode_id,
+        failure_class=failure.failure_class.value,
+        error_type=failure.error_type,
+        error_message=failure.summary,
+        outcome=(Outcome.BLOCKED if blocked else Outcome.FAILED).value,
+        attributes={"status": episode_status, "retry_exhausted": failure.retry_exhausted},
+    )

@@ -17,6 +17,7 @@ OFF の worker の新しい実行は ``patched`` を呼ばないので、コマ�
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import ClassVar
@@ -26,6 +27,7 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 with workflow.unsafe.imports_passed_through():
+    from contracts.log_contract import EventName, Outcome
     from contracts.states import DEFAULT_MAX_ATTEMPTS, FailureClass
     from domain.errors import (
         NON_RETRYABLE_ERROR_TYPE_NAMES,
@@ -48,6 +50,21 @@ with workflow.unsafe.imports_passed_through():
         ScriptEvidenceOutcome,
         ScriptEvidenceRequest,
     )
+
+
+def _event(level: int, event: EventName, msg: str, *args: object, **fields: object) -> None:
+    """業務イベント（ADR-0040 / INV-40）。replay 中は SDK の logger が抑止する。
+
+    Workflow は ``infrastructure`` を import しない。``extra`` は ``"avp"`` の1キーだけで、
+    event_id は sandbox の外の整形器が決定的に導く。ログの故障で workflow task を落とさない。
+    """
+    try:
+        payload = {k: v for k, v in fields.items() if v is not None}
+        payload["event_name"] = event.value
+        workflow.logger.log(level, msg, *args, extra={"avp": payload})
+    except Exception:
+        pass
+
 
 STATE_ACTIVITY_TIMEOUT = timedelta(seconds=30)
 #: Codex は数分かかりうる。adapter 側の subprocess timeout より**長く**取る
@@ -93,6 +110,14 @@ class ScriptWorkflow:
     @workflow.run
     async def run(self, request: ScriptWorkflowInput) -> ScriptWorkflowResult:
         episode_ref = EpisodeRef(episode_id=request.episode_id)
+        _event(
+            logging.INFO,
+            EventName.STAGE_STARTED,
+            "script started",
+            stage="script",
+            episode_id=request.episode_id,
+            outcome=Outcome.STARTED.value,
+        )
 
         await workflow.execute_activity_method(
             ScriptActivities.mark_episode_in_progress,
@@ -133,6 +158,18 @@ class ScriptWorkflow:
                 episode_ref,
                 start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
                 retry_policy=STATE_RETRY_POLICY,
+            )
+            _event(
+                logging.INFO,
+                EventName.STAGE_SUCCEEDED,
+                "script succeeded status=%s round=%s",
+                status,
+                round_number,
+                stage="script",
+                episode_id=request.episode_id,
+                job_id=job_id,
+                outcome=Outcome.SUCCEEDED.value,
+                attributes={"rounds_used": round_number, "reused": result.reused},
             )
             return ScriptWorkflowResult(
                 episode_id=request.episode_id,
@@ -226,6 +263,24 @@ class ScriptWorkflow:
             ),
             start_to_close_timeout=STATE_ACTIVITY_TIMEOUT,
             retry_policy=STATE_RETRY_POLICY,
+        )
+        _event(
+            logging.WARNING,
+            EventName.STAGE_BLOCKED
+            if outcome.episode_status == "blocked"
+            else EventName.STAGE_FAILED,
+            "script %s class=%s",
+            outcome.episode_status,
+            failure_class.value,
+            stage="script",
+            episode_id=request.episode_id,
+            job_id=job_id,
+            failure_class=failure_class.value,
+            error_message=summary,
+            outcome=(
+                Outcome.BLOCKED if outcome.episode_status == "blocked" else Outcome.FAILED
+            ).value,
+            attributes={"status": outcome.episode_status},
         )
         return ScriptWorkflowResult(episode_id=request.episode_id, status=outcome.episode_status)
 

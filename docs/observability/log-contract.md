@@ -169,7 +169,7 @@ ADR-0040。語彙・型・上限・設定キーの**唯一の宣言元**は
   変化と、Activity 試行ごとの最初の観測だけ `provider.job.state_changed` を INFO。
   `activity.started` と `provider.call.started` は DEBUG。
 - 第三者 logger の既定: `httpx`・`httpcore` は WARNING（URL の query を出さない。既存 INV-20 対策を
-  一か所へ寄せる）、`temporalio` は INFO、Core は WARN 以上。
+  一か所へ寄せる）、`temporalio` は INFO、Core は WARN 以上。`sqlalchemy.engine`・`aiosqlite` は `AVP_LOG_LEVEL=DEBUG` でも WARNING に固定（DEBUG は行の値＝session URI 等を出す）。asyncio の未捕捉例外は `asyncio` logger 経由で root の整形器へ流れる。
 - 1 Episode（約10シーン）の INFO 以上は数百件程度を目安にする（容量試算の前提、実測で更新）。
 
 ## 7. 安全化（stdout に出す前）

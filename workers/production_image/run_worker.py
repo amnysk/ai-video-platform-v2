@@ -15,6 +15,7 @@ from temporalio.worker import Worker
 from contracts.states import PRODUCTION_IMAGE_TASK_QUEUE
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.production.paid_job import PaidJobRunner
 from infrastructure.providers.fal_queue import FalQueueClient
@@ -28,9 +29,6 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    # httpx は URL を INFO で出す。キーは header なので出ないが、ノイズを抑える
-    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings()
     if not settings.fal_key:
         sys.exit("FAL_KEY is not set: production image worker calls a paid provider")
@@ -71,6 +69,7 @@ async def main() -> None:
     try:
         async with Worker(
             client,
+            interceptors=worker_interceptors(),
             task_queue=PRODUCTION_IMAGE_TASK_QUEUE,
             activities=activities.all_activities(),
             max_concurrent_activities=settings.image_concurrency,
