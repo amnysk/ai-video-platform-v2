@@ -29,6 +29,7 @@ x-app-logging: &app-logging
     max-size: ${APPTEST_LOG_MAX_SIZE:-20m}
     max-file: "${APPTEST_LOG_MAX_FILE:-5}"
     labels: avp.logging,com.docker.compose.service,com.docker.compose.project
+    tag: "{{.Name}}"
 
 # サードパーティ（postgres・temporal・minio）: label 無し＝Collector は unstructured（infra 系統）へ
 x-infra-logging: &infra-logging
@@ -86,8 +87,11 @@ x-runner: &runner
     AVP_LOG_FORMAT: ${APPTEST_LOG_FORMAT:-json}
     AVP_LOG_LEVEL: ${APPTEST_LOG_LEVEL:-INFO}
     AVP_GIT_REVISION: ${APPTEST_GIT_REVISION:-unknown}
-    # /src/deploy/logging/test: apptest_logging_plugin（pytest -p で読む）
-    PYTHONPATH: /src:/src/deploy/logging/test
+    PYTHONPATH: /src
+    # A の tests/support/json_log_plugin（-p で読む）: JSON ログを capture の外の stdout へ、
+    # テストが自前で組む Worker にも interceptor を足す（docs/observability/emission-points.md）
+    AVP_TEST_JSON_LOGS: ${APPTEST_JSON_LOGS:-1}
+    AVP_TEST_BREAK_LOGGING: ${APPTEST_BREAK_LOGGING:-0}
     PYTHONDONTWRITEBYTECODE: "1"
     PYTHONUNBUFFERED: "1"
     HOME: /tmp/home
@@ -173,7 +177,7 @@ services:
     restart: "no"
 
   # pytest を回す。`run-e2e.sh run` が `docker compose run` で起動する（up では起動しない）。
-  # -s: テストと worker の stdout をそのまま json-file へ流す（Collector が拾う）。
+  # JSON ログは A の plugin が capture の外の stdout へ出す（json-file → Collector）。
   test-runner:
     <<: *runner
     profiles: [runner]
@@ -188,8 +192,7 @@ services:
       - -p
       - no:cacheprovider
       - -p
-      - apptest_logging_plugin
-      - -s
+      - tests.support.json_log_plugin
       - -q
       - -rs
 

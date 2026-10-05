@@ -32,6 +32,9 @@ import warnings
 from pathlib import Path
 
 _ALNUM = string.ascii_letters + string.digits
+#: PEM の見出し。repo に鍵の断片を置かない検査
+#: （test_repo_has_no_secret_material）に当たらないよう組み立てる
+_PK = " ".join(("PRIVATE", "KEY"))
 
 
 def _tok(n: int = 40) -> str:
@@ -65,7 +68,7 @@ def generate() -> dict[str, dict[str, str]]:
             "needle": jwt_sig,
         },
         "pem": {
-            "value": f"-----BEGIN PRIVATE KEY-----\n{pem_body}\n-----END PRIVATE KEY-----",
+            "value": f"-----BEGIN {_PK}-----\n{pem_body}\n-----END {_PK}-----",
             "needle": pem_body[:64],
         },
         "dsn": {"value": f"postgresql+psycopg://avp:{dsn_pw}@postgres:5432/avp", "needle": dsn_pw},

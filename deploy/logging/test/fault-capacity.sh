@@ -14,7 +14,7 @@ step "stop $os"; docker stop "$os" >/dev/null
 "$RUN_E2E" tool python deploy/logging/test/loggen.py --tag "$t" --count "$n" --pad "$pad" >/dev/null
 sleep 30
 step "buffer usage / drops while down"; fb_metrics 'storage|drop|chunk'
-docker exec "$fb" sh -c 'du -sh /fluent-bit/storage 2>/dev/null || true' || true
+fb_fs 'du -sh /proc/1/root/fb-buffer' || true; fb_storage | head -c 400; echo
 df -h / | tail -1
 step "start $os"; docker start "$os" >/dev/null
 # 期待: 全件ではない（破棄が起きた）が、新しい側は届く。dropped_records_total が増えている

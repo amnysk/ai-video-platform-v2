@@ -7,9 +7,11 @@
 
 - ``OPENSEARCH_URL``            既定 ``https://127.0.0.1:9200``
 - ``OPENSEARCH_CA``             CA 証明書のパス（必須。検証を切るオプションは持たない）
-- ``OPENSEARCH_USER``           既定 ``avp_log_viewer``（検索は読み取りユーザーで行う）
+- ``OPENSEARCH_USER``           既定 ``avp_viewer``（検索は読み取りユーザーで行う）
 - ``OPENSEARCH_PASSWORD_FILE``  パスワードを1行で書いたファイル（0600 を推奨）
 - ``OPENSEARCH_INDEX``          検索対象（既定 ``avp-app-test-*``）
+- ``OPENSEARCH_CLIENT_CERT`` / ``OPENSEARCH_CLIENT_KEY``  指定すると Basic ではなく証明書で認証する
+  （``alias`` / ``ism`` / ``snapshot`` は viewer に権限が無いので admin 証明書で読む。読み取りだけ）
 
 サブコマンド（例）::
 
@@ -59,7 +61,16 @@ def _client_config() -> tuple[str, ssl.SSLContext, str]:
         raise SystemExit("OPENSEARCH_CA が未設定（TLS 検証は切らない）")
     ctx = ssl.create_default_context(cafile=ca)
     ctx.check_hostname = os.environ.get("OPENSEARCH_VERIFY_HOSTNAME", "1") != "0"
-    user = os.environ.get("OPENSEARCH_USER", "avp_log_viewer")
+    # Python 3.13 は既定で VERIFY_X509_STRICT（CA に keyUsage が無いと拒否）。B の CA は keyUsage を
+    # 持たない（verification-results の F-B1）。鎖と hostname の検証は保ったまま strict だけ外す
+    if os.environ.get("OPENSEARCH_X509_STRICT", "0") != "1":
+        ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    cert = os.environ.get("OPENSEARCH_CLIENT_CERT")
+    if cert:
+        # admin 証明書（alias・ISM の explain・template の読み取りは viewer に権限が無い）
+        ctx.load_cert_chain(cert, os.environ.get("OPENSEARCH_CLIENT_KEY"))
+        return url, ctx, ""
+    user = os.environ.get("OPENSEARCH_USER", "avp_viewer")
     pw_file = os.environ.get("OPENSEARCH_PASSWORD_FILE")
     if not pw_file:
         raise SystemExit("OPENSEARCH_PASSWORD_FILE が未設定")
@@ -72,7 +83,8 @@ def request(method: str, path: str, body: Any | None = None) -> Any:
     url, ctx, auth = _client_config()
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url + path, data=data, method=method)
-    req.add_header("Authorization", auth)
+    if auth:
+        req.add_header("Authorization", auth)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
@@ -86,6 +98,8 @@ def request(method: str, path: str, body: Any | None = None) -> Any:
         except Exception:
             detail = {}
         raise AssertFailed(f"HTTP {exc.code} {method} {path} {detail}") from None
+    except urllib.error.URLError as exc:
+        raise AssertFailed(f"{method} {path}: {exc.reason}") from None
 
 
 def _index() -> str:
