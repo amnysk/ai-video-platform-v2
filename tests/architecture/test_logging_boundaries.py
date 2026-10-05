@@ -126,3 +126,51 @@ def test_log_extra_uses_only_the_avp_key() -> None:
                 else:
                     bad.append(f"{where} extra={ast.unparse(kw.value)}")
     assert not bad, bad
+
+
+def _emitted_event_names() -> set[str]:
+    """``EventName.X`` を参照している（＝発行している）event の値。"""
+    from contracts.log_contract import EventName
+
+    names: set[str] = set()
+    for path in _py("apps", "workers", "infrastructure"):
+        for node in ast.walk(_tree(path)):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "EventName"
+                and node.attr in EventName.__members__
+            ):
+                names.add(EventName[node.attr].value)
+    return names
+
+
+def test_every_event_name_has_a_documented_emission_point() -> None:
+    """発行位置の表（emission-points.md）と実コードを突き合わせる（AGENTS.md §7 の片側更新防止）。
+
+    表で「未発行」と書いたものだけが、コードに発行箇所を持たなくてよい。
+    """
+    from contracts.log_contract import EventName
+
+    doc = (REPO / "docs" / "observability" / "emission-points.md").read_text(encoding="utf-8")
+    emitted = _emitted_event_names()
+    rows = {line for line in doc.splitlines() if line.startswith("| `")}
+    problems: list[str] = []
+    for event in EventName:
+        row = next((r for r in rows if f"`{event.value}`" in r.split("|")[1]), None)
+        short = event.value.rsplit(".", 1)[-1]
+        if row is None:
+            # `reservation.reserved` / `dispatched` のように1行にまとめた行も許す
+            prefix = event.value.rsplit(".", 1)[0]
+            row = next(
+                (r for r in rows if f"`{prefix}." in r.split("|")[1] and f"`{short}`" in r), None
+            )
+        if row is None:
+            problems.append(f"{event.value}: emission-points.md に行が無い")
+            continue
+        unemitted = "未発行" in row
+        if unemitted and event.value in emitted:
+            problems.append(f"{event.value}: 表は未発行だがコードが発行している")
+        if not unemitted and event.value not in emitted:
+            problems.append(f"{event.value}: 表にあるがコードに発行箇所が無い")
+    assert not problems, "\n".join(problems)

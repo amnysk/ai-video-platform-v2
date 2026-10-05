@@ -80,7 +80,8 @@ def install_core_log_forwarding() -> bool:
     """Temporal Core のログを Python logging（``temporalio.core``）へ転送する既定 Runtime を置く。
 
     最初の connect より前に呼ぶ。既定 Runtime が既にあれば何もしない（``False``）。既定のままだと
-    Core は stderr へ直接書き、整形・安全化を通らない（ADR-0040 §1）。
+    Core は console へ直接書き（実測では stdout に ANSI 色つきの非 JSON 行）、整形・安全化を
+    通らない（ADR-0040 §1）。
     """
     from temporalio.runtime import (
         LogForwardingConfig,

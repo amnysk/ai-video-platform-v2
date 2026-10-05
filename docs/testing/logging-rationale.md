@@ -88,6 +88,7 @@
 | `test_workflow_modules_do_not_import_infrastructure` | INV-40。sandbox 内で `infrastructure.logging` が再 import されると handler が分裂し workflow task が失敗する（実測） |
 | `test_nothing_imports_opensearch` | アプリは stdout にしか書かない（ADR-0040 §1。OpenSearch の停止が業務に届かない） |
 | `test_log_extra_uses_only_the_avp_key` | `workflow.logger` の `extra=` のキーは `"avp"` だけ（予約属性と衝突すると `makeRecord` が KeyError を投げ、業務へ伝播する）。Workflow の外では `extra=` を直接書かず `emit()` を使う: 直接の `logger.warning(extra=...)` はロガーの故障をそのまま業務の例外にする（故障注入のテストで実際に `test_paid_job` が落ちた） |
+| `test_every_event_name_has_a_documented_emission_point` | `docs/observability/emission-points.md` の表と、実コードの `EventName.X` の参照を突き合わせる。表で「未発行」と書いたものだけが発行箇所を持たなくてよい（発行を足して表を忘れる・表だけ直す片側更新を止める） |
 
 ## 故障注入（`tests/unit/test_log_fault_injection.py`）— INV-38
 
