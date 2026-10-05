@@ -20,6 +20,32 @@ Fluent Bit 5.1.2、2026-09-30）。
   表と契約がずれると、アプリの行が infra 系統へ流れる・正しい値が退避される。
 - **`--check` の終了コード**: CI や手元で drift を検出する手段として使えることを固定する。
 
+## 2. `tests/contract/test_logging_platform_config.py`
+
+設定ファイルだけを読み、ADR-0040 §4〜§7 の決定が黙って外れることを止める。どれも「外れても起動はする」
+（＝運用で気付かない）ものだけを選んでいる。
+
+- **digest 固定と VERSIONS.md の一致、OpenSearch と Dashboards の同版**: tag だけにすると知らないうちに
+  別の版（`id_key` や bulk 応答の扱いが違う）になる。Dashboards は版の違う cluster を拒否する。
+- **loopback だけの公開、docker.sock 無し、Fluent Bit の read-only・cap_drop・internal network・
+  containers/ だけの ro mount・コンテナ内 root**: Collector は全サービスの秘密（config.v2.json）を読める
+  権限で動く（実測）。その囲いが緩むと漏れ先ができる。uid を 1000 に戻すと無音で何も読めなくなる。
+- **秘密を env で渡さない・admin 証明書は setup の one-shot だけ・repo に鍵や hash が無い**: env は
+  `docker inspect` で見える。
+- **資源の上限（mem=memswap、heap、oom_score_adj、Dashboards は profile）**: 本番ホストは swap が満杯で、
+  ログ基盤が本番 worker より先に落ちる前提で共存を認めている（ADR-0040 §7）。
+- **sentinel と volume-guard**: project 名の違いで空の volume が作られると、OpenSearch は空で起動し、
+  Fluent Bit は位置 DB 無し＋`read_from_head=true` で既存の大きなログを全量読む。
+- **tail / output の値**: `*-json.log*`・`read_from_head`・`buffer_max_size`/`skip_long_lines`・
+  `create`+`id_key`・`suppress_type_name`・`tls.verify_hostname`（既定 off）・`buffer_size 4M`・
+  有限 retry・`trace_error off`。どれも実測した失敗（停止中 rotation の欠損、32k 超の行で監視停止、
+  `_type` の 400、応答の溢れによる全体再送、値のプレビューの露出）への対策で、既定値に戻ると黙って失敗する。
+- **OpenSearch の設定・ロール・ISM・bootstrap の順序・saved objects**: auto_create の値、DN の順序
+  （逆だと admin 証明書が 401）、writer に検索・削除・作成が無いこと、demo ユーザーを持ち込まないこと、
+  `server_username`（無いと Dashboards が 403 で起動しない）、保持の閾値、bootstrap が書く前に alias 誤作成を
+  検出すること、saved search が存在する index pattern を参照すること。
+- **試験用 ISM は override からだけ使われる**: 分単位で削除する policy が本番に入ると検索用ログが数分で消える。
+
 ## 3. `tests/integration/test_logging_collector_lua.py`
 
 本物の `fluent-bit.yaml` の filter 列を採用版イメージ（5.1.2）で通す。Lua は手元にインタプリタが無く、
