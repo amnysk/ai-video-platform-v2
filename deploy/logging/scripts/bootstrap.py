@@ -187,14 +187,22 @@ def put_policy(series: str) -> None:
     print(f"ok   ISM policy {policy_id} updated（既存の管理対象 index は旧版のまま）")
 
 
+def check_alias_not_an_index(series: str) -> None:
+    """alias 名が実 index になっていないか（auto_create と権限の二重防御をすり抜けた場合の検出）。
+
+    何かを書く前に確かめる（誤作成を見つけたら何も変えずに止まる）。
+    """
+    alias = f"avp-{series}-{ENV}-write"
+    status, body = call("GET", f"/{alias}?filter_path=*.aliases", ok=(200, 404))
+    if status == 200 and alias in (body or {}):
+        raise BootstrapError(f"{alias} が実 index として存在する（alias 誤作成）。手で調べること")
+
+
 def ensure_write_index(series: str) -> None:
     prefix = f"avp-{series}-{ENV}"
     alias = f"{prefix}-write"
     first = f"{prefix}-000001"
-    # alias 名が実 index になっていないか（auto_create と権限の二重防御をすり抜けた場合の検出）
-    status, body = call("GET", f"/{alias}?filter_path=*.aliases", ok=(200, 404))
-    if status == 200 and alias in (body or {}):
-        raise BootstrapError(f"{alias} が実 index として存在する（alias 誤作成）。手で調べること")
+    check_alias_not_an_index(series)
     status, body = call("GET", f"/_alias/{alias}", ok=(200, 404))
     if status == 200:
         writers = [i for i, v in body.items() if v["aliases"][alias].get("is_write_index")]
@@ -236,6 +244,8 @@ def main() -> int:
     try:
         wait_ready()
         check_auto_create()
+        for s in SERIES:
+            check_alias_not_an_index(s)
         set_ism_job_interval()
         put_pipeline()
         components = {s: put_component(s) for s in SERIES}
