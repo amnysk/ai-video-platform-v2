@@ -88,6 +88,7 @@
 | `test_workflow_modules_do_not_import_infrastructure` | INV-40。sandbox 内で `infrastructure.logging` が再 import されると handler が分裂し workflow task が失敗する（実測） |
 | `test_nothing_imports_opensearch` | アプリは stdout にしか書かない（ADR-0040 §1。OpenSearch の停止が業務に届かない） |
 | `test_log_extra_uses_only_the_avp_key` | `workflow.logger` の `extra=` のキーは `"avp"` だけ（予約属性と衝突すると `makeRecord` が KeyError を投げ、業務へ伝播する）。Workflow の外では `extra=` を直接書かず `emit()` を使う: 直接の `logger.warning(extra=...)` はロガーの故障をそのまま業務の例外にする（故障注入のテストで実際に `test_paid_job` が落ちた） |
+| `test_every_emission_outside_workflows_is_guarded_with_its_arguments` | `emit()`/`defer()` の try は呼ばれた後しか握れない。引数の計算（分類・行→フィールド・`str(exc)`）が except 節の中で投げると業務の例外が置き換わる（レビュー I-2。YouTube uploader の `_observe` が実例）。発行は前処理ごと `with log_guard():` の中に置く。Workflow は `_event` が握るので対象外 |
 | `test_every_event_name_has_a_documented_emission_point` | `docs/observability/emission-points.md` の表と、実コードの `EventName.X` の参照を突き合わせる。表で「未発行」と書いたものだけが発行箇所を持たなくてよい（発行を足して表を忘れる・表だけ直す片側更新を止める） |
 
 ## 故障注入（`tests/unit/test_log_fault_injection.py`）— INV-38
@@ -95,7 +96,7 @@
 | テスト | 守るもの |
 |---|---|
 | `test_the_fault_injection_really_breaks_emission` | 注入（`tests/support/json_log_plugin.break_logging`）が実際に発行を壊していること。効いていなければ次の検査は空振り |
-| `test_ledger_suites_pass_unchanged_with_broken_logging` | 既存の台帳・有料 submit/await・fal adapter・画像/動画/代替案/Upload の Activity のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |
+| `test_ledger_suites_pass_unchanged_with_broken_logging`（レビュー I-1 で強化） | 既存の台帳・有料 submit/await・fal adapter・画像/動画/代替案/Upload の Activity のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |
 
 ## commit 後のイベント（`tests/unit/test_log_ledger.py`、unit: SQLite）— log-contract §9
 
@@ -144,3 +145,15 @@ repository のメソッドが session に積み、`after_commit` で出す（`in
 | テスト | 守るもの |
 |---|---|
 | `test_workflow_events_are_emitted_once_and_replay_emits_nothing` | 本物の `DailyEpisodeWorkflow`/`EpisodePipelineWorkflow`（sandbox あり）をキャッシュ無しの Worker（毎 task で履歴を頭から replay）で走らせても、工程のイベントは1回ずつ。全記録の `event_id` が一意で、Workflow の記録は uuid5 の導出値。取った履歴を Replayer にかけると非決定にならず、1件も発行しない。ログ発行を足したことで稼働中の workflow の履歴と食い違わないことの検査でもある（既存の replay test・履歴 fixture も通る） |
+
+### レビュー I-1 の後の故障注入（2026-10-06）
+
+以前の注入は logger が INFO 無効のまま走っており、`emit()` がレベル判定で先に return するため、壊した
+`makeRecord` に1度も届いていなかった（担当D の実測: `paid_job` の `isEnabledFor(INFO)` が False、root level 30）。
+今は子プロセスで root を DEBUG・JSON handler つき（`configure_logging(stream=devnull)`）にし、注入点
+（`makeRecord`（INFO/WARNING 別）・`JsonFormatter.build`・`ledger._queue`（2回に1回）・`ledger._flush_pending`・
+`CallObservation._base`・`reservation_fields`）ごとの発火回数を `AVP_TEST_FAULT_REPORT` に書き、0 でないことを
+assert する。実測（8 suites・184 tests、全件 pass）: make_record.INFO 276 / make_record.WARNING 17 /
+formatter.build 275 / ledger.defer 282 / ledger.after_commit 216 / call_observation 54 / reservation_fields 518。
+強化した注入で初めて、`reservation_fields` と `CallObservation._base` の故障が業務の例外になる経路
+（`await_output` の文脈作成・`_defer_reservation`・`CallObservation.succeeded`）が見つかり、I-2 と同じ形で直した。

@@ -14,6 +14,7 @@ transaction では捨てる（発行しない）。
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from typing import Any
@@ -30,13 +31,16 @@ def _sync_session(session: Any) -> Any:
     return getattr(session, "sync_session", session)
 
 
-def _after_commit(session: Any) -> None:
-    try:
-        pending = session.info.pop(_PENDING_KEY, None) or []
-    except Exception:
-        return
+def _flush_pending(session: Any) -> None:
+    pending = session.info.pop(_PENDING_KEY, None) or []
     for logger_name, event, level, msg, args, fields in pending:
         emit(logging.getLogger(logger_name), event, level, msg, *args, **fields)
+
+
+def _after_commit(session: Any) -> None:
+    # commit の後に呼ばれる listener。ここの例外は commit した呼び出し側へ伝播し得るので必ず握る
+    with contextlib.suppress(Exception):
+        _flush_pending(session)
 
 
 def _after_transaction_end(session: Any, transaction: Any) -> None:
@@ -76,12 +80,13 @@ def defer(
     """``session``（AsyncSession でも Session でも）の commit が成功したら発行する。"""
     try:
         _install()
-        sync = _sync_session(session)
-        sync.info.setdefault(_PENDING_KEY, []).append(
-            (logger_name, event, level, msg, args, fields)
-        )
+        _queue(_sync_session(session), (logger_name, event, level, msg, args, fields))
     except Exception:  # ログの故障は業務へ伝播させない（INV-38）
         pass
+
+
+def _queue(sync_session: Any, item: tuple[Any, ...]) -> None:
+    sync_session.info.setdefault(_PENDING_KEY, []).append(item)
 
 
 def reservation_fields(reservation: Any) -> dict[str, Any]:
