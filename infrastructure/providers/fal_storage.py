@@ -40,11 +40,14 @@ from urllib.parse import urlparse
 
 import httpx
 
+from contracts.log_contract import EventName, Outcome, ProviderLabel, ProviderOperation
 from domain.errors import (
     ProviderInvocationError,
     ProviderRejectedError,
     ProviderUnavailableError,
 )
+from infrastructure.logging.emit import emit
+from infrastructure.logging.provider import allowed_headers, classify
 
 STORAGE_TOKEN_URL = "https://rest.fal.ai/storage/auth/token?storage_type=fal-cdn-v3"
 CDN_UPLOAD_URL = "https://v3.fal.media/files/upload"
@@ -52,6 +55,9 @@ CDN_UPLOAD_URL = "https://v3.fal.media/files/upload"
 DEFAULT_LIFECYCLE_SECONDS = 24 * 60 * 60
 
 logger = logging.getLogger(__name__)
+
+#: ``what`` → ``provider_operation``（ADR-0040）
+_OPERATIONS = {"token": ProviderOperation.STORAGE_TOKEN, "upload": ProviderOperation.INPUT_UPLOAD}
 
 
 def _worker_id() -> str:
@@ -79,7 +85,12 @@ def _error_type_from_body(response: httpx.Response) -> str | None:
 def _log_http_failure(response: httpx.Response, *, what: str, tag: str) -> None:
     request_id = response.headers.get("x-fal-request-id")
     error_type = response.headers.get("x-fal-error-type") or _error_type_from_body(response)
-    logger.error(
+    category, basis = classify(None, response.status_code, response.headers)
+    # 既存の1行の文言は変えない（ADR-0030 の診断。運用の grep が使う）。フィールドは JSON の側へ
+    emit(
+        logger,
+        EventName.PROVIDER_CALL_FAILED,
+        logging.ERROR,
         "%s fal_operation=%s http_status=%s provider_request_id=%s provider_error_type=%s "
         "worker_id=%s config_version=%s occurred_at=%s",
         tag,
@@ -90,11 +101,24 @@ def _log_http_failure(response: httpx.Response, *, what: str, tag: str) -> None:
         _worker_id(),
         _config_version(),
         datetime.now(UTC).isoformat(),
+        provider=ProviderLabel.FAL_STORAGE.value,
+        provider_operation=_OPERATIONS[what].value,
+        http_status=response.status_code,
+        provider_request_id=request_id,
+        error_code=[error_type] if error_type else None,
+        error_category=category,
+        classification_basis=basis,
+        outcome=Outcome.FAILED.value,
+        response_excerpt={"headers": allowed_headers(response.headers)},
     )
 
 
 def _log_transport_failure(exc: httpx.TransportError, *, what: str) -> None:
-    logger.error(
+    category, basis = classify(exc, None)
+    emit(
+        logger,
+        EventName.PROVIDER_CALL_FAILED,
+        logging.ERROR,
         "PROVIDER_TRANSIENT_FAILURE fal_operation=%s http_status=None provider_request_id=None "
         "provider_error_type=%s worker_id=%s config_version=%s occurred_at=%s",
         what,
@@ -102,6 +126,12 @@ def _log_transport_failure(exc: httpx.TransportError, *, what: str) -> None:
         _worker_id(),
         _config_version(),
         datetime.now(UTC).isoformat(),
+        provider=ProviderLabel.FAL_STORAGE.value,
+        provider_operation=_OPERATIONS[what].value,
+        error_type=type(exc).__name__,
+        error_category=category if category != "unknown" else "transient_network",
+        classification_basis=basis,
+        outcome=Outcome.FAILED.value,
     )
 
 
@@ -176,6 +206,19 @@ class FalStorageClient:
         url = _json_object(response, what="upload").get("access_url")
         if not isinstance(url, str) or urlparse(url).scheme != "https":
             raise ProviderInvocationError("fal storage upload returned no https access_url")
+        # access_url は capability URL。整形器が host 以外を縮約する（log-contract §7.4）
+        emit(
+            logger,
+            EventName.PROVIDER_CALL_SUCCEEDED,
+            logging.INFO,
+            "fal storage upload succeeded",
+            provider=ProviderLabel.FAL_STORAGE.value,
+            provider_operation=ProviderOperation.INPUT_UPLOAD.value,
+            http_status=response.status_code,
+            provider_request_id=response.headers.get("x-fal-request-id"),
+            outcome=Outcome.SUCCEEDED.value,
+            attributes={"bytes": len(data), "content_type": content_type},
+        )
         return url
 
     async def _token(self) -> tuple[str, str]:

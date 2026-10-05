@@ -358,3 +358,55 @@ f209e7c と同じ）
 Workflow と本番工程はそれを import しない）
 / `tests/architecture/test_research_isolation.py::test_the_planning_links_do_not_touch_production_billing_or_artifacts`
 （B6 で追加。ADR-0038 §B6 / ADR-0039 §B6）
+
+## M. 構造化ログ（ADR-0040）
+
+### INV-38 ログの障害は業務を止めず、業務状態・課金・例外の型を変えず、自動判断の根拠にならない
+ログの発行・整形・収集・検索基盤の障害は業務処理を失敗・停止させず、業務状態・課金・例外の型を変えない。
+発行ヘルパー（`infrastructure.logging.emit`）は record の生成を含めて例外を握り、整形器は失敗を固定形で
+出し直し、Activity interceptor・API middleware は記録してから**同じ例外オブジェクト**を再送出する。
+アプリは stdout にしか書かず、OpenSearch を import・接続しない。ログ検索の結果を課金判定・再実行・
+再開・投稿の自動判断に使わない（人手の照合の手がかりにはしてよい。確定は DB・Temporal・provider 側）。
+予約台帳・成果物のイベントは commit が成功した後にだけ出る。
+**機械検査**: `tests/unit/test_log_fault_injection.py::test_ledger_suites_pass_unchanged_with_broken_logging`
+（既存の台帳・有料 submit/await・fal adapter のテストを書き換えずにロガーを壊して全部通す）
+/ `tests/unit/test_log_fault_injection.py::test_the_fault_injection_really_breaks_emission`
+/ `tests/unit/test_log_emit.py::test_emit_never_raises_even_when_the_logger_is_broken`
+/ `tests/unit/test_log_activity_interceptor.py::test_a_broken_logger_does_not_change_the_activity_outcome`
+/ `tests/unit/test_log_activity_interceptor.py::test_failure_is_recorded_and_the_same_object_is_reraised`
+/ `tests/unit/test_log_api.py::test_an_exception_is_logged_and_reraised_unchanged`
+/ `tests/unit/test_log_formatter.py::test_a_broken_record_falls_back_to_the_fixed_minimal_form`
+/ `tests/unit/test_log_ledger.py::test_rolled_back_or_uncommitted_changes_are_not_logged`
+/ `tests/architecture/test_logging_boundaries.py::test_nothing_imports_opensearch`
+/ `tests/architecture/test_logging_boundaries.py::test_log_extra_uses_only_the_avp_key`
+（自動判断に使わないことは機械で検査できない。運用文書と ADR-0040 で禁じる）
+
+### INV-39 秘密・provider 応答全文・prompt 全文・メディアのバイト列は stdout に出る前に除去される
+Python logging を経由する全ての記録（第三者 logger・`warnings`・未捕捉例外・Temporal Core の転送を含む）は、
+stdout に出る前に同じ整形器で安全化される: 秘密を示すキーの値、Bearer/Basic/Key・fal key・JWT・private key・
+Google token・`sk-`・DSN の userinfo・SQLAlchemy の `[parameters: …]`・長い base64 を置換し、URL の
+query・userinfo を落として許可 host（adapter の定数から導く）以外の path を縮約し、provider 応答は許可した
+項目だけを入れる。置換してから切り詰める。迂回経路（logging 設定前の起動失敗・native クラッシュの stderr・
+migrate の alembic・CLI provider の stderr を含む例外文）は log-contract §7.6 に残るリスクとして記録する。
+**機械検査**: `tests/unit/test_log_redaction.py::test_value_patterns_are_replaced`
+/ `tests/unit/test_log_redaction.py::test_message_attributes_and_exception_text_are_cleaned`
+/ `tests/unit/test_log_redaction.py::test_third_party_logger_goes_through_the_same_formatter`
+/ `tests/unit/test_log_redaction.py::test_uncaught_exception_goes_through_the_formatter`
+/ `tests/unit/test_log_redaction.py::test_warnings_are_captured`
+/ `tests/unit/test_log_redaction.py::test_temporal_core_logs_are_forwarded_not_written_to_stderr`
+/ `tests/unit/test_log_redaction.py::test_allowed_hosts_are_derived_from_the_adapter_constants`
+/ `tests/unit/test_log_redaction.py::test_other_hosts_are_shrunk_to_a_hash`
+/ `tests/unit/test_log_provider_calls.py::test_422_content_policy_uses_the_provider_error_type`
+/ `tests/unit/test_log_activity_events.py::test_upload_started_succeeded_then_reused_existing`
+/ `tests/unit/test_log_api.py::test_route_template_episode_id_and_request_id`
+
+### INV-40 Workflow のログ発行は決定性を崩さず、replay で業務イベントを重複発行しない
+Workflow のコードは `infrastructure` を import せず、`workflow.logger` と `extra={"avp": {...}}` だけで発行し、
+時刻・乱数・UUID・I/O を足さない（コマンドを足さない）。replay 中の発行は SDK が抑止する。`event_id` は
+sandbox の外の整形器が `uuid5(workflow_id:run_id:history_length:seq:event_name)` で導く。workflow task が
+発行の後に失敗・timeout した場合の再発行（別 ID）は起こり得る（task の試行単位で at-least-once）。
+**機械検査**: `tests/unit/test_log_workflow_replay.py::test_workflow_events_are_emitted_once_and_replay_emits_nothing`
+/ `tests/architecture/test_logging_boundaries.py::test_workflow_modules_do_not_import_infrastructure`
+/ `tests/unit/test_log_formatter.py::test_workflow_event_id_is_deterministic_and_every_input_matters`
+/ `tests/unit/test_log_formatter.py::test_workflow_event_id_does_not_collide_across_a_grid`
+/ `tests/unit/test_pipeline_workflows.py`（既存の履歴 fixture の replay がログ発行を足した後も通る）

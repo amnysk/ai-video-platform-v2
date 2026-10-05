@@ -15,7 +15,8 @@ Accepted（2026-09-30。設計レビューと独立再確認: 独立レビュー
   （ローテーション無し）**。最大のコンテナログは約 77MB。
 - アプリログは `logging.basicConfig(level=INFO)` の非構造テキスト（13か所で個別に初期化）。
   uvicorn は CLI 起動で独自の handler（access log は query 付き path）。Temporal Core（Rust）のログは
-  Python logging を通らず stderr に出る（`LoggingConfig.default` の `forwarding=None`）。
+  Python logging を通らず console に直接出る（`LoggingConfig.default` の `forwarding=None`。
+  実測では stdout に ANSI 色つきの非 JSON 行。2026-10-05 訂正、当初「stderr」と記載）。
 - 2026-09-22 以降の 403（ADR-0030）では診断が DB の `error_summary` 文字列頼みで、どの試行・
   どのシーン・どの操作（submit / storage token）かをログから辿れなかった。
 - 既存の監視: DB の `operational_anomalies` と watchdog（ADR-0027/0031）、`avp.anomaly` logger。
@@ -126,7 +127,7 @@ ingested_at）→ Dashboards`。
   採用版は bulk の item ごとに 2xx/409 を成功扱いにし、失敗 item だけを再送する（ソースと実測）。
   400 と 429 は区別されない。上限を超えた record は破棄され `dropped_records_total`・
   `retries_failed_total` に出る。
-- **許容できる OpenSearch 停止時間**は retry 上限と buffer 上限の短い方で決まる。上の設定で約6時間（backoff の cap 300秒 × 72 回。jitter あり）、buffer 1GiB は現在の出力量なら数日分なので、retry 側が律速する。これを超える停止では古い record から破棄される（`dropped_records_total` で検知）。長く止めるときは Fluent Bit も止める（位置 DB から再開でき、rotation 一巡までは欠損しない）。実測で調整する。
+- **許容できる OpenSearch 停止時間**は retry 上限と buffer 上限の短い方で決まる。上の設定の上限は cap 300秒 × 72 回だが、backoff は base〜cap の乱数（平均 約140秒/回）なので**実測で約2時間49分**で尽きる（platform.md §7）、buffer 1GiB は現在の出力量なら数日分なので、retry 側が律速する。これを超える停止では古い record から破棄される（`dropped_records_total` で検知）。長く止めるときは Fluent Bit も止める（位置 DB から再開でき、rotation 一巡までは欠損しない）。実測で調整する。
 - tail: `buffer_max_size 256k`、`skip_long_lines on`（既定 32k を超える行でファイルの監視が止まるのを防ぐ。Docker は `<` を `\u003c` に escape するので包装後の行は生の行より膨らむ）。skip は `long_line_skipped` 系の metrics で監視する。
 - buffer: filesystem、`storage.total_limit_size` 1GiB（超えたら古い chunk から破棄）、メモリ上限つき。
   **有限バッファでは無欠損と無停止を同時に保証できない**ので、業務を止めない側を選び、破棄・再送・

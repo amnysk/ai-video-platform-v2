@@ -25,6 +25,7 @@ from domain.upload.ports import VideoUploader
 from infrastructure.config import Settings
 from infrastructure.db.repositories import OperationalSwitchRepository
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
@@ -123,6 +124,7 @@ def uploads_paused_switch(settings: Settings, session_factory: async_sessionmake
 def build_workers(client: Client, activities: UploadActivities) -> tuple[Worker, Worker]:
     state = Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=UPLOAD_TASK_QUEUE,
         workflows=[UploadWorkflow],
         activities=activities.state_activities(),
@@ -130,6 +132,7 @@ def build_workers(client: Client, activities: UploadActivities) -> tuple[Worker,
     )
     media = Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=UPLOAD_MEDIA_TASK_QUEUE,
         activities=activities.media_activities(),
         max_concurrent_activities=DEFAULT_UPLOAD_CONCURRENCY,
@@ -139,10 +142,6 @@ def build_workers(client: Client, activities: UploadActivities) -> tuple[Worker,
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    # httpx は URL（session URI を含む）を INFO で出すので抑える（INV-20）
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
     settings = Settings()
     channel_id = require_channel_id(settings)
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as http:

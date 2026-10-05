@@ -16,6 +16,7 @@ from temporalio.worker import Worker
 from contracts.states import STORYBOARD_WORKFLOW
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
 from infrastructure.providers.openmontage_storyboard import (
     OpenMontageGuidedStoryboardGenerator,
@@ -35,7 +36,6 @@ _, STORYBOARD_TASK_QUEUE = STORYBOARD_WORKFLOW
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings()
 
     if not settings.openmontage_repo_path:
@@ -92,6 +92,7 @@ async def main() -> None:
     )
     async with Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=STORYBOARD_TASK_QUEUE,
         workflows=[StoryboardWorkflow],
         activities=activities.all_activities(),
