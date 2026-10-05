@@ -27,6 +27,7 @@ from infrastructure.logging.redaction import (
     sanitize_text,
     sanitize_url,
 )
+from infrastructure.youtube.uploader import UPLOAD_URL
 
 REPO = Path(__file__).resolve().parents[2]
 FAL_KEY = "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b:" + "ab" * 16
@@ -126,7 +127,7 @@ def test_allowed_hosts_are_derived_from_the_adapter_constants() -> None:
     from infrastructure.providers.fal_queue import QUEUE_BASE_URL
     from infrastructure.providers.fal_storage import STORAGE_TOKEN_URL
     from infrastructure.youtube.oauth import TOKEN_ENDPOINT
-    from infrastructure.youtube.uploader import API_BASE_URL, UPLOAD_URL
+    from infrastructure.youtube.uploader import API_BASE_URL
 
     expected = {
         urlsplit(u).hostname
@@ -144,9 +145,12 @@ def test_allowed_hosts_are_derived_from_the_adapter_constants() -> None:
 
 
 def test_allowed_host_keeps_path_but_drops_query_and_userinfo() -> None:
-    url = "https://queue.fal.run/fal-ai/x/requests/abc/status?token=zzz#frag"
-    assert sanitize_url(url) == "https://queue.fal.run/fal-ai/x/requests/abc/status"
-    resumable = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&upload_id=AEnB2Uo-secret"
+    # endpoint は adapter の定数から組む（literal を書かない / INV-18 の検査と同じ方針）
+    from infrastructure.providers.fal_queue import QUEUE_BASE_URL
+
+    path = f"{QUEUE_BASE_URL}/model-x/requests/abc/status"
+    assert sanitize_url(f"{path}?token=zzz#frag") == path
+    resumable = f"{UPLOAD_URL}?uploadType=resumable&upload_id=AEnB2Uo-secret"
     assert "AEnB2Uo" not in sanitize_url(resumable)
 
 
@@ -176,7 +180,7 @@ def test_message_attributes_and_exception_text_are_cleaned() -> None:
     err = caught.value
     line = _line(
         _record(
-            "HTTP Request: PUT https://www.googleapis.com/upload/youtube/v3/videos"
+            f"HTTP Request: PUT {UPLOAD_URL}"
             '?uploadType=resumable&upload_id=AEnB2Uo-secret "HTTP/1.1 308"',
             avp={
                 "attributes": {
