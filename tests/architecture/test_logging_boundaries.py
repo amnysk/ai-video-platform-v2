@@ -95,9 +95,12 @@ def test_nothing_imports_opensearch() -> None:
 
 
 def test_log_extra_uses_only_the_avp_key() -> None:
-    """``logger.*(…, extra=…)`` と ``workflow.logger.*(…, extra=…)`` のキーは ``"avp"`` だけ。"""
+    """``workflow.logger.*(…, extra=…)`` のキーは ``"avp"`` だけ。Workflow の外では ``extra=`` を
+    直接書かず ``emit()`` を使う（emit は record の生成を含めて例外を握る。直接の
+    ``logger.warning(extra=...)`` はロガーの故障を業務へ伝播させる。INV-38 の故障注入で実測）。"""
     bad: list[str] = []
     for path in _py("apps", "workers", "infrastructure"):
+        is_workflow = "@workflow.defn" in path.read_text(encoding="utf-8")
         for node in ast.walk(_tree(path)):
             if not (
                 isinstance(node, ast.Call)
@@ -111,6 +114,9 @@ def test_log_extra_uses_only_the_avp_key() -> None:
                 where = f"{path.relative_to(REPO)}:{node.lineno}"
                 if ast.unparse(kw.value) == "{RECORD_EXTRA_KEY: payload}":
                     continue  # infrastructure.logging.emit（RECORD_EXTRA_KEY == "avp"）
+                if not is_workflow:
+                    bad.append(f"{where} extra= outside a workflow (use emit())")
+                    continue
                 if isinstance(kw.value, ast.Dict) and all(
                     isinstance(k, ast.Constant) for k in kw.value.keys
                 ):

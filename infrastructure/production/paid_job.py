@@ -409,22 +409,21 @@ class PaidJobRunner:
             )
             raise
         except Exception as exc:
-            logger.warning(
+            emit(
+                logger,
+                EventName.LOG_RECORD,
+                logging.WARNING,
                 "paid submit ambiguous; reservation left dispatched without ref "
                 "reservation=%s episode=%s scene=%s error=%s",
                 reservation.id,
                 spec.episode_id,
                 spec.scene_id,
                 type(exc).__name__,
-                extra={
-                    "avp": {
-                        "provider_operation": ProviderOperation.SUBMIT.value,
-                        "outcome": Outcome.AMBIGUOUS.value,
-                        "error_type": type(exc).__name__,
-                        "error_category": ErrorCategory.SUBMIT_AMBIGUOUS.value,
-                        "classification_basis": ClassificationBasis.EXCEPTION_TYPE.value,
-                    }
-                },
+                provider_operation=ProviderOperation.SUBMIT.value,
+                outcome=Outcome.AMBIGUOUS.value,
+                error_type=type(exc).__name__,
+                error_category=ErrorCategory.SUBMIT_AMBIGUOUS.value,
+                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
             )
             if isinstance(exc, ProviderSubmitAmbiguousError):
                 raise
