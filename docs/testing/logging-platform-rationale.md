@@ -34,6 +34,9 @@ Fluent Bit 5.1.2、2026-09-30）。
   権限で動く（実測）。その囲いが緩むと漏れ先ができる。uid を 1000 に戻すと無音で何も読めなくなる。
 - **秘密を env で渡さない・admin 証明書は setup の one-shot だけ・repo に鍵や hash が無い**: env は
   `docker inspect` で見える。
+- **秘密はファイル単位で mount し、サービスごとの許可リストに収まる**（I-9）: ディレクトリごと渡すと
+  bootstrap・securityadmin にも CA の秘密鍵（`ca.key`、証明書を発行できる）や node 鍵が見える。`ca.key` は
+  どのコンテナにも渡さない。
 - **資源の上限（mem=memswap、heap、oom_score_adj、Dashboards は profile）**: 本番ホストは swap が満杯で、
   ログ基盤が本番 worker より先に落ちる前提で共存を認めている（ADR-0040 §7）。
 - **sentinel と volume-guard**: project 名の違いで空の volume が作られると、OpenSearch は空で起動し、
