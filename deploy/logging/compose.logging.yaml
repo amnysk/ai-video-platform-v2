@@ -214,6 +214,8 @@ services:
     <<: *oneshot
     image: *os-image
     profiles: [setup]
+    # イメージの security 設定（所有者 1000・0750）と internal_users.yml（0600）を読むだけの権限（実測で必要）
+    cap_add: [DAC_READ_SEARCH]
     entrypoint: ["bash", "/scripts/securityadmin.sh"]
     volumes:
       # admin 証明書と CA 証明書だけ（ca.key・node.key は渡さない。I-9）
