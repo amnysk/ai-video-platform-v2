@@ -336,3 +336,16 @@ def test_saved_objects_reference_existing_index_patterns() -> None:
         refs = {r["id"] for r in s["references"]}
         assert refs <= patterns, s["id"]
         json.loads(s["attributes"]["kibanaSavedObjectMeta"]["searchSourceJSON"])
+
+
+def test_scripts_do_not_put_passwords_on_the_command_line() -> None:
+    """`curl -u user:pass` は ps で見える（I-6）。-K の一時 config で渡す。"""
+    for path in (LOGGING / "scripts").glob("*.sh"):
+        text = path.read_text(encoding="utf-8")
+        assert not re.search(r"curl[^\n]*\s-u\s", text), path.name
+
+
+def test_check_pipeline_checks_each_series_and_the_environment() -> None:
+    src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
+    assert 'check_lag app "$MAX_LAG_MIN"' in src and 'check_lag infra "$MAX_LAG_INFRA_MIN"' in src
+    assert "must_not" in src and "environment" in src and "now-24h" in src
