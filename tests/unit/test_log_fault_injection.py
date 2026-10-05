@@ -18,12 +18,17 @@ from infrastructure.logging import emit
 from tests.support.json_log_plugin import BREAK_LOGGING_ENV, break_logging
 
 REPO = Path(__file__).resolve().parents[2]
-#: 予約台帳・有料 submit/await・provider adapter・Upload の台帳。caplog で文言を見るテストを
-#: 含まない（故障注入で記録そのものが消えるため）
+#: 予約台帳・有料 submit/await・provider adapter・画像/動画/代替案/Upload の Activity。
+#: caplog で記録の**存在**を見るテストを含まない（故障注入で記録そのものが消えるため）
 LEDGER_SUITES = (
     "tests/unit/test_paid_job.py",
     "tests/unit/test_fal_queue.py",
     "tests/unit/test_provider_reservations.py",
+    "tests/unit/test_production_image_activities.py",
+    "tests/unit/test_production_video_activities.py",
+    "tests/unit/test_scene_alternative_activity.py",
+    "tests/unit/test_scene_identity_reuse.py",
+    "tests/unit/test_upload_activities.py",
 )
 
 

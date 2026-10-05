@@ -95,7 +95,7 @@
 | テスト | 守るもの |
 |---|---|
 | `test_the_fault_injection_really_breaks_emission` | 注入（`tests/support/json_log_plugin.break_logging`）が実際に発行を壊していること。効いていなければ次の検査は空振り |
-| `test_ledger_suites_pass_unchanged_with_broken_logging` | 既存の台帳・有料 submit/await・fal adapter のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |
+| `test_ledger_suites_pass_unchanged_with_broken_logging` | 既存の台帳・有料 submit/await・fal adapter・画像/動画/代替案/Upload の Activity のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |
 
 ## commit 後のイベント（`tests/unit/test_log_ledger.py`、unit: SQLite）— log-contract §9
 
