@@ -36,13 +36,17 @@ CERT = os.environ.get("AVP_ADMIN_CERT", "/secrets/pki/admin.pem")
 KEY = os.environ.get("AVP_ADMIN_KEY", "/secrets/pki/admin.key")
 CA = os.environ.get("AVP_ADMIN_CA", "/secrets/pki/ca.pem")
 DEPLOY = os.environ.get("AVP_DEPLOY_DIR", "/deploy")
+#: 試験用に短縮した policy を使うとき ``ism-test``（本番は ``ism``）
+ISM_DIR = os.environ.get("AVP_ISM_POLICY_DIR", "ism") or "ism"
+#: 試験用に ISM の実行間隔（分）を縮めるとき。空なら触らない（既定 5 分）
+ISM_JOB_INTERVAL = os.environ.get("AVP_ISM_JOB_INTERVAL_MIN", "")
 
 EXPECTED_AUTO_CREATE = "-avp-*,+*"
 PIPELINE = "avp-ingest"
 #: series -> (component template file, ISM policy file)
 SERIES = {
-    "app": ("templates/avp-app-mappings.json", "ism/avp-app.json"),
-    "infra": ("templates/avp-infra-mappings.json", "ism/avp-infra.json"),
+    "app": ("templates/avp-app-mappings.json", "avp-app.json"),
+    "infra": ("templates/avp-infra-mappings.json", "avp-infra.json"),
 }
 
 
@@ -108,6 +112,16 @@ def check_auto_create() -> None:
     print(f"ok   action.auto_create_index={value}")
 
 
+def set_ism_job_interval() -> None:
+    if not ISM_JOB_INTERVAL:
+        return
+    if not ISM_JOB_INTERVAL.isdigit():
+        raise BootstrapError(f"AVP_ISM_JOB_INTERVAL_MIN が不正: {ISM_JOB_INTERVAL!r}")
+    body = {"persistent": {"plugins.index_state_management.job_interval": int(ISM_JOB_INTERVAL)}}
+    call("PUT", "/_cluster/settings", body)
+    print(f"ok   ISM job_interval={ISM_JOB_INTERVAL}m（試験用）")
+
+
 def put_pipeline() -> None:
     call("PUT", f"/_ingest/pipeline/{PIPELINE}", load("ingest/avp-ingest.json"))
     print(f"ok   ingest pipeline {PIPELINE}")
@@ -159,7 +173,7 @@ def _normalize_policy(policy: dict) -> dict:
 
 def put_policy(series: str) -> None:
     policy_id = f"avp-{series}"
-    desired = load(SERIES[series][1])
+    desired = load(os.path.join(ISM_DIR, SERIES[series][1]))
     status, current = call("GET", f"/_plugins/_ism/policies/{policy_id}", ok=(200, 404))
     if status == 404:
         call("PUT", f"/_plugins/_ism/policies/{policy_id}", desired)
@@ -222,6 +236,7 @@ def main() -> int:
     try:
         wait_ready()
         check_auto_create()
+        set_ism_job_interval()
         put_pipeline()
         components = {s: put_component(s) for s in SERIES}
         for s in SERIES:

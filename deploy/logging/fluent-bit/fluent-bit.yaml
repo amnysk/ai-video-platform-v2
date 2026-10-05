@@ -15,7 +15,8 @@ service:
   hc_errors_count: 5
   hc_retry_failure_count: 5
   hc_period: 60
-  storage.path: /fb-state/buffer
+  # 既定は位置 DB と同じ volume。試験では容量を絞った tmpfs に差し替える（compose.test.yaml）
+  storage.path: ${AVP_LOG_STORAGE_PATH}
   storage.sync: normal
   storage.checksum: off
   storage.metrics: on

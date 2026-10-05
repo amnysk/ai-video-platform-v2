@@ -6,7 +6,9 @@
 # 差し替えられる値（既定は本番用）: AVP_LOGGING_ENV / AVP_LOGGING_SECRETS_DIR / AVP_LOG_CONTAINERS_DIR /
 # AVP_LOG_TARGET_PROJECT / AVP_LOG_HOST_NAME / AVP_LOG_READ_FROM_HEAD / AVP_LOG_STORAGE_LIMIT /
 # AVP_LOGGING_OS_PORT / AVP_LOGGING_OSD_PORT / AVP_LOGGING_OS_HEAP / AVP_LOGGING_OS_MEM_LIMIT /
-# AVP_LOGGING_OPENSEARCH_HOST / AVP_LOGGING_OPENSEARCH_PORT（.env.example）
+# AVP_LOGGING_OPENSEARCH_HOST / AVP_LOGGING_OPENSEARCH_PORT / AVP_LOG_STORAGE_PATH /
+# AVP_ISM_POLICY_DIR / AVP_ISM_JOB_INTERVAL_MIN（.env.example）。試験用の上書きは compose.test.yaml。
+# volume・network の名前は <project>_<key>（-p で分ける）
 name: avp2-logging
 
 x-os-image: &os-image opensearchproject/opensearch:3.8.0@sha256:fafe3fc3587088674669235575aa166228c48bdb940294a8cdbbc1da75236a40
@@ -116,6 +118,7 @@ services:
       AVP_LOG_HOST_NAME: ${AVP_LOG_HOST_NAME:-unknown}
       AVP_LOG_READ_FROM_HEAD: ${AVP_LOG_READ_FROM_HEAD:-true}
       AVP_LOG_STORAGE_LIMIT: ${AVP_LOG_STORAGE_LIMIT:-1G}
+      AVP_LOG_STORAGE_PATH: ${AVP_LOG_STORAGE_PATH:-/fb-state/buffer}
       AVP_LOGGING_OPENSEARCH_HOST: ${AVP_LOGGING_OPENSEARCH_HOST:-opensearch}
       AVP_LOGGING_OPENSEARCH_PORT: ${AVP_LOGGING_OPENSEARCH_PORT:-9200}
     mem_limit: 256m
@@ -189,6 +192,9 @@ services:
     environment:
       AVP_LOGGING_ENV: ${AVP_LOGGING_ENV:-prod}
       OPENSEARCH_URL: https://opensearch:9200
+      # 試験用: 短縮した ISM policy の置き場所（deploy/logging/opensearch からの相対）と ISM の実行間隔（分）
+      AVP_ISM_POLICY_DIR: ${AVP_ISM_POLICY_DIR:-ism}
+      AVP_ISM_JOB_INTERVAL_MIN: ${AVP_ISM_JOB_INTERVAL_MIN:-}
     volumes:
       - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki:/secrets/pki:ro
       - ./opensearch:/deploy:ro
