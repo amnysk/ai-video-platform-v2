@@ -4,6 +4,9 @@
 #   run-e2e.sh build            worker イメージ（この worktree の Dockerfile）と test-runner を作る
 #   run-e2e.sh up               postgres / temporal / minio / namespace / migrate を用意する
 #   run-e2e.sh run [args...]    test-runner で pytest（既定: tests/integration 全部）
+#   run-e2e.sh run-each [files...]
+#                               integration の各ファイルを別コンテナ（container_name=<project>-r-<stem>）で
+#                               実行する。OpenSearch で container_name によりテストとログを対応づける
 #   run-e2e.sh tool [--secrets DIR] [--name N] cmd...
 #                               一時コンテナ（label avp.logging=app）で cmd を実行（loggen 等）
 #   run-e2e.sh ps | logs        状態・ログ
@@ -94,6 +97,23 @@ case "$cmd" in
     set -e
     echo "run: container=$name rc=$rc elapsed=$(( $(date +%s) - start ))s"
     exit "$rc"
+    ;;
+  run-each)
+    ensure_secrets
+    files=("$@")
+    [ "${#files[@]}" -gt 0 ] || mapfile -t files < <(cd "$SRC" && ls tests/integration/test_*.py)
+    summary="$STATE/run-each-$(date -u +%Y%m%dT%H%M%SZ).tsv"
+    total_start=$(date +%s)
+    for f in "${files[@]}"; do
+      stem="$(basename "$f" .py)"; stem="${stem#test_}"
+      name="$PROJECT-r-${stem//_/-}"
+      docker rm -f "$name" >/dev/null 2>&1 || true
+      start=$(date +%s)
+      out="$(dc run -T --name "$name" test-runner pytest "$f" -p no:cacheprovider \
+        -p tests.support.json_log_plugin -q -rs 2>&1 | grep -E '^[0-9]+ (passed|failed|skipped|error)|^(FAILED|ERROR|SKIPPED) ' | tr '\n' ' ')"
+      printf '%s\t%s\t%ss\t%s\n' "$f" "$name" "$(( $(date +%s) - start ))" "$out" | tee -a "$summary"
+    done
+    echo "run-each: $(( $(date +%s) - total_start ))s summary=$summary"
     ;;
   tool)
     ensure_secrets
