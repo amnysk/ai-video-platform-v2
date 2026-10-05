@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 import yaml
 
+from contracts.log_contract import ENV_SERVICE_NAME
 from contracts.research import DEFAULT_RESEARCH_PROVIDER
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,7 +45,10 @@ def test_the_research_worker_env_is_app_env_plus_the_provider_only(compose) -> N
     services = compose["services"]
     worker = _env(services["research-worker"])
     app_env = {str(k) for k in compose["x-app-env"]}
-    assert set(worker) == app_env | {PROVIDER_ENV}
+    # ADR-0040 §3（承認済み）: 各アプリサービスは自分の名前を AVP_SERVICE_NAME で持つ
+    # （秘密ではない）
+    assert set(worker) == app_env | {PROVIDER_ENV, ENV_SERVICE_NAME}
+    assert worker[ENV_SERVICE_NAME] == "research-worker"
     assert worker[PROVIDER_ENV] == EXPECTED_PROVIDER
     for prefix in ("YOUTUBE_", "CODEX_", "FAL_KEY", "OPENAI", "ANTHROPIC", "GOOGLE"):
         assert not [k for k in worker if k.startswith(prefix)], prefix

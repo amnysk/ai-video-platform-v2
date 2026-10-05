@@ -1,0 +1,25 @@
+{
+  "policy": {
+    "description": "ADR-0040 §4: avp-infra-* rollover at 1gb primary shard or 3d, delete 7d after rollover",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [
+          {"rollover": {"min_primary_shard_size": "1gb", "min_index_age": "3d"}}
+        ],
+        "transitions": [
+          {"state_name": "delete", "conditions": {"min_rollover_age": "7d"}}
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [{"delete": {}}],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {"index_patterns": ["avp-infra-*"], "priority": 100}
+    ]
+  }
+}

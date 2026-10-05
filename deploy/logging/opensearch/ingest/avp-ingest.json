@@ -1,0 +1,6 @@
+{
+  "description": "ADR-0040: set ingested_at (OpenSearch receive time). Nothing else.",
+  "processors": [
+    {"set": {"field": "ingested_at", "value": "{{{_ingest.timestamp}}}"}}
+  ]
+}
