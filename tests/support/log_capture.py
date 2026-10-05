@@ -23,7 +23,8 @@ class Captured:
         return [e for e in out if e["event_name"] == event_name]
 
     def names(self) -> list[str]:
-        return [e["event_name"] for e in self.events()]
+        """業務イベントの名前（``log.record``＝既存・第三者 logger の記録は除く）。"""
+        return [e["event_name"] for e in self.events() if e["event_name"] != "log.record"]
 
 
 @contextmanager

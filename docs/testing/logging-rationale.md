@@ -95,3 +95,16 @@
 |---|---|
 | `test_the_fault_injection_really_breaks_emission` | 注入（`tests/support/json_log_plugin.break_logging`）が実際に発行を壊していること。効いていなければ次の検査は空振り |
 | `test_ledger_suites_pass_unchanged_with_broken_logging` | 既存の台帳・有料 submit/await・fal adapter のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |
+
+## commit 後のイベント（`tests/unit/test_log_ledger.py`、unit: SQLite）— log-contract §9
+
+予約台帳の書き手は5か所（paid_job・upload・planning・storyboard・scene_recovery）あるので、発行は
+repository のメソッドが session に積み、`after_commit` で出す（`infrastructure/logging/ledger.py`）。
+
+| テスト | 守るもの |
+|---|---|
+| `test_reservation_events_come_only_after_commit` | flush しただけでは出ず、commit の後に `reservation_id`・`provider_attempt`（台帳ラウンド）つきで出る |
+| `test_rolled_back_or_uncommitted_changes_are_not_logged` | rollback・commit せずに閉じた変更は出さない。別の session の commit で古い保留が漏れない（「ログにある＝DB にある」） |
+| `test_dispatch_job_ref_and_spent_follow_the_ledger` | dispatched → job_ref_recorded → spent の順。同じ参照の再記録（no-op）では出さない |
+| `test_artifact_stored_and_superseded` | 新しい世代の記録で旧世代の superseded と新世代の stored。同じ内容の再記録は何も出さない |
+| `test_rejection_and_auth_incident` | 拒否は `error_code`（観測）と `error_category`（`RejectionCategory` の値）を分けて出す。403 は `access_denied` / `http_status_only`（credentials と断定しない） |
