@@ -52,6 +52,9 @@ ensure_secrets() {
 }
 
 dc() {
+  # tool サービスの secrets mount 元（compose は全サービスを補間するので常に渡す）
+  install -d -m 700 "$STATE/empty"
+  APPTEST_SECRETS_DIR="${APPTEST_SECRETS_DIR:-$STATE/empty}" \
   APPTEST_SRC="$SRC" \
   APPTEST_RUNNER_IMAGE="$RUNNER_IMAGE" \
   APPTEST_GIT_REVISION="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo unknown)" \
@@ -103,13 +106,15 @@ case "$cmd" in
       esac
     done
     [ "$#" -gt 0 ] || { echo "tool: コマンドを指定する" >&2; exit 2; }
+    user_opt=()
     if [ -n "$secrets_dir" ]; then
-      APPTEST_SECRETS_DIR="$secrets_dir" dc run -T --no-deps --name "$name" tool "$@"
-    else
-      # /dev/null の bind を避けるため secrets 無しは空ディレクトリを渡す
-      empty="$STATE/empty"; install -d -m 700 "$empty"
-      APPTEST_SECRETS_DIR="$empty" dc run -T --no-deps --name "$name" tool "$@"
+      # secrets は host 所有者の 0600。rootless Docker では host の所有者＝コンテナ内 uid 0 なので、
+      # 読むには uid 0 で動かす（cap は全て落としてあり、host 上は非特権）。rootful では
+      # APPTEST_TOOL_USER に host 所有者の uid:gid を渡す
+      user_opt=(--user "${APPTEST_TOOL_USER:-0:0}")
     fi
+    APPTEST_SECRETS_DIR="${secrets_dir:-$STATE/empty}" \
+      dc run -T --no-deps "${user_opt[@]}" --name "$name" tool "$@"
     echo "tool: container=$name"
     ;;
   ps) ensure_secrets; dc ps -a ;;

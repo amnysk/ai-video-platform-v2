@@ -55,3 +55,16 @@ test DB・test namespace・test bucket で接続する作りになっている�
 | `fault-capacity.sh` | buffer 上限での古い chunk の破棄と検知。**容量制限した tmpfs でだけ**実行し、ホストのディスクを埋めない（tmpfs でなければ中止する） |
 | `fault-secrets.sh` | INV-39 を json-file・buffer・OpenSearch の3か所で確認。隔離スタックの実パスワードも needle に入れる |
 | `measure.sh` | 本番ホスト共存の条件（ADR-0040 §7 の MemAvailable 閾値）を実測で判断するための記録 |
+
+## 3. test-runner で JSON ログを出す plugin（`apptest_logging_plugin.py`）と tool の実行ユーザー
+
+- 既存の integration テストは `configure_logging()` を呼ばないので、そのままでは pytest プロセス内の
+  Activity・Workflow のログは stdout に出ない（pytest の caplog にだけ入る）。テストの中身を変えずに
+  本番と同じ整形器を通すため、`pytest -p apptest_logging_plugin` で読み込む plugin を置いた。
+  A の `configure_logging` が無い間は何もしない（実測: A 実装前で
+  `test_upload_workflow_persistence.py` 4 passed、結果は plugin 無しと同じ）。
+- `inject-secrets.py` の値は host 所有者の 0600。rootless Docker ではコンテナ内 uid 1000 は subuid に
+  写像され読めない（実測 PermissionError）ので、secrets を渡す tool だけ uid 0（= host の所有者、
+  cap は全て落とす）で動かす。
+- 陽性対照: `--stdlib-only`（伏せ字無し）で json-file に needle が 52 件出ることを確認済み。
+  検出器が「0 件」を出すのが検出漏れでないことの裏付け。

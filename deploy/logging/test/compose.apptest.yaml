@@ -86,7 +86,8 @@ x-runner: &runner
     AVP_LOG_FORMAT: ${APPTEST_LOG_FORMAT:-json}
     AVP_LOG_LEVEL: ${APPTEST_LOG_LEVEL:-INFO}
     AVP_GIT_REVISION: ${APPTEST_GIT_REVISION:-unknown}
-    PYTHONPATH: /src
+    # /src/deploy/logging/test: apptest_logging_plugin（pytest -p で読む）
+    PYTHONPATH: /src:/src/deploy/logging/test
     PYTHONDONTWRITEBYTECODE: "1"
     PYTHONUNBUFFERED: "1"
     HOME: /tmp/home
@@ -181,7 +182,16 @@ services:
       minio: {condition: service_healthy}
       temporal-namespace: {condition: service_completed_successfully}
       migrate: {condition: service_completed_successfully}
-    command: ["pytest", "tests/integration", "-p", "no:cacheprovider", "-s", "-q", "-rs"]
+    command:
+      - pytest
+      - tests/integration
+      - -p
+      - no:cacheprovider
+      - -p
+      - apptest_logging_plugin
+      - -s
+      - -q
+      - -rs
 
   # 検証用の一時コンテナ（loggen.py / inject-secrets.py）。依存を起動しない。
   # `run-e2e.sh tool <cmd...>` が `docker compose run` で起動する（label avp.logging=app）。
