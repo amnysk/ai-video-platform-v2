@@ -32,6 +32,7 @@
 | `test_value_patterns_are_replaced` | §7.3 の値のパターン（Bearer・fal key・JWT・private key・DSN・Google token・`sk-`・`key=value`・SQLAlchemy の `[parameters: …]`・長い base64） |
 | `test_allowed_hosts_are_derived_from_the_adapter_constants` | 許可 host は adapter の定数から導く（写しを持たない / AGENTS §8）。capability URL の host（`v3.fal.media`）は含まない |
 | `test_allowed_host_keeps_path_but_drops_query_and_userinfo` / `test_other_hosts_are_shrunk_to_a_hash` | URL の query（YouTube の `upload_id` 等）を落とし、署名つき URL の path を縮約する |
+| `test_secrets_straddling_the_stack_cut_are_still_removed` | stack は例外ごとの block を**安全化してから**切る（レビュー I-4）。先に切ると、切れ目で JWT・鍵が途中で切れてパターンに当たらない断片が残る。秘密を短い間隔で並べて、どの上限の切れ目でも断片が残らないことを見る。JWT は前に英数字が付いても当てる（`\b` を外した） |
 | `test_sanitize_is_idempotent_on_already_redacted_text` | 既存の adapter の伏せ字処理の出力に重ねても壊れない（ADR-0040 §3） |
 | `test_message_attributes_and_exception_text_are_cleaned` | message・attributes・response_excerpt・例外 chain の文字列の全部を通す |
 | `test_third_party_logger_goes_through_the_same_formatter` | 第三者 logger（sqlalchemy・httpx）も同じ整形器。httpx の INFO は出さない |
