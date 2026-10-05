@@ -39,6 +39,10 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
 - **`_id` にできない `event_id` の退避**: 512 bytes を超える `_id` は item ではなく bulk の **request 全体**が
   400 になり、同じ chunk の正常な行も 72 回の再送（実測 約2時間50分）の末に破棄された（隔離環境で実測、
   正常2件を含む3件が `dropped_records_total`）。Collector で退避して自動 ID にする。
+- **app 系統の記録は必ず `event_id` を持つ**: Fluent Bit 5.1.2 の opensearch output は `id_key` の値が無い
+  record に**直前の record の `_id`** を使い回す（action 行を作り直さない。`plugins/out_opensearch/opensearch.c`）。
+  隔離環境で、退避した長い ID の行が直前の行と同じ `_id` で送られ 409（成功扱い）になり**黙って消えた**。
+  JSON でない行・退避した行には Collector が `collector-…` の ID を付ける。
 - **ミリ秒の丸め**: 出力側は record 時刻の `tv_nsec` を切り捨ててミリ秒を書く。`.001` を double にすると
   `.000999…` になり 1ms 早い時刻が保存された（隔離環境で実測）。stdout も同じ切り捨ての iso8601 で検査する。
 - **追加の安全化と切り詰め**: 整形器の取りこぼし（`Authorization: Bearer …`、DSN の userinfo）が

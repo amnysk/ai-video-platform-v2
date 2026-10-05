@@ -28,6 +28,18 @@ local ERR_NOT_JSON = "json_parse_failed"
 local ID_MAX_BYTES = 512
 -- 出力側は tv_nsec を切り捨ててミリ秒を書く。double の誤差で 1ms 下がらないよう半ミリ秒足す
 local HALF_MS = 0.0005
+-- event_id を持たない app 系統の記録に付ける ID の接頭辞。Fluent Bit 5.1.2 の opensearch output は
+-- id_key の値が無い record に**直前の record の _id** を使い回す（action 行を作り直さない。実測:
+-- 409 になり黙って捨てられた）。app 系統では必ず event_id を持たせる
+local GENERATED_ID_PREFIX = "collector-"
+math.randomseed(os.time())
+local ID_SALT = string.format("%x%x", os.time(), math.random(0, 0x7fffffff))
+local id_seq = 0
+
+local function generated_id(timestamp)
+  id_seq = id_seq + 1
+  return string.format("%s%s-%.6f-%d", GENERATED_ID_PREFIX, ID_SALT, timestamp or 0, id_seq)
+end
 
 -- ---------------------------------------------------------------- 文字列の安全化（追加防御）
 
@@ -291,7 +303,9 @@ function avp_app(tag, timestamp, record)
   local attrs = record.attrs or {}
   -- parser が JSON として解釈できなかった行（log が残っている）は unstructured として扱う
   if record.log ~= nil then
-    return unstructured(timestamp, record, attrs, ERR_NOT_JSON)
+    local code, ts, out = unstructured(timestamp, record, attrs, ERR_NOT_JSON)
+    out.event_id = generated_id(timestamp)
+    return code, ts, out
   end
 
   local out = {}
@@ -330,6 +344,9 @@ function avp_app(tag, timestamp, record)
     moved.event_id = eid
     out.event_id = nil
     errors[#errors + 1] = "event_id"
+  end
+  if out.event_id == nil then
+    out.event_id = generated_id(timestamp)
   end
 
   -- @timestamp: 解釈できなければ Docker の時刻に置き換える。出力側が record の時刻から書く

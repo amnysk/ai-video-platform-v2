@@ -18,6 +18,8 @@ linux/amd64 の manifest digest は、取得したイメージの検証用（`do
 - Fluent Bit 5.1.2 の opensearch output は bulk 応答の item ごとに 2xx と 409 を成功扱いにし、失敗 item
   だけを再送する（`src/flb_search_bulk.c`）。ただし action 行そのものが不正（`_id` が 512 bytes 超など）だと
   **request 全体が 400**（item 単位ではない）になり chunk 全体が再送・破棄される（実測）。
+- Fluent Bit 5.1.2 は `id_key` の値が無い record に直前の record の `_id` を使い回す（実測。409 で黙って
+  消える）→ Collector の Lua が app 系統の全 record に `event_id` を持たせる。
 - Fluent Bit の `tls.verify_hostname` は既定 off（`-o opensearch -h`）→ 明示的に on。
 - `create` + `id_key`: 既存 `_id` は 409 で成功扱い（重複抑制）。
 - OpenSearch 3.8.0 は `ignore_malformed` を boolean に付けると template を 400 で拒否する。

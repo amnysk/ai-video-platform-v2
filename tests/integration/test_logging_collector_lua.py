@@ -196,7 +196,8 @@ def test_routing_repair_and_sanitize(tmp_path: Path) -> None:
     assert len(fatal["message"].encode()) <= UNSTRUCTURED_LINE_MAX_BYTES
     assert fatal["truncated"] is True
     long_id = next(r for r in got if r.get("message") == "long-id")
-    assert "event_id" not in long_id
+    # 出力が直前の record の _id を使い回さないよう、app 系統は必ず event_id を持つ（実測）
+    assert long_id["event_id"].startswith("collector-")
     assert long_id["collector_errors"] == ["event_id"]
     assert long_id["attributes"]["collector_moved"]["event_id"] == "L" * 600
 
@@ -205,3 +206,5 @@ def test_routing_repair_and_sanitize(tmp_path: Path) -> None:
 
     broken = next(r for r in infra if "broken" in r["message"])
     assert broken["collector_errors"] == ["json_parse_failed"]
+    assert broken["event_id"].startswith("collector-")
+    assert broken["event_id"] != long_id["event_id"]
