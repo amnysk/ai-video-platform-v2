@@ -160,3 +160,9 @@ assert する。実測（8 suites・184 tests、全件 pass）: make_record.INFO
 formatter.build 275 / ledger.defer 282 / ledger.after_commit 216 / call_observation 54 / reservation_fields 518。
 強化した注入で初めて、`reservation_fields` と `CallObservation._base` の故障が業務の例外になる経路
 （`await_output` の文脈作成・`_defer_reservation`・`CallObservation.succeeded`）が見つかり、I-2 と同じ形で直した。
+
+## API の起動点（`tests/contract/test_api_entrypoint.py`）
+
+| テスト | 守るもの |
+|---|---|
+| `test_the_app_image_defaults_to_the_logging_entry_point` | app イメージの既定 CMD は `python -m apps.api.serve`（レビュー I-10）。compose は command を上書きするが、command を書かずに起動した時だけ uvicorn の CLI のログ設定（stderr・query 付き access log）に戻るのを防ぐ |
