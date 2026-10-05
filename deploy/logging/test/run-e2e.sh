@@ -7,6 +7,7 @@
 #   run-e2e.sh tool [--secrets DIR] [--name N] cmd...
 #                               一時コンテナ（label avp.logging=app）で cmd を実行（loggen 等）
 #   run-e2e.sh ps | logs        状態・ログ
+#   run-e2e.sh stop             コンテナを止める（volume・パスワードは残す。up で再開）
 #   run-e2e.sh down             コンテナ・network・volume を消す（この project だけ）
 #
 # 本番（compose project `avp2`）には触れない。project 名が avp2 なら拒否する。
@@ -119,6 +120,7 @@ case "$cmd" in
     ;;
   ps) ensure_secrets; dc ps -a ;;
   logs) ensure_secrets; dc logs "$@" ;;
+  stop) ensure_secrets; dc --profile runner --profile tools stop ;;
   down)
     ensure_secrets
     dc --profile runner --profile tools down -v --remove-orphans
