@@ -48,3 +48,17 @@
 | `test_emit_never_raises_even_when_the_logger_is_broken` | ロガーの故障が業務の例外にならない（INV-38） |
 | `test_emit_respects_the_level` | DEBUG のイベント（poll 等）を INFO 運用で出さない |
 | `test_context_is_restored_on_exception` / `test_parallel_tasks_do_not_see_each_others_context` | 文脈は例外でも戻り、同時に走る2つの Episode で混ざらない |
+
+## Activity interceptor（`tests/unit/test_log_activity_interceptor.py`、unit + time-skipping server）
+
+| テスト | 守るもの |
+|---|---|
+| `test_every_activity_input_type_is_in_the_explicit_table` / `test_the_table_only_names_attributes_that_exist` | 文脈は入力型ごとの明示の表から。新しい Activity を足して表を忘れると、そのログに episode_id が付かないまま気付けない |
+| `test_research_request_id_is_not_the_api_request_id` | Research の `request_id`（依頼 ID）を API の `request_id` に入れない（照合を誤らせる名前衝突） |
+| `test_voice_scene_id_is_the_script_scene_id` | 音声の `scene_id` は台本のシーン ID（音声 Artifact と同じ名前空間）。storyboard 側は attributes |
+| `test_unknown_input_types_bind_nothing` | 属性名で汎用的に拾わない |
+| `test_success_binds_context_and_records_duration` | Activity 内の任意の logger に activity info と入力の文脈が付く |
+| `test_failure_is_recorded_and_the_same_object_is_reraised` / `test_plain_exceptions_are_retryable_by_temporal` | 失敗の `error_type`（ドメイン名）・`failure_class`・`retryable`（Temporal の再試行）。**同じ例外オブジェクト**を再送出（INV-38: 例外の型・中身を変えない） |
+| `test_cancel_is_recorded_as_cancelled_and_propagates` | 兄弟 Activity の cancel を失敗と区別する（`outcome=cancelled`） |
+| `test_a_broken_logger_does_not_change_the_activity_outcome` | ロガーが壊れても Activity の結果・例外は同じ（INV-38） |
+| `test_two_episodes_in_parallel_do_not_mix` | 実 Worker で2つの Episode を並列に走らせても文脈が混ざらない |
