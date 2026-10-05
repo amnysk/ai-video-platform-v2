@@ -108,3 +108,12 @@ repository のメソッドが session に積み、`after_commit` で出す（`in
 | `test_dispatch_job_ref_and_spent_follow_the_ledger` | dispatched → job_ref_recorded → spent の順。同じ参照の再記録（no-op）では出さない |
 | `test_artifact_stored_and_superseded` | 新しい世代の記録で旧世代の superseded と新世代の stored。同じ内容の再記録は何も出さない |
 | `test_rejection_and_auth_incident` | 拒否は `error_code`（観測）と `error_category`（`RejectionCategory` の値）を分けて出す。403 は `access_denied` / `http_status_only`（credentials と断定しない） |
+
+## 有料ジョブ（`tests/unit/test_log_paid_job.py`、unit: SQLite + fake generator）
+
+| テスト | 守るもの |
+|---|---|
+| `test_a_successful_round_reads_in_ledger_order` | reserved → dispatched → submit 受理（ref の commit **前**）→ job_ref_recorded → poll の状態変化 → spent の順で、全てに episode・scene・provider が付く。`provider_attempt` は台帳ラウンド、run ごとの試行番号は `attributes.run_attempt`（2つの「試行」を混ぜない） |
+| `test_resume_and_reuse_are_visible` | 既存の予約の再開（再 submit しない）がログで見える |
+| `test_failed_job_spends_conservatively_and_is_logged` | provider のジョブ失敗は conservative の spent として残る |
+| `test_an_unreconciled_reservation_blocks_and_is_logged` | 未照合の予約が新ラウンドを止めた判断（`reservation.blocked`）を、止めた予約の ID つきで残す |
