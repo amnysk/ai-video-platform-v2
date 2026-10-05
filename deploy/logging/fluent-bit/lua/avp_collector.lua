@@ -23,6 +23,11 @@ local PROJECT_ATTR = "com.docker.compose.project"
 local SERVICE_ATTR = "com.docker.compose.service"
 local ERR_TIMESTAMP = "@timestamp_replaced"
 local ERR_NOT_JSON = "json_parse_failed"
+-- OpenSearch の _id の上限（bytes）。超えると bulk の request 全体が 400 になり、同じ chunk の
+-- 正常な行まで再送の末に破棄される（実測）。超える event_id は退避して自動 ID にする
+local ID_MAX_BYTES = 512
+-- 出力側は tv_nsec を切り捨ててミリ秒を書く。double の誤差で 1ms 下がらないよう半ミリ秒足す
+local HALF_MS = 0.0005
 
 -- ---------------------------------------------------------------- 文字列の安全化（追加防御）
 
@@ -318,9 +323,20 @@ function avp_app(tag, timestamp, record)
     end
   end
 
+  -- event_id は _id になる（id_key）。_id にできない値は退避する（Fluent Bit は制御文字・引用符だけを検査する）
+  local eid = out.event_id
+  if eid ~= nil and (type(eid) ~= "string" or eid == "" or #eid > ID_MAX_BYTES
+    or eid:find("[%c\"\\]")) then
+    moved.event_id = eid
+    out.event_id = nil
+    errors[#errors + 1] = "event_id"
+  end
+
   -- @timestamp: 解釈できなければ Docker の時刻に置き換える。出力側が record の時刻から書く
   local ts = parse_iso8601(out[C.time_field])
-  if ts == nil then
+  if ts ~= nil then
+    ts = ts + HALF_MS
+  else
     ts = timestamp
     errors[#errors + 1] = ERR_TIMESTAMP
     if out[C.time_field] ~= nil then

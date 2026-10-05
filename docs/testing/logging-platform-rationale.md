@@ -36,5 +36,10 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
 - **`@timestamp` を record から外し record の時刻へ移す**: 出力側（`time_key`）が `@timestamp` を1つだけ
   書く。重複キーは ingest pipeline 経由で bulk 全体を 400 にする（実測）ので、構造的に起きない形にする。
   不正な値は Docker の時刻へ置換し `@timestamp_replaced`。
+- **`_id` にできない `event_id` の退避**: 512 bytes を超える `_id` は item ではなく bulk の **request 全体**が
+  400 になり、同じ chunk の正常な行も 72 回の再送（実測 約2時間50分）の末に破棄された（隔離環境で実測、
+  正常2件を含む3件が `dropped_records_total`）。Collector で退避して自動 ID にする。
+- **ミリ秒の丸め**: 出力側は record 時刻の `tv_nsec` を切り捨ててミリ秒を書く。`.001` を double にすると
+  `.000999…` になり 1ms 早い時刻が保存された（隔離環境で実測）。stdout も同じ切り捨ての iso8601 で検査する。
 - **追加の安全化と切り詰め**: 整形器の取りこぼし（`Authorization: Bearer …`、DSN の userinfo）が
   OpenSearch へ届かないこと、unstructured 行が `UNSTRUCTURED_LINE_MAX_BYTES` 以下になることを固定する。

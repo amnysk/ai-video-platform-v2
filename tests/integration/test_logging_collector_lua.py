@@ -75,7 +75,15 @@ def _run(tmp_path: Path, lines: list[str]) -> list[dict[str, Any]]:
     tail.pop("storage.type", None)
     for flt in conf["pipeline"]["filters"]:
         flt.pop("emitter_storage.type", None)
-    conf["pipeline"]["outputs"] = [{"name": "stdout", "match": "avp.*", "format": "json_lines"}]
+    # 出力側（opensearch output）と同じく tv_nsec の切り捨てで時刻を文字列にする形式
+    conf["pipeline"]["outputs"] = [
+        {
+            "name": "stdout",
+            "match": "avp.*",
+            "format": "json_lines",
+            "json_date_format": "iso8601",
+        }
+    ]
     cfg = tmp_path / "test.yaml"
     cfg.write_text(yaml.safe_dump(conf, sort_keys=False), encoding="utf-8")
 
@@ -98,6 +106,12 @@ def _run(tmp_path: Path, lines: list[str]) -> list[dict[str, Any]]:
             records.append(json.loads(line))
     assert proc.returncode == 0, proc.stderr[-2000:]
     return records
+
+
+def _ms(record: dict[str, Any]) -> str:
+    """iso8601 の date を、出力側が書くミリ秒精度の文字列に切り詰める。"""
+    date = record["date"]
+    return date[:23] + "Z"
 
 
 def _app(**fields: Any) -> str:
@@ -139,6 +153,12 @@ def test_routing_repair_and_sanitize(tmp_path: Path) -> None:
         _docker_line(_app(event_id="other-1"), project=PROJECT + "-x"),
         # `{` で始まるが壊れた JSON
         _docker_line('{"event_id": "broken"\n'),
+        # _id にできない event_id（512 bytes 超）。そのまま送ると bulk の request 全体が 400 に
+        # なり、
+        # 同じ chunk の正常な行まで再送の末に破棄される（実測）
+        _docker_line(_app(event_id="L" * 600, message="long-id")),
+        # ミリ秒が double の誤差で1つ下に丸められないこと（.001 → .000 にしない）
+        _docker_line(_app(event_id="ms-1", **{"@timestamp": "2026-09-30T03:40:00.001Z"})),
     ]
     got = _run(tmp_path, lines)
     by_id = {r.get("event_id"): r for r in got if r.get("event_id")}
@@ -151,7 +171,7 @@ def test_routing_repair_and_sanitize(tmp_path: Path) -> None:
     assert ok["container_name"] == "avp2-luatest-api-1" and ok["host_name"] == "test-host"
     assert ok["stream"] == "stdout"
     assert "@timestamp" not in ok, "時刻は record の timestamp に移し、出力側が1つだけ書く"
-    assert abs(ok["date"] - 1790726400.123) < 0.001
+    assert _ms(ok) == "2026-09-30T00:00:00.123Z"
     assert "collector_errors" not in ok
     assert not {"attrs", "time", "log", "_avp_route"} & set(ok)
 
@@ -162,7 +182,7 @@ def test_routing_repair_and_sanitize(tmp_path: Path) -> None:
 
     ts = by_id["ts-1"]
     assert ts["collector_errors"] == ["@timestamp_replaced"]
-    assert abs(ts["date"] - 1790730123.456) < 0.01
+    assert _ms(ts) == "2026-09-30T01:02:03.456Z"
 
     sec = by_id["sec-1"]
     assert "abc.def.ghi" not in json.dumps(sec) and REDACTED in sec["message"]
@@ -175,5 +195,13 @@ def test_routing_repair_and_sanitize(tmp_path: Path) -> None:
     assert "avp:pw@" not in fatal["message"] and fatal["redaction_applied"] is True
     assert len(fatal["message"].encode()) <= UNSTRUCTURED_LINE_MAX_BYTES
     assert fatal["truncated"] is True
+    long_id = next(r for r in got if r.get("message") == "long-id")
+    assert "event_id" not in long_id
+    assert long_id["collector_errors"] == ["event_id"]
+    assert long_id["attributes"]["collector_moved"]["event_id"] == "L" * 600
+
+    # 出力側は tv_nsec を切り捨てて .%03 を書く。double の誤差で .000 にならないこと
+    assert _ms(by_id["ms-1"]) == "2026-09-30T03:40:00.001Z"
+
     broken = next(r for r in infra if "broken" in r["message"])
     assert broken["collector_errors"] == ["json_parse_failed"]
