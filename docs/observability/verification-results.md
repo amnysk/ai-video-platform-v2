@@ -671,3 +671,41 @@ AVP_LOGGING_OS_PORT=19213 deploy/logging/scripts/check-pipeline.sh --env test --
 | `--catchup-only`、rotation 一巡の直後（§5.11） | rc=0（追いつき 0 bytes。消えたファイルは見えない） |
 
 - tail の停滞（I-15）の判定経路は、修正後の Fluent Bit では停滞そのものが再現しない（§5.10）ので実機では未発火。
+
+### 5.18 最終統合 HEAD c5af8ff での S-E2E（1 Episode の取り込み → 検索）
+
+verify HEAD **07f281c**（= c5af8ff を merge した 7f03f7d + 試験スクリプト・記録の commit。`git diff --stat c5af8ff 07f281c --
+deploy/logging/{fluent-bit,opensearch,scripts} apps workers infrastructure domain contracts` は空）。Fluent Bit は c5af8ff の Lua。
+2026-10-06T10:45:07Z、`APPTEST_RUNNER_NAME=avp2-oslog-c2-runner-final-e2e run-e2e.sh run pytest
+tests/integration/test_scene_rejection_recovery_e2e.py -p tests.support.json_log_plugin` → **1 passed**（9.33s）。
+
+```bash
+sa count --term container_name=avp2-oslog-c2-runner-final-e2e --min 150 --wait 120     # 204
+sa agg   --term container_name=avp2-oslog-c2-runner-final-e2e --by episode_id,git_sha --table
+#   0af5e922-bdf3-419f-9b32-a3501917edca  07f281c…  192   /  (episode なし) 07f281c…  12
+EP=0af5e922-bdf3-419f-9b32-a3501917edca
+sa count  --term episode_id=$EP                                                # 192
+sa fields --term episode_id=$EP --require-contract                             # 192 件すべて
+sa dupes  --term episode_id=$EP                                                # 0
+sa count  --term episode_id=$EP --term event_name=upload.succeeded --expect 1  # 1
+sa count  --term episode_id=$EP --term event_name=scene.rejected --expect 1    # 1（DB の provider_rejections 1 行 = テストの assert）
+sa agg    --term episode_id=$EP --by event_name --table
+sa agg    --term episode_id=$EP --term event_name=reservation.reserved --by provider --table
+#   codex_scene_alternative 1 / fal_image 7 / fal_video 7 / youtube_upload 1（テストの予約数 assert と一致）
+```
+
+- 取り込みの完全性: runner の json-file 206 行のうち JSON 行 204 → app 204 文書、非 JSON 2 行 → infra 2 文書（欠け・重複なし）。
+- event_name 別（94d52f4 の §5.1 と同じ分布）: `activity.succeeded` 43、`provider.job.state_changed` 28、`artifact.stored` 22、
+  `reservation.reserved`・`dispatched`・`spent` 各16、`reservation.job_ref_recorded` 15、`provider.call.succeeded` 14、
+  `log.record` 6、`stage.started`・`stage.succeeded` 各3、`render.validation.passed` 2、`upload.started`・`upload.succeeded`・
+  `stage.skipped`・`scene.rejected`・`scene.alternative.started`・`scene.alternative.result`・`artifact.superseded`・
+  `activity.failed` 各1（20 種）。
+- 代表文書: `scene.rejected` = `scene_id` sb6・`http_status` 422・`error_category` content_policy・`error_code`
+  `["content_policy_violation"]`・`classification_basis` provider_error_type・`reservation_id` あり・`log_source` app_json。
+  `upload.succeeded` = `attributes {"reconciled_by": "upload_response", "video_id": "vid00000002"}`（fake）・`reservation_id` あり。
+- 94d52f4 で実施した他の項目を c5af8ff で再実行しない理由: 94d52f4 → c5af8ff の差分のうち実行されるものは
+  `avp_collector.lua` の伏せ字規則（`redact_between`・`redact_unclosed`・`redact_userinfo`）だけ（他は unit test・docs）。
+  伏せ字は文字列の置換で、経路（routing・型修復・`event_id`・buffer・出力・ISM）に触れない。その影響を受ける S-SEC（§5.8）と、
+  同じ Lua を通る S-BAD（§5.10）、ここでの S-E2E を c5af8ff で再実行し、§5.11〜§5.17 はもともと c5af8ff の Lua で実施した。
+  S-CTX・S-REPLAY・S-403・S-422・S-REUSE・S-RESUME（§5.2〜§5.7）はアプリ側の発行の検査で、c5af8ff でアプリのコードは
+  変わっていない（I-21 は unit test のみ）。
