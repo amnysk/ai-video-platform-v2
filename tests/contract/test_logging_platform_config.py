@@ -349,3 +349,31 @@ def test_check_pipeline_checks_each_series_and_the_environment() -> None:
     src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
     assert 'check_lag app "$MAX_LAG_MIN"' in src and 'check_lag infra "$MAX_LAG_INFRA_MIN"' in src
     assert "must_not" in src and "environment" in src and "now-24h" in src
+
+
+def _size(value: str) -> int:
+    """Fluent Bit の size 表記（``256k`` 等。k/m は 1024 倍）を bytes に。"""
+    m = re.fullmatch(r"(\d+)([kKmM]?)", value)
+    assert m, value
+    return int(m.group(1)) * {"": 1, "k": 1024, "m": 1024 * 1024}[m.group(2).lower()]
+
+
+def test_collector_caps_joined_lines_at_the_tail_buffer_size(fb) -> None:
+    """partial を結合した行には tail の buffer_max_size が効かない（実測）。
+
+    Collector が同じ大きさで切る（I-15）。
+    """
+    from contracts.log_contract import COLLECTOR_LINE_MAX_BYTES
+
+    tail = _one(fb["pipeline"]["inputs"], name="tail")
+    assert _size(tail["buffer_max_size"]) == COLLECTOR_LINE_MAX_BYTES
+    lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
+    assert "C.collector_line_max_bytes" in lua
+    assert 'ERR_LINE_TOO_LONG = "line_too_long"' in lua
+
+
+def test_sanitize_has_no_backtracking_userinfo_rule() -> None:
+    """``%a[%w%+%.%-]*://`` は長い英数字の連なりで O(n²) になり、Collector 全体を止めた（I-15）。"""
+    lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
+    assert "%a[%w%+%.%-]*://" not in lua
+    assert "%[parameters: .-%]" not in lua

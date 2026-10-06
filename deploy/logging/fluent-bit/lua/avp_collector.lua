@@ -23,6 +23,9 @@ local PROJECT_ATTR = "com.docker.compose.project"
 local SERVICE_ATTR = "com.docker.compose.service"
 local ERR_TIMESTAMP = "@timestamp_replaced"
 local ERR_NOT_JSON = "json_parse_failed"
+-- 1行（Docker の partial を結合した後）が C.collector_line_max_bytes を超えた（I-15）
+local ERR_LINE_TOO_LONG = "line_too_long"
+local LINE_TOO_LONG_KEY = "_avp_line_too_long"
 -- OpenSearch の _id の上限（bytes）。超えると bulk の request 全体が 400 になり、同じ chunk の
 -- 正常な行まで再送の末に破棄される（実測）。超える event_id は退避して自動 ID にする
 local ID_MAX_BYTES = 512
@@ -59,19 +62,102 @@ local function redact_long(pattern_min)
   end
 end
 
--- 値のパターン（§7.3）。Lua のパターンは正規表現ではない（大文字小文字の区別、量指定子の制約）
+-- open から close まで（どちらもパターン）を伏せる。close が無ければ行末まで伏せる。
+-- `open.-close` は close の無い open が多いと O(n²) になるので、find を前へ進めるだけにする（I-15）
+local function redact_between(open_pat, close_pat, replacement)
+  return function(s)
+    if not s:find(open_pat) then
+      return s
+    end
+    local parts, pos = {}, 1
+    while true do
+      local i, j = s:find(open_pat, pos)
+      if i == nil then
+        break
+      end
+      parts[#parts + 1] = s:sub(pos, i - 1)
+      parts[#parts + 1] = replacement
+      local _, e = s:find(close_pat, j + 1)
+      if e == nil then
+        return table.concat(parts)
+      end
+      pos = e + 1
+    end
+    parts[#parts + 1] = s:sub(pos)
+    return table.concat(parts)
+  end
+end
+
+local SCHEME_BYTE = {}
+for c in ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-"):gmatch(".") do
+  SCHEME_BYTE[c:byte()] = true
+end
+
+-- userinfo 付きの URL / DSN（scheme に + を含む形も）。`scheme://user:pass@` の `user:pass` を伏せる。
+-- 先頭を英字の連なりで探す gsub は長い英数字の連なりで各開始位置から末尾まで読み戻すので O(n²) になり、300k の
+-- 1行で Collector のイベントループ（全ファイルの tail）が止まった（実測、I-15）。`://` を起点に
+-- scheme を後ろへ、userinfo を前へ読む（どちらも次の `://` を越えないので全体で線形）
+local function redact_userinfo(s)
+  if not s:find("://", 1, true) then
+    return s
+  end
+  local parts, pos, init = {}, 1, 1
+  while true do
+    local i = s:find("://", init, true)
+    if i == nil then
+      break
+    end
+    local after = i + 3
+    local j, letter = i - 1, false
+    while j >= 1 and SCHEME_BYTE[s:byte(j)] do
+      local b = s:byte(j)
+      if (b >= 65 and b <= 90) or (b >= 97 and b <= 122) then
+        letter = true
+      end
+      j = j - 1
+    end
+    local e = nil
+    if letter then
+      local _, ue = s:find("^[^/%s:@\"']*:[^/%s@\"']*@", after)
+      e = ue
+    end
+    if e ~= nil then
+      parts[#parts + 1] = s:sub(pos, after - 1)
+      parts[#parts + 1] = C.redacted .. "@"
+      pos = e + 1
+      init = e + 1
+    else
+      init = after
+    end
+  end
+  parts[#parts + 1] = s:sub(pos)
+  return table.concat(parts)
+end
+
+-- JWT（3つの部分を . で繋いだ token）。`eyJ[...]+%.[...]+%.[...]+` は `.` の無い長い連なりで O(n²) に
+-- なるので、`.` を含む連なりを1回で取り、形を確かめてから伏せる（I-15）
+local function redact_jwt(token)
+  if token:find("^eyJ[%w%-_]+%.[%w%-_]+%.[%w%-_]+") then
+    return C.redacted
+  end
+  return token
+end
+
+-- 値のパターン（§7.3）。Lua のパターンは正規表現ではない（大文字小文字の区別、量指定子の制約）。
+-- 規則は長い行でも線形であること（失敗した照合が開始位置ごとに末尾まで読み戻す形を使わない。I-15）。
+-- { pattern, replacement } は gsub、{ fn } は文字列全体を受け取る関数
 local VALUE_RULES = {
-  -- PEM の秘密鍵ブロック
-  { "%-%-%-%-%-BEGIN[%u ]*PRIVATE KEY%-%-%-%-%-.-%-%-%-%-%-END[%u ]*PRIVATE KEY%-%-%-%-%-", C.redacted },
+  -- PEM の秘密鍵ブロック（END が無ければ行末まで）
+  { redact_between("%-%-%-%-%-BEGIN[%u ]*PRIVATE KEY%-%-%-%-%-", "PRIVATE KEY%-%-%-%-%-", C.redacted) },
   -- Authorization の値
   { "([Bb]earer)%s+[%w%-%._~%+/=]+", "%1 " .. C.redacted },
   { "([Bb]asic)%s+[%w%+/=]+", "%1 " .. C.redacted },
   -- Authorization ヘッダの値は形式を問わず行末・引用符まで伏せる（`Key <fal key>` 等）
   { "([Aa]uthorization[\"']?%s*[:=]%s*[\"']?)[^\"'\r\n]+", "%1" .. C.redacted },
   -- JWT
-  { "eyJ[%w%-_]+%.[%w%-_]+%.[%w%-_]+", C.redacted },
-  -- userinfo 付きの URL / DSN（scheme に + を含む形も）
-  { "(%a[%w%+%.%-]*://)[^/%s:@\"']+:[^/%s@\"']*@", "%1" .. C.redacted .. "@" },
+  { "eyJ[%w%-_%.]*", redact_jwt },
+  -- userinfo 付きの URL / DSN（空の user も）
+  { redact_userinfo },
   -- Google OAuth
   { "ya29%.[%w%-_%.]+", C.redacted },
   { "1//[%w%-_]+", redact_long(12) },
@@ -79,10 +165,11 @@ local VALUE_RULES = {
   { "sk%-[%w%-_]+", redact_long(20) },
   -- fal key（uuid:hex）
   { "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x:%x+", C.redacted },
-  -- SQLAlchemy の [parameters: ...]
-  { "%[parameters: .-%]", "[parameters: " .. C.redacted .. "]" },
-  -- URL の query・fragment（署名付き URL の署名を残さない）
-  { "(https?://[^%s%?#\"'<>]+)[%?#][^%s\"'<>]*", "%1" },
+  -- SQLAlchemy の [parameters: ...]（] が無ければ行末まで）
+  { redact_between("%[parameters: ", "%]", "[parameters: " .. C.redacted .. "]") },
+  -- URL の query・fragment（署名付き URL の署名を残さない）。2つ目の捕捉は空か ?/# で始まり、
+  -- 必ず成功するので読み戻さない
+  { "(https?://[^%s%?#\"'<>]+)[^%s\"'<>]*", "%1" },
   -- 長い base64 様の値（256字以上）
   { "[%w%+/=_%-]+", redact_long(256) },
 }
@@ -93,7 +180,11 @@ local function sanitize(s)
   end
   local out = s
   for _, rule in ipairs(VALUE_RULES) do
-    out = out:gsub(rule[1], rule[2])
+    if rule[2] == nil then
+      out = rule[1](out)
+    else
+      out = out:gsub(rule[1], rule[2])
+    end
   end
   local lower = out:lower()
   for _, word in ipairs(SECRET_KEY_WORDS) do
@@ -265,7 +356,12 @@ function avp_route(tag, timestamp, record)
     return -1, timestamp, record
   end
   local route = "infra"
-  if attrs[C.app_label] == C.app_label_value and record.stream == "stdout"
+  if type(record.log) == "string" and #record.log > C.collector_line_max_bytes then
+    -- partial を結合した後の行には tail の buffer_max_size が効かない（実測、I-15）。JSON として
+    -- 解釈せず（切った JSON は壊れている）、安全化の前にここで切って infra へ送る
+    record.log = truncate_utf8(record.log, C.collector_line_max_bytes)
+    record[LINE_TOO_LONG_KEY] = true
+  elseif attrs[C.app_label] == C.app_label_value and record.stream == "stdout"
     and type(record.log) == "string" and record.log:match("^%s*{") then
     route = "app"
   end
@@ -296,6 +392,11 @@ end
 
 function avp_infra(tag, timestamp, record)
   local attrs = record.attrs or {}
+  if record[LINE_TOO_LONG_KEY] then
+    local code, ts, out = unstructured(timestamp, record, attrs, ERR_LINE_TOO_LONG)
+    out.truncated = true
+    return code, ts, out
+  end
   return unstructured(timestamp, record, attrs, nil)
 end
 

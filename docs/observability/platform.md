@@ -14,6 +14,7 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
   → Fluent Bit（compose project avp2-logging）
        tail <containers>/*/*-json.log*（位置 DB・filesystem buffer）
        Lua avp_route   : attrs の compose project が AVP_LOG_TARGET_PROJECT と完全一致しない行は捨てる
+                         COLLECTOR_LINE_MAX_BYTES を超える行は切って infra（line_too_long）
                          avp.logging=app かつ stdout かつ `{` で始まる行 → app、それ以外 → infra
        parser(json)    : app の行を解釈
        Lua avp_app     : 型修復・@timestamp・event_id の保証・追加の安全化・Collector フィールド
@@ -63,7 +64,7 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 | tail `path` | `/containers/*/*-json.log*` | Collector 停止中に rotation したファイルも inode で続きから読む（実測 300/300、重複0） |
 | `read_from_head` | true（導入時だけ false） | 新しく見つかったファイルを先頭から読む。false だと停止中に作られたファイルを失う |
 | `db` / `db.locking` | `/fb-state/tail.db` / true | 位置の永続化 |
-| `buffer_max_size` / `skip_long_lines` | 256k / on | 既定 32k を超える行で監視が止まるのを防ぐ。skip は監視する |
+| `buffer_max_size` / `skip_long_lines` | 256k / on | 既定 32k を超える行で監視が止まるのを防ぐ。skip は監視する。Docker の partial を結合した後の行には効かない（下記） |
 | output `write_operation` / `id_key` | create / event_id | 同じ index 内の再送は 409（成功扱い）で重複しない |
 | `suppress_type_name` | on | OpenSearch 3.x は `_type` を 400 |
 | `tls.verify` / `tls.verify_hostname` | on / on | `verify_hostname` は既定 off |
@@ -90,6 +91,33 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 | `fluentbit_output_retries_failed_total` | 同上 | 再送上限を超えて諦めた chunk。増えたら異常 |
 | `fluentbit_output_dropped_records_total` | 同上 | 破棄した record（再送上限・buffer 上限の evict）。増えたら異常 |
 | `fluentbit_output_errors_total` | 同上 | 出力のエラー |
+
+### 長い行（I-15）
+
+Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書く。tail の `buffer_max_size`・
+`skip_long_lines` は**ファイル上の1行（= partial 1つ）**に効き、`multiline.parser: docker` が結合した後の行には
+上限が無い（5.1.2 で実測: 300k の行が `long_line_skipped_total` 0 のまま filter へ届いた。service の
+`multiline_buffer_limit` は 32KiB にしても効かず、`multiline_truncated_total` も 0。旧来の `docker_mode` も同じ）。
+
+- 修正前: 結合後の 300k の行（英数字の長い連なり）で安全化の Lua パターンが O(n²) になり、Fluent Bit の
+  イベントループが CPU 100% のまま止まった。**全ファイルの読み取りが止まり**、health は ok、skip 0、buffer の
+  chunk も増えない（隔離環境で実測。担当C が発見、担当B が Fluent Bit 単体で再現）。
+- 対策1（上限）: Lua `avp_route` が `log` を `COLLECTOR_LINE_MAX_BYTES`（262144 = `buffer_max_size`、
+  `contracts/log_contract.py`）で切り、JSON として解釈せず infra 系統へ送る（`collector_errors=line_too_long`、
+  `truncated=true`、message は `UNSTRUCTURED_LINE_MAX_BYTES` まで）。行の残りは失われる。
+- 対策2（線形化）: 安全化の規則から、照合に失敗した開始位置ごとに末尾まで読み戻す形を除いた（userinfo・JWT・
+  SQL parameters・PEM・URL の query）。262144 bytes の病的な入力（英数字・hex・`eyJ`・`http://`・
+  `[parameters: ` の繰り返し等）で 1行 0.05 秒以下（修正前は 40k で 7.6 秒、O(n²)）。閉じていない
+  `[parameters: ` と PEM は行末まで伏せる（修正前は伏せなかった）。空の user（`redis://:pw@`）も伏せる。
+- 実測（Fluent Bit 単体、OpenSearch なし、出力 file、本物の fluent-bit.yaml と Lua）:
+
+  | | 長い行の後の同じファイルの行 | 別ファイル（0.2秒ごと）の行 | Fluent Bit の CPU |
+  |---|---|---|---|
+  | 修正前・300k | 0 / 100 | 停止（40秒間 0 行） | 100% |
+  | 修正後・300k（上限超え → infra、`line_too_long`） | 100 / 100 | 読み続けた（15秒で +75 行） | 1% 未満 |
+  | 修正後・200k（上限内 → app、message は `[REDACTED]`） | 100 / 100 | 読み続けた | 1% 未満 |
+
+- 観測: 切った行は infra の文書 `collector_errors:line_too_long` で検索できる。
 
 `/api/v1/storage` の `storage_layer.chunks.total_chunks`（buffer に溜まっている chunk）、
 `/api/v2/health` の `status`（`hc_*` の閾値を超えると `error`）。
@@ -196,7 +224,8 @@ $C --profile dashboards-setup run --rm dashboards-import
 |---|---|
 | 再送上限・buffer 上限による破棄 | `dropped_records_total` / `retries_failed_total` の増分（check-pipeline） |
 | containers/ が読めない（mount 不成立・権限） | `files_opened_total == 0` |
-| `buffer_max_size` を超える行 | `long_line_skipped_total` の増分 |
+| `buffer_max_size` を超える行（partial でない行） | `long_line_skipped_total` の増分 |
+| `COLLECTOR_LINE_MAX_BYTES` を超える行（partial を結合した行） | infra の `collector_errors:line_too_long`（行の残りは失われる） |
 | 収集・送信の停止 | 系統ごとの最終 `ingested_at` の lag（業務が止まっているのと区別できない） |
 | `environment` の取り違え（`.env` の書き忘れ） | 直近24時間の不一致件数（check-pipeline） |
 | 型不整合・時刻の置換 | 文書の `collector_errors` / `_ignored`（失われない） |

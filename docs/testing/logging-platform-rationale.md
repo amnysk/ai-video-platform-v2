@@ -54,6 +54,12 @@ Fluent Bit 5.1.2、2026-09-30）。
 - **check-pipeline が系統別に lag を見て、environment の食い違いを数える**（I-5/I-6）: 1つの lag では
   temporal 等の infra の行が絶えず入るので app の収集停止が隠れる。compose の既定 `dev` が本番の行を
   `avp-app-prod-*` に `environment=dev` で入れた事故（I-5）を、設定の取り違えとして検出する。
+- **Collector の行の上限 `COLLECTOR_LINE_MAX_BYTES` が tail の `buffer_max_size` と同じ値で、Lua がそれを使う**
+  （I-15）: `buffer_max_size` は Docker の partial 1つずつにしか効かず、結合後の行は無制限に filter へ届く
+  （実測）。上限を契約の1箇所に置き、設定と Lua の両方がそれに一致することを固定する。
+- **安全化の Lua に O(n²) だった形（`%a[%w%+%.%-]*://`、`%[parameters: .-%]`）が戻らない**（I-15）:
+  これらは長い行で Fluent Bit 全体を無言で止めた。実際に線形であることは integration test（§3）が
+  時間で確かめるが、submit 前の検査（unit/contract）でも同じ形の再導入を止める。
 - **試験用 ISM は override からだけ使われる**: 分単位で削除する policy が本番に入ると検索用ログが数分で消える。
 
 ## 3. `tests/integration/test_logging_collector_lua.py`
@@ -83,6 +89,15 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
   `.000999…` になり 1ms 早い時刻が保存された（隔離環境で実測）。stdout も同じ切り捨ての iso8601 で検査する。
 - **Lua が書くキーは行き先の mapping の部分集合**（I-7）: `dynamic: false` なので、mapping に無いキーを
   Collector が書いても黙って検索できないだけで、どこもエラーにならない。
+- **partial を結合した長い行で filter 列が止まらない**（I-15）: Docker と同じく 16KiB の partial に分けた
+  20万字規模の行（英数字・hex・`eyJ`・`http://`・`[parameters: `・PEM 見出しの繰り返し）を app と infra の
+  両方に流し、後続の 50 行が全て出ること、全体が 60 秒以内に終わることを確かめる。修正前は1行目で
+  O(n²) になり 120 秒で打ち切られた（実測）。上限を超える行が app の文書にならず、infra に
+  `line_too_long`・`truncated` で1件だけ出ることも固定する。`exit_on_eof` が長い行の途中で終了する
+  （5.1.2、実測）ので、この試験だけ `buffer_chunk_size` を大きくして渡す（`_run` の `tail_overrides`）。
+- **線形に書き直した規則が同じものを伏せる**（I-15）: userinfo（`+` を含む scheme、空の user）、URL の
+  query・fragment、SQL の `[parameters: …]`（閉じていないものも）、PEM（END の無いものも）、JWT。
+  書き直しで伏せ漏れが出ないことを、値が出力に残らないことで確かめる。
 - **追加の安全化と切り詰め**: 整形器の取りこぼし（`Authorization: Bearer …`、DSN の userinfo）が
   OpenSearch へ届かないこと、unstructured 行が `UNSTRUCTURED_LINE_MAX_BYTES` 以下になることを固定する。
 

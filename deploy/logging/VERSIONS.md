@@ -25,6 +25,13 @@ linux/amd64 の manifest digest は、取得したイメージの検証用（`do
 - OpenSearch 3.8.0 は `ignore_malformed` を boolean に付けると template を 400 で拒否する。
 - ingest pipeline（`index.default_pipeline`）を使うと、bulk 内に JSON として壊れた文書が1件あると同じ bulk の
   全文書が 400（実測）。Fluent Bit は msgpack から JSON を作り直して送るので重複キー・壊れた JSON は生じない。
+- Fluent Bit 5.1.2 の tail は `buffer_max_size`・`skip_long_lines` を Docker の partial（16KiB）1つずつに
+  適用し、`multiline.parser: docker` が結合した後の行には上限を掛けない。service の `multiline_buffer_limit`
+  （文書上は既定 2MB で切り詰める）を 32KiB にしても 300k の結合行はそのまま届き、`multiline_truncated_total`
+  も 0（2026-10-06 実測、I-15）。結合後の上限は Collector の Lua（`COLLECTOR_LINE_MAX_BYTES`）が担う。
+  版を上げるときは platform.md §3「長い行」の確認をやり直す。
+- Fluent Bit 5.1.2 の tail `exit_on_eof` は `buffer_chunk_size` より長い行の途中で EOF と判定して終了する
+  （実測。integration test では chunk を大きくして回避）。
 
 ## 見送った版
 

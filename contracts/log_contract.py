@@ -404,6 +404,12 @@ EVENT_MAX_BYTES = 12288
 KEYWORD_MAX_CHARS = 512
 #: JSON でない行（``log_source=unstructured``）を Collector が切り詰める上限
 UNSTRUCTURED_LINE_MAX_BYTES = 4096
+#: Collector が受け付ける1行（Docker の partial を結合した後の ``log``）の上限。超えた行は
+#: JSON として解釈せず、この長さで切ってから infra 系統へ送る
+#: （``collector_errors=line_too_long``）。
+#: tail の ``buffer_max_size`` と同じ値（fluent-bit.yaml）: partial は 16KiB ごとに判定されるので、
+#: 結合後の行には ``buffer_max_size`` が効かない（実測、I-15）
+COLLECTOR_LINE_MAX_BYTES = 262144
 
 #: 秘密を置き換えた印
 REDACTED = "[REDACTED]"
@@ -413,6 +419,7 @@ __all__ = [
     "APP_LOG_LABEL",
     "APP_LOG_LABEL_VALUE",
     "ATTRIBUTES_MAX_BYTES",
+    "COLLECTOR_LINE_MAX_BYTES",
     "ENV_ENVIRONMENT",
     "ENV_GIT_REVISION",
     "ENV_LOG_FORMAT",
