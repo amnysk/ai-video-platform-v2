@@ -173,12 +173,16 @@ json-file の行を照合する。
   | Lua `avp_route` だけ（rewrite_tag 無し） | 10 | **0 / 3600** |
   | Lua `avp_route` + rewrite_tag（振り分け）だけ | 3 | 4 / 1500 |
 
-- 原因: **rewrite_tag の emitter**。rewrite_tag は record を emitter（内部の input）へ積み直して新しい tag で流す。
-  停止のとき emitter に積まれた途中の record は chunk にならずに消えるが、tail は読んだ位置を既に位置 DB へ
-  進めている（`tail.threaded: on` で欠損が増えた（3回で 33 行）ことも、途中で溜まる量に比例することと合う）。
-  upstream に同じ報告は見つけていない（v3.0.2 で「filter の pause 時に元の input も pause する」修正はあるが別件）。
-- 設定では直らなかった（どれも 3 回の restart で欠損 1〜6 行）: service `grace: 30`、`emitter_storage.type: memory`、
-  tail `storage.type: memory`、`flush: 0.2` + `grace: 10`。
+- **切り分けた事実**: 欠損は rewrite_tag があるときだけ起きた。同じ入力・同じ restart で、rewrite_tag を外す
+  （Lua の振り分けだけにする）と 10 回で 0 / 3600、rewrite_tag を足すと 3 回で 4 / 1500。filter が無くても 0。
+- **推定（未確認）**: rewrite_tag は record を emitter（内部の input）へ積み直して新しい tag で流すので、停止のとき
+  emitter に積まれた途中の record が chunk にならずに消え、tail は読んだ位置を既に位置 DB へ進めている。
+  `tail.threaded: on` で欠損が増えた（3回で 33 行）のは、途中で溜まる量が増えることと合うが、Fluent Bit の
+  ソースでは確かめていない。upstream に同じ報告は見つけていない（v3.0.2 に「filter の pause 時に元の input も
+  pause する」修正はあるが別件）。
+- 設定では直らなかった: service `grace: 30`、`emitter_storage.type: memory`、tail `storage.type: memory`、
+  `flush: 0.2` + `grace: 10`（どれも欠損 1〜6 行）。**各 restart 3 回だけの小さな標本**で、「減らない」とまでは
+  言えるが、差の大小は比べられない。
 - 直す候補（設計変更。ADR-0040 §1 の経路を変えるので未実施）: rewrite_tag を使わない。tail を app 用と infra 用の
   2つに分け（位置 DB も別）、それぞれの Lua が他方の系統の行を捨てる。I-19 の壊れた JSON は infra 側でも
   parser を当てて判定する。上の表のとおり rewrite_tag が無ければ 10 回の restart で欠損 0。代わりに全ファイルを
@@ -186,8 +190,9 @@ json-file の行を照合する。
 - 運用上の緩和: Fluent Bit の restart は deploy・設定変更のときだけにする（`restart: unless-stopped` の自動再起動・
   ホストの再起動でも起きる）。欠損は restart の時刻の前後数行で、app 系統なら `event_id` の欠番ではなく
   「その時刻の前後の行が json-file にあって検索に無い」で見つかる。どうしても埋める必要があるときは、
-  Fluent Bit を止めて位置 DB を消し `read_from_head=true` で読み直す（app は `event_id` で重複しない、infra は
-  読み直した分が重複する。担当C の S-DUP で実測）。
+  位置 DB を消して読み直す（手順は runbook §7。guard の読み直しモード `AVP_LOG_REREAD=yes` を使う。I-28）。
+  app 系統は**同じ index の中なら** `event_id` で重複しないが、rollover 済みの index にある行は新しい write index に
+  別の文書として重複して入る。infra 系統は読み直した分がすべて重複する（担当C の S-DUP で実測）。
 
 ## 4. TLS・権限・秘密の置き場所
 
@@ -318,6 +323,7 @@ CHECK=deploy/logging/scripts/check-pipeline.sh                  # --env prod が
 ### 6.2 運用中の注意
 
 - 位置 DB が無い状態で `read_from_head=true` のまま起動しようとすると `fluent-bit-guard` が止める。
+  位置 DB を消して読み直すときだけ `AVP_LOG_REREAD=yes` を付けて起動する（runbook §7。`.env` には書かない。I-28）。
   sentinel の無い volume（project 名の違いで新しく作られた空の volume）でも OpenSearch・Fluent Bit は起動しない。
 - アプリ側の変更（`compose.yaml` の `logging:`・label・env）は、コンテナの**再作成**で反映される。deploy の
   たびに手順 7 の `--catchup-only` を先に流す。

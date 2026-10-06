@@ -165,7 +165,7 @@ deploy/logging/scripts/fb-metrics.sh --project avp2-logging /api/v1/metrics/prom
 - **Fluent Bit の restart・stop で 1〜2 行が欠けることがある**（隔離試験で3回とも、metrics には出ない。
   verification-results §5.9。**I-26、既知の限界**: 原因は rewrite_tag の emitter で設定では直らない。platform.md §3「Fluent Bit の
   restart で数行欠ける」）。必要のない restart をしない。欠けた行は json-file に残っているので、
-  rotation 前なら位置 DB を消して読み直すと戻る（§7。infra の重複に注意）。
+  rotation 前なら位置 DB を消して読み直すと戻る（§7 の手順。rollover 済み index と infra の重複に注意）。
 
 ## 7. 欠損時の復旧・deploy 前の確認
 
@@ -182,8 +182,24 @@ deploy/logging/scripts/fb-metrics.sh --project avp2-logging /api/v1/metrics/prom
 - 位置 DB を消すと、残っている json-file を先頭から読み直す。app 系統は同じ index 内なら `event_id`（= `_id`）で
   重複しない（隔離試験で 31138 件を再送し文書の増加は欠けていた 5 件だけ）。rollover 済みの index の行は新しい
   index に重複して入る。**infra 系統は `_id` を持たないので読み直した分だけ重複する**（隔離試験で 19205 → 39170）。
-  消す前に所有者の判断を取る。手順: Fluent Bit を止める → volume `avp2-logging_fbstate` の `tail.db`・`tail.db-wal`・
-  `tail.db-shm` を消す → 起動 → `check-pipeline.sh --catchup-only` が rc=0 になるまで待つ。
+  消す前に所有者の判断を取る。手順（I-28。隔離環境 `avp2-oslog-b-pipe` で1回実行して確認: 500 行を読み直し、
+  その後の既定の起動では読み直さない）:
+
+  ```bash
+  C="docker compose -f deploy/logging/compose.logging.yaml"
+  $C stop fluent-bit
+  docker run --rm --network none --user 0:0 -v avp2-logging_fbstate:/fb-state \
+    --entrypoint bash opensearchproject/opensearch:3.8.0@sha256:fafe3fc3587088674669235575aa166228c48bdb940294a8cdbbc1da75236a40 \
+    -c 'rm -f /fb-state/tail.db /fb-state/tail.db-wal /fb-state/tail.db-shm'
+  AVP_LOG_REREAD=yes $C up -d fluent-bit       # 読み直しモード（guard が位置 DB 無し＋先頭から読むことを許す）
+  deploy/logging/scripts/check-pipeline.sh --catchup-only   # rc=0 になるまで待つ
+  ```
+
+  - `AVP_LOG_REREAD=yes` を付けずに `$C up -d fluent-bit` すると、guard（`fluent-bit-guard`）が「位置 DB が無い」で
+    止める（導入手順の誤りと区別できないため）。`AVP_LOG_READ_FROM_HEAD=false` で起動すると末尾から読み、
+    **黙って何も読み直さない**ので使わない（guard も読み直しモードとの組み合わせを拒む）。
+  - `AVP_LOG_REREAD` は `.env` に書かない（その1回だけ）。位置 DB ができた後の起動では guard は読み直しモードを
+    「位置 DB が残っている」で拒むので、付けたままにしても読み直しは起きないが、`up` が失敗する。
 
 ## 8. 導入（read_from_head 二段構え）と rollback
 
