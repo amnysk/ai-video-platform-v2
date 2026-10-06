@@ -27,25 +27,36 @@ Critical/High の残りなし。I-1〜I-10 は解消（I-3 は上記の残りあ
 |---|---|---|---|---|
 | I-11 | Low | A | `log_guard` の本体を AST で制限する検査が無い（`Raise`・`Return`・`Await` 禁止、呼び出しは `emit`/`defer` と許可したログ用関数のみ）。`test_logging_boundaries.py` に追加 | 修正（99aafd0、A）。D の再確認待ち |
 | I-12 | Low | A | 故障注入の `LEDGER_SUITES` に `test_fal_storage.py`、uploader・render・research・pipeline の Activity テスト、`test_log_ledger.py` が無い。追加し発火回数 > 0 を assert | 修正（9f3f385、A。記録を見る fal_storage・log_ledger は別検査で「落ちるのは記録を見る行だけ」を確認）。D の再確認待ち |
-| I-13 | Low | B | check-pipeline の app lag 既定 60分が watchdog の毎時実行（35 * * * *）と同周期で誤報しやすい。90分以上にし根拠を platform.md へ | 修正（cb9cc83、B）。D の再確認待ち |
-| I-14 | Low | B | 本番 `.env` に `AVP_ENVIRONMENT` が無い（キーの有無のみ確認）。platform.md の導入手順をチェックリスト化（`AVP_ENVIRONMENT=prod` 追記・`read_from_head` 二段構え・deploy 前の追いつき確認・systemd timer）。本番 `.env` 自体は触らない | 修正（7cfd1b2、B）。D の再確認待ち |
+| I-13 | Low | B | check-pipeline の app lag 既定 60分が watchdog の毎時実行（35 * * * *）と同周期で誤報しやすい。90分以上にし根拠を platform.md へ | 修正（cb9cc83、B）。D 再確認: 解消（2026-10-06、コーディネーター経由） |
+| I-14 | Low | B | 本番 `.env` に `AVP_ENVIRONMENT` が無い（キーの有無のみ確認）。platform.md の導入手順をチェックリスト化（`AVP_ENVIRONMENT=prod` 追記・`read_from_head` 二段構え・deploy 前の追いつき確認・systemd timer）。本番 `.env` 自体は触らない | 修正（7cfd1b2、B）。D 再確認: 解消（2026-10-06、コーディネーター経由） |
 
 ## 隔離試験（担当C フェーズ2、2026-10-06、claude/oslog-verify 6e1e720）で見つかった不具合
 C の作業メモでは ID が F-B1 と重複していたため、ここで I 番号を振り直す。
 
 | ID | 重大度 | 担当 | 指摘 | 状態 |
 |---|---|---|---|---|
-| I-15 | High | B | Fluent Bit tail の stall: Docker が partial に分けた1行が結合後 `buffer_max_size`（256k）を超えると、tail が CPU 100% のまま全ファイルの読み取りを止める。health ok・`long_line_skipped` 0 で、lag でしか見えない。業務影響は無いがログ収集が無言で全停止する | 修正（8b97fda、検知 7dc4d7e、B）。原因は buffer_max_size ではなく、結合後の行に上限が無いこと＋安全化 Lua の O(n²)（platform.md §3「長い行」）。D の再確認待ち |
-| I-16 | Low | B | 自己署名 CA に keyUsage が無く、Python 3.13 の `VERIFY_X509_STRICT` で拒否される（試験用 search-assert.py は strict だけ外して回避） | 修正（5cf2fba、B。既存の証明書は再生成が必要）。D の再確認待ち |
-| I-17 | Medium | B | check-pipeline が位置 DB の offset と json-file サイズの差（追いつき）を見ない。deploy 前確認が試験用 `catchup.py` 頼み | 修正（7dc4d7e、B）。D の再確認待ち |
+| I-15 | High | B | Fluent Bit tail の stall: Docker が partial に分けた1行が結合後 `buffer_max_size`（256k）を超えると、tail が CPU 100% のまま全ファイルの読み取りを止める。health ok・`long_line_skipped` 0 で、lag でしか見えない。業務影響は無いがログ収集が無言で全停止する | 修正（8b97fda、検知 7dc4d7e、B）。原因は buffer_max_size ではなく、結合後の行に上限が無いこと＋安全化 Lua の O(n²)（platform.md §3「長い行」）。D 再確認: 停止は解消、線形化で伏せ字の後退2点（I-22・I-23）→ a7dea61 で修正。D の再確認待ち |
+| I-16 | Low | B | 自己署名 CA に keyUsage が無く、Python 3.13 の `VERIFY_X509_STRICT` で拒否される（試験用 search-assert.py は strict だけ外して回避） | 修正（5cf2fba、B。既存の証明書は再生成が必要）。D 再確認: 解消（2026-10-06、コーディネーター経由） |
+| I-17 | Medium | B | check-pipeline が位置 DB の offset と json-file サイズの差（追いつき）を見ない。deploy 前確認が試験用 `catchup.py` 頼み | 修正（7dc4d7e、B）。D 再確認: 解消（2026-10-06、コーディネーター経由） |
 | I-20 | Low | A | （担当C V-3）並行二重起動の upload 試験で動画1本に `upload.succeeded` が2件（どちらも `reconciled_by=upload_response`）。業務は1本（`videos_created` 1・予約1つ）。2件目は事実と違う記録: 負けた試行が台帳の spent を読んで同じ video id を no-op で再記録し、succeeded と `reservation.spent` を重ねて出していた | 修正（9780b54、A。succeeded はこの試行が spent を書いた時だけ、他は `upload.reused_existing`（`found_at=record`）、`reservation.spent` は no-op で出さない）。D の再確認待ち |
+| I-21 | Low | A | （D、統合 94d52f4）I-20 の並行テスト `test_concurrent_upload_attempts_log_one_success_and_one_reuse` が30回に1回失敗。負けた試行が `InvalidTransitionError('job transition rejected: running + started')` で止まり reuse 経路に届かない回がある | 修正（7ffbbcd、A。原因はテストの前提（負けた側が必ず reuse まで進む）で、ログ発行・業務は正しい。2つの順序をそれぞれ固定した2本に置き換え、100 回連続 0 失敗）。D の再確認待ち |
 
 ## 隔離試験（担当C、verification-results.md の V-1・V-2）で見つかった不具合
 
 | ID | 重大度 | 担当 | 指摘 | 状態 |
 |---|---|---|---|---|
-| I-18 | Medium | B | 数値フィールドの文字列 "inf"/"nan" を Lua の型修復が数値として通し、Bulk が chunk ごと失敗して同じ chunk の正常行も届かない（41行中0件）。再送は破棄・エラーの metrics に出ず retry だけ増える（C の V-1） | 修正（2d4c420、B）。D の再確認待ち |
-| I-19 | Low | B | `{` で始まるが JSON として壊れた行が app index に必須フィールド無しで入る。設計（ADR-0040 §1・platform.md §1）は infra（C の V-2） | 修正（2760ae6、B）。D の再確認待ち |
+| I-18 | Medium | B | 数値フィールドの文字列 "inf"/"nan" を Lua の型修復が数値として通し、Bulk が chunk ごと失敗して同じ chunk の正常行も届かない（41行中0件）。再送は破棄・エラーの metrics に出ず retry だけ増える（C の V-1） | 修正（2d4c420、B）。D 再確認: 解消（2026-10-06、コーディネーター経由） |
+| I-19 | Low | B | `{` で始まるが JSON として壊れた行が app index に必須フィールド無しで入る。設計（ADR-0040 §1・platform.md §1）は infra（C の V-2） | 修正（2760ae6、B）。D 再確認: 解消（2026-10-06、コーディネーター経由） |
+
+## D の再確認（2026-10-06、I-13〜I-19 の B 修正、コーディネーター経由）
+B の I-13・I-14・I-16〜I-19 は解消。I-15 の線形化に伏せ字の後退が2点。
+
+| ID | 重大度 | 担当 | 指摘 | 状態 |
+|---|---|---|---|---|
+| I-22 | Low | B | JWT の直前に形の合わない `eyJ.` があると後ろの本物の JWT が伏せられない（87fd105 の規則は伏せていた） | 修正（a7dea61、B。部分ごとに形を確かめ、一番左の形の合う `eyJ` から伏せる。差分 fuzz 2,000,000 入力で新規則だけが漏らす件数 0）。D の再確認待ち |
+| I-23 | Low | B | 閉じていない PRIVATE KEY の BEGIN の後に別の BEGIN が来ると2つ目の鍵本文が残る（終端が BEGIN の見出しにも一致） | 修正（a7dea61、B。終端を END の見出しだけに。旧規則に無い追加の規則は旧規則の後に流す）。D の再確認待ち |
+| I-24 | Low | B | 結合後の行は Lua に渡るまで全体がメモリに載り、数十〜数百MB の1行で Fluent Bit（256MiB）が OOM→再起動で同じ行を読み直しうる | 記録（092d219、platform.md §3 に限界・兆候・対処の手順。手順は未実測） |
+| I-25 | Low | B | catchup の複製中の書き込みによる誤報、inode 再利用での見逃し | 記録（092d219、platform.md §5 に既知の限界） |
 
 ## 未実施
 - 担当C フェーズ2: 途中まで実施（integration を1ファイルずつ隔離 runner で実行、故障注入・ISM 監視・資源測定の一部）。中断のため `verification-results.md` 未作成。最終統合版で再実行する。

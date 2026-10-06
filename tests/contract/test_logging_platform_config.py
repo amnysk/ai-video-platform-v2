@@ -440,3 +440,10 @@ def test_broken_json_is_rerouted_to_infra(fb) -> None:
     assert infra_lua > app_lua
     lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
     assert 'REROUTE_KEY = "_avp_reroute"' in lua
+
+
+def test_pem_block_closes_only_at_an_end_header() -> None:
+    """PEM の終端が別の BEGIN の見出しにも一致すると、その後ろの鍵本文が残る（I-23）。"""
+    lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
+    assert '"%-%-%-%-%-END[%u ]*PRIVATE KEY%-%-%-%-%-"' in lua
+    assert '"PRIVATE KEY%-%-%-%-%-", C.redacted' not in lua

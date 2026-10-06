@@ -381,3 +381,29 @@ def test_broken_json_goes_to_the_infra_series(tmp_path: Path) -> None:
         assert "event_id" not in r
         assert set(r) - {"_tag"} <= INFRA_FIELD_NAMES, set(r) - INFRA_FIELD_NAMES
     assert any("broken-1" in r["message"] for r in infra)
+
+
+def test_linear_rules_do_not_leak_what_the_old_rules_redacted(tmp_path: Path) -> None:
+    """線形化（I-15）で生じた伏せ漏れ（D の再確認 I-22・I-23）。
+
+    修正前の規則（87fd105）はどちらも伏せていた。
+    """
+    cases = {
+        # JWT の直前に形の合わない `eyJ.` がある（I-22）
+        "jwt_after_eyj": ("a eyJ.eyJhbGc.eyJzdWIi.c2lnbmF0 b", ["eyJzdWIi", "c2lnbmF0"]),
+        "jwt_after_two": ("eyJ.eyJ.eyJhbGc.eyJzdWIi.c2lnbmF1", ["eyJzdWIi", "c2lnbmF1"]),
+        "jwt_mid_segment": ("xeyJ.aeyJb.eyJzdWIi.c2lnbmF2", ["eyJzdWIi", "c2lnbmF2"]),
+        # 閉じていない BEGIN の後に別の鍵ブロック（I-23）
+        "pem_two_begins": (
+            "-----BEGIN PRIVATE KEY-----\nKEYONE\n-----BEGIN EC PRIVATE KEY-----\n"
+            "KEYTWO\n-----END EC PRIVATE KEY----- tail",
+            ["KEYONE", "KEYTWO"],
+        ),
+    }
+    lines = [_docker_line(_app(event_id=k, message=m)) for k, (m, _) in cases.items()]
+    got = _run(tmp_path, lines)
+    by_id = {r.get("event_id"): r for r in got if r.get("event_id")}
+    for key, (_, secrets) in cases.items():
+        for secret in secrets:
+            assert secret not in json.dumps(by_id[key]), (key, secret, by_id[key]["message"])
+    assert by_id["pem_two_begins"]["message"].endswith(" tail")
