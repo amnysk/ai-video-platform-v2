@@ -101,6 +101,12 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
 - **線形に書き直した規則が同じものを伏せる**（I-15）: userinfo（`+` を含む scheme、空の user）、URL の
   query・fragment、SQL の `[parameters: …]`（閉じていないものも）、PEM（END の無いものも）、JWT。
   書き直しで伏せ漏れが出ないことを、値が出力に残らないことで確かめる。
+- **`{` で始まるが JSON として壊れた行は infra 系統へ**（I-19）: ADR-0040 §1 の振り分け（JSON でない行は infra）に
+  対し、修正前は app の index に契約の必須フィールド無しで入った（担当C の隔離試験）。行き先の系統は stdout の
+  出力では分からないので、`_run(by_tag=True)` が tag ごとのファイル出力を読んで `_tag` を付ける。既存の
+  `test_routing_repair_and_sanitize` の「壊れた行が `collector-…` の event_id を持つ」という assert は修正前の
+  （設計と食い違う）挙動を写していたので、「event_id を持たない（infra）」に改めた。JSON の数値として溢れる
+  `1e400` も同じ経路（parser が解釈できない）であることを固定する。
 - **追加の安全化と切り詰め**: 整形器の取りこぼし（`Authorization: Bearer …`、DSN の userinfo）が
   OpenSearch へ届かないこと、unstructured 行が `UNSTRUCTURED_LINE_MAX_BYTES` 以下になることを固定する。
 

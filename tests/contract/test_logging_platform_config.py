@@ -417,3 +417,26 @@ def test_app_lag_default_leaves_margin_over_the_watchdog_period() -> None:
     m = re.search(r"^MAX_LAG_MIN=(\d+)$", src, re.M)
     assert m is not None
     assert int(m.group(1)) >= period_min + 30
+
+
+def test_broken_json_is_rerouted_to_infra(fb) -> None:
+    """JSON として壊れた app の行は infra 系統へ（ADR-0040 §1。I-19）。
+
+    avp_app が印を付け、rewrite_tag が avp.infra として流し直す
+    （avp_infra が unstructured にする）。
+    """
+    filters = fb["pipeline"]["filters"]
+    names = [(f["name"], f["match"], f.get("call")) for f in filters]
+    app_lua = names.index(("lua", "avp.app", "avp_app"))
+    infra_lua = names.index(("lua", "avp.infra", "avp_infra"))
+    reroute = [
+        i for i, f in enumerate(filters) if f["name"] == "rewrite_tag" and f["match"] == "avp.app"
+    ]
+    assert len(reroute) == 1
+    flt = filters[reroute[0]]
+    assert app_lua < reroute[0]
+    assert flt["rule"] == ["$_avp_reroute ^infra$ avp.infra false"]
+    assert flt["emitter_storage.type"] == "filesystem"
+    assert infra_lua > app_lua
+    lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
+    assert 'REROUTE_KEY = "_avp_reroute"' in lua

@@ -62,8 +62,14 @@ def _docker_line(log: str, *, stream: str = "stdout", app: bool = True, project:
 
 
 def _run(
-    tmp_path: Path, lines: list[str], tail_overrides: dict[str, str] | None = None
+    tmp_path: Path,
+    lines: list[str],
+    tail_overrides: dict[str, str] | None = None,
+    *,
+    by_tag: bool = False,
 ) -> list[dict[str, Any]]:
+    """filter 列に通した record。``by_tag`` なら出力を tag ごとのファイルにし、各 record に
+    ``_tag``（試験側で足す。Fluent Bit の出力には無い）を付けて返す（行き先の系統を確かめる）。"""
     image = _fluent_bit_image()
     _require_docker(image)
     cdir = tmp_path / "containers" / CONTAINER_ID
@@ -91,6 +97,12 @@ def _run(
             "json_date_format": "iso8601",
         }
     ]
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    if by_tag:
+        conf["pipeline"]["outputs"] = [
+            {"name": "file", "match": "avp.*", "path": "/out", "format": "plain"}
+        ]
     cfg = tmp_path / "test.yaml"
     cfg.write_text(yaml.safe_dump(conf, sort_keys=False), encoding="utf-8")
 
@@ -103,6 +115,7 @@ def _run(
             "-v", f"{tmp_path / 'containers'}:/containers:ro",
             "-v", f"{FB_DIR}:/fluent-bit/etc/avp:ro",
             "-v", f"{cfg}:/test.yaml:ro",
+            "-v", f"{out_dir}:/out",
             image, "-c", "/test.yaml",
         ],
         capture_output=True, text=True, timeout=120, check=False,
@@ -112,6 +125,10 @@ def _run(
         if line.startswith("{"):
             records.append(json.loads(line))
     assert proc.returncode == 0, proc.stderr[-2000:]
+    if by_tag:
+        for f in sorted(out_dir.iterdir()):
+            for line in f.read_text(encoding="utf-8").splitlines():
+                records.append({**json.loads(line), "_tag": f.name})
     return records
 
 
@@ -213,8 +230,9 @@ def test_routing_repair_and_sanitize(tmp_path: Path) -> None:
 
     broken = next(r for r in infra if "broken" in r["message"])
     assert broken["collector_errors"] == ["json_parse_failed"]
-    assert broken["event_id"].startswith("collector-")
-    assert broken["event_id"] != long_id["event_id"]
+    # JSON として壊れた行は infra 系統（ADR-0040 §1・platform.md §1。I-19）。
+    # infra は event_id を持たない
+    assert "event_id" not in broken
 
     # Lua が書くキーは、行き先の mapping にあるものだけ（dynamic:false で黙って検索できなく
     # ならない。I-7）。
@@ -314,3 +332,29 @@ def test_sanitize_rules_keep_redacting_after_the_linear_rewrite(tmp_path: Path) 
     assert by_id["dsn"]["message"].startswith("connect postgresql+psycopg://"), "scheme は残す"
     assert "https://bucket.example/obj 200" in by_id["query"]["message"]
     assert by_id["pem"]["message"].endswith(" ok")
+
+
+# ---------------------------------------------------------- 壊れた JSON（I-19）
+
+
+def test_broken_json_goes_to_the_infra_series(tmp_path: Path) -> None:
+    """``{`` で始まるが JSON として壊れた行は infra 系統へ（I-19）。
+
+    修正前は app の index に契約の必須フィールド無しで入った（担当C の隔離試験）。
+    """
+    lines = [
+        _docker_line('{"event_id": "broken-1", "message": "cut\n'),
+        _docker_line('{"duration_ms": 1e400}\n'),  # JSON の数値として溢れる（解釈できない）
+        _docker_line(_app(event_id="fine-1")),
+    ]
+    got = _run(tmp_path, lines, by_tag=True)
+    infra = [r for r in got if r["_tag"] == "avp.infra"]
+    app = [r for r in got if r["_tag"] == "avp.app"]
+    assert [r["event_id"] for r in app] == ["fine-1"]
+    assert len(infra) == 2, infra
+    for r in infra:
+        assert r["log_source"] == "unstructured"
+        assert r["collector_errors"] == ["json_parse_failed"]
+        assert "event_id" not in r
+        assert set(r) - {"_tag"} <= INFRA_FIELD_NAMES, set(r) - INFRA_FIELD_NAMES
+    assert any("broken-1" in r["message"] for r in infra)

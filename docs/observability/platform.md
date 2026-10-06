@@ -18,6 +18,7 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
                          avp.logging=app かつ stdout かつ `{` で始まる行 → app、それ以外 → infra
        parser(json)    : app の行を解釈
        Lua avp_app     : 型修復・@timestamp・event_id の保証・追加の安全化・Collector フィールド
+                         JSON として解釈できなかった行は印を付け、rewrite_tag で infra へ流し直す
        Lua avp_infra   : 安全化・UNSTRUCTURED_LINE_MAX_BYTES で切り詰め
   → OpenSearch（write alias avp-app-<env>-write / avp-infra-<env>-write、ingest pipeline で ingested_at）
   → Dashboards（使う時だけ起動）
@@ -28,10 +29,11 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 - 書き込み先の index は Fluent Bit 設定の固定値。レコードの `environment` で振り分けない。
 - 型修復: 契約の型に合わない値は `attributes.collector_moved` へ退避し、名前を `collector_errors` に残す。
   未知のトップレベルキー・アプリが書いた Collector のフィールドも同じ。`@timestamp` が不正・欠落なら
-  Docker の時刻に置き換えて `@timestamp_replaced`。JSON として壊れた行は `log_source=unstructured`・
-  `json_parse_failed`。
-- **app 系統の記録は必ず `event_id`（= `_id`）を持つ**。_id にできない値（512 bytes 超・制御文字）と、
-  JSON でない行には Collector が `collector-…` を付ける。Fluent Bit 5.1.2 は `id_key` の値が無い record に
+  Docker の時刻に置き換えて `@timestamp_replaced`。`{` で始まるが JSON として壊れた行は
+  `log_source=unstructured`・`json_parse_failed` で **infra 系統**へ（`avp_app` が印を付け、2つ目の rewrite_tag が
+  `avp.infra` として流し直す。I-19: 修正前は app の index に契約の必須フィールド無しで入った）。
+- **app 系統の記録は必ず `event_id`（= `_id`）を持つ**。_id にできない値（512 bytes 超・制御文字）・
+  欠けた値には Collector が `collector-…` を付ける。Fluent Bit 5.1.2 は `id_key` の値が無い record に
   直前の record の `_id` を使い回し、409（成功扱い）で黙って消える（実測）ため。
 - `@timestamp` は Lua が record から外して record の時刻にし、出力側（`time_key`）が1つだけ書く。
   重複キーは ingest pipeline 経由で bulk 全体を 400 にする（実測）。

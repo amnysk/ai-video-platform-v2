@@ -26,6 +26,10 @@ local ERR_NOT_JSON = "json_parse_failed"
 -- 1行（Docker の partial を結合した後）が C.collector_line_max_bytes を超えた（I-15）
 local ERR_LINE_TOO_LONG = "line_too_long"
 local LINE_TOO_LONG_KEY = "_avp_line_too_long"
+-- avp_app が JSON として解釈できなかった行に付ける印。rewrite_tag が avp.infra へ移し、avp_infra が
+-- unstructured にする（ADR-0040 §1: JSON でない行は infra 系統。I-19）
+local REROUTE_KEY = "_avp_reroute"
+local JSON_FAILED_KEY = "_avp_json_failed"
 -- OpenSearch の _id の上限（bytes）。超えると bulk の request 全体が 400 になり、同じ chunk の
 -- 正常な行まで再送の末に破棄される（実測）。超える event_id は退避して自動 ID にする
 local ID_MAX_BYTES = 512
@@ -397,16 +401,20 @@ function avp_infra(tag, timestamp, record)
     out.truncated = true
     return code, ts, out
   end
+  if record[JSON_FAILED_KEY] then
+    return unstructured(timestamp, record, attrs, ERR_NOT_JSON)
+  end
   return unstructured(timestamp, record, attrs, nil)
 end
 
 function avp_app(tag, timestamp, record)
   local attrs = record.attrs or {}
-  -- parser が JSON として解釈できなかった行（log が残っている）は unstructured として扱う
+  -- parser が JSON として解釈できなかった行（log が残っている）は infra 系統へ移す（I-19）。
+  -- 安全化・切り詰めは avp_infra が行う（rewrite_tag が avp.infra として流し直す）
   if record.log ~= nil then
-    local code, ts, out = unstructured(timestamp, record, attrs, ERR_NOT_JSON)
-    out.event_id = generated_id(timestamp)
-    return code, ts, out
+    record[REROUTE_KEY] = "infra"
+    record[JSON_FAILED_KEY] = true
+    return 2, timestamp, record
   end
 
   local out = {}
