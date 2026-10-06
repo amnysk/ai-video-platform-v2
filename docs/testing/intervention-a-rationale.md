@@ -50,3 +50,13 @@
 | `test_without_a_recorded_exchange_the_prompt_is_unavailable_not_invented` | 捕捉できなかった prompt は `unavailable`（補完しない） | tape を通さない生成器 | 空・推測の prompt を captured として記録 |
 | `test_capture_failure_fails_the_storyboard_activity_without_an_artifact` | 記録できなければ storyboard を現行にしない（有料の production へ流れない） | 故障注入 | 記録の無い storyboard から有料素材が作られる |
 | `test_the_storyboard_worker_routes_its_llm_through_the_exchange_recorder` | 本番の配線が LLM を包んでいる（包まなければ常に unavailable になる） | worker の配線は起動しないと通らないため source で検査 | 配線漏れで prompt が一度も捕捉されない |
+
+## Topic Planner（producer）の記録（`tests/unit/test_intervention_topic_capture.py`）
+
+| テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
+|---|---|---|---|
+| `test_capture_is_off_by_default` | 既定 OFF。日次の Planner は何も書かない（prompt の不変は既存の `test_planner_trend_opt_in.py::test_off_prompt_and_version_are_byte_identical_to_f209e7c` が守る） | 実 Activity 2つを通す | 設定を入れていないのに記録が増える |
+| `test_the_worker_passes_a_capture_store_only_when_enabled` | 配線は設定だけで決まる | 配線関数を直接 | 設定と無関係に保存先が渡る |
+| `test_enabled_capture_records_the_run_and_the_choice_with_the_plan` | 設計 §17-1「企画採用理由から実際の入力・成果物へたどれる」: plan → choose_topic → agent_run → 実際の prompt・生出力 | workflow を変えずに2つの Activity が同じキーを導くことを通しで | 一時置き場から写せない、判断記録が snapshot を指さない、候補が保存済みと食い違う |
+| `test_a_staging_failure_fails_candidate_generation` | ON のとき記録できなければ失敗させる | 故障注入 | 記録が無いまま plan が確定する |
+| `test_a_rerun_of_select_and_save_does_not_duplicate_records` | 保存後に応答を失った再実行で記録が増えない | 同じ Activity を2回 | 再実行で agent_run・判断記録が増える |

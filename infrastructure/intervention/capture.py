@@ -273,6 +273,61 @@ class AgentRunRecorder:
         put = await self._store.put_json(key, payload)
         return put.key, put.sha256
 
+    async def stage(self, key: str, capture: RunCapture) -> None:
+        """所属（episode / topic_plan）がまだ無い実行の記録を一時置き場に書く（安全化済み）。
+
+        Topic Planner の候補生成は TopicPlan より前に走る。plan を保存する transaction で
+        ``load_stage`` → ``record`` し、正規の ``agent-runs/{topic_plan_id}/…`` へ写す。
+        """
+        if not key.startswith(f"{STAGING_PREFIX}/"):
+            raise ValueError(f"staging key must be under {STAGING_PREFIX}/: {key}")
+        redaction = _Redaction()
+        document = {
+            "schema_version": CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+            "kind": "staged_agent_run",
+            "idempotency_key": capture.idempotency_key,
+            "role": capture.role.value,
+            "step": capture.step,
+            "model": capture.model,
+            "prompt_version": capture.prompt_version,
+            "prompt": redaction.value(capture.prompt),
+            "prompt_source": capture.prompt_source.value,
+            "input_refs": redaction.value(dict(capture.input_refs)),
+            "request": redaction.value(None if capture.request is None else dict(capture.request)),
+            "response": redaction.value(
+                None if capture.response is None else dict(capture.response)
+            ),
+            "tool_invocations": [dict(t) for t in capture.tool_invocations],
+            "notes": list(capture.notes),
+        }
+        try:
+            await self._store.put_json(key, document)
+        except Exception as exc:
+            raise AgentRunCaptureError(
+                f"agent run staging could not be stored ({type(exc).__name__})"
+            ) from exc
+
+    async def load_stage(self, key: str) -> RunCapture | None:
+        """``stage`` で書いた記録。無ければ ``None``（所属は呼び出し側が ``replace`` で足す）。"""
+        try:
+            document = await self._store.get_json(key)
+        except KeyError:
+            return None
+        return RunCapture(
+            idempotency_key=str(document["idempotency_key"]),
+            role=AgentRole(document["role"]),
+            step=str(document["step"]),
+            model=document.get("model"),
+            prompt_version=document.get("prompt_version"),
+            prompt=document.get("prompt"),
+            prompt_source=PromptSource(document["prompt_source"]),
+            input_refs=dict(document.get("input_refs") or {}),
+            request=document.get("request"),
+            response=document.get("response"),
+            tool_invocations=tuple(document.get("tool_invocations") or ()),
+            notes=tuple(document.get("notes") or ()),
+        )
+
     async def insert(
         self,
         session: AsyncSession,

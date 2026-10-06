@@ -137,6 +137,12 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
   `artifact_metadata` と agent_run・判断記録は同じ transaction）。再開（保存済みの生出力から続行）では
   prompt を同じ入力・同じ版から組み直して `prompt_source=re_rendered` と記録し、組み直せない工程
   （storyboard の prompt は adapter の内側）は `unavailable` と記録する（補完しない）。
+  Topic Planner（producer）は Episode より前に走るので mode では切り替えず、設定
+  `TOPIC_PLANNER_CAPTURE_ENABLED`（既定 OFF）が ON のときだけ記録する。候補生成の snapshot を
+  `agent-runs/_staging/topic/{日}/{strategy}/{content}/r{round}/{候補の sha256 先頭16}.json` に置き、plan を
+  保存する transaction で `agent-runs/{topic_plan_id}/…` の agent_run と `choose_topic`（保存済み候補から。
+  補完しない）にする。全候補が却下された round の一時置き場は行にならず残る（plan が無いため）。
+  compose の環境変数への受け渡しは未配線（`compose.yaml` は担当外）。
 - `decision_records`: 問い・実際の候補（無ければ1件）・選択・`rationale_kind`（`reported` / `post_hoc_summary` /
   `human` / `rule`）・根拠参照・留保・制約・対象 revision・結果 revision・評価の種別（`self_assessed` / `measured` / `rule`）。
   **候補・スコアを補完しない。** 入力 snapshot に無い資料を根拠に挙げたら `evidence_check=unverified_ref` を付ける。
