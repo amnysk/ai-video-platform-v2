@@ -39,6 +39,7 @@ C の作業メモでは ID が F-B1 と重複していたため、ここで I �
 | I-16 | Low | B | 自己署名 CA に keyUsage が無く、Python 3.13 の `VERIFY_X509_STRICT` で拒否される（試験用 search-assert.py は strict だけ外して回避） | 修正（5cf2fba、B。既存の証明書は再生成が必要）。D の再確認待ち |
 | I-17 | Medium | B | check-pipeline が位置 DB の offset と json-file サイズの差（追いつき）を見ない。deploy 前確認が試験用 `catchup.py` 頼み | 修正（7dc4d7e、B）。D の再確認待ち |
 | I-20 | Low | A | （担当C V-3）並行二重起動の upload 試験で動画1本に `upload.succeeded` が2件（どちらも `reconciled_by=upload_response`）。業務は1本（`videos_created` 1・予約1つ）。2件目は事実と違う記録: 負けた試行が台帳の spent を読んで同じ video id を no-op で再記録し、succeeded と `reservation.spent` を重ねて出していた | 修正（9780b54、A。succeeded はこの試行が spent を書いた時だけ、他は `upload.reused_existing`（`found_at=record`）、`reservation.spent` は no-op で出さない）。D の再確認待ち |
+| I-21 | Low | A | （D、統合 94d52f4）I-20 の並行テスト `test_concurrent_upload_attempts_log_one_success_and_one_reuse` が30回に1回失敗。負けた試行が `InvalidTransitionError('job transition rejected: running + started')` で止まり reuse 経路に届かない回がある | 修正（7ffbbcd、A。原因はテストの前提（負けた側が必ず reuse まで進む）で、ログ発行・業務は正しい。2つの順序をそれぞれ固定した2本に置き換え、100 回連続 0 失敗）。D の再確認待ち |
 
 ## 隔離試験（担当C、verification-results.md の V-1・V-2）で見つかった不具合
 
