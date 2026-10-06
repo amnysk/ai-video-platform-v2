@@ -138,6 +138,15 @@ LOG_FIELDS: tuple[LogField, ...] = (
 LOG_FIELD_NAMES: frozenset[str] = frozenset(f.name for f in LOG_FIELDS)
 REQUIRED_APP_FIELDS: tuple[str, ...] = tuple(f.name for f in LOG_FIELDS if f.always)
 
+#: infra（``log_source=unstructured``）系統の文書が持つフィールド。Collector が書くものの全部と、
+#: Collector が JSON でない行から作る ``@timestamp``（Docker の時刻）・``message``
+#: （安全化・切り詰め済みの行）・``truncated``・``redaction_applied``。
+#: infra の mapping はこの集合から生成する（ADR-0040 §4）。
+INFRA_FIELD_NAMES: frozenset[str] = frozenset(
+    {f.name for f in LOG_FIELDS if f.origin is FieldOrigin.COLLECTOR}
+    | {"@timestamp", "message", "truncated", "redaction_applied"}
+)
+
 
 # --------------------------------------------------------------------------- 設定キー（env）
 
@@ -419,6 +428,7 @@ __all__ = [
     "MESSAGE_MAX_BYTES",
     "RECORD_EXTRA_KEY",
     "REDACTED",
+    "INFRA_FIELD_NAMES",
     "REQUIRED_APP_FIELDS",
     "RESPONSE_EXCERPT_MAX_BYTES",
     "UNKNOWN",

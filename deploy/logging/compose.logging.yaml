@@ -176,7 +176,13 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
     entrypoint: ["bash", "/scripts/security-init.sh"]
     volumes:
-      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}:/secrets:ro
+      # 秘密はファイル単位（CA の秘密鍵・admin 鍵は渡さない。I-9）
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/ca.pem:/secrets/pki/ca.pem:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/node.pem:/secrets/pki/node.pem:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/node.key:/secrets/pki/node.key:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/fluentbit.pw:/secrets/fluentbit.pw:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/viewer.pw:/secrets/viewer.pw:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/dashboards.pw:/secrets/dashboards.pw:ro
       - ./opensearch/security:/tmpl:ro
       - ./scripts:/scripts:ro
       - osconf:/osconf
@@ -196,7 +202,10 @@ services:
       AVP_ISM_POLICY_DIR: ${AVP_ISM_POLICY_DIR:-ism}
       AVP_ISM_JOB_INTERVAL_MIN: ${AVP_ISM_JOB_INTERVAL_MIN:-}
     volumes:
-      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki:/secrets/pki:ro
+      # admin 証明書と CA 証明書だけ（ca.key・node.key は渡さない。I-9）
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/ca.pem:/secrets/pki/ca.pem:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/admin.pem:/secrets/pki/admin.pem:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/admin.key:/secrets/pki/admin.key:ro
       - ./opensearch:/deploy:ro
       - ./scripts:/scripts:ro
     networks: [internal]
@@ -205,9 +214,14 @@ services:
     <<: *oneshot
     image: *os-image
     profiles: [setup]
+    # イメージの security 設定（所有者 1000・0750）と internal_users.yml（0600）を読むだけの権限（実測で必要）
+    cap_add: [DAC_READ_SEARCH]
     entrypoint: ["bash", "/scripts/securityadmin.sh"]
     volumes:
-      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki:/secrets/pki:ro
+      # admin 証明書と CA 証明書だけ（ca.key・node.key は渡さない。I-9）
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/ca.pem:/secrets/pki/ca.pem:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/admin.pem:/secrets/pki/admin.pem:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/pki/admin.key:/secrets/pki/admin.key:ro
       - ./opensearch:/deploy:ro
       - ./scripts:/scripts:ro
       - osconf:/osconf:ro
@@ -221,7 +235,8 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
     entrypoint: ["bash", "/scripts/dashboards-keystore.sh"]
     volumes:
-      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}:/secrets:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/dashboards.pw:/secrets/dashboards.pw:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/dashboards-cookie.pw:/secrets/dashboards-cookie.pw:ro
       - ./scripts:/scripts:ro
       - osdconf:/osdconf
     network_mode: none
@@ -232,7 +247,7 @@ services:
     profiles: [dashboards-setup]
     entrypoint: ["bash", "/scripts/dashboards-import.sh"]
     volumes:
-      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}:/secrets:ro
+      - ${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}/viewer.pw:/secrets/viewer.pw:ro
       - ./dashboards:/deploy/dashboards:ro
       - ./scripts:/scripts:ro
     networks: [internal]

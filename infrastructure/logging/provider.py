@@ -30,7 +30,7 @@ from domain.errors import (
     TransientError,
     UnreconciledReservationError,
 )
-from infrastructure.logging.emit import emit
+from infrastructure.logging.emit import emit, log_guard
 
 #: ``response_excerpt`` に入れてよい応答ヘッダ（log-contract §7.5）
 ALLOWED_RESPONSE_HEADERS: tuple[str, ...] = (
@@ -142,14 +142,15 @@ class CallObservation:
         }
 
     def succeeded(self, level: int = logging.INFO, **fields: Any) -> None:
-        emit(
-            self.logger,
-            EventName.PROVIDER_CALL_SUCCEEDED,
-            level,
-            "provider %s succeeded",
-            self.operation.value,
-            **{**self._base(), "outcome": Outcome.SUCCEEDED.value, **fields},
-        )
+        with log_guard():  # ログの故障は業務へ伝播させない（INV-38）
+            emit(
+                self.logger,
+                EventName.PROVIDER_CALL_SUCCEEDED,
+                level,
+                "provider %s succeeded",
+                self.operation.value,
+                **{**self._base(), "outcome": Outcome.SUCCEEDED.value, **fields},
+            )
 
     def failed(self, exc: BaseException, level: int = logging.WARNING, **fields: Any) -> None:
         """例外を観測として記録する（例外そのものは呼び出し側がそのまま再送出する）。"""

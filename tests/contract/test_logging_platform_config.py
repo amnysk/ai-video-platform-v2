@@ -107,12 +107,52 @@ def test_secrets_are_not_passed_as_env(compose) -> None:
             assert not re.search(r"PASS|PASSWORD|SECRET|TOKEN", key), f"{name}: {key}"
 
 
+SECRETS_ROOT = "${AVP_LOGGING_SECRETS_DIR:-${HOME}/.config/avp-logging/${AVP_LOGGING_ENV:-prod}}"
+
+#: サービスごとに mount してよい秘密のファイル（AVP_LOGGING_SECRETS_DIR からの相対）。I-9:
+#: ディレクトリごと渡さない（ca.key・node.key・admin.key を必要の無いコンテナに見せない）
+ALLOWED_SECRET_FILES: dict[str, set[str]] = {
+    "fluent-bit": {"fluent-bit-secret.yaml", "pki/ca.pem"},
+    "security-init": {
+        "pki/ca.pem",
+        "pki/node.pem",
+        "pki/node.key",
+        "fluentbit.pw",
+        "viewer.pw",
+        "dashboards.pw",
+    },
+    "bootstrap": {"pki/ca.pem", "pki/admin.pem", "pki/admin.key"},
+    "securityadmin": {"pki/ca.pem", "pki/admin.pem", "pki/admin.key"},
+    "dashboards-keystore": {"dashboards.pw", "dashboards-cookie.pw"},
+    "dashboards-import": {"viewer.pw"},
+}
+
+
+def _secret_sources(svc: dict[str, Any]) -> set[str]:
+    out = set()
+    for v in svc.get("volumes") or []:
+        source = v["source"] if isinstance(v, dict) else v.rsplit(":", 2)[0]
+        if source.startswith(SECRETS_ROOT):
+            out.add(source[len(SECRETS_ROOT) :].lstrip("/"))
+    return out
+
+
+def test_secrets_are_mounted_file_by_file(compose) -> None:
+    for name, svc in compose["services"].items():
+        mounted = _secret_sources(svc)
+        assert mounted <= ALLOWED_SECRET_FILES.get(name, set()), f"{name}: {sorted(mounted)}"
+        assert "" not in mounted and "pki" not in mounted, f"{name}: ディレクトリごと mount"
+        assert "pki/ca.key" not in mounted, f"{name}: CA の秘密鍵はどのコンテナにも渡さない"
+
+
 def test_admin_certificate_only_in_setup_oneshots(compose) -> None:
     for name, svc in compose["services"].items():
-        mounts = " ".join(str(v) for v in svc.get("volumes") or [])
-        if "/pki:" in mounts or (":/secrets:" in mounts and "pki" not in mounts):
+        mounted = _secret_sources(svc)
+        if any(m.endswith(".key") or m.endswith(".pw") for m in mounted) and name != "fluent-bit":
             assert set(svc.get("profiles") or []) <= {"setup", "dashboards-setup"}, name
             assert svc.get("profiles"), f"{name}: 秘密を mount する常駐サービス"
+        if "pki/admin.key" in mounted:
+            assert name in {"bootstrap", "securityadmin"}, name
 
 
 def test_repo_has_no_secret_material() -> None:
@@ -296,3 +336,16 @@ def test_saved_objects_reference_existing_index_patterns() -> None:
         refs = {r["id"] for r in s["references"]}
         assert refs <= patterns, s["id"]
         json.loads(s["attributes"]["kibanaSavedObjectMeta"]["searchSourceJSON"])
+
+
+def test_scripts_do_not_put_passwords_on_the_command_line() -> None:
+    """`curl -u user:pass` は ps で見える（I-6）。-K の一時 config で渡す。"""
+    for path in (LOGGING / "scripts").glob("*.sh"):
+        text = path.read_text(encoding="utf-8")
+        assert not re.search(r"curl[^\n]*\s-u\s", text), path.name
+
+
+def test_check_pipeline_checks_each_series_and_the_environment() -> None:
+    src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
+    assert 'check_lag app "$MAX_LAG_MIN"' in src and 'check_lag infra "$MAX_LAG_INFRA_MIN"' in src
+    assert "must_not" in src and "environment" in src and "now-24h" in src

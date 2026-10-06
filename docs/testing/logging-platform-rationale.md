@@ -18,6 +18,8 @@ Fluent Bit 5.1.2、2026-09-30）。
   同名フィールドの型が食い違うと Dashboards が conflict として扱う。
 - **Lua の型表と label 定数**: Collector の振り分け（`avp.logging=app`）と型修復は Lua の表を読む。
   表と契約がずれると、アプリの行が infra 系統へ流れる・正しい値が退避される。
+- **infra の mapping は契約の `INFRA_FIELD_NAMES` と一致し、生成器はその集合を自前で持たない**（I-7）:
+  集合が生成器にあると、契約を読む側（Collector の Lua・検索側）と別の場所に同じ真実が散る（AGENTS.md §8）。
 - **`--check` の終了コード**: CI や手元で drift を検出する手段として使えることを固定する。
 
 ## 2. `tests/contract/test_logging_platform_config.py`
@@ -32,6 +34,9 @@ Fluent Bit 5.1.2、2026-09-30）。
   権限で動く（実測）。その囲いが緩むと漏れ先ができる。uid を 1000 に戻すと無音で何も読めなくなる。
 - **秘密を env で渡さない・admin 証明書は setup の one-shot だけ・repo に鍵や hash が無い**: env は
   `docker inspect` で見える。
+- **秘密はファイル単位で mount し、サービスごとの許可リストに収まる**（I-9）: ディレクトリごと渡すと
+  bootstrap・securityadmin にも CA の秘密鍵（`ca.key`、証明書を発行できる）や node 鍵が見える。`ca.key` は
+  どのコンテナにも渡さない。
 - **資源の上限（mem=memswap、heap、oom_score_adj、Dashboards は profile）**: 本番ホストは swap が満杯で、
   ログ基盤が本番 worker より先に落ちる前提で共存を認めている（ADR-0040 §7）。
 - **sentinel と volume-guard**: project 名の違いで空の volume が作られると、OpenSearch は空で起動し、
@@ -44,6 +49,11 @@ Fluent Bit 5.1.2、2026-09-30）。
   （逆だと admin 証明書が 401）、writer に検索・削除・作成が無いこと、demo ユーザーを持ち込まないこと、
   `server_username`（無いと Dashboards が 403 で起動しない）、保持の閾値、bootstrap が書く前に alias 誤作成を
   検出すること、saved search が存在する index pattern を参照すること。
+- **スクリプトがパスワードを curl の argv に出さない**（I-6）: `-u user:pass` はホストの `ps` で誰にでも
+  見える。0600 の一時 config を `-K` で渡す。
+- **check-pipeline が系統別に lag を見て、environment の食い違いを数える**（I-5/I-6）: 1つの lag では
+  temporal 等の infra の行が絶えず入るので app の収集停止が隠れる。compose の既定 `dev` が本番の行を
+  `avp-app-prod-*` に `environment=dev` で入れた事故（I-5）を、設定の取り違えとして検出する。
 - **試験用 ISM は override からだけ使われる**: 分単位で削除する policy が本番に入ると検索用ログが数分で消える。
 
 ## 3. `tests/integration/test_logging_collector_lua.py`
@@ -71,6 +81,8 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
   JSON でない行・退避した行には Collector が `collector-…` の ID を付ける。
 - **ミリ秒の丸め**: 出力側は record 時刻の `tv_nsec` を切り捨ててミリ秒を書く。`.001` を double にすると
   `.000999…` になり 1ms 早い時刻が保存された（隔離環境で実測）。stdout も同じ切り捨ての iso8601 で検査する。
+- **Lua が書くキーは行き先の mapping の部分集合**（I-7）: `dynamic: false` なので、mapping に無いキーを
+  Collector が書いても黙って検索できないだけで、どこもエラーにならない。
 - **追加の安全化と切り詰め**: 整形器の取りこぼし（`Authorization: Bearer …`、DSN の userinfo）が
   OpenSearch へ届かないこと、unstructured 行が `UNSTRUCTURED_LINE_MAX_BYTES` 以下になることを固定する。
 
@@ -82,6 +94,9 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
 - **アプリ（app / worker イメージ）のサービスだけが `avp.logging=app` を持ち、`AVP_SERVICE_NAME` が
   compose のサービス名**: label がずれると postgres 等の行が app の mapping に入り、逆にアプリの行が
   infra へ流れて検索できなくなる。`service_name` と `compose_service` が一致することで照合できる。
+- **`AVP_ENVIRONMENT` に既定値を持たせない**（I-5、レビューで仕様変更）: 既定 `dev` だと、本番の `.env` に
+  書き忘れたとき本番の行が `environment=dev` で prod の index に入り、推測値で埋めない契約（log-contract §2）に
+  反する。空文字なら整形器が `unknown` にすることも同じ test で固定する。
 - **API の起動コマンド**: uvicorn の CLI 起動は独自の handler と query 付きの access log を出す
   （ADR-0040 §1）。モジュール `apps.api.serve` は担当A が作るので、ここでは存在を検査しない。
 - `test_research_worker_compose.py` は research-worker の env を「app-env ＋ provider の設定だけ」に

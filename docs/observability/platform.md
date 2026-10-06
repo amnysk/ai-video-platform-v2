@@ -129,8 +129,11 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 
 - Fluent Bit: health、`files_opened_total == 0`、`dropped_records_total`・`retries_failed_total`・
   `long_line_skipped_total` の増分、buffer の chunk 数（`--max-chunks`、既定 2000）
-- OpenSearch: 到達性・cluster の状態、最終 `ingested_at` からの経過（`--max-lag-min`、既定 60）、
-  index サイズ、ディスク使用率（85% 以上で異常）
+- OpenSearch: 到達性・cluster の状態、**系統ごと**の最終 `ingested_at` からの経過（app は `--max-lag-min`、
+  infra は `--max-lag-infra-min`、既定どちらも 60。infra の行で app の停止が隠れないように）、
+  直近24時間の app 文書のうち `environment` が index の env と違う件数（> 0 で異常。アプリの `.env` の
+  `AVP_ENVIRONMENT` の書き忘れ・取り違え）、index サイズ、ディスク使用率（85% 以上で異常）
+- 資格情報は viewer のパスワードを 0600 の一時 config で `curl -K` に渡す（argv に出さない）
 - 証明書: CA・ノード証明書の残り 30日未満
 - ホスト: Docker root のディスク（90% 以上で異常）、MemAvailable
 - `--enforce-memory`: MemAvailable < 2GiB で Dashboards、< 1.5GiB で OpenSearch を止める
@@ -155,6 +158,10 @@ $C --profile dashboards up -d dashboards
 $C --profile dashboards-setup run --rm dashboards-import
 ```
 
+- **本番のアプリの `.env`（`compose.yaml` のディレクトリ）に `AVP_ENVIRONMENT=prod` を書く**。compose は
+  既定値を持たない（I-5: 既定 `dev` だと本番の行が `avp-app-prod-*` に `environment=dev` で入った）。
+  未設定なら整形器が `unknown` にする。Collector の `AVP_LOGGING_ENV`（index 名）とは別の設定なので、
+  食い違いは `check-pipeline.sh` が検出する（§5）。
 - アプリ側の変更（`compose.yaml` の `logging:`・label・env）は、コンテナの**再作成**で反映される
   （次の deploy-workers）。再作成で消える未読の json-file は検知できない欠損になるので、deploy の前に
   `check-pipeline.sh` で Collector が追いついている（buffer chunk が 0 付近、lag が小さい）ことを見る。
@@ -190,7 +197,8 @@ $C --profile dashboards-setup run --rm dashboards-import
 | 再送上限・buffer 上限による破棄 | `dropped_records_total` / `retries_failed_total` の増分（check-pipeline） |
 | containers/ が読めない（mount 不成立・権限） | `files_opened_total == 0` |
 | `buffer_max_size` を超える行 | `long_line_skipped_total` の増分 |
-| 収集・送信の停止 | 最終 `ingested_at` の lag（業務が止まっているのと区別できない） |
+| 収集・送信の停止 | 系統ごとの最終 `ingested_at` の lag（業務が止まっているのと区別できない） |
+| `environment` の取り違え（`.env` の書き忘れ） | 直近24時間の不一致件数（check-pipeline） |
 | 型不整合・時刻の置換 | 文書の `collector_errors` / `_ignored`（失われない） |
 | Collector 停止中に rotation が一巡した分 | **検知できない** |
 | コンテナ再作成で消えた未読ファイル | **検知できない**（deploy 前の追いつき確認で減らす） |

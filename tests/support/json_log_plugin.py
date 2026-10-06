@@ -28,6 +28,17 @@ import pytest
 
 JSON_LOGS_ENV = "AVP_TEST_JSON_LOGS"
 BREAK_LOGGING_ENV = "AVP_TEST_BREAK_LOGGING"
+#: 故障注入の発火回数（注入点ごと）を書き出す JSON のパス（INV-38 の検査が読む）
+FAULT_REPORT_ENV = "AVP_TEST_FAULT_REPORT"
+
+#: 注入点 → 発火回数。``make_record.<LEVEL>`` はレベル別
+FAULTS: dict[str, int] = {}
+
+
+def _fire(point: str) -> None:
+    FAULTS[point] = FAULTS.get(point, 0) + 1
+    raise InjectedLoggingFault(f"injected: {point}")
+
 
 #: pytest の fd capture が始まる前（``-p`` でこの module が import される時点）の stdout を複製して
 #: おく。capture の後では fd 1 自体が一時ファイルへ差し替わっていて ``sys.__stdout__`` でも届かない
@@ -64,36 +75,83 @@ def install_worker_interceptors() -> None:
 
 @contextmanager
 def break_logging() -> Iterator[None]:
-    """ログの発行と整形を壊す。業務コードの結果・例外・台帳は変わってはならない（INV-38）。
+    """ログの発行・整形・commit 後の発行・adapter の観測を壊す（INV-38）。
 
-    - ``extra={"avp": ...}`` を持つ記録（業務イベント）の生成で例外を投げる（emit が握る経路）
-    - 整形器そのものも例外を投げる（handler が握る経路。``raiseExceptions`` を落とす）
+    業務コードの結果・例外の型・台帳の状態は変わってはならない。注入点:
+
+    - ``extra={"avp": ...}`` を持つ記録の生成（``Logger.makeRecord``。emit が握る経路）
+    - 整形器（``JsonFormatter.build``。handler が握る経路。``raiseExceptions`` を落とす）
+    - commit 後の発行の積み込み（``ledger._queue``。2回に1回）と取り出し
+      （``ledger._flush_pending``）
+    - adapter の観測（``CallObservation._base``）
+    - 予約台帳の行 → フィールド（``reservation_fields``。使う module の名前を差し替える）
+
+    発火回数は ``FAULTS`` に数える（0 なら注入が経路に届いていない）。
     """
+    import infrastructure.db.repositories as repositories
+    import infrastructure.production.paid_job as paid_job
     from contracts.log_contract import RECORD_EXTRA_KEY
+    from infrastructure.logging import ledger
     from infrastructure.logging.formatter import JsonFormatter
+    from infrastructure.logging.provider import CallObservation
 
     original_make = logging.Logger.makeRecord
     original_build = JsonFormatter.build
     original_raise = logging.raiseExceptions
+    original_queue = ledger._queue
+    original_flush = ledger._flush_pending
+    original_base = CallObservation._base
+    original_fields = (paid_job.reservation_fields, repositories.reservation_fields)
+    queued = {"n": 0}
 
     def make_record(self: logging.Logger, *args: Any, **kwargs: Any) -> logging.LogRecord:
         extra = kwargs.get("extra") if "extra" in kwargs else (args[8] if len(args) > 8 else None)
         if isinstance(extra, dict) and RECORD_EXTRA_KEY in extra:
-            raise InjectedLoggingFault("injected: record creation failed")
+            level = args[1] if len(args) > 1 else kwargs.get("level", 0)
+            _fire(f"make_record.{logging.getLevelName(level)}")
         return original_make(self, *args, **kwargs)
 
     def build(self: JsonFormatter, record: logging.LogRecord) -> dict[str, Any]:
-        raise InjectedLoggingFault("injected: formatting failed")
+        _fire("formatter.build")
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def queue(sync_session: Any, item: tuple[Any, ...]) -> None:
+        queued["n"] += 1
+        if queued["n"] % 2:
+            _fire("ledger.defer")
+        original_queue(sync_session, item)
+
+    def flush(session: Any) -> None:
+        if session.info.get(ledger._PENDING_KEY):
+            _fire("ledger.after_commit")
+        original_flush(session)
+
+    def base(self: CallObservation) -> dict[str, Any]:
+        _fire("call_observation")
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def fields(reservation: Any) -> dict[str, Any]:
+        _fire("reservation_fields")
+        raise AssertionError("unreachable")  # pragma: no cover
 
     logging.Logger.makeRecord = make_record  # type: ignore[method-assign]
     JsonFormatter.build = build  # type: ignore[method-assign]
     logging.raiseExceptions = False
+    ledger._queue = queue  # type: ignore[assignment]
+    ledger._flush_pending = flush  # type: ignore[assignment]
+    CallObservation._base = base  # type: ignore[method-assign]
+    paid_job.reservation_fields = fields  # type: ignore[assignment]
+    repositories.reservation_fields = fields  # type: ignore[assignment]
     try:
         yield
     finally:
         logging.Logger.makeRecord = original_make  # type: ignore[method-assign]
         JsonFormatter.build = original_build  # type: ignore[method-assign]
         logging.raiseExceptions = original_raise
+        ledger._queue = original_queue  # type: ignore[assignment]
+        ledger._flush_pending = original_flush  # type: ignore[assignment]
+        CallObservation._base = original_base  # type: ignore[method-assign]
+        paid_job.reservation_fields, repositories.reservation_fields = original_fields  # type: ignore[assignment]
 
 
 @pytest.fixture
@@ -112,10 +170,27 @@ def _break_logging_everywhere() -> Iterator[None]:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    from infrastructure.logging.setup import configure_logging
+
+    if os.environ.get(BREAK_LOGGING_ENV) == "1" and os.environ.get(JSON_LOGS_ENV) != "1":
+        # 故障注入は本番と同じ経路（DEBUG まで有効・JSON の handler）で走らせる。出力は捨てる
+        configure_logging(
+            {**os.environ, "AVP_LOG_LEVEL": "DEBUG"},
+            open(os.devnull, "w", encoding="utf-8"),  # noqa: SIM115 — プロセスの終わりまで使う
+            forward_temporal_core=False,
+        )
     if os.environ.get(JSON_LOGS_ENV) != "1":
         return
-    from infrastructure.logging.setup import configure_logging
 
     # capture の外へ（-s を付けなくても stdout に1行1 JSON が出る）
     configure_logging(stream=_REAL_STDOUT or sys.__stdout__)
     install_worker_interceptors()
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    path = os.environ.get(FAULT_REPORT_ENV)
+    if path:
+        import json
+
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(FAULTS, fh, sort_keys=True)
