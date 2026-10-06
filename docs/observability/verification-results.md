@@ -578,3 +578,21 @@ verify 61dc077 以降、Fluent Bit は c5af8ff の Lua（§5.8 で再作成）�
 
 - 一巡で消えた行は Fluent Bit の metrics にも `check-pipeline`（残っているファイルしか見ない）にも出ない。
   ADR-0040 §5 の「受け入れる欠損」どおり。検知できるのは「Collector が止まっている／遅れている」ことまで。
+
+### 5.12 S-DUP（合格。infra は重複する＝設計どおり）
+
+2026-10-06T10:27〜10:31Z、c5af8ff の Lua。
+
+| 試験 | 結果 |
+|---|---|
+| `loggen.py --count 1000 --duplicate-every 10`（json-file 1100 行、同じ `event_id` の再出力 100） | `sa count --term request_id=d1-… --expect 1000` → **1000**、`dupes` **0** |
+| Bulk 中の OpenSearch 停止（3000 行・rate 200/s の 7 秒目に `docker stop`、20 秒後に start） | **3000 / 3000**、`dupes` **0** |
+| 位置 DB の削除（Fluent Bit 停止 → volume `avp2-oslog-c2-log_fbstate` の `tail.db*` を削除 → 再開。`read_from_head=true` で全ファイルを先頭から読み直す） | app: 再送 31138 records（`proc_records`）に対し文書は **31033 → 31038**、index 全体の `dupes` **0**（同じ index 内は `event_id` = `_id` で吸収）。infra: **19205 → 39170**（`_id` を持たないので読み直した分だけ重複） |
+
+- 位置 DB 削除後に app が +5 件になったのは、§5.9 の restart で欠けた 5 行（seq 719・720、717・718、711）。
+  読み直し後は `fbrestart-*` の3つとも **2000 / 2000**。欠けた行は json-file に残っていたが、位置 DB はその先まで
+  進んでいた、という V-8 の推定を裏づける。
+- rollover をまたぐ再送は §5.13（S-IDX）の新スタックでは試していない（rollover 後に旧 index の行を読み直すと、
+  新しい write index に別文書として入る。runbook §5 の `collapse` で吸収する手順のまま）。
+- infra 系統の重複は設計どおり（`event_id` を持たない）。位置 DB を消す運用（runbook §7）では infra の件数が増える
+  ことを runbook に明記する。
