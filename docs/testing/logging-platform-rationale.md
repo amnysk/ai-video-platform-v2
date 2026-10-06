@@ -101,6 +101,9 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
 - **線形に書き直した規則が同じものを伏せる**（I-15）: userinfo（`+` を含む scheme、空の user）、URL の
   query・fragment、SQL の `[parameters: …]`（閉じていないものも）、PEM（END の無いものも）、JWT。
   書き直しで伏せ漏れが出ないことを、値が出力に残らないことで確かめる。
+- **旧規則が伏せていたものを線形の規則が残さない**（I-22・I-23、D の再確認）: 形の合わない `eyJ.` の後ろの JWT
+  （区切りの位置を変えた3通り）と、閉じていない BEGIN の後ろの別の鍵ブロック。どちらも I-15 の書き直しで
+  伏せなくなっていた（修正前の Lua でこの試験が落ちることを確認）。網羅は差分 fuzz（platform.md §3）で見る。
 - **数値フィールドの非有限値（`"inf"`・`"-inf"`・`"nan"`・`"1e400"`・`"-INF"`）を数値として送らない**（I-18）:
   Lua の `tonumber` はこれらを inf / nan にし、Fluent Bit はそれを JSON にできない値のまま bulk に書く
   （修正前はこの試験の stdout 自体が JSON として読めなかった）。OpenSearch は bulk を chunk ごと拒否し、

@@ -66,8 +66,9 @@ local function redact_long(pattern_min)
   end
 end
 
--- open から close まで（どちらもパターン）を伏せる。close が無ければ行末まで伏せる。
--- `open.-close` は close の無い open が多いと O(n²) になるので、find を前へ進めるだけにする（I-15）
+-- open から close まで（どちらもパターン）を伏せる。旧規則 `open.-close` と同じく close の無い open は
+-- 残す（閉じていないものは規則の最後の redact_unclosed が伏せる）。`open.-close` は close の無い open が
+-- 多いと O(n²) になるので、find を前へ進めるだけにする（I-15）
 local function redact_between(open_pat, close_pat, replacement)
   return function(s)
     if not s:find(open_pat) then
@@ -79,16 +80,37 @@ local function redact_between(open_pat, close_pat, replacement)
       if i == nil then
         break
       end
-      parts[#parts + 1] = s:sub(pos, i - 1)
-      parts[#parts + 1] = replacement
       local _, e = s:find(close_pat, j + 1)
       if e == nil then
-        return table.concat(parts)
+        break
       end
+      parts[#parts + 1] = s:sub(pos, i - 1)
+      parts[#parts + 1] = replacement
       pos = e + 1
     end
     parts[#parts + 1] = s:sub(pos)
     return table.concat(parts)
+  end
+end
+
+-- 最後の close より後ろにある open（= 閉じていない open）から行末までを伏せる。切り詰められた
+-- SQL の parameters・PEM の本文を残さない。他の規則がすべて済んだ後に流す（先に流すと、後の規則が
+-- 旧規則と違う文字列を見て伏せ方が変わる。D の差分 fuzz、I-22/I-23）
+local function redact_unclosed(open_pat, close_pat)
+  return function(s)
+    local last, init = 0, 1
+    while true do
+      local _, e = s:find(close_pat, init)
+      if e == nil then
+        break
+      end
+      last, init = e, e + 1
+    end
+    local i = s:find(open_pat, last + 1)
+    if i == nil then
+      return s
+    end
+    return s:sub(1, i - 1) .. C.redacted
   end
 end
 
@@ -100,59 +122,99 @@ end
 -- userinfo 付きの URL / DSN（scheme に + を含む形も）。`scheme://user:pass@` の `user:pass` を伏せる。
 -- 先頭を英字の連なりで探す gsub は長い英数字の連なりで各開始位置から末尾まで読み戻すので O(n²) になり、300k の
 -- 1行で Collector のイベントループ（全ファイルの tail）が止まった（実測、I-15）。`://` を起点に
--- scheme を後ろへ、userinfo を前へ読む（どちらも次の `://` を越えないので全体で線形）
-local function redact_userinfo(s)
-  if not s:find("://", 1, true) then
-    return s
-  end
-  local parts, pos, init = {}, 1, 1
-  while true do
-    local i = s:find("://", init, true)
-    if i == nil then
-      break
+-- scheme を後ろへ、userinfo を前へ読む（どちらも次の `://` を越えないので全体で線形）。
+-- userinfo_pat は `://` の直後に anchor する形（旧規則と同じ user 1文字以上と、最後に流す空の user）
+local function redact_userinfo(userinfo_pat)
+  return function(s)
+    if not s:find("://", 1, true) then
+      return s
     end
-    local after = i + 3
-    local j, letter = i - 1, false
-    while j >= 1 and SCHEME_BYTE[s:byte(j)] do
-      local b = s:byte(j)
-      if (b >= 65 and b <= 90) or (b >= 97 and b <= 122) then
-        letter = true
+    local parts, pos, init = {}, 1, 1
+    while true do
+      local i = s:find("://", init, true)
+      if i == nil then
+        break
       end
-      j = j - 1
+      local after = i + 3
+      local j, letter = i - 1, false
+      while j >= 1 and SCHEME_BYTE[s:byte(j)] do
+        local b = s:byte(j)
+        if (b >= 65 and b <= 90) or (b >= 97 and b <= 122) then
+          letter = true
+        end
+        j = j - 1
+      end
+      local e = nil
+      if letter then
+        local _, ue = s:find(userinfo_pat, after)
+        e = ue
+      end
+      if e ~= nil then
+        parts[#parts + 1] = s:sub(pos, after - 1)
+        parts[#parts + 1] = C.redacted .. "@"
+        pos = e + 1
+        init = e + 1
+      else
+        init = after
+      end
     end
-    local e = nil
-    if letter then
-      local _, ue = s:find("^[^/%s:@\"']*:[^/%s@\"']*@", after)
-      e = ue
-    end
-    if e ~= nil then
-      parts[#parts + 1] = s:sub(pos, after - 1)
-      parts[#parts + 1] = C.redacted .. "@"
-      pos = e + 1
-      init = e + 1
-    else
-      init = after
-    end
+    parts[#parts + 1] = s:sub(pos)
+    return table.concat(parts)
   end
-  parts[#parts + 1] = s:sub(pos)
-  return table.concat(parts)
 end
 
 -- JWT（3つの部分を . で繋いだ token）。`eyJ[...]+%.[...]+%.[...]+` は `.` の無い長い連なりで O(n²) に
--- なるので、`.` を含む連なりを1回で取り、形を確かめてから伏せる（I-15）
+-- なるので、`.` を含む連なりを1回で取り、`.` で区切った部分ごとに形を確かめる（I-15）。
+-- 旧規則（gsub）と同じく、一番左で形の合う `eyJ` から3つ目の部分の終わりまでを伏せ、その後ろで続ける。
+-- 部分 i の中で形が合うかは「部分 i に `eyJ` とその後の1文字以上があり、部分 i+1・i+2 が空でない」
+-- だけで決まる（部分 i の中の後ろの `eyJ` も同じ i+1・i+2 を使う）ので、部分ごとに1回調べれば足りる。
+-- 形の合わない `eyJ.` の後ろの本物の JWT も伏せる（I-22）
 local function redact_jwt(token)
-  if token:find("^eyJ[%w%-_]+%.[%w%-_]+%.[%w%-_]+") then
-    return C.redacted
+  local segs = {}
+  local pos = 1
+  while true do
+    local dot = token:find(".", pos, true)
+    if dot == nil then
+      segs[#segs + 1] = { pos, #token }
+      break
+    end
+    segs[#segs + 1] = { pos, dot - 1 }
+    pos = dot + 1
   end
-  return token
+  local parts, out_pos, i = {}, 1, 1
+  while i + 2 <= #segs do
+    local a, b = segs[i][1], segs[i][2]
+    local p = (a <= b) and token:sub(a, b):find("eyJ", 1, true) or nil
+    if p ~= nil and a + p + 2 <= b and segs[i + 1][1] <= segs[i + 1][2]
+      and segs[i + 2][1] <= segs[i + 2][2] then
+      parts[#parts + 1] = token:sub(out_pos, a + p - 2)
+      parts[#parts + 1] = C.redacted
+      out_pos = segs[i + 2][2] + 1
+      i = i + 3
+    else
+      i = i + 1
+    end
+  end
+  if out_pos == 1 then
+    return token
+  end
+  parts[#parts + 1] = token:sub(out_pos)
+  return table.concat(parts)
 end
 
 -- 値のパターン（§7.3）。Lua のパターンは正規表現ではない（大文字小文字の区別、量指定子の制約）。
 -- 規則は長い行でも線形であること（失敗した照合が開始位置ごとに末尾まで読み戻す形を使わない。I-15）。
 -- { pattern, replacement } は gsub、{ fn } は文字列全体を受け取る関数
 local VALUE_RULES = {
-  -- PEM の秘密鍵ブロック（END が無ければ行末まで）
-  { redact_between("%-%-%-%-%-BEGIN[%u ]*PRIVATE KEY%-%-%-%-%-", "PRIVATE KEY%-%-%-%-%-", C.redacted) },
+  -- PEM の秘密鍵ブロック。終端は END の見出しだけ（別の BEGIN の見出しで
+  -- 閉じると、その後ろの鍵本文が残る。I-23）
+  {
+    redact_between(
+      "%-%-%-%-%-BEGIN[%u ]*PRIVATE KEY%-%-%-%-%-",
+      "%-%-%-%-%-END[%u ]*PRIVATE KEY%-%-%-%-%-",
+      C.redacted
+    ),
+  },
   -- Authorization の値
   { "([Bb]earer)%s+[%w%-%._~%+/=]+", "%1 " .. C.redacted },
   { "([Bb]asic)%s+[%w%+/=]+", "%1 " .. C.redacted },
@@ -160,8 +222,8 @@ local VALUE_RULES = {
   { "([Aa]uthorization[\"']?%s*[:=]%s*[\"']?)[^\"'\r\n]+", "%1" .. C.redacted },
   -- JWT
   { "eyJ[%w%-_%.]*", redact_jwt },
-  -- userinfo 付きの URL / DSN（空の user も）
-  { redact_userinfo },
+  -- userinfo 付きの URL / DSN
+  { redact_userinfo("^[^/%s:@\"']+:[^/%s@\"']*@") },
   -- Google OAuth
   { "ya29%.[%w%-_%.]+", C.redacted },
   { "1//[%w%-_]+", redact_long(12) },
@@ -169,13 +231,28 @@ local VALUE_RULES = {
   { "sk%-[%w%-_]+", redact_long(20) },
   -- fal key（uuid:hex）
   { "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x:%x+", C.redacted },
-  -- SQLAlchemy の [parameters: ...]（] が無ければ行末まで）
+  -- SQLAlchemy の [parameters: ...]
   { redact_between("%[parameters: ", "%]", "[parameters: " .. C.redacted .. "]") },
   -- URL の query・fragment（署名付き URL の署名を残さない）。2つ目の捕捉は空か ?/# で始まり、
   -- 必ず成功するので読み戻さない
   { "(https?://[^%s%?#\"'<>]+)[^%s\"'<>]*", "%1" },
   -- 長い base64 様の値（256字以上）
   { "[%w%+/=_%-]+", redact_long(256) },
+}
+
+-- 旧規則（87fd105）に無かった追加。キー名の規則も含めて旧規則がすべて済んだ後に流すので、伏せる範囲は
+-- 旧規則以上になる（減らない。先に流すと後の規則が旧規則と違う文字列を見る。D の差分 fuzz）
+local EXTRA_RULES = {
+  -- 空の user の userinfo（`redis://:pw@`）
+  { redact_userinfo("^:[^/%s@\"']*@") },
+  -- 閉じていない PEM・SQL の parameters は行末まで
+  {
+    redact_unclosed(
+      "%-%-%-%-%-BEGIN[%u ]*PRIVATE KEY%-%-%-%-%-",
+      "%-%-%-%-%-END[%u ]*PRIVATE KEY%-%-%-%-%-"
+    ),
+  },
+  { redact_unclosed("%[parameters: ", "%]") },
 }
 
 local function sanitize(s)
@@ -200,6 +277,9 @@ local function sanitize(s)
       end
       lower = out:lower()
     end
+  end
+  for _, rule in ipairs(EXTRA_RULES) do
+    out = rule[1](out)
   end
   return out, out ~= s
 end
