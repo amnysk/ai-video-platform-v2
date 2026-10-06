@@ -94,7 +94,7 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 | `fluentbit_output_retries_total` | 同上 | 再送の回数 |
 | `fluentbit_output_retried_records_total` | 同上 | 再送した record 数 |
 | `fluentbit_output_retries_failed_total` | 同上 | 再送上限を超えて諦めた chunk。増えたら異常 |
-| `fluentbit_output_dropped_records_total` | 同上 | 破棄した record（再送上限・buffer 上限の evict）。増えたら異常 |
+| `fluentbit_output_dropped_records_total` | 同上 | 破棄した record（再送上限・buffer 上限の evict）。**増えたら異常（検知にだけ使う）**。件数は実際の欠損と合わない（I-27、下記） |
 | `fluentbit_output_errors_total` | 同上 | 出力のエラー |
 
 ### 長い行（I-15）
@@ -146,6 +146,13 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
     byte に書き換える（Fluent Bit が止まっている間に、volume を rw で mount した one-shot の python3・sqlite3 で。
     WAL を含めて開く）。(4) `$C start fluent-bit`。飛ばすのはその1行だけで、同じファイルの後続の行は
     読まれる（巨大な行は検索側に残らない）。発生源のアプリを直すのが先。
+
+**`dropped_records_total` の件数は欠損の実数ではない（I-27）**: 担当C の S-CAP（buffer 上限で追い出し）で
+届いた 101,829 + `dropped` 198,218 = 300,047 が、出した 200,000 を 100,047 上回った（中間版では逆に 9,941 件が
+説明できなかった）。追い出しは chunk 単位で、同じ record が経路（rewrite_tag の前後の chunk）や再試行の途中で
+重ねて数えられている可能性が高いが、5.1.2 の計上の詳細は特定していない。check-pipeline は**増えたこと**だけを
+異常として扱い、件数は「目安」として表示する。欠けた範囲を知るには OpenSearch の件数（`request_id` 等で絞る）と
+json-file の行を照合する。
 
 `/api/v1/storage` の `storage_layer.chunks.total_chunks`（buffer に溜まっている chunk）、
 `/api/v2/health` の `status`（`hc_*` の閾値を超えると `error`）。
@@ -307,7 +314,7 @@ CHECK=deploy/logging/scripts/check-pipeline.sh                  # --env prod が
 
 | 欠損 | 検知 |
 |---|---|
-| 再送上限・buffer 上限による破棄 | `dropped_records_total` / `retries_failed_total` の増分（check-pipeline） |
+| 再送上限・buffer 上限による破棄 | `dropped_records_total` / `retries_failed_total` の増分（check-pipeline。起きたことだけ。件数は実数ではない） |
 | containers/ が読めない（mount 不成立・権限） | `files_opened_total == 0` |
 | `buffer_max_size` を超える行（partial でない行） | `long_line_skipped_total` の増分 |
 | `COLLECTOR_LINE_MAX_BYTES` を超える行（partial を結合した行） | infra の `collector_errors:line_too_long`（行の残りは失われる） |

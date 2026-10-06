@@ -447,3 +447,15 @@ def test_pem_block_closes_only_at_an_end_header() -> None:
     lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
     assert '"%-%-%-%-%-END[%u ]*PRIVATE KEY%-%-%-%-%-"' in lua
     assert '"PRIVATE KEY%-%-%-%-%-", C.redacted' not in lua
+
+
+def test_check_pipeline_uses_dropped_records_only_as_a_signal() -> None:
+    """``dropped_records_total`` は実際の欠損件数と合わない（I-27）。
+
+    届いた + dropped が出力を上回った。
+
+    増えたことの検知にだけ使い、件数を欠損の実数として報告しない。
+    """
+    src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
+    assert "件数は欠損の実数ではない" in src
+    assert "破棄 +$d_dropped records" not in src

@@ -63,6 +63,9 @@ Fluent Bit 5.1.2、2026-09-30）。
 - **app の lag の既定が watchdog の周期 + 30分以上**（I-13）: 静かな日の app 系統は毎時の watchdog の行
   だけで、既定が周期と同じだと確認のたびに誤報しうる。周期は `contracts/schedule_guard.py` の
   `DEFAULT_WATCHDOG_CRON` から読む（同じ値を書き直さない）。
+- **check-pipeline が `dropped_records_total` を件数として報告しない**（I-27）: 担当C の実測で、届いた件数 +
+  `dropped` が出力した件数を 10 万件上回った。件数を欠損の実数として載せると、照合で誤った結論を出す。
+  増えたことの検知にだけ使う文言であることを固定する。
 - **試験用 ISM は override からだけ使われる**: 分単位で削除する policy が本番に入ると検索用ログが数分で消える。
 
 ## 3. `tests/integration/test_logging_collector_lua.py`
