@@ -38,6 +38,7 @@ C の作業メモでは ID が F-B1 と重複していたため、ここで I �
 | I-15 | High | B | Fluent Bit tail の stall: Docker が partial に分けた1行が結合後 `buffer_max_size`（256k）を超えると、tail が CPU 100% のまま全ファイルの読み取りを止める。health ok・`long_line_skipped` 0 で、lag でしか見えない。業務影響は無いがログ収集が無言で全停止する | 未修正 |
 | I-16 | Low | B | 自己署名 CA に keyUsage が無く、Python 3.13 の `VERIFY_X509_STRICT` で拒否される（試験用 search-assert.py は strict だけ外して回避） | 未修正 |
 | I-17 | Medium | B | check-pipeline が位置 DB の offset と json-file サイズの差（追いつき）を見ない。deploy 前確認が試験用 `catchup.py` 頼み | 未修正 |
+| I-20 | Low | A | （担当C V-3）並行二重起動の upload 試験で動画1本に `upload.succeeded` が2件（どちらも `reconciled_by=upload_response`）。業務は1本（`videos_created` 1・予約1つ）。2件目は事実と違う記録: 負けた試行が台帳の spent を読んで同じ video id を no-op で再記録し、succeeded と `reservation.spent` を重ねて出していた | 修正（9780b54、A。succeeded はこの試行が spent を書いた時だけ、他は `upload.reused_existing`（`found_at=record`）、`reservation.spent` は no-op で出さない）。D の再確認待ち |
 
 ## 未実施
 - 担当C フェーズ2: 途中まで実施（integration を1ファイルずつ隔離 runner で実行、故障注入・ISM 監視・資源測定の一部）。中断のため `verification-results.md` 未作成。最終統合版で再実行する。

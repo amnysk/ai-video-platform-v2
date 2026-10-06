@@ -1036,6 +1036,19 @@ class ProviderReservationRepository:
 
         同じ結果での再記録は no-op。異なる結果・abandoned への記録は ``InvalidTransitionError``。
         """
+        reservation, _ = await self.record_upload_result_once(
+            reservation_id, result_ref, reconciled_by=reconciled_by
+        )
+        return reservation
+
+    async def record_upload_result_once(
+        self, reservation_id: uuid.UUID | str, result_ref: str, *, reconciled_by: str
+    ) -> tuple[ProviderReservation, bool]:
+        """``record_upload_result`` と同じ。加えて**この呼び出しが** ``spent`` にしたかを返す。
+
+        ``False`` は同じ結果が既に記録されていた（並行する試行が先に記録した等）no-op。
+        ``reservation.spent`` は実際に書いた時だけ出す（レビュー I-20。no-op で2件目を出さない）。
+        """
         if not result_ref:
             raise ValueError("result_ref must be non-empty")
         target = transition_reservation(
@@ -1044,7 +1057,7 @@ class ProviderReservationRepository:
         if isinstance(target, Rejected):  # pragma: no cover - 表の定義で起きない
             raise InvalidTransitionError(target.reason)
         table = ProviderReservationRow
-        await self._session.execute(
+        written = await self._session.execute(
             update(table)
             .where(
                 table.id == _as_uuid(reservation_id),
@@ -1059,6 +1072,7 @@ class ProviderReservationRepository:
             )
             .execution_options(synchronize_session=False)
         )
+        changed = getattr(written, "rowcount", 0) == 1
         fresh = await self._session.get(table, _as_uuid(reservation_id), populate_existing=True)
         if fresh is None:
             raise InvalidTransitionError(f"reservation not found: {reservation_id}")
@@ -1067,15 +1081,16 @@ class ProviderReservationRepository:
             and fresh.provider_result_ref == result_ref
         ):
             reservation = _to_reservation(fresh)
-            _defer_reservation(
-                self._session,
-                EventName.RESERVATION_SPENT,
-                "spent",
-                reservation,
-                reconciled_by=reservation.reconciled_by,
-                video_id=result_ref,
-            )
-            return reservation
+            if changed:
+                _defer_reservation(
+                    self._session,
+                    EventName.RESERVATION_SPENT,
+                    "spent",
+                    reservation,
+                    reconciled_by=reservation.reconciled_by,
+                    video_id=result_ref,
+                )
+            return reservation, changed
         raise InvalidTransitionError(
             f"reservation {reservation_id} is {fresh.status} with a different or missing "
             "result ref; refusing to record another result"

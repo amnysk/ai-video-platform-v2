@@ -101,6 +101,39 @@ async def test_dispatch_job_ref_and_spent_follow_the_ledger(session_factory) -> 
     assert spent["attributes"]["reconciled_by"] == "evidence"
 
 
+async def test_rerecording_the_same_upload_result_is_a_silent_no_op(session_factory) -> None:
+    """並行する upload の2試行が同じ video id を記録すると、2つ目は no-op（レビュー I-20）。
+    ``reservation.spent`` は実際に spent にした1回だけ出し、呼び出し側には書いたかを返す
+    （書いていない試行は ``upload.succeeded`` ではなく ``upload.reused_existing`` を出す）。"""
+    episode_id = await _episode(session_factory)
+    async with session_factory() as session:
+        reservation = await ProviderReservationRepository(session).reserve(
+            episode_id=episode_id,
+            provider=ProviderCall.YOUTUBE_UPLOAD,
+            idempotency_key=f"k-{uuid.uuid4().hex}",
+            input_hash="u" * 64,
+            round=1,
+        )
+        await session.commit()
+    with capture_json() as logs:
+        async with session_factory() as session:
+            repo = ProviderReservationRepository(session)
+            first, wrote = await repo.record_upload_result_once(
+                reservation.id, "vid-1", reconciled_by="upload_response"
+            )
+            await session.commit()
+        async with session_factory() as session:
+            repo = ProviderReservationRepository(session)
+            again, wrote_again = await repo.record_upload_result_once(
+                reservation.id, "vid-1", reconciled_by="status_query"
+            )
+            await session.commit()
+    assert wrote and not wrote_again
+    assert first.provider_result_ref == again.provider_result_ref == "vid-1"
+    assert again.reconciled_by == "upload_response"  # 先に書いた試行の記録のまま
+    assert logs.names() == ["reservation.spent"]
+
+
 async def test_artifact_stored_and_superseded(session_factory) -> None:
     episode_id = await _episode(session_factory)
 

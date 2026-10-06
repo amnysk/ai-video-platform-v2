@@ -461,6 +461,10 @@ class UploadActivities:
         await self._download_verified(final, path)
 
         reservation = await self._reserve(episode_id, upload_key, job_id)
+        #: この試行が送った（または照会で確かめた）結果を、この試行が台帳に spent として書いたか。
+        #: そうでなければ ``upload.succeeded`` ではなく ``upload.reused_existing``（レビュー I-20:
+        #: 並行2試行で負けた側も succeeded を出し、動画1本に2件になっていた）
+        recorded_here = False
         if reservation.status is ReservationStatus.SPENT:
             # round 2 の事前照合で見つかった / 並行する試行が先に記録した
             outcome = _spent_outcome(reservation)
@@ -478,26 +482,35 @@ class UploadActivities:
             )
             async with self._session_factory() as session:
                 # 受領より先に video id と spent を commit（crash 後も再投稿なしで受領を作れる）
-                reservation = await ProviderReservationRepository(session).record_upload_result(
+                repo = ProviderReservationRepository(session)
+                reservation, recorded_here = await repo.record_upload_result_once(
                     reservation.id, outcome.video_id, reconciled_by=outcome.reconciled_by
                 )
                 await session.commit()
-        with log_guard():
-            emit(
-                logger,
-                EventName.UPLOAD_SUCCEEDED,
-                logging.INFO,
-                "uploaded episode=%s video=%s reconciled_by=%s",
-                episode_id,
-                outcome.video_id,
-                outcome.reconciled_by,
-                episode_id=episode_id,
-                job_id=job_id,
-                reservation_id=reservation.id,
-                stage=LogStage.UPLOAD.value,
-                outcome=Outcome.SUCCEEDED.value,
-                attributes={"video_id": outcome.video_id, "reconciled_by": outcome.reconciled_by},
-            )
+            if not recorded_here:
+                # 並行する試行が先に同じ video id を記録していた（_drive が台帳の spent を読んだ、
+                # または同じ session の完了を照会で見た）。この試行は動画を作っていない
+                _reused_existing(episode_id, job_id, reservation.id, outcome, "record")
+        if recorded_here:
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.UPLOAD_SUCCEEDED,
+                    logging.INFO,
+                    "uploaded episode=%s video=%s reconciled_by=%s",
+                    episode_id,
+                    outcome.video_id,
+                    outcome.reconciled_by,
+                    episode_id=episode_id,
+                    job_id=job_id,
+                    reservation_id=reservation.id,
+                    stage=LogStage.UPLOAD.value,
+                    outcome=Outcome.SUCCEEDED.value,
+                    attributes={
+                        "video_id": outcome.video_id,
+                        "reconciled_by": outcome.reconciled_by,
+                    },
+                )
         return await self._finish(
             episode_id, job_id, final, metadata, upload_key, reservation, outcome, called=True
         )
