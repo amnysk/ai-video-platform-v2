@@ -159,8 +159,10 @@ def test_upgrade_adds_only_research_tables_and_leaves_production_tables_alone(
         )
         for t in PRODUCTION_TABLES
     }
-    _config_after, engine = _upgraded(tmp_path)
-    after = inspect(engine)
+    # 0015 の差分を測る（head ではない。後続の migration が足す表を 0015 の差分に数えない）
+    after_url = f"sqlite:///{tmp_path / 'after.db'}"
+    command.upgrade(_config(after_url), "0015")
+    after = inspect(create_engine(after_url))
     assert set(after.get_table_names()) - before_tables == RESEARCH_TABLES
     for table in PRODUCTION_TABLES:
         shape = (
