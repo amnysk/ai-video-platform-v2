@@ -417,3 +417,16 @@ Replayer で replay。非決定にならず1件も発行しない）
 / `tests/unit/test_log_old_history_replay.py::test_the_old_histories_cover_every_stage_workflow`
 / `tests/architecture/test_logging_boundaries.py::test_workflow_event_names_and_stages_are_contract_vocabulary`
 / `tests/unit/test_pipeline_workflows.py`（既存の履歴 fixture の replay がログ発行を足した後も通る）
+
+## N. 判断記録と介入（ADR-0041）
+
+### INV-46 新方式（mode != legacy）では、必須記録の無い有料生成・投稿を開始しない
+`episode_controls.mode` が `legacy` 以外の Episode では、有料 dispatch・投稿の開始許可
+（`mark_dispatched` / `mark_upload_dispatched` の同じ transaction の dispatch gate
+`infrastructure.intervention.gate.check_dispatch_allowed`）が、現行の script・storyboard の各 revision に
+生成した `agent_runs`（`output_revision_id`）か人の変更を表す `decision_records`（`result_revision_id`）が
+結び付いていることを検査し、欠けていれば `MissingDecisionRecordError` で拒否する（予約は未 dispatch のまま）。
+`episode_controls` 行の無い Episode・`legacy` の Episode は従来どおり（gate は何も書かない）。
+**機械検査**: `tests/unit/test_intervention_gate.py::test_new_mode_requires_a_record_for_the_current_script_and_storyboard`
+/ `tests/unit/test_intervention_gate.py::test_legacy_mode_with_a_row_does_not_require_records`
+/ `tests/unit/test_intervention_gate.py::test_an_episode_without_a_control_row_dispatches_and_nothing_is_written`
