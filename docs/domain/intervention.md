@@ -128,8 +128,15 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
 ## 6. 判断記録と必須記録
 - `agent_runs`: 役割（`producer` / `writer_director` / `reviewer`）、model 識別子（設定値。CLI の実モデルは未検証と明記）、
   `prompt_version`、ContextSnapshot（実際に渡した入力・参照した成果物 revision の固定版。MinIO
-  `agent-runs/{episode_id}/{agent_run_id}/context.json` と sha256）、request／response の保存参照、
+  `agent-runs/{episode_id または topic_plan_id}/{agent_run_id}/context-{sha256 先頭16}.json` と sha256。
+  名前に内容の sha256 を含めるのは、Activity の再実行で内容が変わっても不変性（INV-11）に当たらないため）、
+  request／response の保存参照（同じ接頭辞の `request-…json` / `response-…json`）、
   `tool_invocations`（予約 ID・research call ID を参照）、token usage（取得できなければ NULL。0 で埋めない）。
+  捕捉は `infrastructure/intervention/capture.py`。**`mode != legacy` の Episode だけ**が記録し（行の無い
+  Episode・日次は何も書かない）、記録できなければ Activity を `needs_input` で失敗させる（成果物の
+  `artifact_metadata` と agent_run・判断記録は同じ transaction）。再開（保存済みの生出力から続行）では
+  prompt を同じ入力・同じ版から組み直して `prompt_source=re_rendered` と記録し、組み直せない工程
+  （storyboard の prompt は adapter の内側）は `unavailable` と記録する（補完しない）。
 - `decision_records`: 問い・実際の候補（無ければ1件）・選択・`rationale_kind`（`reported` / `post_hoc_summary` /
   `human` / `rule`）・根拠参照・留保・制約・対象 revision・結果 revision・評価の種別（`self_assessed` / `measured` / `rule`）。
   **候補・スコアを補完しない。** 入力 snapshot に無い資料を根拠に挙げたら `evidence_check=unverified_ref` を付ける。

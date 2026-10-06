@@ -31,3 +31,12 @@
 | `test_derived_links_are_written_once_for_existing_upstreams` | 新方式の `derived_from` は実在する revision だけを冪等に書く | DB（FK）込みで | 存在しない revision への辺、重複辺 |
 | `test_old_episodes_get_the_same_edges_by_reading_without_writing` | 古い Episode は読み取りで同じ辺を導出し、何も書かない | DB 込みで書き込みが無いことを数える | 読み取りが表を書き換える |
 | `test_unreadable_artifacts_are_reported_not_skipped_silently` | 読めない成果物は「読めない」と返す | 空の store で | 辺が無いことと読めないことの混同 |
+
+## 台本 Activity の記録（`tests/unit/test_intervention_script_capture.py`）
+
+| テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
+|---|---|---|---|
+| `test_legacy_episodes_get_no_capture_and_no_records[None / legacy]` | 日次・古い Episode（行なし / mode=legacy）の挙動・履歴・出力を変えない（ADR-0041 Decision、設計 §2） | 実 Activity を Fake 生成器で通し、新しい表の行数と store の中身を数える | legacy でも snapshot・行・制御行を書く（日次の DB と MinIO を汚す） |
+| `test_new_method_records_the_run_and_the_decision_with_the_artifact` | 新方式では実際の prompt・生出力・予約 ID を記録し、判断記録が成果物 revision と snapshot を指す | Activity 全体（予約→呼び出し→成果物→記録）の順序を通す | prompt の取り違え、結果 revision の欠落、tool 参照の欠落 |
+| `test_capture_failure_fails_the_activity_and_records_no_artifact` | 記録が無ければ下流（有料生成）へ流さない。再開は LLM を呼び直さず、prompt は組み直して明記 | 故障注入（`agent-runs/` への put だけ失敗）＋同じ round の再開 | 記録失敗を握りつぶして成果物だけ残す／再開で LLM を二重に呼ぶ／組み直した prompt を captured と偽る |
+| `test_reusing_an_existing_artifact_does_not_add_runs` | 同じ入力の再実行（再利用）は実行記録を増やさない | 同じ Activity を2回 | 再利用のたびに agent_run・判断記録が増える |
