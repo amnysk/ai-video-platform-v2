@@ -28,7 +28,10 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
   （uid 1000 では1ファイルも読めず無音。ADR-0040 §6）。外への経路の無い `internal` network にだけいる。
 - 書き込み先の index は Fluent Bit 設定の固定値。レコードの `environment` で振り分けない。
 - 型修復: 契約の型に合わない値は `attributes.collector_moved` へ退避し、名前を `collector_errors` に残す。
-  未知のトップレベルキー・アプリが書いた Collector のフィールドも同じ。`@timestamp` が不正・欠落なら
+  未知のトップレベルキー・アプリが書いた Collector のフィールドも同じ。数値フィールドの非有限値
+  （文字列の `"inf"`・`"nan"`・`"1e400"` 等。Lua の `tonumber` が inf / nan にする）も型不整合として退避する
+  （I-18: 数値のまま送ると OpenSearch が bulk を chunk ごと拒否し、同じ chunk の正常な行まで届かず、
+  `retried_records_total` だけが増えて破棄・エラーの metrics に出なかった。担当C の隔離試験で 41 行中 0 件）。`@timestamp` が不正・欠落なら
   Docker の時刻に置き換えて `@timestamp_replaced`。`{` で始まるが JSON として壊れた行は
   `log_source=unstructured`・`json_parse_failed` で **infra 系統**へ（`avp_app` が印を付け、2つ目の rewrite_tag が
   `avp.infra` として流し直す。I-19: 修正前は app の index に契約の必須フィールド無しで入った）。

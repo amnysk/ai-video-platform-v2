@@ -293,6 +293,11 @@ local function all_scalars(t)
 end
 
 -- (ok, value)。ok=false なら退避する
+-- 有限の数か。inf・nan は JSON にできず、OpenSearch が bulk を chunk ごと拒否する（I-18）
+local function is_finite(n)
+  return n == n and n ~= math.huge and n ~= -math.huge
+end
+
 local function coerce(ftype, v)
   local tv = type(v)
   if ftype == "keyword" then
@@ -316,10 +321,10 @@ local function coerce(ftype, v)
     end
     return false, v
   elseif ftype == "integer" or ftype == "long" or ftype == "double" then
-    if tv == "number" then
-      return true, v
-    elseif tv == "string" and tonumber(v) ~= nil then
-      return true, tonumber(v)
+    -- tonumber は "inf"・"nan"・"1e400" を非有限の数にする。数値として送らず退避する（I-18）
+    local n = (tv == "number") and v or (tv == "string" and tonumber(v)) or nil
+    if n ~= nil and is_finite(n) then
+      return true, n
     end
     return false, v
   elseif ftype == "boolean" then
@@ -332,7 +337,7 @@ local function coerce(ftype, v)
     end
     return false, v
   elseif ftype == "date" then
-    if tv == "string" or tv == "number" then
+    if tv == "string" or (tv == "number" and is_finite(v)) then
       return true, v
     end
     return false, v

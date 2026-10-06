@@ -334,7 +334,30 @@ def test_sanitize_rules_keep_redacting_after_the_linear_rewrite(tmp_path: Path) 
     assert by_id["pem"]["message"].endswith(" ok")
 
 
-# ---------------------------------------------------------- 壊れた JSON（I-19）
+# ---------------------------------------------------------- 非有限値・壊れた JSON（I-18, I-19）
+
+
+def test_non_finite_numbers_are_moved_aside(tmp_path: Path) -> None:
+    """数値フィールドの "inf"/"nan" を数値として送らない（I-18）。
+
+    Lua の tonumber は "inf"・"nan"・"1e400" を非有限の数にする。OpenSearch はそれを含む bulk を
+    chunk ごと拒否し、同じ chunk の正常な行まで届かなかった（担当C の隔離試験で 41 行中 0 件、
+    再送は metrics の破棄・エラーに出ない）。既存の型不整合と同じく退避する。
+    """
+    bad = {"inf": "inf", "ninf": "-inf", "nan": "nan", "big": "1e400", "hexinf": "-INF"}
+    lines = [_docker_line(_app(event_id=f"nf-{k}", duration_ms=v)) for k, v in bad.items()]
+    lines.append(_docker_line(_app(event_id="nf-ok", duration_ms="12", scene_revision=3)))
+    got = _run(tmp_path, lines, by_tag=True)
+    by_id = {r.get("event_id"): r for r in got if r.get("event_id")}
+    for k, v in bad.items():
+        r = by_id[f"nf-{k}"]
+        assert "duration_ms" not in r, k
+        assert "duration_ms" in r["collector_errors"], k
+        assert r["attributes"]["collector_moved"]["duration_ms"] == v, k
+        assert r["_tag"] == "avp.app"
+    ok = by_id["nf-ok"]
+    assert ok["duration_ms"] == 12 and ok["scene_revision"] == 3
+    assert "collector_errors" not in ok
 
 
 def test_broken_json_goes_to_the_infra_series(tmp_path: Path) -> None:

@@ -101,6 +101,12 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
 - **線形に書き直した規則が同じものを伏せる**（I-15）: userinfo（`+` を含む scheme、空の user）、URL の
   query・fragment、SQL の `[parameters: …]`（閉じていないものも）、PEM（END の無いものも）、JWT。
   書き直しで伏せ漏れが出ないことを、値が出力に残らないことで確かめる。
+- **数値フィールドの非有限値（`"inf"`・`"-inf"`・`"nan"`・`"1e400"`・`"-INF"`）を数値として送らない**（I-18）:
+  Lua の `tonumber` はこれらを inf / nan にし、Fluent Bit はそれを JSON にできない値のまま bulk に書く
+  （修正前はこの試験の stdout 自体が JSON として読めなかった）。OpenSearch は bulk を chunk ごと拒否し、
+  同じ chunk の正常な行まで再送の末に失われた（担当C の隔離試験で 41 行中 0 件）。既存の型不整合と同じく
+  `attributes.collector_moved` へ退避し `collector_errors` に名前を残すこと、有限の文字列数値は従来どおり
+  数値にすることを固定する。
 - **`{` で始まるが JSON として壊れた行は infra 系統へ**（I-19）: ADR-0040 §1 の振り分け（JSON でない行は infra）に
   対し、修正前は app の index に契約の必須フィールド無しで入った（担当C の隔離試験）。行き先の系統は stdout の
   出力では分からないので、`_run(by_tag=True)` が tag ごとのファイル出力を読んで `_tag` を付ける。既存の
