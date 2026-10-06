@@ -79,6 +79,15 @@ pipeline:
       call: avp_app
       type_array_key: collector_errors
 
+    # JSON として解釈できなかった app の行を infra 系統へ（ADR-0040 §1。I-19）。avp_app が印を付ける
+    - name: rewrite_tag
+      match: avp.app
+      rule:
+        - $_avp_reroute ^infra$ avp.infra false
+      emitter_name: avp_reroute_emitter
+      emitter_storage.type: filesystem
+      emitter_mem_buf_limit: 16M
+
     - name: lua
       match: avp.infra
       script: /fluent-bit/etc/avp/lua/avp_collector.lua

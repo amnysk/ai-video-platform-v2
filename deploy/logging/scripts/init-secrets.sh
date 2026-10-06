@@ -56,8 +56,13 @@ key() { openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/nu
 
 if [[ ! -s "$pki/ca.pem" ]]; then
   key "$pki/ca.key"
+  # CA の拡張は明示する（I-16）: 無いと Python 3.13 の既定 VERIFY_X509_STRICT が拒否する
   openssl req -x509 -new -key "$pki/ca.key" -sha256 -days 3650 \
-    -subj "/OU=avp2-logging/CN=avp2-logging-ca" -out "$pki/ca.pem"
+    -subj "/OU=avp2-logging/CN=avp2-logging-ca" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    -addext "subjectKeyIdentifier=hash" \
+    -out "$pki/ca.pem"
   echo "created $pki/ca.pem"
 fi
 
@@ -77,11 +82,11 @@ issue() {
 if [[ ! -s "$pki/node.pem" || $ROTATE_NODE -eq 1 ]]; then
   # SAN: compose のサービス名（Fluent Bit / Dashboards が名前で検証する）と loopback（ホストの確認用）
   issue node opensearch \
-    "subjectAltName=DNS:opensearch,DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth,clientAuth\n"
+    "subjectAltName=DNS:opensearch,DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth,clientAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n"
 fi
 if [[ ! -s "$pki/admin.pem" ]]; then
   issue admin avp2-logging-admin \
-    "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=clientAuth\n"
+    "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=clientAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n"
 fi
 chmod 600 "$pki"/*
 

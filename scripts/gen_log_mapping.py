@@ -36,6 +36,7 @@ if str(ROOT) not in sys.path:
 from contracts.log_contract import (  # noqa: E402
     APP_LOG_LABEL,
     APP_LOG_LABEL_VALUE,
+    COLLECTOR_LINE_MAX_BYTES,
     INFRA_FIELD_NAMES,
     KEYWORD_MAX_CHARS,
     LOG_FIELDS,
@@ -124,6 +125,7 @@ def render_lua_types() -> str:
         f"  schema_version = {LOG_SCHEMA_VERSION},",
         f"  keyword_max_chars = {KEYWORD_MAX_CHARS},",
         f"  unstructured_line_max_bytes = {UNSTRUCTURED_LINE_MAX_BYTES},",
+        f"  collector_line_max_bytes = {COLLECTOR_LINE_MAX_BYTES},",
         f"  app_label = {_lua_str(APP_LOG_LABEL)},",
         f"  app_label_value = {_lua_str(APP_LOG_LABEL_VALUE)},",
         f"  unknown = {_lua_str(UNKNOWN)},",

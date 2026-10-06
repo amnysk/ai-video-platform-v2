@@ -33,10 +33,18 @@ FAULT_REPORT_ENV = "AVP_TEST_FAULT_REPORT"
 
 #: 注入点 → 発火回数。``make_record.<LEVEL>`` はレベル別
 FAULTS: dict[str, int] = {}
+#: テストファイル（repo 相対）→ 発火回数。suite ごとに注入が経路へ届いたかを見る（レビュー I-12）
+FAULTS_BY_FILE: dict[str, int] = {}
+#: report の中で ``FAULTS_BY_FILE`` を置くキー（注入点の名前と衝突しない）
+BY_FILE_KEY = "_by_file"
+_CURRENT_FILE: dict[str, str | None] = {"path": None}
 
 
 def _fire(point: str) -> None:
     FAULTS[point] = FAULTS.get(point, 0) + 1
+    current = _CURRENT_FILE["path"]
+    if current is not None:
+        FAULTS_BY_FILE[current] = FAULTS_BY_FILE.get(current, 0) + 1
     raise InjectedLoggingFault(f"injected: {point}")
 
 
@@ -161,12 +169,16 @@ def broken_logging() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _break_logging_everywhere() -> Iterator[None]:
+def _break_logging_everywhere(request: pytest.FixtureRequest) -> Iterator[None]:
     if os.environ.get(BREAK_LOGGING_ENV) != "1":
         yield
         return
-    with break_logging():
-        yield
+    _CURRENT_FILE["path"] = os.path.relpath(request.node.path, request.config.rootpath)
+    try:
+        with break_logging():
+            yield
+    finally:
+        _CURRENT_FILE["path"] = None
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -193,4 +205,4 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         import json
 
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump(FAULTS, fh, sort_keys=True)
+            json.dump({**FAULTS, BY_FILE_KEY: FAULTS_BY_FILE}, fh, sort_keys=True)

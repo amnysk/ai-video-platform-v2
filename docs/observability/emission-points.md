@@ -32,7 +32,7 @@
 | `provider.job.state_changed` | `infrastructure/production/paid_job.py:PaidJobRunner._await_output` | 試行ごとの最初の観測と状態の変化だけ |
 | `provider.auth_incident.recorded` | `infrastructure/db/repositories.py:ProviderAuthIncidentRepository.record` | commit 後 |
 | `provider.call.suppressed` | `infrastructure/production/paid_job.py:PaidJobRunner._check_auth_outage_gate` | |
-| `reservation.reserved` / `dispatched` / `job_ref_recorded` / `spent` | `infrastructure/db/repositories.py:ProviderReservationRepository.reserve` / `mark_dispatched` / `mark_upload_dispatched` / `record_provider_job_ref` / `record_upload_session` / `mark_spent` / `record_upload_result`（`_defer_reservation`） | commit 後。書き手（paid_job・upload・planning・storyboard・scene_recovery）を問わない |
+| `reservation.reserved` / `dispatched` / `job_ref_recorded` / `spent` | `infrastructure/db/repositories.py:ProviderReservationRepository.reserve` / `mark_dispatched` / `mark_upload_dispatched` / `record_provider_job_ref` / `record_upload_session` / `mark_spent` / `record_upload_result`・`record_upload_result_once`（`_defer_reservation`） | commit 後。書き手（paid_job・upload・planning・storyboard・scene_recovery）を問わない。同じ video id の再記録（no-op）では出さない（I-20） |
 | `reservation.resumed` / `reservation.blocked` | `infrastructure/production/paid_job.py:_resumed` / `_blocked` / `_check_input_fetch_retry` / `_check_rejected_image_gate` | 判断（DB の変更ではない） |
 | `artifact.stored` / `artifact.superseded` | `infrastructure/db/repositories.py:ArtifactMetadataRepository._defer_stored` / `_supersede_current` | commit 後 |
 | `artifact.reused` | `infrastructure/production/paid_job.py:PaidJobRunner._submit` | 完全性検証（ADR-0033）の後 |
@@ -43,8 +43,8 @@
 | `episode.resume.requested` / `rejected` / `started` | `apps/api/routers/episodes.py:resume_episode` / `_resume_rejected` | |
 | `render.validation.passed` / `render.validation.failed` | `workers/render/activities.py:_log_validation` | |
 | `upload.started` / `upload.failed` | `workers/upload/activities.py:UploadActivities.upload_final_video` | |
-| `upload.succeeded` | `workers/upload/activities.py:UploadActivities._upload` | |
-| `upload.reused_existing` | `workers/upload/activities.py:_reused_existing` | YouTube を呼ばない |
+| `upload.succeeded` | `workers/upload/activities.py:UploadActivities._upload` | 動画1本に1件: この試行が得た video id を**この試行が**台帳に spent として書いた時だけ（`record_upload_result_once` が書いたと返した時）。並行する試行が先に書いていた・予約の時点で spent だった試行は `upload.reused_existing`（レビュー I-20） |
+| `upload.reused_existing` | `workers/upload/activities.py:_reused_existing` | YouTube へ送らない（送っていない）。`attributes.found_at`: `ledger`（開始時に spent）/ `reserve`（予約・マーカー照合で spent）/ `record`（並行する試行が先に同じ video id を記録） |
 | `upload.skipped` | `workers/pipeline/workflows.py:EpisodePipelineWorkflow.run` | upload gate |
 | `research.request.started` / `research.request.finished` | `workers/research/activities.py:ResearchActivities.execute` / `_finished` | `research_request_id` |
 | `anomaly.recorded` | `infrastructure/observability/anomaly_notifier.py:LoggingAnomalyNotifier.notify` | `OPERATIONAL_ANOMALY anomaly=` の文言は維持 |

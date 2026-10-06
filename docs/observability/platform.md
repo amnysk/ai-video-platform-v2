@@ -14,9 +14,11 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
   → Fluent Bit（compose project avp2-logging）
        tail <containers>/*/*-json.log*（位置 DB・filesystem buffer）
        Lua avp_route   : attrs の compose project が AVP_LOG_TARGET_PROJECT と完全一致しない行は捨てる
+                         COLLECTOR_LINE_MAX_BYTES を超える行は切って infra（line_too_long）
                          avp.logging=app かつ stdout かつ `{` で始まる行 → app、それ以外 → infra
        parser(json)    : app の行を解釈
        Lua avp_app     : 型修復・@timestamp・event_id の保証・追加の安全化・Collector フィールド
+                         JSON として解釈できなかった行は印を付け、rewrite_tag で infra へ流し直す
        Lua avp_infra   : 安全化・UNSTRUCTURED_LINE_MAX_BYTES で切り詰め
   → OpenSearch（write alias avp-app-<env>-write / avp-infra-<env>-write、ingest pipeline で ingested_at）
   → Dashboards（使う時だけ起動）
@@ -26,11 +28,15 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
   （uid 1000 では1ファイルも読めず無音。ADR-0040 §6）。外への経路の無い `internal` network にだけいる。
 - 書き込み先の index は Fluent Bit 設定の固定値。レコードの `environment` で振り分けない。
 - 型修復: 契約の型に合わない値は `attributes.collector_moved` へ退避し、名前を `collector_errors` に残す。
-  未知のトップレベルキー・アプリが書いた Collector のフィールドも同じ。`@timestamp` が不正・欠落なら
-  Docker の時刻に置き換えて `@timestamp_replaced`。JSON として壊れた行は `log_source=unstructured`・
-  `json_parse_failed`。
-- **app 系統の記録は必ず `event_id`（= `_id`）を持つ**。_id にできない値（512 bytes 超・制御文字）と、
-  JSON でない行には Collector が `collector-…` を付ける。Fluent Bit 5.1.2 は `id_key` の値が無い record に
+  未知のトップレベルキー・アプリが書いた Collector のフィールドも同じ。数値フィールドの非有限値
+  （文字列の `"inf"`・`"nan"`・`"1e400"` 等。Lua の `tonumber` が inf / nan にする）も型不整合として退避する
+  （I-18: 数値のまま送ると OpenSearch が bulk を chunk ごと拒否し、同じ chunk の正常な行まで届かず、
+  `retried_records_total` だけが増えて破棄・エラーの metrics に出なかった。担当C の隔離試験で 41 行中 0 件）。`@timestamp` が不正・欠落なら
+  Docker の時刻に置き換えて `@timestamp_replaced`。`{` で始まるが JSON として壊れた行は
+  `log_source=unstructured`・`json_parse_failed` で **infra 系統**へ（`avp_app` が印を付け、2つ目の rewrite_tag が
+  `avp.infra` として流し直す。I-19: 修正前は app の index に契約の必須フィールド無しで入った）。
+- **app 系統の記録は必ず `event_id`（= `_id`）を持つ**。_id にできない値（512 bytes 超・制御文字）・
+  欠けた値には Collector が `collector-…` を付ける。Fluent Bit 5.1.2 は `id_key` の値が無い record に
   直前の record の `_id` を使い回し、409（成功扱い）で黙って消える（実測）ため。
 - `@timestamp` は Lua が record から外して record の時刻にし、出力側（`time_key`）が1つだけ書く。
   重複キーは ingest pipeline 経由で bulk 全体を 400 にする（実測）。
@@ -63,7 +69,7 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 | tail `path` | `/containers/*/*-json.log*` | Collector 停止中に rotation したファイルも inode で続きから読む（実測 300/300、重複0） |
 | `read_from_head` | true（導入時だけ false） | 新しく見つかったファイルを先頭から読む。false だと停止中に作られたファイルを失う |
 | `db` / `db.locking` | `/fb-state/tail.db` / true | 位置の永続化 |
-| `buffer_max_size` / `skip_long_lines` | 256k / on | 既定 32k を超える行で監視が止まるのを防ぐ。skip は監視する |
+| `buffer_max_size` / `skip_long_lines` | 256k / on | 既定 32k を超える行で監視が止まるのを防ぐ。skip は監視する。Docker の partial を結合した後の行には効かない（下記） |
 | output `write_operation` / `id_key` | create / event_id | 同じ index 内の再送は 409（成功扱い）で重複しない |
 | `suppress_type_name` | on | OpenSearch 3.x は `_type` を 400 |
 | `tls.verify` / `tls.verify_hostname` | on / on | `verify_hostname` は既定 off |
@@ -91,6 +97,33 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 | `fluentbit_output_dropped_records_total` | 同上 | 破棄した record（再送上限・buffer 上限の evict）。増えたら異常 |
 | `fluentbit_output_errors_total` | 同上 | 出力のエラー |
 
+### 長い行（I-15）
+
+Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書く。tail の `buffer_max_size`・
+`skip_long_lines` は**ファイル上の1行（= partial 1つ）**に効き、`multiline.parser: docker` が結合した後の行には
+上限が無い（5.1.2 で実測: 300k の行が `long_line_skipped_total` 0 のまま filter へ届いた。service の
+`multiline_buffer_limit` は 32KiB にしても効かず、`multiline_truncated_total` も 0。旧来の `docker_mode` も同じ）。
+
+- 修正前: 結合後の 300k の行（英数字の長い連なり）で安全化の Lua パターンが O(n²) になり、Fluent Bit の
+  イベントループが CPU 100% のまま止まった。**全ファイルの読み取りが止まり**、health は ok、skip 0、buffer の
+  chunk も増えない（隔離環境で実測。担当C が発見、担当B が Fluent Bit 単体で再現）。
+- 対策1（上限）: Lua `avp_route` が `log` を `COLLECTOR_LINE_MAX_BYTES`（262144 = `buffer_max_size`、
+  `contracts/log_contract.py`）で切り、JSON として解釈せず infra 系統へ送る（`collector_errors=line_too_long`、
+  `truncated=true`、message は `UNSTRUCTURED_LINE_MAX_BYTES` まで）。行の残りは失われる。
+- 対策2（線形化）: 安全化の規則から、照合に失敗した開始位置ごとに末尾まで読み戻す形を除いた（userinfo・JWT・
+  SQL parameters・PEM・URL の query）。262144 bytes の病的な入力（英数字・hex・`eyJ`・`http://`・
+  `[parameters: ` の繰り返し等）で 1行 0.05 秒以下（修正前は 40k で 7.6 秒、O(n²)）。閉じていない
+  `[parameters: ` と PEM は行末まで伏せる（修正前は伏せなかった）。空の user（`redis://:pw@`）も伏せる。
+- 実測（Fluent Bit 単体、OpenSearch なし、出力 file、本物の fluent-bit.yaml と Lua）:
+
+  | | 長い行の後の同じファイルの行 | 別ファイル（0.2秒ごと）の行 | Fluent Bit の CPU |
+  |---|---|---|---|
+  | 修正前・300k | 0 / 100 | 停止（40秒間 0 行） | 100% |
+  | 修正後・300k（上限超え → infra、`line_too_long`） | 100 / 100 | 読み続けた（15秒で +75 行） | 1% 未満 |
+  | 修正後・200k（上限内 → app、message は `[REDACTED]`） | 100 / 100 | 読み続けた | 1% 未満 |
+
+- 観測: 切った行は infra の文書 `collector_errors:line_too_long` で検索できる。
+
 `/api/v1/storage` の `storage_layer.chunks.total_chunks`（buffer に溜まっている chunk）、
 `/api/v2/health` の `status`（`hc_*` の閾値を超えると `error`）。
 
@@ -105,6 +138,13 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 - **読み取り用の資格情報の決まった場所**（確認スクリプト・隔離試験が使う）:
   ユーザー `avp_viewer`、パスワード `<AVP_LOGGING_SECRETS_DIR>/viewer.pw`、CA `<AVP_LOGGING_SECRETS_DIR>/pki/ca.pem`、
   URL `https://127.0.0.1:<AVP_LOGGING_OS_PORT>`。
+- CA は `basicConstraints=critical,CA:TRUE`・`keyUsage=critical,keyCertSign,cRLSign`・SKI を持ち、node・admin
+  証明書は SKI・AKI を持つ（I-16）。これが無いと Python 3.13 以降の `ssl.create_default_context()`
+  （`VERIFY_X509_STRICT` が既定）や `openssl verify -x509_strict` が「CA cert does not include key usage
+  extension」で拒否する。**2026-10-06 より前に作った証明書は再生成しないと直らない**（`init-secrets.sh` は既存の
+  ファイルを上書きしない）: `pki/` の `ca.*`・`node.*`・`admin.*` を退避 → `init-secrets.sh` → `security-init` →
+  `$C up -d --force-recreate opensearch fluent-bit`（Dashboards を使っていれば同じく）→ `securityadmin`。
+  DN は変わらないのでパスワード・ロールはそのまま。
 - 証明書はホストの openssl で作る（OpenSearch / Dashboards のイメージに openssl が無い）。named volume への
   配置と internal_users の hash 化は one-shot（`security-init`）で行う。DN は RFC2253 順
   （`CN=…,OU=avp2-logging`。逆順だと admin 証明書が 401 になる。実測）。
@@ -129,10 +169,25 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 
 - Fluent Bit: health、`files_opened_total == 0`、`dropped_records_total`・`retries_failed_total`・
   `long_line_skipped_total` の増分、buffer の chunk 数（`--max-chunks`、既定 2000）
+- **追いつき**（I-17、`scripts/catchup.py`）: 位置 DB の offset と、収集対象 project（`--target-project`、既定
+  `$AVP_LOG_TARGET_PROJECT` か `avp2`）の各コンテナの `*-json.log*` の大きさの差。位置 DB（volume
+  `<project>_fbstate`）は read-only で mount した one-shot が **WAL ごと**一時ディレクトリへ複製し、ホストで
+  その複製を読む（Fluent Bit は `db.locking` で DB を排他的に開いている。元の DB は開かない・止めない）。
+  位置 DB に無いファイルは全量を未読と数える。差が `--max-behind-bytes`（既定 262144 = 1行の上限）を超えたら
+  異常。対象は `docker ps -a --filter label=com.docker.compose.project=<target>` のコンテナだけ。
+- **tail の停滞**（I-15）: 未読が残っているのに `input_records_total{name="tail.0"}` が前回の確認から
+  増えていなければ異常（5秒おいて読み直してから判定）。Fluent Bit のイベントループが止まると health は ok、
+  skip も chunk も変わらないので、これ以外では lag でしか見えない。対処は Fluent Bit の restart と、
+  原因の行の特定（`collector_errors:line_too_long`・該当コンテナのログ）。
+- `--catchup-only`: Fluent Bit と追いつき・停滞だけを見て終わる（deploy の前。§6）
 - OpenSearch: 到達性・cluster の状態、**系統ごと**の最終 `ingested_at` からの経過（app は `--max-lag-min`、
-  infra は `--max-lag-infra-min`、既定どちらも 60。infra の行で app の停止が隠れないように）、
+  既定 90、infra は `--max-lag-infra-min`、既定 60。infra の行で app の停止が隠れないように）。app の既定は
+  watchdog の周期（`DEFAULT_WATCHDOG_CRON` = `35 * * * *`、毎時）+ 30分: 静かな日の app 系統は毎時の
+  watchdog の行だけになり、既定を周期と同じ 60 にすると次の実行の取り込みと確認（5分ごと）が競って誤報する
+  （I-13）。infra は temporal 等が絶えず書くので 60 のまま、
   直近24時間の app 文書のうち `environment` が index の env と違う件数（> 0 で異常。アプリの `.env` の
-  `AVP_ENVIRONMENT` の書き忘れ・取り違え）、index サイズ、ディスク使用率（85% 以上で異常）
+  `AVP_ENVIRONMENT` の書き忘れ・取り違え）、直近24時間に Collector が切った長い行
+  （`collector_errors:line_too_long`、> 0 で WARN。終了コードは変えない）、index サイズ、ディスク使用率（85% 以上で異常）
 - 資格情報は viewer のパスワードを 0600 の一時 config で `curl -K` に渡す（argv に出さない）
 - 証明書: CA・ノード証明書の残り 30日未満
 - ホスト: Docker root のディスク（90% 以上で異常）、MemAvailable
@@ -144,35 +199,67 @@ systemd user timer の例: `deploy/logging/systemd/avp-logging-check.{service,ti
 
 ## 6. 導入・停止・rollback（設定面）
 
+### 6.1 本番導入のチェックリスト（I-14）
+
+上から順に、各項目の「確認」を満たしてから次へ進む。`C` と `CHECK` は全項目で使う。
+
 ```bash
-C="docker compose -f deploy/logging/compose.logging.yaml"
-deploy/logging/scripts/init-secrets.sh --env prod          # 1. 秘密（repo 外）
-$C run --rm security-init                                  # 2. 証明書・internal_users・sentinel
-$C up -d --wait opensearch                                 # 3. OpenSearch
-$C run --rm bootstrap                                      # 4. index 基盤（冪等）
-AVP_LOG_READ_FROM_HEAD=false $C up -d fluent-bit           # 5. 位置 DB を作る（既存の大きなログを読まない）
-#    files_opened が増えたのを scripts/fb-metrics.sh で確認してから
-$C up -d fluent-bit                                        # 6. read_from_head=true で作り直す
-$C --profile dashboards-setup run --rm dashboards-keystore # 7. Dashboards（使うときだけ）
-$C --profile dashboards up -d dashboards
-$C --profile dashboards-setup run --rm dashboards-import
+C="docker compose -f deploy/logging/compose.logging.yaml"     # project avp2-logging
+CHECK=deploy/logging/scripts/check-pipeline.sh                  # --env prod が既定
 ```
 
-- **本番のアプリの `.env`（`compose.yaml` のディレクトリ）に `AVP_ENVIRONMENT=prod` を書く**。compose は
-  既定値を持たない（I-5: 既定 `dev` だと本番の行が `avp-app-prod-*` に `environment=dev` で入った）。
-  未設定なら整形器が `unknown` にする。Collector の `AVP_LOGGING_ENV`（index 名）とは別の設定なので、
-  食い違いは `check-pipeline.sh` が検出する（§5）。
-- アプリ側の変更（`compose.yaml` の `logging:`・label・env）は、コンテナの**再作成**で反映される
-  （次の deploy-workers）。再作成で消える未読の json-file は検知できない欠損になるので、deploy の前に
-  `check-pipeline.sh` で Collector が追いついている（buffer chunk が 0 付近、lag が小さい）ことを見る。
+- [ ] **1. アプリの `.env` に `AVP_ENVIRONMENT=prod`**: 本番のアプリの `.env`（`compose.yaml` のディレクトリ。
+  `docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' avp2-api-1` で分かる）に
+  1行追記する。compose は既定値を持たない（I-5: 既定 `dev` だと本番の行が `avp-app-prod-*` に `environment=dev`
+  で入った）。未設定なら整形器が `unknown` にする。反映は手順 7 の再作成のとき。
+  確認: `grep -c '^AVP_ENVIRONMENT=prod$' <dir>/.env` が 1（値以外を表示しない）。
+  2026-10-06 時点で本番の `.env` にはこのキーが無い（キーの有無だけを確認、担当B）。
+- [ ] **2. 秘密**: `deploy/logging/scripts/init-secrets.sh --env prod`（repo の外。既存は上書きしない）。
+  確認: `~/.config/avp-logging/prod` が 0700、各ファイル 0600。CA が keyUsage を持つ（§4、I-16）。
+- [ ] **3. 証明書・internal_users・sentinel**: `$C --profile setup run --rm security-init`。
+- [ ] **4. OpenSearch と index 基盤**: `$C up -d --wait opensearch` → `$C --profile setup run --rm bootstrap`
+  （冪等）。確認: bootstrap が `FAIL` を出さずに終わる。
+- [ ] **5. Fluent Bit（1段目: `read_from_head=false`）**: `AVP_LOG_READ_FROM_HEAD=false $C up -d fluent-bit`。
+  既存の大きなログ（ローテーション無しで最大 約77MB）を全量取り込まずに、位置 DB を今の末尾で作る。
+  確認: `deploy/logging/scripts/fb-metrics.sh | grep files_opened_total` が 0 より大きい。
+- [ ] **6. Fluent Bit（2段目: `read_from_head=true`）**: `$C up -d fluent-bit`（作り直す。位置 DB は volume に
+  残る）。位置 DB にあるファイルは offset から続け、以後に新しく現れたファイル（手順 7 で作り直すコンテナ・
+  停止中の rotation）は先頭から読む。`false` のままだと停止・再起動のたびに、その間に作られたファイルを失う。
+  確認: `$CHECK --catchup-only` が `result: ok`。
+- [ ] **7. アプリの再作成（deploy-workers）の直前に追いつき確認**: `$CHECK --catchup-only`（I-17）。
+  再作成で消えるコンテナの未読の json-file は検知できない欠損になる。`FAIL 追いつき` なら数分待って
+  やり直す。`FAIL tail の停滞` なら `$C restart fluent-bit` して原因の行を調べる（§3「長い行」）。
+  確認: `result: ok` のすぐ後に deploy する。新しい `logging:`・label・`AVP_ENVIRONMENT` はこの再作成で入る。
+- [ ] **8. 取り込みの確認**: deploy から数分後に `$CHECK`（全項目）。確認: app・infra の lag が出る、
+  `environment` の食い違いが 0 件（手順 1 の書き忘れはここで分かる）。
+- [ ] **9. systemd user timer**: `deploy/logging/systemd/avp-logging-check.{service,timer}` を
+  `~/.config/systemd/user/` へ複製し、`ExecStart` のパスを実際の checkout に直して
+  `systemctl --user daemon-reload && systemctl --user enable --now avp-logging-check.timer`。
+  確認: `systemctl --user list-timers avp-logging-check.timer` に次回時刻、`journalctl --user -u avp-logging-check`
+  に `result:`。ログアウト後も動かすには `loginctl enable-linger`（未設定なら）。
+- [ ] **10. Dashboards（使うときだけ）**: `$C --profile dashboards-setup run --rm dashboards-keystore` →
+  `$C --profile dashboards up -d dashboards` → `$C --profile dashboards-setup run --rm dashboards-import`。
+  使い終わったら `$C --profile dashboards stop dashboards`（メモリ。§7）。
+
+**rollback**（どの段階でも。アプリの業務は変わらない。ログは検索用の副本で SSoT ではない）:
+
+- [ ] Collector と検索側を止める: `systemctl --user disable --now avp-logging-check.timer` →
+  `$C --profile dashboards down`（volume は残る。再開は手順 4 から。位置 DB があるので手順 5 は不要）。
+- [ ] アプリのログ形式を戻すなら `.env` に `AVP_LOG_FORMAT=text` を足して次の deploy で再作成（json-file の
+  ローテーション・label は残っても害は無い）。手順 1 の `AVP_ENVIRONMENT=prod` は残してよい。
+- [ ] 消すなら `$C --profile dashboards down -v`（検索用ログと位置 DB が失われる。秘密は repo 外に残る）。
+  入れ直すときは手順 2 から（位置 DB が無いので手順 5 の1段目が必要。`fluent-bit-guard` が強制する）。
+
+### 6.2 運用中の注意
+
 - 位置 DB が無い状態で `read_from_head=true` のまま起動しようとすると `fluent-bit-guard` が止める。
   sentinel の無い volume（project 名の違いで新しく作られた空の volume）でも OpenSearch・Fluent Bit は起動しない。
+- アプリ側の変更（`compose.yaml` の `logging:`・label・env）は、コンテナの**再作成**で反映される。deploy の
+  たびに手順 7 の `--catchup-only` を先に流す。
 - パスワード・ロールの変更: `init-secrets.sh`（変えるファイルを消して再生成）→ `security-init` →
   `$C run --rm securityadmin`。初回の security index は `allow_default_init_securityindex` が作る。
 - 長い停止: OpenSearch を止めるときは Fluent Bit も止める（位置 DB から再開でき、rotation が一巡する
   まで欠損しない）。
-- rollback: `$C down`（volume は残る）。アプリの挙動は変わらない。アプリ側は `AVP_LOG_FORMAT=text` で
-  従来の形式に戻せる。消すなら `$C down -v`（検索用ログは失われる。SSoT ではない）。
 
 ## 7. 資源・共存条件・許容停止時間
 
@@ -196,12 +283,15 @@ $C --profile dashboards-setup run --rm dashboards-import
 |---|---|
 | 再送上限・buffer 上限による破棄 | `dropped_records_total` / `retries_failed_total` の増分（check-pipeline） |
 | containers/ が読めない（mount 不成立・権限） | `files_opened_total == 0` |
-| `buffer_max_size` を超える行 | `long_line_skipped_total` の増分 |
+| `buffer_max_size` を超える行（partial でない行） | `long_line_skipped_total` の増分 |
+| `COLLECTOR_LINE_MAX_BYTES` を超える行（partial を結合した行） | infra の `collector_errors:line_too_long`（行の残りは失われる） |
 | 収集・送信の停止 | 系統ごとの最終 `ingested_at` の lag（業務が止まっているのと区別できない） |
+| tail の停滞（イベントループが止まる。I-15） | 未読が残り `input_records_total{tail.0}` が増えない（check-pipeline） |
+| Collector が追いついていない | 位置 DB の offset とファイルの大きさの差（check-pipeline の追いつき。deploy 前は `--catchup-only`） |
 | `environment` の取り違え（`.env` の書き忘れ） | 直近24時間の不一致件数（check-pipeline） |
 | 型不整合・時刻の置換 | 文書の `collector_errors` / `_ignored`（失われない） |
 | Collector 停止中に rotation が一巡した分 | **検知できない** |
-| コンテナ再作成で消えた未読ファイル | **検知できない**（deploy 前の追いつき確認で減らす） |
+| コンテナ再作成で消えた未読ファイル | **検知できない**（deploy 前の `check-pipeline.sh --catchup-only` で減らす） |
 | rotation 境界をまたぐ partial 行 | **検知できない**（結合されず順序も入れ替わる） |
 | `event_id` の衝突（別の記録が同じ ID） | **検知できない**（409 は成功扱い）。導出の unit test で防ぐ |
 

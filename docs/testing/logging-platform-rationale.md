@@ -54,6 +54,15 @@ Fluent Bit 5.1.2、2026-09-30）。
 - **check-pipeline が系統別に lag を見て、environment の食い違いを数える**（I-5/I-6）: 1つの lag では
   temporal 等の infra の行が絶えず入るので app の収集停止が隠れる。compose の既定 `dev` が本番の行を
   `avp-app-prod-*` に `environment=dev` で入れた事故（I-5）を、設定の取り違えとして検出する。
+- **Collector の行の上限 `COLLECTOR_LINE_MAX_BYTES` が tail の `buffer_max_size` と同じ値で、Lua がそれを使う**
+  （I-15）: `buffer_max_size` は Docker の partial 1つずつにしか効かず、結合後の行は無制限に filter へ届く
+  （実測）。上限を契約の1箇所に置き、設定と Lua の両方がそれに一致することを固定する。
+- **安全化の Lua に O(n²) だった形（`%a[%w%+%.%-]*://`、`%[parameters: .-%]`）が戻らない**（I-15）:
+  これらは長い行で Fluent Bit 全体を無言で止めた。実際に線形であることは integration test（§3）が
+  時間で確かめるが、submit 前の検査（unit/contract）でも同じ形の再導入を止める。
+- **app の lag の既定が watchdog の周期 + 30分以上**（I-13）: 静かな日の app 系統は毎時の watchdog の行
+  だけで、既定が周期と同じだと確認のたびに誤報しうる。周期は `contracts/schedule_guard.py` の
+  `DEFAULT_WATCHDOG_CRON` から読む（同じ値を書き直さない）。
 - **試験用 ISM は override からだけ使われる**: 分単位で削除する policy が本番に入ると検索用ログが数分で消える。
 
 ## 3. `tests/integration/test_logging_collector_lua.py`
@@ -83,6 +92,27 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
   `.000999…` になり 1ms 早い時刻が保存された（隔離環境で実測）。stdout も同じ切り捨ての iso8601 で検査する。
 - **Lua が書くキーは行き先の mapping の部分集合**（I-7）: `dynamic: false` なので、mapping に無いキーを
   Collector が書いても黙って検索できないだけで、どこもエラーにならない。
+- **partial を結合した長い行で filter 列が止まらない**（I-15）: Docker と同じく 16KiB の partial に分けた
+  20万字規模の行（英数字・hex・`eyJ`・`http://`・`[parameters: `・PEM 見出しの繰り返し）を app と infra の
+  両方に流し、後続の 50 行が全て出ること、全体が 60 秒以内に終わることを確かめる。修正前は1行目で
+  O(n²) になり 120 秒で打ち切られた（実測）。上限を超える行が app の文書にならず、infra に
+  `line_too_long`・`truncated` で1件だけ出ることも固定する。`exit_on_eof` が長い行の途中で終了する
+  （5.1.2、実測）ので、この試験だけ `buffer_chunk_size` を大きくして渡す（`_run` の `tail_overrides`）。
+- **線形に書き直した規則が同じものを伏せる**（I-15）: userinfo（`+` を含む scheme、空の user）、URL の
+  query・fragment、SQL の `[parameters: …]`（閉じていないものも）、PEM（END の無いものも）、JWT。
+  書き直しで伏せ漏れが出ないことを、値が出力に残らないことで確かめる。
+- **数値フィールドの非有限値（`"inf"`・`"-inf"`・`"nan"`・`"1e400"`・`"-INF"`）を数値として送らない**（I-18）:
+  Lua の `tonumber` はこれらを inf / nan にし、Fluent Bit はそれを JSON にできない値のまま bulk に書く
+  （修正前はこの試験の stdout 自体が JSON として読めなかった）。OpenSearch は bulk を chunk ごと拒否し、
+  同じ chunk の正常な行まで再送の末に失われた（担当C の隔離試験で 41 行中 0 件）。既存の型不整合と同じく
+  `attributes.collector_moved` へ退避し `collector_errors` に名前を残すこと、有限の文字列数値は従来どおり
+  数値にすることを固定する。
+- **`{` で始まるが JSON として壊れた行は infra 系統へ**（I-19）: ADR-0040 §1 の振り分け（JSON でない行は infra）に
+  対し、修正前は app の index に契約の必須フィールド無しで入った（担当C の隔離試験）。行き先の系統は stdout の
+  出力では分からないので、`_run(by_tag=True)` が tag ごとのファイル出力を読んで `_tag` を付ける。既存の
+  `test_routing_repair_and_sanitize` の「壊れた行が `collector-…` の event_id を持つ」という assert は修正前の
+  （設計と食い違う）挙動を写していたので、「event_id を持たない（infra）」に改めた。JSON の数値として溢れる
+  `1e400` も同じ経路（parser が解釈できない）であることを固定する。
 - **追加の安全化と切り詰め**: 整形器の取りこぼし（`Authorization: Bearer …`、DSN の userinfo）が
   OpenSearch へ届かないこと、unstructured 行が `UNSTRUCTURED_LINE_MAX_BYTES` 以下になることを固定する。
 
@@ -103,3 +133,30 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
   固定している（秘密の混入を止める検査）。ADR-0040 §3（Accepted）でアプリの各サービスに
   `AVP_SERVICE_NAME`（秘密ではない）を足すので、許可する集合にそれを加え、値がサービス名であることを検査する。
   `AVP_ENVIRONMENT`・`AVP_LOG_FORMAT` は `x-core-env` 経由なので既存の「app-env と同じ集合」に含まれる。
+
+## 6. `tests/unit/test_logging_init_secrets.py`（I-16）
+
+- **自前 CA が keyUsage（keyCertSign・cRLSign）と critical な basicConstraints を持ち、発行した node・admin
+  証明書が `openssl verify -x509_strict` を通る**: Python 3.13 から `ssl.create_default_context()` は
+  `VERIFY_X509_STRICT` を立て、keyUsage の無い CA を拒否する（担当C の試験で発見。試験用スクリプトは strict を
+  外して回避していた）。運用の確認スクリプトを Python で書いた途端に TLS が通らなくなるので、生成する側で固定する。
+  OpenSSL の `-x509_strict` は Python と同じ flag なので、ネットワークを使わずに同じ判定ができる。
+  修正前の init-secrets.sh では3件とも落ちる（確認済み）。
+
+## 7. `tests/unit/test_logging_catchup.py` と check-pipeline の検査（I-17、I-15 の検知）
+
+- **位置 DB の offset とファイルの大きさの差を inode で照合し、位置 DB に無いファイルは全量を未読と数える**:
+  rotation でファイル名は変わるが inode は同じ。位置 DB に無いファイル（Collector が見つけていない・
+  停止中に作られた）を数えないと、まさに失われる分を見落とす。
+- **収集対象 project のコンテナだけを見る**: containers/ にはログ基盤自身・別の試験環境のファイルもある。
+  それらは Collector が捨てる（project の完全一致）ので、未読として数えると常に異常になる。
+- **WAL ごと複製した DB で最新の offset が読める**: Fluent Bit は `db.locking` で DB を排他的に開いたまま
+  WAL に書く（隔離環境で確認: 元の DB は `database is locked`、`tail.db-wal` に 4MB）。DB 本体だけを複製すると
+  checkpoint 前の古い offset を読み、追いついているのに未読と判定する。
+- **読めない DB は別の終了コード**: 「未読がある」と「確認できない」を check-pipeline が区別して表示する。
+- contract（`test_logging_platform_config.py`）: check-pipeline が `--catchup-only` を持ち、位置 DB の volume を
+  read-only で mount して `tail.db*` をまとめて複製すること、対象 project で絞ること、停滞の判定に
+  `input_records_total{name="tail.0"}` と前回値を使うこと、`line_too_long` を数えることを固定する。停滞は
+  health・skip・chunk のどれにも出ない（隔離環境で実測: CPU 100% のまま health ok）ので、この組み合わせが
+  唯一の検知になる。修正前の Lua で停滞させた Fluent Bit に対し、2回目の確認で `tail の停滞` が FAIL に
+  なることを隔離環境で確認した（platform.md §3）。
