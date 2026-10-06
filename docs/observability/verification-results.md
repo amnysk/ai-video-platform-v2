@@ -493,6 +493,15 @@ logging 経由と `--raw`（print、stdout・stderr）の両方で出した。
   Collector が秘密と判定できない（行単位の収集の限界）。plan の「残った種類は ADR の残るリスクとして報告」に当たる。
 - needle の値は `/run/user/1000/avp2-oslog-apptest/avp2-oslog-c2/secrets-*`（0600、乱数の偽物）。試験後に削除する。
 
+**最終統合 c5af8ff（Lua の伏せ字規則 I-22/I-23）で再実行**（verify 7f03f7d、Fluent Bit を `ldc up -d --force-recreate
+--no-deps fluent-bit` で再作成し、コンテナ内の `avp_collector.lua` の sha256 `5862f256…` = c5af8ff の blob を確認）:
+
+- 10:21:28Z（7f03f7d の script）: json-file の JSON 行 0・buffer は PEM だけ 1 ファイル・app 0（22 文書）。ただし infra の走査が
+  34 件中 2 件しか届いていない時点で行われ「無い」と出た（試験スクリプトの不具合。待ってから手で走査し直すと PEM 2 文書）。
+- 10:22:45Z（infra の到着を待つ修正後の script）: **json-file（JSON 行）0、buffer は PEM（needle 行 5）1 ファイルのみ、
+  app 0（22 文書・18 needles）、infra は 34 文書を待ってから走査し PEM 2 文書（print の stdout・stderr）のみ、raw の他 14 種 0、
+  `redaction_applied=true` 52**。94d52f4 と同じ結果（伏せ字規則の変更で後退なし）。
+
 ### 5.9 S-STOP（一部不合格: Fluent Bit の restart で 1〜2 行が欠ける）
 
 **OpenSearch 停止**（09:58:49〜10:05:58Z、`fault-opensearch-stop.sh 120 3000`）: 合格。
