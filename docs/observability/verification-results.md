@@ -4,7 +4,7 @@
 **本番（compose project `avp2`・`avp2-logging`）では何も実行していない。** 有料 provider・YouTube は
 fake のみ（隔離 app スタックの network は `internal: true`）。
 
-> この文書は**中間版**。A・B が I-11〜I-17 を修正中で、最終統合版で**全項目を再実行**する（§4）。
+> §0〜§4 は中間版（4110779、修正前の B 設定）。**最終版（統合 94d52f4、I-11〜I-20 修正済み）の結果は §5**。
 > 「前任の暫定値」は 6e1e720（修正前）時点の実測で、出所のファイルを明記して転記した。
 > 出所に無い数値は「記録なし」と書き、推測で埋めていない。
 
@@ -311,3 +311,164 @@ ID は暫定（V-n）。review-log への登録（I 番号の付与）は統合 
 - **S-VER**: Dashboards の `/api/status`。
 - **S-IDX**: 今回の手動 rollover を使わず、新しい stack（`logging-stack.sh up`）で plan どおりに。
 - I-17（check-pipeline の追いつき確認）の修正後、runbook §7 の手順を `catchup.py` から置き換えて確認。
+
+## 5. 最終版（統合 94d52f4）の結果
+
+verify branch で 94d52f4 を merge した commit は 990d7e1、試験の実行コードは **517c9ca**（990d7e1 + 試験
+スクリプトの project 名の引数化）。§5 の記録の commit（docs だけ）は試験の後に積むので、それ以降の
+`git_sha` は記録 commit を指すことがある（コードは 517c9ca から変えていない）。
+
+### 5.0 環境（新規に作り直した隔離スタック）
+
+| 項目 | 値 |
+|---|---|
+| app | project `avp2-oslog-c2`（`run-e2e.sh build` で image `avp2-oslog-c2-{worker,runner}:test` を 517c9ca から作り直し、`run-e2e.sh up`） |
+| ログ基盤 | project `avp2-oslog-c2-log`（`APPTEST_ISM=prod logging-stack.sh up`。最終版の `fluent-bit.yaml`・Lua を mount、port 19213） |
+| 秘密 | `~/.config/avp-logging-test/c2/`（`init-secrets.sh --env test` で**新規生成**。本番 `~/.config/avp-logging/prod` には触れていない） |
+| 旧スタック | `avp2-oslog-c`・`avp2-oslog-c-log` は停止（volume は残す）。OpenSearch を2つ同時に動かしていない |
+| env | scratchpad `c2/c2.env`（`AVP_APPTEST_PROJECT=avp2-oslog-c2 LOGGING_PROJECT=avp2-oslog-c2-log AVP_LOGGING_SECRETS_DIR=~/.config/avp-logging-test/c2 AVP_LOGGING_OS_PORT=19213 OPENSEARCH_X509_STRICT=1`） |
+| 証拠 | scratchpad `c2/final/`（run-each・text・break のログ、measure*.csv、検索結果） |
+
+**I-16（CA の keyUsage）: 合格。** 新しい CA は `X509v3 Key Usage: critical  Certificate Sign, CRL Sign`、
+`Basic Constraints: critical CA:TRUE`（旧 CA は Key Usage 無し）。`OPENSEARCH_X509_STRICT=1`（Python 3.13.14 の
+`VERIFY_X509_STRICT` を外さない）で `sa version` → `{"version": "3.8.0"}`、admin 証明書での alias 読み取りも成功。
+§5 の検索はすべて strict のまま行った。
+
+### 5.1 S-E2E（合格）
+
+既存 integration を3条件・同一コード（517c9ca）で実行:
+
+| 条件 | 実行 | 結果 | 所要 |
+|---|---|---|---|
+| JSON ログ | `run-e2e.sh run-each`（27 ファイル、ファイルごとに runner `avp2-oslog-c2-r-<stem>`）06:13:31〜06:22:38Z | **137 passed, 6 skipped, 0 failed** | 547s |
+| text | `APPTEST_LOG_FORMAT=text … run pytest tests/integration -p tests.support.json_log_plugin`（runner `avp2-oslog-c2-runner-text2`）06:23:30〜06:30:22Z | **137 passed, 6 skipped** | 407.10s |
+| ロガー故障注入 | `APPTEST_BREAK_LOGGING=1 …`（runner `avp2-oslog-c2-runner-break2`）06:30:22〜06:37:41Z | **137 passed, 6 skipped** | 433.79s |
+
+- skip 6 は3条件で同じ: `test_logging_collector_lua.py` 5（runner に docker が無い）、`test_pipeline_schedule.py` 1（既知）。
+- 故障注入の発火: runner のログに `InjectedLoggingFault` が 776 行（`AVP_TEST_FAULT_REPORT` で発火回数を
+  ファイルに出す指定をしたが、コンテナ内に report が残らず回収できなかった。回数の内訳は記録なし）。
+- 最初の text 実行（`avp2-oslog-c2-runner-text`）は report 指定のやり直しのため 16 秒で止めた（exit 143）。結果に使っていない。
+
+OpenSearch での検索（strict TLS、viewer）:
+
+```bash
+sa agg --by service_name,git_sha,environment --table   # test-runner 517c9ca… test 3591（JSON 実行の直後）
+sa fields --require-contract                           # docs 3591 すべて契約フィールドあり（I-19 の修正後、欠けた文書 0）
+sa dupes                                               # duplicated_event_ids 0
+```
+
+1 Episode（`test_scene_rejection_recovery_e2e.py`、episode `89b1a8c3-de4c-4e4d-b639-ab05bc086de2`）:
+
+```bash
+sa count  --term episode_id=89b1a8c3-de4c-4e4d-b639-ab05bc086de2                       # 192
+sa fields --term episode_id=89b1a8c3-… --require-contract                              # 192 件すべて
+sa dupes  --term episode_id=89b1a8c3-…                                                 # 0
+sa count  --term episode_id=89b1a8c3-… --term event_name=upload.succeeded --expect 1   # 1
+sa agg    --term episode_id=89b1a8c3-… --by event_name --table
+```
+
+| event_name | 件数 | `reservation_id` あり | `scene_id` あり |
+|---|---|---|---|
+| activity.succeeded | 43 | 13 | 31 |
+| provider.job.state_changed | 28 | 28 | 28 |
+| artifact.stored | 22 | 13 | 17 |
+| reservation.reserved / dispatched / spent | 各16 | 16 | 15 |
+| reservation.job_ref_recorded | 15 | 15 | 14 |
+| provider.call.succeeded | 14 | 14 | 14 |
+| log.record | 6 | 0 | 4 |
+| stage.started / stage.succeeded | 各3 | 0 | 0 |
+| render.validation.passed | 2 | 0 | 0 |
+| upload.started / upload.succeeded | 各1 | 0 / 1 | 0 |
+| scene.rejected / scene.alternative.started / scene.alternative.result | 各1 | 1 / 0 / 0 | 1 |
+| stage.skipped・artifact.superseded・activity.failed | 各1 | | |
+
+- `reservation_id` は予約より前の行（`stage.*`・`upload.started`・`scene.alternative.*`）に無く、予約後の行にだけある。
+- `provider_request_id` は 0 件: fake provider は `fal_queue.py`（`provider_request_id` を付ける唯一の経路）を
+  通らない。実 adapter 側は unit test の担当（emission-points.md）。
+- 代表文書（秘密なし。`c2/final/e2e-ep-samples.jsonl`）: `scene.rejected` は `http_status` 422・`error_category`
+  `content_policy`・`error_code` `["content_policy_violation"]`・`classification_basis` `provider_error_type`・
+  `scene_id` sb6・`reservation_id` あり、`response_excerpt` に `"reason": "partner_validation_failed"`。
+  `upload.succeeded` は `attributes.reconciled_by=upload_response`・`video_id=vid00000002`（fake）・`reservation_id` あり。
+  `stage.started` は `workflow_id=episode-89b1a8c3-…-production`・`run_id`・`stage=production`。
+
+### 5.2 S-CTX（合格）
+
+```bash
+sa agg --term log_source=app_json --by run_id,activity_id,episode_id --table   # → c2/final/ctx.tsv を集計
+```
+
+- Activity 実行（`run_id`×`activity_id`）970 件・文書 4289 件のうち、**2つ以上の `episode_id` を持つ実行は 0**。
+  episode の付いた文書と付かない文書（temporalio の `Completing activity as failed` 等）が混ざる実行は 66（前の
+  episode が残ったのではなく、episode を持たない SDK の行）。
+- 並行の upload 試験（`test_concurrent_double_start…`、episode `5f551644-…`）の文書はすべてその episode。
+- `test_daily_slot_concurrency.py` は app 系統の文書を出さない（infra に stdout 2 行のみ）。ログでは検証できない。
+- A の unit test: `tests/unit/test_log_activity_interceptor.py::test_two_episodes_in_parallel_do_not_mix` ほか
+  （`test_log_activity_interceptor.py`・`test_log_activity_events.py`・`test_log_emit.py`・`test_log_workflow_replay.py`・
+  `test_log_old_history_replay.py`）をホストで実行し **56 passed**。
+
+### 5.3 S-REPLAY（合格）
+
+- `test_worker_restart_durability.py` 3 passed（3条件とも。worker の SIGKILL と引継ぎを含む）。この試験の worker
+  子プロセスは stdout をファイルへ向けるので、索引に載るのは runner 側の 13 件だけ（plan §2-3 のとおり）。
+- `sa agg --term event_name=stage.started --by container_name,run_id --table` → workflow run 68 件・文書 68 件、
+  **同じ run に `stage.started` が2件以上ある run は 0**。index 全体の `dupes` 0。
+- A の replay unit test（`test_log_workflow_replay.py::test_workflow_events_are_emitted_once_and_replay_emits_nothing`、
+  `test_log_old_history_replay.py`）は上の 56 passed に含む。
+
+### 5.4 S-403（合格）
+
+container `avp2-oslog-c2-r-incident-recovery-e2e`。DB の行数はテスト自身の assert（スキーマはテストごとに作って
+消すので、試験後に DB を直接数えられない）と突き合わせた。
+
+```bash
+sa agg --term container_name=avp2-oslog-c2-r-incident-recovery-e2e --term event_name=provider.auth_incident.recorded \
+  --by episode_id,scene_id,provider,http_status,error_category,classification_basis --table
+sa agg --term container_name=… --term event_name=provider.call.suppressed --by episode_id,scene_id,provider,error_category --table
+sa agg --term episode_id=1430e9f5-a954-49ee-8a6b-cde8555fa692 --term event_name=reservation.reserved --by provider,scene_id --table
+```
+
+| テスト | DB 側（テストの assert） | OpenSearch |
+|---|---|---|
+| `test_auth_incident_threshold…`（episode `9922fa22-…`） | `count_unresolved_within_window(FAL_VIDEO) == 3`、sb4 は prepare も呼ばれず止まる | `provider.auth_incident.recorded` **3**（sb1・sb2・sb3、`http_status` 403・`error_category` access_denied・`classification_basis` http_status_only）、`provider.call.suppressed` **1**（sb4、`suppressed_by_incident`） |
+| `test_sb6_403_blocks…`（episode `1430e9f5-…`） | sb6 は prepare で 403、復旧後 sb6 だけ新規 submit・他は再課金なし | `provider.auth_incident.recorded` 1（sb6、403・access_denied・http_status_only）。`reservation.reserved` は各 scene・各 provider 1 件（sb6 の動画も1件 = 復旧後の1回）。`artifact.reused` 11（画像 6・動画 5）。`stage.started` は run 2つで各1 |
+
+- 403 は credentials と断定していない（`classification_basis=http_status_only`）。
+- `provider.call.failed` は 0 件: fake は `fal_storage.py` / `fal_queue.py` を通らない（テスト自身のコメントのとおり）。
+  plan の「`provider.call.failed` に http_status=403」は fake の integration では検証できない → 食い違い V-5（§5.15）。
+
+### 5.5 S-422（合格）
+
+| テスト | DB 側（テストの assert） | OpenSearch |
+|---|---|---|
+| `test_scene_rejection_recovery_e2e.py`（episode `89b1a8c3-…`） | `provider_rejections` 1 行（sb6、`partner_validation_failed`）、planner 1 回・override revision 1、fal_video 予約は sb6 が 2・他 1、codex 1、youtube 1 | `scene.rejected` **1**（sb6）、`scene.alternative.started/result` 各 **1**（`scene_revision` 1）、`reservation.reserved` は fal_image 7・fal_video 7（sb6 が 2、他 1）・codex_scene_alternative 1・youtube_upload 1 |
+| `test_incident_recovery_e2e.py::test_422…`（episode `f6bdfc25-…`） | sb6 の video が 422、版を上げても再課金なし | `scene.rejected` 1（sb6、422・content_policy・provider_error_type） |
+| `test_input_fetch_retry_e2e.py`（4件） | — | episode `892f574d-…`: `scene.input_refetch` 2・`scene.rejected` 1・`upload.succeeded` 1。`596385ff-…`: `scene.input_refetch` 2・`scene.rejected` 2・`reservation.blocked` 1・`artifact.reused` 11。`a145dce8-…`: rejected 1・alternative 各1。`dd21d426-…`: rejected 2・alternative 各2 |
+
+- input_fetch 系の DB 行数との1対1の突き合わせ（`scene.input_refetch` と上げ直し回数）は、テストの assert が回数を
+  直接持たないため未実施。件数は記録のみ。
+
+### 5.6 S-REUSE（合格）
+
+- `test_production_e2e.py::test_production_end_to_end_then_rerun_reuses_everything`（episode `cd32c2ab-…`、4 scene）:
+  1回目の run（`01a10fda-729e-…`）は `reservation.reserved` 8・`provider.call.succeeded` 8、rerun の run
+  （`01a10fda-84b4-…`）は `artifact.reused` **8**（sb1〜sb4 × 画像・動画）で submit 0。テストの assert
+  （submit 回数が増えない）と一致。
+- `artifact.reuse_rejected` は 0 件: emission-points.md で **v1 未発行**（破損は `infrastructure.artifact.verify` の
+  `log.record` ERROR `ARTIFACT_VERIFICATION_FAILED … verdict=corrupt_hash`）。`test_corrupt_artifact…`（episode
+  `96e5b1a1-…`）でその ERROR 2 件を確認。plan の記述が古い → V-5。
+
+### 5.7 S-RESUME（合格）
+
+- 3条件で既存テストの合否が同じ（§5.1）。
+- I-20（並行 upload）: episode `5f551644-…` で `upload.succeeded` **1**・`upload.reused_existing` **1**・
+  `reservation.spent` **1**・`reservation.reserved` 1。他の upload 試験の episode は `upload.succeeded` 1 / `spent` 1、
+  unknown outcome（`5f747238-…`）は `upload.failed` 2・`spent` 0。
+- 未照合予約: `reservation.blocked` は production_e2e（`70d9ccca-…`、ambiguous submit）と input_fetch（`596385ff-…`）で
+  各1。その後の再送（同じ scene の `reservation.reserved` 増加）は無い（テストの submit 回数 assert も pass）。
+- `episode.resume.*`: 並行 resume（episode `25fca168-…`）で索引上 `requested` 1・`started` 1・`rejected` 1（409）、
+  `c69526fb-…` は `requested` 1・`started` 2。json-file には `requested` が各 2 件ある。索引に無い 2 件は、pytest の
+  進捗の `.` が JSON 行の先頭に付いた行（`.{"@timestamp":…`）で、Collector は JSON と見なさず infra 系統
+  （`log_source=unstructured`）に入れた。run-each の 27 コンテナで 84 行（infra の `message` が `{"@timestamp` で
+  始まる文書 84 件と一致）。**試験 harness の問題**（`tests.support.json_log_plugin` が pytest の端末出力と同じ
+  stdout に書く）で、本番の worker には pytest の進捗出力が無い → V-6（§5.15）。§5 の件数は、各テストの最初の
+  1 行程度がこの理由で app 系統から欠け得る（上の S-403/S-422/S-REUSE の件数はテストの assert と一致した）。
