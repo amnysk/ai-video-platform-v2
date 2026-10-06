@@ -7,7 +7,7 @@
 source "$(dirname "$0")/lib.sh"
 n="${1:-20000}"; pad="${2:-200}"; t="$(tag rot)"
 fb="$(container_of "$FLUENTBIT_SERVICE")"; [ -n "$fb" ] || { echo "Fluent Bit コンテナが無い" >&2; exit 2; }
-name="avp2-oslog-c-tool-$t"
+name="$AVP_LOG_TARGET_PROJECT-tool-$t"
 step "stop $fb"; docker stop "$fb" >/dev/null
 step "emit $n lines (tag=$t pad=$pad)"
 "$RUN_E2E" tool --name "$name" python deploy/logging/test/loggen.py --tag "$t" --count "$n" --pad "$pad" >/dev/null

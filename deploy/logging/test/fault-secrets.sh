@@ -4,8 +4,8 @@
 # buffer に chunk を留めて走査するため、注入の間だけ OpenSearch を止める。
 source "$(dirname "$0")/lib.sh"
 mode="${1:-}"
-state="${AVP_APPTEST_STATE:-${XDG_RUNTIME_DIR:-/tmp}/avp2-oslog-apptest/avp2-oslog-c}"
-dir="$state/secrets-$(date -u +%H%M%S)"; t="$(tag secret)"; name="avp2-oslog-c-tool-$t"
+state="${AVP_APPTEST_STATE:-${XDG_RUNTIME_DIR:-/tmp}/avp2-oslog-apptest/$AVP_LOG_TARGET_PROJECT}"
+dir="$state/secrets-$(date -u +%H%M%S)"; t="$(tag secret)"; name="$AVP_LOG_TARGET_PROJECT-tool-$t"
 since="$(date -u -d '-1 min' +%Y-%m-%dT%H:%M:%SZ)"
 "$PY" "$TEST_DIR/inject-secrets.py" gen --out-dir "$dir" >/dev/null
 # 隔離スタックの実パスワード（env にある秘密）も needle に足す

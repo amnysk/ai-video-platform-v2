@@ -9,7 +9,7 @@ for _ in $(seq "$times"); do
   avail="$(awk '/MemAvailable/{print $2}' /proc/meminfo)"; swapf="$(awk '/SwapFree/{print $2}' /proc/meminfo)"
   docker stats --no-stream --format '{{.Name}},{{.CPUPerc}},{{.MemUsage}},{{.MemPerc}}' \
     $(docker ps -q --filter "label=com.docker.compose.project=$LOGGING_PROJECT") \
-    $(docker ps -q --filter "label=com.docker.compose.project=avp2-oslog-c") 2>/dev/null \
+    $(docker ps -q --filter "label=com.docker.compose.project=$AVP_LOG_TARGET_PROJECT") 2>/dev/null \
     | sed "s#^#$ts,#; s#\$#,$avail,$swapf#" >>"$out"
   sleep "$every"
 done
