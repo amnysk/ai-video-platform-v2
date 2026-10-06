@@ -492,3 +492,28 @@ logging 経由と `--raw`（print、stdout・stderr）の両方で出した。
 - 残るリスク: logging を通らない print で PEM を出すと、改行で行が分かれ、`BEGIN … KEY` を含まない本文の行は
   Collector が秘密と判定できない（行単位の収集の限界）。plan の「残った種類は ADR の残るリスクとして報告」に当たる。
 - needle の値は `/run/user/1000/avp2-oslog-apptest/avp2-oslog-c2/secrets-*`（0600、乱数の偽物）。試験後に削除する。
+
+### 5.9 S-STOP（一部不合格: Fluent Bit の restart で 1〜2 行が欠ける）
+
+**OpenSearch 停止**（09:58:49〜10:05:58Z、`fault-opensearch-stop.sh 120 3000`）: 合格。
+
+- loggen（rate 50/s、3000 行）は停止中に 61 秒で完了（業務側は遅れない）。
+- 停止中: `retried_records_total{avp_app}` 176 → 13963、`dropped` 0、`retries_failed` 0。
+- 復旧後: `sa count --term request_id=osstop-095849-31948 --expect 3000` → **3000**、`dupes` **0**。`retries_failed` 0。
+  全件そろうまで再起動から約5分（再送の backoff）。
+
+**Fluent Bit の `docker restart`**（loggen 2000 行・rate 100/s の途中で `docker restart avp2-oslog-c2-log-fluent-bit-1`）:
+**3回とも欠損**、重複は 0。
+
+| tag | 届いた件数 / 2000 | 欠けた seq | 重複 |
+|---|---|---|---|
+| `fbrestart-100607` | 1998 | 719, 720 | 0 |
+| `fbrestart2-101141` | 1998 | 717, 718 | 0 |
+| `fbrestart3-101616` | 1999 | 711 | 0 |
+
+- 欠けた行は json-file にある（`fbrestart-100607` の json-file は 2001 行 = 2000 + stderr 1）。infra にも無い。
+- Fluent Bit のログは `caught signal (SIGTERM)` → `pausing all inputs` → `service has stopped (0 pending tasks)`（5 秒の
+  grace 内に正常終了）。`dropped`・`retries_failed` は 0 のまま（metrics に出ない）。
+- 推定: tail は読んだ位置を位置 DB に進めたが、その行が rewrite_tag の emitter（`emitter_storage.type: filesystem`）の
+  chunk に入る前に停止した。証明はしていない → V-8（§5.15）。
+- 計画上の「worker SIGKILL で別 worker が引き継ぐ」は `test_worker_restart_durability.py`（3条件で pass、§5.1・§5.3）。
