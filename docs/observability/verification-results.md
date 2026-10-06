@@ -612,3 +612,34 @@ verify 61dc077 以降、Fluent Bit は c5af8ff の Lua（§5.8 で再作成）�
   計 90611712 bytes で、届いた chunk（`succeeded`）と追い出した chunk の名前の重なりは 0。`dropped_records_total` は失った
   件数の実数としては使えない（増えたこと＝破棄が起きたことの検知には使える）→ V-9（§5.15）。中間版（§2.5）では逆に
   9941 件が説明できなかった。
+
+### 5.14 S-IDX（合格。plan どおり新しいスタックで）
+
+短縮 ISM で最初から作るため、ログ基盤をもう1つ新規に作った: project `avp2-oslog-c2-idx`（port 19223、秘密は c2 と共用、
+`logging-stack.sh up` の既定 = `ism-test`、収集対象 `avp2-oslog-c2`）。メモリのため `avp2-oslog-c2-log` の OpenSearch・
+Fluent Bit はこの間止めた。2026-10-06T10:35:10〜10:42:37Z、c5af8ff。
+
+- bootstrap 再実行: `sa_admin snapshot --out a.json; ldc run --rm bootstrap; sa_admin snapshot --out b.json; diff` → **空**
+  （`ISM policy avp-app unchanged`、alias も同じ）。
+- alias 名・typo の実 index 化: admin で `PUT avp-app-test2-write/_doc/x` → **404**、`avp_fluentbit` で同じ → **404**、
+  `avp_fluentbit` の `PUT /avp-app-test2`（作成）→ **403**、`PUT /zz-probe/_doc/x` → **403**。index は増えていない。
+- rollover・delete（loggen 10 行のあと 20 秒間隔で `sa_admin ism --index 'avp-app-*' --policy avp-app` と `alias`）:
+
+  | 時刻（UTC） | app の index と ISM の状態 | write index |
+  |---|---|---|
+  | 10:37:05 | 000001:hot | 000001 |
+  | 10:38:26 | 000001:hot、000002 作成 | **000002** |
+  | 10:40:28 | 000003 作成 | 000003 |
+  | 10:41:28 | 000001 が削除へ（state なし） | 000003 |
+  | 10:42:09 | **000001 が消えた**（000002・000003 が hot） | 000003 |
+
+  全 index が `avp-app` の管理下、failed 0。
+
+### 5.15 S-RB（第1・第2段は合格。第3段は未実施）
+
+| 段 | 手順 | 結果 |
+|---|---|---|
+| 1. ログ基盤を止める | `avp2-oslog-c2-log` の OpenSearch・Fluent Bit を停止した状態で、`test_production_e2e.py` と `test_upload_workflow_persistence.py` を実行。実行開始 12 秒後に `avp2-oslog-c2-idx` を `logging-stack.sh down`（`down -v`、volume 0 個に） | **8 passed**（JSON 条件の run-each と同数）、35 秒 |
+| 1'. 再開 | `ldc up -d --wait opensearch; ldc up -d fluent-bit` | 停止中に runner が書いた JSON 行 541 行が **541 文書**として届いた（位置 DB から続き）。`catchup` behind 0 |
+| 2. `AVP_LOG_FORMAT=text` | §5.1 の text 条件（全 integration） | **137 passed, 6 skipped**（JSON・故障注入と同数）。runner の出力は stdlib の text 形式、app 系統の文書は出ない |
+| 3. compose の `logging:` を戻す | 未実施 | 隔離 app の compose（`compose.apptest.yaml`）の logging 設定を差し替える手段が試験 harness に無い。logging driver の設定は Docker 側の変更でアプリのプロセスに影響しないこと、1・2 段でアプリの合否が変わらないことまでを確認 |
