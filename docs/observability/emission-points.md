@@ -48,6 +48,7 @@
 | `upload.skipped` | `workers/pipeline/workflows.py:EpisodePipelineWorkflow.run` | upload gate |
 | `research.request.started` / `research.request.finished` | `workers/research/activities.py:ResearchActivities.execute` / `_finished` | `research_request_id` |
 | `anomaly.recorded` | `infrastructure/observability/anomaly_notifier.py:LoggingAnomalyNotifier.notify` | `OPERATIONAL_ANOMALY anomaly=` の文言は維持 |
+| `decision.recorded` / `agent.run.recorded` / `intervention.command.received` / `intervention.command.finished` / `intervention.comment.added` / `intervention.hold.requested` / `intervention.hold.effective` / `intervention.change.proposed` / `intervention.change.applied` / `intervention.change.conflicted` / `intervention.variant.selected` / `review.invalidated` / `review.resolved` / `checkpoint.waiting` / `checkpoint.released` / `intervention.resume.requested` / `intervention.resume.completed` / `intervention.mode.changed` | **未発行（語彙のみ）**。`episode_events` の投影（ADR-0041）で発行する | 正本は `episode_events` |
 
 ## テストで JSON ログを出す（担当C の隔離検証向け）
 
