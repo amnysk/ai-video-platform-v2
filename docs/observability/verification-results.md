@@ -472,3 +472,23 @@ sa agg --term episode_id=1430e9f5-a954-49ee-8a6b-cde8555fa692 --term event_name=
   始まる文書 84 件と一致）。**試験 harness の問題**（`tests.support.json_log_plugin` が pytest の端末出力と同じ
   stdout に書く）で、本番の worker には pytest の進捗出力が無い → V-6（§5.15）。§5 の件数は、各テストの最初の
   1 行程度がこの理由で app 系統から欠け得る（上の S-403/S-422/S-REUSE の件数はテストの assert と一致した）。
+
+### 5.8 S-SEC（合格。raw の print に残るリスク1種）
+
+2026-10-06T09:56:16Z、`deploy/logging/test/fault-secrets.sh`（8b4ae60 で判定を logging 経由と raw に分けた版。
+1回目 09:54:24Z は旧版で、json-file の判定に raw の print が混ざり、infra の全走査が 400 で止まった。§5.15 V-7）。
+OpenSearch を止めて buffer に留め、needle（実行ごとの乱数 16 種 + 隔離スタックの DB・MinIO パスワード 2 = 18）を
+logging 経由と `--raw`（print、stdout・stderr）の両方で出した。
+
+| 場所 | 結果 |
+|---|---|
+| json-file（logging 経由の JSON 行） | **0 件**（56 行中。print の行は 30 行に needle、= 14 種 × stdout/stderr + PEM 本文の継続行 2） |
+| Fluent Bit buffer（tmpfs）・位置 DB | needle の hit は **PEM（needle 行 5）だけ、1 ファイル**。他の 15 種とパスワードは 0 |
+| OpenSearch app（`sa absent --needles-file needles-logging.txt --since …`） | **0 件**（22 文書を全走査、18 needles） |
+| OpenSearch infra / 全体（raw needle） | PEM の needle が **2 文書**（print の stdout・stderr）。他の 14 種は 0 |
+| `redaction_applied=true` | 52 文書（`--since` 以降、app + infra）。この tool の infra 文書は stdout・stderr 各 15 が true、各 2 が false |
+
+- logging を通る経路（A の整形器 + Collector）は全種を伏せた。
+- 残るリスク: logging を通らない print で PEM を出すと、改行で行が分かれ、`BEGIN … KEY` を含まない本文の行は
+  Collector が秘密と判定できない（行単位の収集の限界）。plan の「残った種類は ADR の残るリスクとして報告」に当たる。
+- needle の値は `/run/user/1000/avp2-oslog-apptest/avp2-oslog-c2/secrets-*`（0600、乱数の偽物）。試験後に削除する。
