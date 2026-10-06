@@ -101,7 +101,8 @@
 | テスト | 守るもの |
 |---|---|
 | `test_the_fault_injection_really_breaks_emission` | 注入（`tests/support/json_log_plugin.break_logging`）が実際に発行を壊していること。効いていなければ次の検査は空振り |
-| `test_ledger_suites_pass_unchanged_with_broken_logging`（レビュー I-1 で強化） | 既存の台帳・有料 submit/await・fal adapter・画像/動画/代替案/Upload の Activity のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |
+| `test_ledger_suites_pass_unchanged_with_broken_logging`（レビュー I-1・I-12 で強化） | 既存の台帳・有料 submit/await・fal adapter・画像/動画/代替案/Upload の Activity・YouTube uploader・Render/Research/Pipeline の Activity のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ。注入点ごとに加えて **suite ごと**の発火回数も > 0（I-12。発火しない suite は何も確かめていない。Research は Activity を本物で動かす `test_research_workflow.py` を使う。`test_research_activity_payloads.py` は発火 0 なので入れない） |
+| `test_log_observing_suites_fail_only_where_they_read_the_records`（レビュー I-12） | 記録の存在を見る suite（`test_fal_storage.py` の ADR-0030 診断行、`test_log_ledger.py` の commit 後イベント）は注入で記録が消えるので全部は通らない。そこで `--tb=line` で落ちた位置を取り、全てがその suite の記録を見る行（`caplog`・`logs.` を含む行）であることを見る。そこまでの業務（`pytest.raises` の型・commit）は注入の下でも変わっていない。業務コードから `InjectedLoggingFault` が漏れると落ちた位置が plugin/業務コードになり捕まる（`_log_http_failure` の guard の外に `logger.error(extra={"avp": ...})` を足して落ちることを確認）。限界: 記録を見る行より後ろの業務の assert は実行されない |
 
 ## commit 後のイベント（`tests/unit/test_log_ledger.py`、unit: SQLite）— log-contract §9
 
@@ -160,6 +161,9 @@ repository のメソッドが session に積み、`after_commit` で出す（`in
 `CallObservation._base`・`reservation_fields`）ごとの発火回数を `AVP_TEST_FAULT_REPORT` に書き、0 でないことを
 assert する。実測（8 suites・184 tests、全件 pass）: make_record.INFO 276 / make_record.WARNING 17 /
 formatter.build 275 / ledger.defer 282 / ledger.after_commit 216 / call_observation 54 / reservation_fields 518。
+I-12 で 12 suites・311 tests（全件 pass）に広げた後の実測: make_record.INFO 374 / make_record.WARNING 91 / make_record.DEBUG 27 /
+formatter.build 445 / ledger.defer 504 / ledger.after_commit 415 / call_observation 54 / reservation_fields 524。suite ごとの発火は
+最少が `test_provider_reservations.py` の 21。記録を見る2 suites（22 tests）は 11 failed・全て記録を見る行で落ち、発火は fal_storage 34 / log_ledger 17。
 強化した注入で初めて、`reservation_fields` と `CallObservation._base` の故障が業務の例外になる経路
 （`await_output` の文脈作成・`_defer_reservation`・`CallObservation.succeeded`）が見つかり、I-2 と同じ形で直した。
 
