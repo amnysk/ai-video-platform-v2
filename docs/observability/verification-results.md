@@ -434,7 +434,7 @@ sa agg --term episode_id=1430e9f5-a954-49ee-8a6b-cde8555fa692 --term event_name=
 
 - 403 は credentials と断定していない（`classification_basis=http_status_only`）。
 - `provider.call.failed` は 0 件: fake は `fal_storage.py` / `fal_queue.py` を通らない（テスト自身のコメントのとおり）。
-  plan の「`provider.call.failed` に http_status=403」は fake の integration では検証できない → 食い違い V-5（§5.15）。
+  plan の「`provider.call.failed` に http_status=403」は fake の integration では検証できない → 食い違い V-5（§5.20）。
 
 ### 5.5 S-422（合格）
 
@@ -470,13 +470,13 @@ sa agg --term episode_id=1430e9f5-a954-49ee-8a6b-cde8555fa692 --term event_name=
   進捗の `.` が JSON 行の先頭に付いた行（`.{"@timestamp":…`）で、Collector は JSON と見なさず infra 系統
   （`log_source=unstructured`）に入れた。run-each の 27 コンテナで 84 行（infra の `message` が `{"@timestamp` で
   始まる文書 84 件と一致）。**試験 harness の問題**（`tests.support.json_log_plugin` が pytest の端末出力と同じ
-  stdout に書く）で、本番の worker には pytest の進捗出力が無い → V-6（§5.15）。§5 の件数は、各テストの最初の
+  stdout に書く）で、本番の worker には pytest の進捗出力が無い → V-6（§5.20）。§5 の件数は、各テストの最初の
   1 行程度がこの理由で app 系統から欠け得る（上の S-403/S-422/S-REUSE の件数はテストの assert と一致した）。
 
 ### 5.8 S-SEC（合格。raw の print に残るリスク1種）
 
 2026-10-06T09:56:16Z、`deploy/logging/test/fault-secrets.sh`（8b4ae60 で判定を logging 経由と raw に分けた版。
-1回目 09:54:24Z は旧版で、json-file の判定に raw の print が混ざり、infra の全走査が 400 で止まった。§5.15 V-7）。
+1回目 09:54:24Z は旧版で、json-file の判定に raw の print が混ざり、infra の全走査が 400 で止まった。§5.20 V-7）。
 OpenSearch を止めて buffer に留め、needle（実行ごとの乱数 16 種 + 隔離スタックの DB・MinIO パスワード 2 = 18）を
 logging 経由と `--raw`（print、stdout・stderr）の両方で出した。
 
@@ -524,7 +524,7 @@ logging 経由と `--raw`（print、stdout・stderr）の両方で出した。
 - Fluent Bit のログは `caught signal (SIGTERM)` → `pausing all inputs` → `service has stopped (0 pending tasks)`（5 秒の
   grace 内に正常終了）。`dropped`・`retries_failed` は 0 のまま（metrics に出ない）。
 - 推定: tail は読んだ位置を位置 DB に進めたが、その行が rewrite_tag の emitter（`emitter_storage.type: filesystem`）の
-  chunk に入る前に停止した。証明はしていない → V-8（§5.15）。
+  chunk に入る前に停止した。証明はしていない → V-8（§5.20）。
 - 計画上の「worker SIGKILL で別 worker が引き継ぐ」は `test_worker_restart_durability.py`（3条件で pass、§5.1・§5.3）。
 
 ### 5.10 S-BAD（合格。最終統合 c5af8ff の Lua で実施）
@@ -610,7 +610,7 @@ verify 61dc077 以降、Fluent Bit は c5af8ff の Lua（§5.8 で再作成）�
   initialized`（503）の間にも追い出しが続き、`dropped` は最終 **198218**。
 - **件数の食い違い**: 届いた 101829 + `dropped` 198218 = 300047 で、出した 200000 を 100047 上回る。追い出しのログは 106 回・
   計 90611712 bytes で、届いた chunk（`succeeded`）と追い出した chunk の名前の重なりは 0。`dropped_records_total` は失った
-  件数の実数としては使えない（増えたこと＝破棄が起きたことの検知には使える）→ V-9（§5.15）。中間版（§2.5）では逆に
+  件数の実数としては使えない（増えたこと＝破棄が起きたことの検知には使える）→ V-9（§5.20）。中間版（§2.5）では逆に
   9941 件が説明できなかった。
 
 ### 5.14 S-IDX（合格。plan どおり新しいスタックで）
@@ -707,5 +707,60 @@ sa agg    --term episode_id=$EP --term event_name=reservation.reserved --by prov
   `avp_collector.lua` の伏せ字規則（`redact_between`・`redact_unclosed`・`redact_userinfo`）だけ（他は unit test・docs）。
   伏せ字は文字列の置換で、経路（routing・型修復・`event_id`・buffer・出力・ISM）に触れない。その影響を受ける S-SEC（§5.8）と、
   同じ Lua を通る S-BAD（§5.10）、ここでの S-E2E を c5af8ff で再実行し、§5.11〜§5.17 はもともと c5af8ff の Lua で実施した。
+  S-STOP（§5.9）は停止・restart の挙動で、伏せ字の規則に依らない。
   S-CTX・S-REPLAY・S-403・S-422・S-REUSE・S-RESUME（§5.2〜§5.7）はアプリ側の発行の検査で、c5af8ff でアプリのコードは
   変わっていない（I-21 は unit test のみ）。
+
+### 5.19 S-RES（記録）
+
+`deploy/logging/test/measure.sh`（10 秒間隔、対象は `avp2-oslog-c2-log` と `avp2-oslog-c2`）。CSV は scratchpad `c2/final/measure-*.csv`。
+
+| 条件 | 期間（UTC） | OpenSearch mem / CPU 最大 | Fluent Bit mem / CPU 最大 | runner mem 最大 | MemAvailable |
+|---|---|---|---|---|---|
+| 待機 | 06:12:13〜06:13:14（6回） | 1026〜1030MiB / 2.9% | 7MiB / 1.0% | — | 5.93〜6.01GiB |
+| integration（JSON run-each） | 06:13:31〜06:27:28（70回） | 1029〜1079MiB / 30.2% | 7〜14MiB / 4.2% | 472MiB | 4.90〜5.96GiB |
+| 障害注入（S-STOP〜S-CAP・S-VER の Dashboards を含む） | 09:58:49〜10:45:50（234回） | 0〜1047MiB（停止を含む）/ 331.2%（再起動・追いつき） | 0〜76MiB（tmpfs の buffer を含む）/ 56.9% | 400MiB | **4.26**〜6.68GiB |
+| 終了時 | 10:46:04〜10:46:27（3回） | 1008MiB / 1.1% | 10MiB / 0.5% | — | 5.59〜5.63GiB |
+
+- OpenSearch: `VmRSS` 1059372 kB、`VmSwap` 0、cgroup `memory.swap.current` 0、`mem_limit` = `memswap_limit` = 1468006400
+  （swap 不可）、heap 512m。**RSS ≤ mem_limit**。Dashboards は起動時 276MiB（上限 1GiB）。
+- ホストの SwapFree は 0〜960 KiB（ホスト全体で swap はほぼ満杯。隔離スタックの外の要因も含む）。
+- ADR §7 の閾値（Dashboards 停止 2GiB / OpenSearch 停止 1.5GiB）に対し、最小は 4.26GiB（S-CAP の 200000 行出力中）。
+
+### 5.20 最終版で見つかった不具合・食い違い（仮番。I 番号は統合 branch で付ける）
+
+| ID | 重大度 | 担当 | 内容 | 根拠 |
+|---|---|---|---|---|
+| V-5 | Low | C（plan） | plan の S-403「`provider.call.failed` に http_status=403」と S-REUSE「`artifact.reuse_rejected`」は、fake の integration では出ない（`provider.call.failed` は実 adapter の `fal_storage.py`・`fal_queue.py` だけ、`artifact.reuse_rejected` は emission-points で v1 未発行）。plan を emission-points に合わせて直す | §5.4・§5.6 |
+| V-6 | Low | A（`tests/support/json_log_plugin.py`）／C | integration の JSON ログが pytest の進捗表示（`.`）と同じ stdout に出るので、各テストの最初の 1 行ほどが `.{"@timestamp"…` になり Collector は infra へ送る（run-each で 84 行）。本番には無い試験 harness の問題だが、試験の件数照合が欠ける | §5.7 |
+| V-7 | Low | C（修正済み） | 試験スクリプト: S-SEC の判定に raw の print が混ざる・infra の全走査が `event_id` の sort で 400・infra の到着を待たずに走査。`8b4ae60`・`da092b4` で修正 | §5.8 |
+| V-8 | **Medium** | B | Fluent Bit の `docker restart`（SIGTERM・正常終了）で、その瞬間に読んだ 1〜2 行が OpenSearch に届かない（3回中3回）。行は json-file に残り、位置 DB はその先へ進んでいる（位置 DB を消して読み直すと戻った）。`dropped`・`retries_failed` に出ない。deploy・設定変更の restart のたびに無言で欠ける | §5.9・§5.12 |
+| V-9 | Low | B | `dropped_records_total` が実際の欠損件数と合わない（S-CAP で 届いた 101829 + dropped 198218 > 出した 200000）。破棄の検知には使えるが、件数の報告・照合に使えない。platform.md §3 の監視項目の説明に注記が要る | §5.13 |
+
+### 5.21 最終版の合否一覧
+
+| ID | 結果 | 実施 commit | 節 |
+|---|---|---|---|
+| S-E2E | **合格**（3条件 137 passed / 6 skipped で同数。1 Episode 192 文書・契約フィールド充足・重複 0） | 517c9ca（94d52f4）、c5af8ff で再実施（07f281c） | §5.1・§5.18 |
+| S-CTX | **合格**（970 Activity 実行で episode の混在 0、A の unit 56 passed） | 517c9ca | §5.2 |
+| S-REPLAY | **合格**（`stage.started` の重複 run 0、durability 3 passed） | 517c9ca | §5.3 |
+| S-403 | **合格**（auth incident 3 = DB、suppressed 1、sb6 だけ再 submit） | 517c9ca | §5.4 |
+| S-422 | **合格**（`scene.rejected` 1 = provider_rejections 1、予約数一致） | 517c9ca | §5.5 |
+| S-REUSE | **合格**（rerun で `artifact.reused` 8・submit 0） | 517c9ca | §5.6 |
+| S-RESUME | **合格**（I-20: succeeded 1・reused_existing 1・spent 1、未照合予約の再送 0） | 517c9ca | §5.7 |
+| S-SEC | **合格**（logging 経由 0。raw の print の PEM 本文行だけ残る＝残るリスク） | c5af8ff の Lua（da092b4） | §5.8 |
+| S-STOP | **一部不合格**（OpenSearch 停止は全件・重複 0。Fluent Bit restart で 1〜2 行欠ける V-8） | 94d52f4 の Lua（b4ce5f0） | §5.9 |
+| S-BAD | **合格**（I-15・I-18・I-19 解消） | c5af8ff の Lua | §5.10 |
+| S-ROT | **合格**（一巡しない量は全件。一巡分は検知不能＝設計どおり） | c5af8ff の Lua | §5.11 |
+| S-DUP | **合格**（app 重複 0。infra は位置 DB 削除で重複＝設計どおり） | c5af8ff の Lua | §5.12 |
+| S-CAP | **合格**（tmpfs のみ、ホスト不変、新しい側が届く。dropped の件数は不正確 V-9） | c5af8ff の Lua | §5.13 |
+| S-IDX | **合格**（新スタックで rollover・delete・bootstrap 冪等・alias 保護） | c5af8ff | §5.14 |
+| S-VER | **合格**（Dashboards `/api/status` 3.8.0 green を含む） | c5af8ff | §5.16 |
+| S-RES | 記録（RSS ≤ 上限、swap 0、MemAvailable 最小 4.26GiB） | — | §5.19 |
+| S-RB | **第1・2段合格**、第3段（compose の `logging:` を戻す）は未実施 | c5af8ff | §5.15 |
+| check-pipeline | 通常 rc=0、Collector 停止で rc=1 | c5af8ff | §5.17 |
+| I-16 | **合格**（新 CA に keyUsage、strict TLS で全検索） | 517c9ca 以降 | §5.0 |
+
+終了時の状態: `avp2-oslog-c2`（postgres・minio・temporal）と `avp2-oslog-c2-log`（opensearch・fluent-bit）は起動したまま
+（D の再確認用。Dashboards は停止）。`avp2-oslog-c2-idx` は S-RB の `down -v` で削除済み。旧 `avp2-oslog-c`・`avp2-oslog-c-log` は
+停止（volume は残す）。
