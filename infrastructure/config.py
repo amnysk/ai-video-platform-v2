@@ -205,6 +205,13 @@ class Settings(BaseSettings):
     #: 台本の後に Evidence を依頼して照合する（助言だけ。結果で Episode を止めない）
     script_evidence_enabled: bool = False
 
+    # --- 介入 API の principal（JP-MAS-001 / ADR-0041 §8、INV-47。担当 C） ---
+    #: ``sha256(token) → {actor_type, actor_id, scopes}`` の JSON、またはその JSON ファイルのパス。
+    #: **未設定なら介入 API（/v1/intervention）は全て 503**（既定で何も開けない）。
+    #: 平文の token は置かない。
+    #: 読み込みと検査（AI に人専用 scope を与えない等）は ``apps/api/auth.py``。
+    intervention_principals: SecretStr | None = None
+
     @field_validator("research_provider", mode="before")
     @classmethod
     def _research_provider_fails_closed(cls, v: object) -> object:
