@@ -400,3 +400,20 @@ def test_check_pipeline_detects_a_stalled_tail() -> None:
     assert 'fluentbit_input_records_total\\{name="tail\\.0"\\}' in src
     assert "prev_tail_records" in src
     assert "line_too_long" in src
+
+
+def test_app_lag_default_leaves_margin_over_the_watchdog_period() -> None:
+    """静かな日の app 系統は毎時の watchdog の行だけになる（I-13）。
+
+    既定の lag が watchdog の周期と同じだと、次の実行の取り込みと確認が競って誤報する。
+    周期 + 30分以上。
+    """
+    from contracts.schedule_guard import DEFAULT_WATCHDOG_CRON
+
+    minute, hour, *_ = DEFAULT_WATCHDOG_CRON.split()
+    assert minute.isdigit() and hour == "*", "毎時の cron を前提にしている"
+    period_min = 60
+    src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
+    m = re.search(r"^MAX_LAG_MIN=(\d+)$", src, re.M)
+    assert m is not None
+    assert int(m.group(1)) >= period_min + 30

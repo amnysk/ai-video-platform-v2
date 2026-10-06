@@ -2,7 +2,7 @@
 # ログ基盤の確認（ADR-0040 §5/§7）。OpenSearch の**外**から、ホストで動かす。異常があれば非0で終了する。
 #
 #   deploy/logging/scripts/check-pipeline.sh [--env prod] [--project avp2-logging]
-#       [--secrets-dir DIR] [--os-url URL] [--max-lag-min 60] [--max-lag-infra-min 60]
+#       [--secrets-dir DIR] [--os-url URL] [--max-lag-min 90] [--max-lag-infra-min 60]
 #       [--max-chunks 2000] [--max-behind-bytes 262144]
 #       [--target-project avp2] [--containers-dir DIR]
 #       [--state-dir DIR] [--enforce-memory] [--catchup-only]
@@ -33,7 +33,7 @@ ENV_NAME="${AVP_LOGGING_ENV:-prod}"
 PROJECT="avp2-logging"
 SECRETS_DIR=""
 OS_URL="https://127.0.0.1:${AVP_LOGGING_OS_PORT:-9200}"
-MAX_LAG_MIN=60
+MAX_LAG_MIN=90
 MAX_LAG_INFRA_MIN=60
 MAX_CHUNKS=2000
 MAX_BEHIND_BYTES=262144

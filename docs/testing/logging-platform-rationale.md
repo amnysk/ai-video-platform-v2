@@ -60,6 +60,9 @@ Fluent Bit 5.1.2、2026-09-30）。
 - **安全化の Lua に O(n²) だった形（`%a[%w%+%.%-]*://`、`%[parameters: .-%]`）が戻らない**（I-15）:
   これらは長い行で Fluent Bit 全体を無言で止めた。実際に線形であることは integration test（§3）が
   時間で確かめるが、submit 前の検査（unit/contract）でも同じ形の再導入を止める。
+- **app の lag の既定が watchdog の周期 + 30分以上**（I-13）: 静かな日の app 系統は毎時の watchdog の行
+  だけで、既定が周期と同じだと確認のたびに誤報しうる。周期は `contracts/schedule_guard.py` の
+  `DEFAULT_WATCHDOG_CRON` から読む（同じ値を書き直さない）。
 - **試験用 ISM は override からだけ使われる**: 分単位で削除する policy が本番に入ると検索用ログが数分で消える。
 
 ## 3. `tests/integration/test_logging_collector_lua.py`

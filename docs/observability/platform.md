@@ -176,7 +176,10 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
   原因の行の特定（`collector_errors:line_too_long`・該当コンテナのログ）。
 - `--catchup-only`: Fluent Bit と追いつき・停滞だけを見て終わる（deploy の前。§6）
 - OpenSearch: 到達性・cluster の状態、**系統ごと**の最終 `ingested_at` からの経過（app は `--max-lag-min`、
-  infra は `--max-lag-infra-min`、既定どちらも 60。infra の行で app の停止が隠れないように）、
+  既定 90、infra は `--max-lag-infra-min`、既定 60。infra の行で app の停止が隠れないように）。app の既定は
+  watchdog の周期（`DEFAULT_WATCHDOG_CRON` = `35 * * * *`、毎時）+ 30分: 静かな日の app 系統は毎時の
+  watchdog の行だけになり、既定を周期と同じ 60 にすると次の実行の取り込みと確認（5分ごと）が競って誤報する
+  （I-13）。infra は temporal 等が絶えず書くので 60 のまま、
   直近24時間の app 文書のうち `environment` が index の env と違う件数（> 0 で異常。アプリの `.env` の
   `AVP_ENVIRONMENT` の書き忘れ・取り違え）、直近24時間に Collector が切った長い行
   （`collector_errors:line_too_long`、> 0 で WARN。終了コードは変えない）、index サイズ、ディスク使用率（85% 以上で異常）
