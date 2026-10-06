@@ -218,3 +218,31 @@ def test_append_only_tables_have_no_update_or_delete_functions() -> None:
     assert len(event_updates) == 1
     values = event_updates[0].split(".values(", 1)[1].split(")", 1)[0]
     assert values.replace(" ", "") == "projected_at=_now("
+
+
+async def test_ensure_manifest_snapshots_current_artifacts_without_bumping_revision(
+    session,
+) -> None:
+    from contracts.states import ArtifactType
+    from infrastructure.intervention.manifests import ensure_manifest
+
+    episode_id = await _episode(session)
+    artifacts = ArtifactMetadataRepository(session)
+    script = await artifacts.record(
+        episode_id=episode_id,
+        artifact_type=ArtifactType.SCRIPT,
+        schema_version="1.0",
+        bucket="b",
+        object_key="k1",
+        sha256="1" * 64,
+        size_bytes=1,
+    )
+    store = InterventionStore(session)
+    first = await ensure_manifest(session, store, episode_id, HUMAN)
+    again = await ensure_manifest(session, store, episode_id, HUMAN)
+    await session.commit()
+    assert first.members == {"script": script.id}
+    assert again.manifest_id == first.manifest_id
+    control = await store.get_control(episode_id)
+    assert control.active_manifest_id == first.manifest_id
+    assert control.control_revision == 0

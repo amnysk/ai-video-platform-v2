@@ -94,6 +94,23 @@ class UnreconciledReservationError(NeedsInputError):
     """
 
 
+class EpisodeHeldError(NeedsInputError):
+    """Episode の制御状態が ``running`` でないので、新しい有料 dispatch・投稿を始めない。
+
+    ADR-0041 / INV-44。
+
+    予約は ``reserved`` かつ未 dispatch のまま残る（送っていない証拠）。resume 後に同じ冪等キーで
+    再利用され、新しい予約・二重課金を作らない。照合待ち（``UnreconciledReservationError``）とは別。
+    """
+
+
+class MissingDecisionRecordError(NeedsInputError):
+    """新方式（mode != legacy）の Episode で、必須の判断・実行記録が欠けている（INV-46）。
+
+    記録が揃うまで有料生成・投稿を開始しない。
+    """
+
+
 class StoryboardOutputUnparseableError(RetryableError):
     """storyboard 生成器の出力が JSON として読めない（ADR-0014 / ADR-0015）。"""
 

@@ -15,6 +15,8 @@
 ## 1. 土台（親、統合 branch に直接）
 `contracts/intervention.py`（語彙・payload）、`contracts/roles.py`（RoleSpec）、migration 0016 と
 `infrastructure/db/models.py` の9表、`infrastructure/intervention/store.py`（全担当が使う唯一の永続化の入口）、
+`infrastructure/intervention/manifests.py`（`current_members` / `ensure_manifest`）、
+`domain/errors.py` の `EpisodeHeldError` / `MissingDecisionRecordError`（どちらも `NeedsInputError`）、
 ADR-0041、`docs/domain/intervention.md`。**契約（上記ファイル）を変えたい担当は親に依頼する**（各自で書き換えない）。
 
 ## 2. 担当と書き込み範囲
@@ -30,12 +32,12 @@ ADR-0041、`docs/domain/intervention.md`。**契約（上記ファイル）を�
 
 ## 3. 担当間のインターフェース（実装前に固定）
 
+- **土台（親）**: `manifests.ensure_manifest(session, store, episode_id, actor) -> Manifest`（現行から採用 manifest を作る／既存を返す）、
+  `manifests.current_members(session, episode_id) -> dict[slot, revision_id]`。
 - **store**: `InterventionStore`（`infrastructure/intervention/store.py`）。Episode 内を書き換える処理は
   `lock_control` → 書き込み → `append_event` を**同じ session・同じ commit**で行う。
 - **A が提供**:
   - `capture.AgentRunRecorder`（`record(...) -> AgentRun`、snapshot を MinIO `agent-runs/{scope}/{agent_run_id}/` に書いてから行を作る）
-  - `manifests.ensure_manifest(session, store, episode_id, actor) -> Manifest`（現行 `superseded_at IS NULL` の成果物から採用 manifest を作る／既存を返す）
-  - `manifests.current_members(session, episode_id) -> dict[slot, revision_id]`
   - `read_model.EpisodeReadModel.load(episode_id) -> EpisodeView`、`compare_revisions(a, b)`、`approval_is_current(annotation, control)`
   - `review_packet.build_packet(view) -> ReviewPacket`、`render_markdown(packet) -> str`、`ChangeProposalFile`（取り込み形式）
 - **B が提供**:
