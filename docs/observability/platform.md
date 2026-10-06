@@ -94,7 +94,7 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 | `fluentbit_output_retries_total` | 同上 | 再送の回数 |
 | `fluentbit_output_retried_records_total` | 同上 | 再送した record 数 |
 | `fluentbit_output_retries_failed_total` | 同上 | 再送上限を超えて諦めた chunk。増えたら異常 |
-| `fluentbit_output_dropped_records_total` | 同上 | 破棄した record（再送上限・buffer 上限の evict）。増えたら異常 |
+| `fluentbit_output_dropped_records_total` | 同上 | 破棄した record（再送上限・buffer 上限の evict）。**増えたら異常（検知にだけ使う）**。件数は実際の欠損と合わない（I-27、下記） |
 | `fluentbit_output_errors_total` | 同上 | 出力のエラー |
 
 ### 長い行（I-15）
@@ -147,8 +147,47 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
     WAL を含めて開く）。(4) `$C start fluent-bit`。飛ばすのはその1行だけで、同じファイルの後続の行は
     読まれる（巨大な行は検索側に残らない）。発生源のアプリを直すのが先。
 
+**`dropped_records_total` の件数は欠損の実数ではない（I-27）**: 担当C の S-CAP（buffer 上限で追い出し）で
+届いた 101,829 + `dropped` 198,218 = 300,047 が、出した 200,000 を 100,047 上回った（中間版では逆に 9,941 件が
+説明できなかった）。追い出しは chunk 単位で、同じ record が経路（rewrite_tag の前後の chunk）や再試行の途中で
+重ねて数えられている可能性が高いが、5.1.2 の計上の詳細は特定していない。check-pipeline は**増えたこと**だけを
+異常として扱い、件数は「目安」として表示する。欠けた範囲を知るには OpenSearch の件数（`request_id` 等で絞る）と
+json-file の行を照合する。
+
 `/api/v1/storage` の `storage_layer.chunks.total_chunks`（buffer に溜まっている chunk）、
 `/api/v2/health` の `status`（`hc_*` の閾値を超えると `error`）。
+
+### Fluent Bit の restart で数行欠ける（I-26、既知の限界）
+
+`docker restart`（SIGTERM・grace 内の正常終了）のたびに、その瞬間に読んでいた 1〜数行が出力に届かない。
+行は json-file に残っているが、位置 DB の offset はその先へ進んでいる（担当C: 3回中3回、位置 DB を消して
+読み直すと戻った）。`dropped`・`retries_failed` にも、check-pipeline の追いつきにも出ない。
+
+- 再現（担当B、Fluent Bit 5.1.2 だけ、OpenSearch なし、本物の filter 列で出力を file に、0.01 秒ごとに1行を
+  出すコンテナを読みながら 1.5〜3 秒おきに `docker restart`）:
+
+  | 構成 | restart 回数 | 欠けた行 / json-file の行 |
+  |---|---|---|
+  | 本番と同じ filter 列 | 10 | **10 / 3600**（restart ごとに 0〜3 行） |
+  | filter 無し | 3 | 0 / 1500 |
+  | Lua `avp_route` だけ（rewrite_tag 無し） | 10 | **0 / 3600** |
+  | Lua `avp_route` + rewrite_tag（振り分け）だけ | 3 | 4 / 1500 |
+
+- 原因: **rewrite_tag の emitter**。rewrite_tag は record を emitter（内部の input）へ積み直して新しい tag で流す。
+  停止のとき emitter に積まれた途中の record は chunk にならずに消えるが、tail は読んだ位置を既に位置 DB へ
+  進めている（`tail.threaded: on` で欠損が増えた（3回で 33 行）ことも、途中で溜まる量に比例することと合う）。
+  upstream に同じ報告は見つけていない（v3.0.2 で「filter の pause 時に元の input も pause する」修正はあるが別件）。
+- 設定では直らなかった（どれも 3 回の restart で欠損 1〜6 行）: service `grace: 30`、`emitter_storage.type: memory`、
+  tail `storage.type: memory`、`flush: 0.2` + `grace: 10`。
+- 直す候補（設計変更。ADR-0040 §1 の経路を変えるので未実施）: rewrite_tag を使わない。tail を app 用と infra 用の
+  2つに分け（位置 DB も別）、それぞれの Lua が他方の系統の行を捨てる。I-19 の壊れた JSON は infra 側でも
+  parser を当てて判定する。上の表のとおり rewrite_tag が無ければ 10 回の restart で欠損 0。代わりに全ファイルを
+  2回読む。
+- 運用上の緩和: Fluent Bit の restart は deploy・設定変更のときだけにする（`restart: unless-stopped` の自動再起動・
+  ホストの再起動でも起きる）。欠損は restart の時刻の前後数行で、app 系統なら `event_id` の欠番ではなく
+  「その時刻の前後の行が json-file にあって検索に無い」で見つかる。どうしても埋める必要があるときは、
+  Fluent Bit を止めて位置 DB を消し `read_from_head=true` で読み直す（app は `event_id` で重複しない、infra は
+  読み直した分が重複する。担当C の S-DUP で実測）。
 
 ## 4. TLS・権限・秘密の置き場所
 
@@ -307,7 +346,7 @@ CHECK=deploy/logging/scripts/check-pipeline.sh                  # --env prod が
 
 | 欠損 | 検知 |
 |---|---|
-| 再送上限・buffer 上限による破棄 | `dropped_records_total` / `retries_failed_total` の増分（check-pipeline） |
+| 再送上限・buffer 上限による破棄 | `dropped_records_total` / `retries_failed_total` の増分（check-pipeline。起きたことだけ。件数は実数ではない） |
 | containers/ が読めない（mount 不成立・権限） | `files_opened_total == 0` |
 | `buffer_max_size` を超える行（partial でない行） | `long_line_skipped_total` の増分 |
 | `COLLECTOR_LINE_MAX_BYTES` を超える行（partial を結合した行） | infra の `collector_errors:line_too_long`（行の残りは失われる） |
@@ -318,6 +357,7 @@ CHECK=deploy/logging/scripts/check-pipeline.sh                  # --env prod が
 | 型不整合・時刻の置換 | 文書の `collector_errors` / `_ignored`（失われない） |
 | Collector 停止中に rotation が一巡した分 | **検知できない** |
 | コンテナ再作成で消えた未読ファイル | **検知できない**（deploy 前の `check-pipeline.sh --catchup-only` で減らす） |
+| Fluent Bit の restart の瞬間の数行（rewrite_tag の emitter。I-26） | **検知できない**（§3「Fluent Bit の restart で数行欠ける」） |
 | rotation 境界をまたぐ partial 行 | **検知できない**（結合されず順序も入れ替わる） |
 | `event_id` の衝突（別の記録が同じ ID） | **検知できない**（409 は成功扱い）。導出の unit test で防ぐ |
 

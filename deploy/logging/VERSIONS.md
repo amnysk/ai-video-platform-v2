@@ -32,6 +32,10 @@ linux/amd64 の manifest digest は、取得したイメージの検証用（`do
   版を上げるときは platform.md §3「長い行」の確認をやり直す。
 - Fluent Bit 5.1.2 の tail `exit_on_eof` は `buffer_chunk_size` より長い行の途中で EOF と判定して終了する
   （実測。integration test では chunk を大きくして回避）。
+- Fluent Bit 5.1.2 は停止（SIGTERM、grace 内の正常終了）のとき rewrite_tag の emitter にある途中の record を
+  失い、tail の位置 DB はその先へ進んでいる（2026-10-06 実測、I-26。restart 10 回で 3600 行中 10 行）。
+  `grace`・`emitter_storage.type`・tail の `storage.type` では直らない。版を上げるときは platform.md §3 の再現を
+  やり直す。
 
 ## 見送った版
 
