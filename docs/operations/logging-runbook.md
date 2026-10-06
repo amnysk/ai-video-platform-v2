@@ -154,7 +154,8 @@ deploy/logging/scripts/fb-metrics.sh --project avp2-logging /api/v1/metrics/prom
   隔離環境での実行結果は verification-results §5.17。
 - `dropped_records_total` / `retries_failed_total` が増えた = 検索用ログが失われた（業務には影響しない）。
   **増えたことは破棄の検知に使えるが、値を失った件数とみなさない**（隔離試験では届いた件数 + dropped が
-  出した件数を上回った。verification-results §5.13）。原因（OpenSearch の長い停止・容量上限）を直し、欠けた
+  出した件数を上回った。verification-results §5.13・§5.22、I-27。check-pipeline は `破棄が起きた（… 件数は欠損の実数ではない）`
+  と表示する）。原因（OpenSearch の長い停止・容量上限）を直し、欠けた
   時間帯は json-file（rotation 前なら）か DB・Temporal で補う。
 - `files_opened_total == 0` が続く = Collector が何も読めていない（権限・mount 不成立）。
 - 長い行: 結合後 262144 bytes を超える行は Collector が切って infra 系統へ送る（`collector_errors:line_too_long`、
@@ -162,7 +163,8 @@ deploy/logging/scripts/fb-metrics.sh --project avp2-logging /api/v1/metrics/prom
   隔離試験で再現しなくなった（300000 bytes の行の前後・他ファイルとも全件、CPU 1% 台。verification-results §5.10）。
   停滞の FAIL が出たら `docker restart avp2-logging-fluent-bit-1` と原因の行の特定（`line_too_long`・該当コンテナのログ）。
 - **Fluent Bit の restart・stop で 1〜2 行が欠けることがある**（隔離試験で3回とも、metrics には出ない。
-  verification-results §5.9 の V-8、B が調査中）。必要のない restart をしない。欠けた行は json-file に残っているので、
+  verification-results §5.9。**I-26、既知の限界**: 原因は rewrite_tag の emitter で設定では直らない。platform.md §3「Fluent Bit の
+  restart で数行欠ける」）。必要のない restart をしない。欠けた行は json-file に残っているので、
   rotation 前なら位置 DB を消して読み直すと戻る（§7。infra の重複に注意）。
 
 ## 7. 欠損時の復旧・deploy 前の確認

@@ -397,7 +397,8 @@ sa agg    --term episode_id=89b1a8c3-… --by event_name --table
 sa agg --term log_source=app_json --by run_id,activity_id,episode_id --table   # → c2/final/ctx.tsv を集計
 ```
 
-- Activity 実行（`run_id`×`activity_id`）970 件・文書 4289 件のうち、**2つ以上の `episode_id` を持つ実行は 0**。
+- Activity 実行（`run_id`×`activity_id`）970 件（属する文書 **2,465 件**。4289 件は集計対象にした 517c9ca の app 文書の総数で、
+  `activity_id` を持たない Workflow・API の文書を含む）のうち、**2つ以上の `episode_id` を持つ実行は 0**（D の再確認で訂正。結論は不変）。
   episode の付いた文書と付かない文書（temporalio の `Completing activity as failed` 等）が混ざる実行は 66（前の
   episode が残ったのではなく、episode を持たない SDK の行）。
 - 並行の upload 試験（`test_concurrent_double_start…`、episode `5f551644-…`）の文書はすべてその episode。
@@ -488,6 +489,10 @@ logging 経由と `--raw`（print、stdout・stderr）の両方で出した。
 | OpenSearch infra / 全体（raw needle） | PEM の needle が **2 文書**（print の stdout・stderr）。他の 14 種は 0 |
 | `redaction_applied=true` | 52 文書（`--since` 以降、app + infra）。この tool の infra 文書は stdout・stderr 各 15 が true、各 2 が false |
 
+注記（D の再確認、2026-10-07）: 試験後の infra 全体には PEM の本文行が **16 文書**ある。内訳は S-SEC の4回の実行（09:54・09:56・10:21・10:22Z）
+× stdout/stderr の **8 件**と、S-DUP（§5.12）で位置 DB を消して json-file を読み直した時に同じ行が infra に重複して入った **8 件**
+（infra は `_id` を持たない）。新しい漏れではない。
+
 - logging を通る経路（A の整形器 + Collector）は全種を伏せた。
 - 残るリスク: logging を通らない print で PEM を出すと、改行で行が分かれ、`BEGIN … KEY` を含まない本文の行は
   Collector が秘密と判定できない（行単位の収集の限界）。plan の「残った種類は ADR の残るリスクとして報告」に当たる。
@@ -524,7 +529,9 @@ logging 経由と `--raw`（print、stdout・stderr）の両方で出した。
 - Fluent Bit のログは `caught signal (SIGTERM)` → `pausing all inputs` → `service has stopped (0 pending tasks)`（5 秒の
   grace 内に正常終了）。`dropped`・`retries_failed` は 0 のまま（metrics に出ない）。
 - 推定: tail は読んだ位置を位置 DB に進めたが、その行が rewrite_tag の emitter（`emitter_storage.type: filesystem`）の
-  chunk に入る前に停止した。証明はしていない → V-8（§5.20）。
+  chunk に入る前に停止した。証明はしていない → V-8（§5.20）＝ **I-26（既知の限界）**。B が Fluent Bit 単体で原因を rewrite_tag の
+  emitter と特定（restart 10 回で 3600 行中 10 行、rewrite_tag 無しなら 0。設定では直らない。platform.md §3「Fluent Bit の restart で
+  数行欠ける」、ADR-0040 §5）。
 - 計画上の「worker SIGKILL で別 worker が引き継ぐ」は `test_worker_restart_durability.py`（3条件で pass、§5.1・§5.3）。
 
 ### 5.10 S-BAD（合格。最終統合 c5af8ff の Lua で実施）
@@ -610,7 +617,8 @@ verify 61dc077 以降、Fluent Bit は c5af8ff の Lua（§5.8 で再作成）�
   initialized`（503）の間にも追い出しが続き、`dropped` は最終 **198218**。
 - **件数の食い違い**: 届いた 101829 + `dropped` 198218 = 300047 で、出した 200000 を 100047 上回る。追い出しのログは 106 回・
   計 90611712 bytes で、届いた chunk（`succeeded`）と追い出した chunk の名前の重なりは 0。`dropped_records_total` は失った
-  件数の実数としては使えない（増えたこと＝破棄が起きたことの検知には使える）→ V-9（§5.20）。中間版（§2.5）では逆に
+  件数の実数としては使えない（増えたこと＝破棄が起きたことの検知には使える）＝ **I-27**（修正済み: check-pipeline は件数を実数として
+  報告しない。§5.22 で表示を確認）→ V-9（§5.20）。中間版（§2.5）では逆に
   9941 件が説明できなかった。
 
 ### 5.14 S-IDX（合格。plan どおり新しいスタックで）
@@ -734,8 +742,8 @@ sa agg    --term episode_id=$EP --term event_name=reservation.reserved --by prov
 | V-5 | Low | C（plan） | plan の S-403「`provider.call.failed` に http_status=403」と S-REUSE「`artifact.reuse_rejected`」は、fake の integration では出ない（`provider.call.failed` は実 adapter の `fal_storage.py`・`fal_queue.py` だけ、`artifact.reuse_rejected` は emission-points で v1 未発行）。plan を emission-points に合わせて直す | §5.4・§5.6 |
 | V-6 | Low | A（`tests/support/json_log_plugin.py`）／C | integration の JSON ログが pytest の進捗表示（`.`）と同じ stdout に出るので、各テストの最初の 1 行ほどが `.{"@timestamp"…` になり Collector は infra へ送る（run-each で 84 行）。本番には無い試験 harness の問題だが、試験の件数照合が欠ける | §5.7 |
 | V-7 | Low | C（修正済み） | 試験スクリプト: S-SEC の判定に raw の print が混ざる・infra の全走査が `event_id` の sort で 400・infra の到着を待たずに走査。`8b4ae60`・`da092b4` で修正 | §5.8 |
-| V-8 | **Medium** | B | Fluent Bit の `docker restart`（SIGTERM・正常終了）で、その瞬間に読んだ 1〜2 行が OpenSearch に届かない（3回中3回）。行は json-file に残り、位置 DB はその先へ進んでいる（位置 DB を消して読み直すと戻った）。`dropped`・`retries_failed` に出ない。deploy・設定変更の restart のたびに無言で欠ける | §5.9・§5.12 |
-| V-9 | Low | B | `dropped_records_total` が実際の欠損件数と合わない（S-CAP で 届いた 101829 + dropped 198218 > 出した 200000）。破棄の検知には使えるが、件数の報告・照合に使えない。platform.md §3 の監視項目の説明に注記が要る | §5.13 |
+| V-8 → **I-26** | **Medium**（既知の限界） | B | Fluent Bit の `docker restart`（SIGTERM・正常終了）で、その瞬間に読んだ 1〜2 行が OpenSearch に届かない（3回中3回）。行は json-file に残り、位置 DB はその先へ進んでいる（位置 DB を消して読み直すと戻った）。`dropped`・`retries_failed` に出ない。deploy・設定変更の restart のたびに無言で欠ける。**I-26 として既知の限界に記録**（原因 rewrite_tag の emitter、B の実測 10/3600、設定では直らず、直すには経路の設計変更。platform.md §3・ADR-0040 §5） | §5.9・§5.12 |
+| V-9 → **I-27** | Low | B | `dropped_records_total` が実際の欠損件数と合わない（S-CAP で 届いた 101829 + dropped 198218 > 出した 200000）。破棄の検知には使えるが、件数の報告・照合に使えない。platform.md §3 の監視項目の説明に注記が要る。**I-27 で修正**（check-pipeline の表示。計上の詳細は未特定） | §5.13・§5.22 |
 
 ### 5.21 最終版の合否一覧
 
@@ -749,11 +757,11 @@ sa agg    --term episode_id=$EP --term event_name=reservation.reserved --by prov
 | S-REUSE | **合格**（rerun で `artifact.reused` 8・submit 0） | 517c9ca | §5.6 |
 | S-RESUME | **合格**（I-20: succeeded 1・reused_existing 1・spent 1、未照合予約の再送 0） | 517c9ca | §5.7 |
 | S-SEC | **合格**（logging 経由 0。raw の print の PEM 本文行だけ残る＝残るリスク） | c5af8ff の Lua（da092b4） | §5.8 |
-| S-STOP | **一部不合格**（OpenSearch 停止は全件・重複 0。Fluent Bit restart で 1〜2 行欠ける V-8） | 94d52f4 の Lua（b4ce5f0） | §5.9 |
+| S-STOP | **一部不合格**（OpenSearch 停止は全件・重複 0。Fluent Bit restart で 1〜2 行欠ける V-8 = I-26、既知の限界） | 94d52f4 の Lua（b4ce5f0） | §5.9 |
 | S-BAD | **合格**（I-15・I-18・I-19 解消） | c5af8ff の Lua | §5.10 |
 | S-ROT | **合格**（一巡しない量は全件。一巡分は検知不能＝設計どおり） | c5af8ff の Lua | §5.11 |
 | S-DUP | **合格**（app 重複 0。infra は位置 DB 削除で重複＝設計どおり） | c5af8ff の Lua | §5.12 |
-| S-CAP | **合格**（tmpfs のみ、ホスト不変、新しい側が届く。dropped の件数は不正確 V-9） | c5af8ff の Lua | §5.13 |
+| S-CAP | **合格**（tmpfs のみ、ホスト不変、新しい側が届く。dropped の件数は不正確 V-9 = I-27） | c5af8ff の Lua | §5.13 |
 | S-IDX | **合格**（新スタックで rollover・delete・bootstrap 冪等・alias 保護） | c5af8ff | §5.14 |
 | S-VER | **合格**（Dashboards `/api/status` 3.8.0 green を含む） | c5af8ff | §5.16 |
 | S-RES | 記録（RSS ≤ 上限、swap 0、MemAvailable 最小 4.26GiB） | — | §5.19 |
@@ -764,3 +772,29 @@ sa agg    --term episode_id=$EP --term event_name=reservation.reserved --by prov
 終了時の状態: `avp2-oslog-c2`（postgres・minio・temporal）と `avp2-oslog-c2-log`（opensearch・fluent-bit）は起動したまま
 （D の再確認用。Dashboards は停止）。`avp2-oslog-c2-idx` は S-RB の `down -v` で削除済み。旧 `avp2-oslog-c`・`avp2-oslog-c-log` は
 停止（volume は残す）。
+
+### 5.22 統合 878318b（I-26 記録・I-27）での check-pipeline
+
+verify c0fe3a3（878318b を merge）。878318b の変更は `check-pipeline.sh` の表示（I-27）と docs・contract test だけで、Fluent Bit 設定・
+Lua・アプリは c5af8ff から変わっていない（`git diff --stat c5af8ff 878318b -- deploy/logging/fluent-bit apps workers infrastructure`
+が空）ので、他の試験は再実行していない。
+
+```bash
+AVP_LOGGING_OS_PORT=19213 deploy/logging/scripts/check-pipeline.sh --env test --project avp2-oslog-c2-log \
+  --secrets-dir ~/.config/avp-logging-test/c2 --target-project avp2-oslog-c2 --state-dir <scratchpad>/cp-state
+```
+
+| 時刻（UTC） | 状況 | 結果 |
+|---|---|---|
+| 2026-10-06T15:11:23Z | 待機（試験が止まって約4時間） | **rc=1**: `FAIL opensearch[app]: 最終取り込みから 266 分（> 90 …）`。隔離環境には worker が無く app 系統が書かれないため（lag 判定が正しく働いた）。他は OK、`WARN line_too_long 2 件` |
+| 15:11:37〜15:14:53Z | `fault-capacity.sh 120000 400 2000` で buffer の破棄を起こした直後 | **I-27 の表示**: `FAIL fluent-bit: 破棄が起きた（dropped_records_total +76612・retries_failed_total +0。件数は欠損の実数ではない。platform.md §3）`。この回も届いた 100370 + dropped 76612 = 176982 > 出した 120000（件数を実数としない表示が妥当） |
+
+## 6. D による独立再確認（2026-10-07、コーディネーター経由）
+
+D が §5 の証拠（OpenSearch の `avp2-oslog-c2-log` と隔離スタック）に対して検索をやり直した結果。
+
+| 区分 | 項目 |
+|---|---|
+| **再現した** | §5 の検索で得た数値すべて（S-E2E の 1 Episode の件数・event_name 別・契約フィールド・重複 0、S-CTX、S-REPLAY、S-403、S-422、S-REUSE、S-RESUME（I-20）、S-SEC、S-BAD、S-ROT、S-DUP、S-STOP の件数、§5.18 の c5af8ff での検索） |
+| 記録の訂正（反映済み） | §5.2 の文書数（Activity 実行に属するのは 2,465 件。4289 件は app 総数）。S-SEC の infra の PEM 本文 16 件の内訳（4回 × stdout/stderr の 8 件 + S-DUP の読み直しによる重複 8 件） |
+| **再現できなかった**（証拠が scratchpad の CSV・ログ、または削除済みのスタックにあるため。D の環境からは見えない） | text・ロガー故障注入条件の integration の件数（runner のログ）、S-RES（measure の CSV）、S-CAP（Fluent Bit の metrics・ログは再作成・restart で消えた）、S-IDX（`avp2-oslog-c2-idx` は S-RB の `down -v` で削除） |
