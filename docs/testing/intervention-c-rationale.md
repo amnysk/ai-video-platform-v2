@@ -82,7 +82,7 @@ fake を `InterventionModules` で渡す。`receive_command` の fake は store 
 
 ## 統合後に親が確かめること（fake でしか動かしていない部分）
 `apps/api/intervention_backend.py::load_real_modules` と `TemporalCommandStarter` は `# pragma: no cover` で、この branch
-ではテストしていない。仮定は [intervention-api.md §6](../operations/intervention-api.md)。
+ではテストしていない。仮定は [intervention-api.md §7](../operations/intervention-api.md)。
 
 ## CLI（`tests/unit/test_intervene_cli.py`）
 
