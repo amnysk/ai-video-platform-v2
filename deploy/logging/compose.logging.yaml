@@ -94,6 +94,8 @@ services:
     entrypoint: ["bash", "/scripts/volume-guard.sh"]
     environment:
       AVP_LOG_READ_FROM_HEAD: ${AVP_LOG_READ_FROM_HEAD:-true}
+      # 読み直しモード（位置 DB を消した後に1回だけ。.env には書かない。runbook §7、I-28）
+      AVP_LOG_REREAD: ${AVP_LOG_REREAD:-}
     volumes:
       - fbstate:/fb-state:ro
       - ${AVP_LOG_CONTAINERS_DIR:-${HOME}/.local/share/docker/containers}:/containers:ro

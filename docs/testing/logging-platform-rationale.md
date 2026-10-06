@@ -174,3 +174,17 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
   AGENTS.md §8）。既存の検査は repo 直下の `Dockerfile` しか見ていなかった。pyproject の依存（extras を含む）の
   再掲と、pyproject に無いパッケージの直接追加の両方を止める（`pytest`・`pytest-xdist` を足すと落ちることを確認）。
   `pip install` が1つも見つからないときも落とす（検査の空振りを防ぐ）。
+
+## 9. `tests/unit/test_logging_volume_guard.py`（I-28）
+
+- **位置 DB を消して読み直す手順が guard で止まらない（読み直しモード）**: I-26 の緩和策・runbook §7 の
+  「位置 DB を消して読み直す」は、既定の起動だと guard が「位置 DB 無し＋`read_from_head=true`」を導入手順の誤りと
+  して止め、`read_from_head=false` にすると末尾から読んで黙って何も読み直さない。書いた手順が動かないことを
+  レビュー（D）が見つけた。`AVP_LOG_REREAD=yes` を明示したときだけ通すことを、guard を実際に bash で動かして
+  確かめる（パスは試験用の環境変数で一時ディレクトリへ差し替える）。
+- **既定の判定は変わらない**: sentinel 無し・導入時の誤りは従来どおり止める。読み直しの合図は完全一致の `yes`
+  だけ（`true`・`1` 等の取り違えで既定の安全装置が外れない）。
+- **読み直しにならない組み合わせを拒む**: 読み直しモードで `read_from_head=false`（何も読み直さない）、位置 DB が
+  残っている（消し忘れ）。
+- contract: compose が guard にだけ `AVP_LOG_REREAD`（既定は空）を渡す。
+

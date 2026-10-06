@@ -190,8 +190,9 @@ json-file の行を照合する。
 - 運用上の緩和: Fluent Bit の restart は deploy・設定変更のときだけにする（`restart: unless-stopped` の自動再起動・
   ホストの再起動でも起きる）。欠損は restart の時刻の前後数行で、app 系統なら `event_id` の欠番ではなく
   「その時刻の前後の行が json-file にあって検索に無い」で見つかる。どうしても埋める必要があるときは、
-  Fluent Bit を止めて位置 DB を消し `read_from_head=true` で読み直す（app は `event_id` で重複しない、infra は
-  読み直した分が重複する。担当C の S-DUP で実測）。
+  位置 DB を消して読み直す（手順は runbook §7。guard の読み直しモード `AVP_LOG_REREAD=yes` を使う。I-28）。
+  app 系統は**同じ index の中なら** `event_id` で重複しないが、rollover 済みの index にある行は新しい write index に
+  別の文書として重複して入る。infra 系統は読み直した分がすべて重複する（担当C の S-DUP で実測）。
 
 ## 4. TLS・権限・秘密の置き場所
 
@@ -322,6 +323,7 @@ CHECK=deploy/logging/scripts/check-pipeline.sh                  # --env prod が
 ### 6.2 運用中の注意
 
 - 位置 DB が無い状態で `read_from_head=true` のまま起動しようとすると `fluent-bit-guard` が止める。
+  位置 DB を消して読み直すときだけ `AVP_LOG_REREAD=yes` を付けて起動する（runbook §7。`.env` には書かない。I-28）。
   sentinel の無い volume（project 名の違いで新しく作られた空の volume）でも OpenSearch・Fluent Bit は起動しない。
 - アプリ側の変更（`compose.yaml` の `logging:`・label・env）は、コンテナの**再作成**で反映される。deploy の
   たびに手順 7 の `--catchup-only` を先に流す。

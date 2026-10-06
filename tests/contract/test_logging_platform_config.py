@@ -459,3 +459,13 @@ def test_check_pipeline_uses_dropped_records_only_as_a_signal() -> None:
     src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
     assert "件数は欠損の実数ではない" in src
     assert "破棄 +$d_dropped records" not in src
+
+
+def test_guard_gets_the_explicit_reread_switch(compose) -> None:
+    """位置 DB を消して読み直す手順（I-26 の緩和策）が既定起動の guard で止まらないこと（I-28）。
+
+    読み直しは ``AVP_LOG_REREAD=yes`` を明示したときだけ。既定値は空（.env に書かない）。
+    """
+    env = compose["services"]["fluent-bit-guard"]["environment"]
+    assert env["AVP_LOG_REREAD"] == "${AVP_LOG_REREAD:-}"
+    assert "AVP_LOG_REREAD" not in compose["services"]["fluent-bit"]["environment"]
