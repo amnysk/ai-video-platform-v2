@@ -565,3 +565,16 @@ verify 61dc077 以降、Fluent Bit は c5af8ff の Lua（§5.8 で再作成）�
 | `str_nan`（`"nan"`） | **41** | `collector_errors=duration_ms`（退避） |
 
 - probe の後に `failed to flush` は 0 件、`dropped`・`errors` 0。中間版（§2.4）の 0/41 は解消。
+
+### 5.11 S-ROT（合格。一巡させた分の欠損は検知できない＝受け入れる欠損）
+
+2026-10-06T10:26:26〜10:29Z、Fluent Bit は c5af8ff の Lua。tool コンテナを `APPTEST_LOG_MAX_SIZE=1m APPTEST_LOG_MAX_FILE=5` で起動。
+
+| 試験 | 手順 | 結果 |
+|---|---|---|
+| 一巡しない量 | `fault-collector-rotation.sh 6000 200`（Fluent Bit を止めて 6000 行 → `.log`〜`.log.4` の5ファイルに分かれる → 再開） | **6000 / 6000**、`dupes` 0 |
+| 一巡させる量 | Fluent Bit 停止中に 20000 行（pad 200）→ 再開 | **5238 / 20000**。残った最古のファイル `.log.4` の先頭が `seq=14762` で、届いた件数 = 20000 − 14762 と一致（消えたファイルの分だけ欠ける）。`dupes` 0、`dropped`・`retries_failed` 0、`catchup` behind 0 |
+| 事前の検知 | Fluent Bit 停止中に 1000 行を出して `check-pipeline.sh --catchup-only` | `FAIL fluent-bit: 到達できない` で **rc=1**（停止は検知できる）。再開後 1000/1000 |
+
+- 一巡で消えた行は Fluent Bit の metrics にも `check-pipeline`（残っているファイルしか見ない）にも出ない。
+  ADR-0040 §5 の「受け入れる欠損」どおり。検知できるのは「Collector が止まっている／遅れている」ことまで。
