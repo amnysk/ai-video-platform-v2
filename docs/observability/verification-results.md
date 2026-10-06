@@ -526,3 +526,42 @@ logging 経由と `--raw`（print、stdout・stderr）の両方で出した。
 - 推定: tail は読んだ位置を位置 DB に進めたが、その行が rewrite_tag の emitter（`emitter_storage.type: filesystem`）の
   chunk に入る前に停止した。証明はしていない → V-8（§5.15）。
 - 計画上の「worker SIGKILL で別 worker が引き継ぐ」は `test_worker_restart_durability.py`（3条件で pass、§5.1・§5.3）。
+
+### 5.10 S-BAD（合格。最終統合 c5af8ff の Lua で実施）
+
+verify 61dc077 以降、Fluent Bit は c5af8ff の Lua（§5.8 で再作成）。2026-10-06T10:24:00〜10:26:00Z。
+
+**`fault-bad-lines.sh 500 40000`**（tag `bad-102400-25006`）:
+
+- 正常行 `count --term request_id=… --term event_name=log.record --min 500` → **537**（正常 500 + JSON として読める壊れ行 36 + 40000 bytes の行 1）。
+- 型不整合の退避 `collector-errors` → 32 件（`@timestamp_replaced` 8、`duration_ms`・`episode_id`・`http_status`・`provider_body`・
+  `retryable`・`scene_revision`・`totally_unknown_field` 各4）。
+- **I-19**: `{` で始まり壊れた行 5 件は **infra**（stdout・`collector_errors=json_parse_failed`）。app 系統のこの container は
+  `app_json` 537 のみ。index 全体の `sa fields --require-contract` は 13959 文書すべて契約フィールドあり。
+- 後続 `bad-after-…` 50/50。`long_line_skipped` 0。
+
+**I-15（300000 bytes の行）**: 同じファイルに「50 行 → 300000 bytes の英数字の1行 → 50 行」（scratchpad `c2/longprobe.py`）、
+並行して別コンテナが rate 10/s で 400 行、その後に別コンテナで 50 行。
+
+| 確認 | 結果 |
+|---|---|
+| 同じファイルの前後の行（`long300k-102434`） | app **100 / 100** |
+| 長い行 | infra 1 文書（`collector_errors=line_too_long`・`truncated=true`） |
+| 並行する別ファイル（`bg300k-…`、400 行） | **400 / 400** |
+| 後続の別コンテナ（`after300k-…`） | **50 / 50** |
+| Fluent Bit の CPU | 直後 1.42%、終了後 0.29%（修正前は 100% で停止） |
+| `dropped`・`retries_failed` | 0 |
+
+**I-18（Bulk 部分失敗の probe、正常 20 行・試験行 1・正常 20 行）**:
+
+| kind | 届いた件数 / 41 | 試験行の扱い |
+|---|---|---|
+| `int_float` | 41 | そのまま格納 |
+| `bool_number` | 41 | `collector_errors=retryable`（退避） |
+| `attributes_scalar` | 41 | そのまま格納 |
+| `int_overflow` | 41 | 格納（`ignore_malformed`） |
+| `num_overflow`（JSON の `1e400`） | 40 + infra 1 | JSON 解釈失敗で infra（I-19 の経路） |
+| `str_inf`（`"inf"`） | **41** | `collector_errors=duration_ms`（退避） |
+| `str_nan`（`"nan"`） | **41** | `collector_errors=duration_ms`（退避） |
+
+- probe の後に `failed to flush` は 0 件、`dropped`・`errors` 0。中間版（§2.4）の 0/41 は解消。
