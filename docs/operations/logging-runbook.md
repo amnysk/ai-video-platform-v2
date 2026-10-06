@@ -139,43 +139,49 @@ q "$OS/avp-app-prod-*/_search" -d '{"size":0,"aggs":{"d":{"terms":{"field":"even
 
 ## 6. Collector の破棄・再送・lag の確認
 
-- `check-pipeline.sh` が読むもの: Fluent Bit metrics（`127.0.0.1:2020/api/v2/metrics/prometheus`）の
-  `retries`・`retries_failed`・`dropped_records`・storage の chunk 数、OpenSearch の最新 `ingested_at`、
-  証明書の期限、ディスク、MemAvailable。
-- 手で見る:
+```bash
+CHECK=deploy/logging/scripts/check-pipeline.sh            # --env prod --project avp2-logging が既定
+$CHECK                                                    # 全項目。非0 なら FAIL 行を見る（journal にも残る）
+deploy/logging/scripts/fb-metrics.sh --project avp2-logging /api/v1/metrics/prometheus \
+  | grep -E 'retr|drop|storage|skip|input_records_total'
+```
 
-  ```bash
-  curl -s 127.0.0.1:2020/api/v2/metrics/prometheus | grep -E 'retr|drop|storage|skip'
-  deploy/logging/test/search-assert.py lag --max-seconds 300
-  ```
-- `dropped_records_total` / `retries_failed_total` が増えた = その分の検索用ログは失われた
-  （業務には影響しない）。原因（OpenSearch 停止・400 の型不整合）を直し、欠けた時間帯は
-  json-file（rotation 前なら）か DB・Temporal で補う。
+- `check-pipeline.sh` が見るもの（platform.md §5）: Fluent Bit の health・開いたファイル数・破棄と再送失敗と
+  長すぎる行の skip（前回からの増分）・buffer の chunk 数、**追いつき**（位置 DB の offset と収集対象の各
+  `*-json.log*` の大きさの差、I-17）、**tail の停滞**（未読が残るのに `input_records_total{name="tail.0"}` が
+  増えない、I-15）、OpenSearch の系統ごとの最終 `ingested_at`（app 既定 90 分・infra 60 分、I-13）、
+  environment の食い違い、Collector が切った長い行（`line_too_long`、WARN）、証明書の期限、ディスク、MemAvailable。
+  隔離環境での実行結果は verification-results §5.17。
+- `dropped_records_total` / `retries_failed_total` が増えた = 検索用ログが失われた（業務には影響しない）。
+  **増えたことは破棄の検知に使えるが、値を失った件数とみなさない**（隔離試験では届いた件数 + dropped が
+  出した件数を上回った。verification-results §5.13）。原因（OpenSearch の長い停止・容量上限）を直し、欠けた
+  時間帯は json-file（rotation 前なら）か DB・Temporal で補う。
 - `files_opened_total == 0` が続く = Collector が何も読めていない（権限・mount 不成立）。
-- **stall**（2026-10-06 の隔離試験で再現。review-log の I-15）: Docker が partial に分けた
-  1行が結合後に `buffer_max_size`（256k）を超えると、tail が CPU 100% のまま全ファイルの読み取りを
-  止める。health は ok・`long_line_skipped` は 0・buffer chunk も増えない。見えるのは最終
-  `ingested_at` の lag と `input_records_total{name="tail.0"}` が増えないこと、`docker stats` の CPU。
-  対処: `docker restart avp2-logging-fluent-bit-1`（位置 DB から再開。その巨大行を含むファイルの
-  残りは読まれず失われる）。B の修正までは lag の監視を短め（`--max-lag-min`）にする。
+- 長い行: 結合後 262144 bytes を超える行は Collector が切って infra 系統へ送る（`collector_errors:line_too_long`、
+  `truncated:true`。行の残りは失われる）。check-pipeline が WARN で知らせる。修正前に起きた tail の停止（I-15）は
+  隔離試験で再現しなくなった（300000 bytes の行の前後・他ファイルとも全件、CPU 1% 台。verification-results §5.10）。
+  停滞の FAIL が出たら `docker restart avp2-logging-fluent-bit-1` と原因の行の特定（`line_too_long`・該当コンテナのログ）。
+- **Fluent Bit の restart・stop で 1〜2 行が欠けることがある**（隔離試験で3回とも、metrics には出ない。
+  verification-results §5.9 の V-8、B が調査中）。必要のない restart をしない。欠けた行は json-file に残っているので、
+  rotation 前なら位置 DB を消して読み直すと戻る（§7。infra の重複に注意）。
 
 ## 7. 欠損時の復旧・deploy 前の確認
 
-- **deploy-workers の前に** Collector の追いつきを確認する（コンテナ再作成で未読の json-file が
-  消えるため）: 位置 DB の offset と各 `*-json.log` のサイズの差が 0 に近いこと。
-  `check-pipeline.sh` はこの差を見ない（buffer の chunk 数と最終 `ingested_at` だけ。
-  review-log の I-17）。当面は試験用の `deploy/logging/test/catchup.py` を使う:
+- **deploy-workers の前に** Collector の追いつきを確認する（コンテナ再作成で未読の json-file が消えるため）:
 
   ```bash
-  LOGGING_PROJECT=avp2-logging AVP_LOG_TARGET_PROJECT=avp2 \
-    bash -c 'source deploy/logging/test/lib.sh && catchup'      # {"ok": true, "behind_bytes": 0, ...}
+  deploy/logging/scripts/check-pipeline.sh --catchup-only     # 追いつき・停滞・Fluent Bit だけ。rc=0 なら deploy してよい
   ```
-  （位置 DB を WAL ごとホストの一時ディレクトリへ複製して読む。Fluent Bit には触れない）
-  追いついていなければ待つ。`behind_bytes` が減らないときは §6 の stall を疑う。
-- Collector 停止が長く、rotation 一巡（20m × 5 ÷ 出力速度）を超えた分は取り戻せない（検知もできない）。
+  未読が `--max-behind-bytes`（既定 262144 = 1行の上限）を超えていれば FAIL。待って再実行する。減らないときは
+  停滞の FAIL を見る（§6）。Collector が止まっていれば `FAIL fluent-bit: 到達できない`（隔離試験で rc=1 を確認）。
+- Collector 停止が長く、rotation 一巡（20m × 5 ÷ 出力速度）を超えた分は取り戻せない（**検知もできない**: 消えた
+  ファイルは check-pipeline にも metrics にも見えない。隔離試験で 20000 行中 14762 行が消えて rc=0。§5.11）。
   その時間帯は DB・Temporal を正として調べる。
-- 位置 DB を消すと、残っている json-file を先頭から読み直す。同じ index 内なら `event_id` で重複は
-  抑止されるが、rollover 済みなら重複する。消す前に所有者の判断を取る。
+- 位置 DB を消すと、残っている json-file を先頭から読み直す。app 系統は同じ index 内なら `event_id`（= `_id`）で
+  重複しない（隔離試験で 31138 件を再送し文書の増加は欠けていた 5 件だけ）。rollover 済みの index の行は新しい
+  index に重複して入る。**infra 系統は `_id` を持たないので読み直した分だけ重複する**（隔離試験で 19205 → 39170）。
+  消す前に所有者の判断を取る。手順: Fluent Bit を止める → volume `avp2-logging_fbstate` の `tail.db`・`tail.db-wal`・
+  `tail.db-shm` を消す → 起動 → `check-pipeline.sh --catchup-only` が rc=0 になるまで待つ。
 
 ## 8. 導入（read_from_head 二段構え）と rollback
 
