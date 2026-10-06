@@ -114,6 +114,15 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
   SQL parameters・PEM・URL の query）。262144 bytes の病的な入力（英数字・hex・`eyJ`・`http://`・
   `[parameters: ` の繰り返し等）で 1行 0.05 秒以下（修正前は 40k で 7.6 秒、O(n²)）。閉じていない
   `[parameters: ` と PEM は行末まで伏せる（修正前は伏せなかった）。空の user（`redis://:pw@`）も伏せる。
+  - 旧規則（87fd105）と同じ範囲を伏せること（I-22・I-23、D の再確認）: JWT は `.` で区切った部分ごとに形を
+    確かめ、形の合わない `eyJ.` の後ろの本物も伏せる。PEM の終端は END の見出しだけ。上の追加（空の user・
+    閉じていないもの）は、キー名の規則まで含めて旧規則がすべて済んだ後に流す（先に流すと後の規則が旧規則と
+    違う文字列を見て、旧規則なら伏せた値が残った）。
+  - 差分 fuzz（scratchpad、担当B、2026-10-06）: 秘密の印を入れた断片をランダムに繋いだ入力を旧規則と新規則に
+    通し、**新規則だけが残す印のある入力の数**を数えた（断片の集合2種 × seed、各 200,000 入力）。
+    修正前（I-15 直後の Lua）: 広い集合 2,407〜2,539 件、JWT・PEM・parameters・userinfo に寄せた集合
+    8,870〜9,201 件。修正後: 両集合 × seed 5通り（計 2,000,000 入力）で 0 件。追加の規則を外した変種でも 0 件
+    （線形化そのものは旧規則と同じ範囲を伏せる）。線形性は維持（262144 bytes の病的入力 17種で 1行 0.06 秒以下）。
 - 実測（Fluent Bit 単体、OpenSearch なし、出力 file、本物の fluent-bit.yaml と Lua）:
 
   | | 長い行の後の同じファイルの行 | 別ファイル（0.2秒ごと）の行 | Fluent Bit の CPU |
@@ -123,6 +132,20 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
   | 修正後・200k（上限内 → app、message は `[REDACTED]`） | 100 / 100 | 読み続けた | 1% 未満 |
 
 - 観測: 切った行は infra の文書 `collector_errors:line_too_long` で検索できる。
+- **限界（I-24、記録のみ）**: `COLLECTOR_LINE_MAX_BYTES` で切るのは Lua に渡った後。それまでは docker multiline が
+  結合した行全体がメモリに載る（Fluent Bit 側に効く上限が無い。上記）。数十〜数百 MB の1行では Fluent Bit
+  （`mem_limit` 256MiB）が OOM で落ち、`restart: unless-stopped` で再起動すると位置 DB の offset（その行の
+  前）から同じ行を読み直して、また落ちる可能性がある（未実測）。アプリの行は `EVENT_MAX_BYTES`（12288）で
+  切られるので、起きるのは契約外の出力（`print` の巨大な値・別プロセスの出力）だけ。
+  - 兆候: `docker inspect -f '{{.State.OOMKilled}} {{.RestartCount}}' avp2-logging-fluent-bit-1` が `true` で
+    再起動回数が増え続ける、check-pipeline の追いつきが FAIL のまま。
+  - 対処（手順は未実測。実施前に隔離環境で確かめる）: (1) `$C stop fluent-bit`。(2) 原因のファイルと行を
+    特定する（位置 DB の複製を `scripts/catchup.py` で読むと、未読の最も大きいファイルが `worst` に出る。
+    その offset から先で、`log` が改行で終わる最初の json-file の行の末尾が巨大な行の終わり）。
+    (3) 位置 DB（volume `<project>_fbstate` の `tail.db`）のその inode の `offset` を、その行の末尾の次の
+    byte に書き換える（Fluent Bit が止まっている間に、volume を rw で mount した one-shot の python3・sqlite3 で。
+    WAL を含めて開く）。(4) `$C start fluent-bit`。飛ばすのはその1行だけで、同じファイルの後続の行は
+    読まれる（巨大な行は検索側に残らない）。発生源のアプリを直すのが先。
 
 `/api/v1/storage` の `storage_layer.chunks.total_chunks`（buffer に溜まっている chunk）、
 `/api/v2/health` の `status`（`hc_*` の閾値を超えると `error`）。
@@ -175,6 +198,9 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
   その複製を読む（Fluent Bit は `db.locking` で DB を排他的に開いている。元の DB は開かない・止めない）。
   位置 DB に無いファイルは全量を未読と数える。差が `--max-behind-bytes`（既定 262144 = 1行の上限）を超えたら
   異常。対象は `docker ps -a --filter label=com.docker.compose.project=<target>` のコンテナだけ。
+  既知の限界（I-25、記録のみ）: 位置 DB の複製とファイルの大きさを読む間にも書き込みが続くので、書き込みの
+  多い瞬間は差が出て誤報しうる（再実行で消えれば無視してよい）。照合は inode だけなので、消えたファイルの
+  inode を新しいファイルが再利用すると古い offset で照合され、未読を見逃しうる。
 - **tail の停滞**（I-15）: 未読が残っているのに `input_records_total{name="tail.0"}` が前回の確認から
   増えていなければ異常（5秒おいて読み直してから判定）。Fluent Bit のイベントループが止まると health は ok、
   skip も chunk も変わらないので、これ以外では lag でしか見えない。対処は Fluent Bit の restart と、
