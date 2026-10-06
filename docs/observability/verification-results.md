@@ -596,3 +596,19 @@ verify 61dc077 以降、Fluent Bit は c5af8ff の Lua（§5.8 で再作成）�
   新しい write index に別文書として入る。runbook §5 の `collapse` で吸収する手順のまま）。
 - infra 系統の重複は設計どおり（`event_id` を持たない）。位置 DB を消す運用（runbook §7）では infra の件数が増える
   ことを runbook に明記する。
+
+### 5.13 S-CAP（合格。ただし破棄件数の metrics は件数として信用できない）
+
+2026-10-06T10:30:45〜10:34:24Z、`fault-capacity.sh 200000 400 2000`（tag `cap-103045-17590`）、buffer は tmpfs 64m・
+`storage.total_limit_size` 48M、c5af8ff の Lua。
+
+- ホストの `/`: 試験中 `915G 116G 753G 14%`（buffer は tmpfs。増えた分は試験コンテナの json-file）。
+- アプリ側: OpenSearch 停止中に 200000 行を 129 秒で出し終えた（止まらない）。`catchup` は直後に behind 0（rotation の欠損なし）。
+- 停止中: buffer 45.1M・chunk 55、`dropped_records_total{avp_app}` **0 → 155343**、`evicted from output queue to make room under
+  storage.total_limit_size` のログ。
+- 復旧後: 件数は **101829** で止まった（新しい側が届く）。`dupes` 0、`retries_failed` 0。復旧直後の `OpenSearch Security not
+  initialized`（503）の間にも追い出しが続き、`dropped` は最終 **198218**。
+- **件数の食い違い**: 届いた 101829 + `dropped` 198218 = 300047 で、出した 200000 を 100047 上回る。追い出しのログは 106 回・
+  計 90611712 bytes で、届いた chunk（`succeeded`）と追い出した chunk の名前の重なりは 0。`dropped_records_total` は失った
+  件数の実数としては使えない（増えたこと＝破棄が起きたことの検知には使える）→ V-9（§5.15）。中間版（§2.5）では逆に
+  9941 件が説明できなかった。
