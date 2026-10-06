@@ -9,6 +9,7 @@ Workflow のコードはこれを使わない（``workflow.logger`` + ``extra={"
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
@@ -42,4 +43,13 @@ def emit(
         pass
 
 
-__all__ = ["emit"]
+def log_guard() -> contextlib.AbstractContextManager[None]:
+    """発行の**引数の組み立てごと**握る block（``with log_guard(): emit(...)``）。
+
+    ``emit()`` の try は呼ばれた後の失敗しか握れない。引数の計算（分類・行→フィールド・
+    ``str(exc)`` 等）が投げると、except 節の中では業務の例外が置き換わる（INV-38 / レビュー I-2）。
+    """
+    return contextlib.suppress(Exception)
+
+
+__all__ = ["emit", "log_guard"]

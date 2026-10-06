@@ -35,7 +35,7 @@ from domain.upload.ports import (
     UploadSessionRef,
     VideoProcessingState,
 )
-from infrastructure.logging.emit import emit
+from infrastructure.logging.emit import emit, log_guard
 from infrastructure.logging.provider import classify
 from infrastructure.youtube.errors import (
     YouTubeAuthError,
@@ -124,34 +124,35 @@ def _observe(
     exc: BaseException | None = None,
 ) -> None:
     """1回の呼び出しの観測。URL（session URI を含む）・token は出さない（INV-20）。"""
-    op = _OPERATIONS.get(operation)
-    status = response.status_code if response is not None else None
-    failed = exc is not None or (status is not None and status >= 400)
-    if failed:
-        category, basis = classify(exc, status)
-        level = logging.WARNING
-    else:
-        category, basis = None, None
-        level = logging.DEBUG if op in _QUIET_OPERATIONS else logging.INFO
-    emit(
-        logger,
-        EventName.PROVIDER_CALL_FAILED if failed else EventName.PROVIDER_CALL_SUCCEEDED,
-        level,
-        "youtube %s -> %s",
-        operation,
-        status if status is not None else type(exc).__name__,
-        provider=ProviderCall.YOUTUBE_UPLOAD.value,
-        provider_operation=op.value if op is not None else None,
-        http_status=status,
-        outcome=(Outcome.FAILED if failed else Outcome.SUCCEEDED).value,
-        error_type=type(exc).__name__ if exc is not None else None,
-        error_category=category,
-        classification_basis=basis,
-        duration_ms=(time.monotonic() - started) * 1000,
-        attributes={"reasons": _error_reasons(response)}
-        if failed and response is not None
-        else None,
-    )
+    with log_guard():
+        op = _OPERATIONS.get(operation)
+        status = response.status_code if response is not None else None
+        failed = exc is not None or (status is not None and status >= 400)
+        if failed:
+            category, basis = classify(exc, status)
+            level = logging.WARNING
+        else:
+            category, basis = None, None
+            level = logging.DEBUG if op in _QUIET_OPERATIONS else logging.INFO
+        emit(
+            logger,
+            EventName.PROVIDER_CALL_FAILED if failed else EventName.PROVIDER_CALL_SUCCEEDED,
+            level,
+            "youtube %s -> %s",
+            operation,
+            status if status is not None else type(exc).__name__,
+            provider=ProviderCall.YOUTUBE_UPLOAD.value,
+            provider_operation=op.value if op is not None else None,
+            http_status=status,
+            outcome=(Outcome.FAILED if failed else Outcome.SUCCEEDED).value,
+            error_type=type(exc).__name__ if exc is not None else None,
+            error_category=category,
+            classification_basis=basis,
+            duration_ms=(time.monotonic() - started) * 1000,
+            attributes={"reasons": _error_reasons(response)}
+            if failed and response is not None
+            else None,
+        )
 
 
 def validate_chunk_bytes(chunk_bytes: int) -> int:

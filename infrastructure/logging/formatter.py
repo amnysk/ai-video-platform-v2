@@ -161,15 +161,20 @@ def _format_one(exc: BaseException, indent: str = "") -> str:
 
 
 def format_exception_chain(
-    exc: BaseException, limit: int = EXCEPTION_STACK_MAX_BYTES
+    exc: BaseException,
+    limit: int = EXCEPTION_STACK_MAX_BYTES,
+    *,
+    redactor: Redactor | None = None,
 ) -> tuple[str, bool]:
     """chain の各例外の型・メッセージと frame の先頭・末尾を残し、全体を ``limit`` 以下にする。
 
     全体の末尾だけを残すと根本原因（chain の先頭）が消えるので、例外ごとに予算を分ける
-    （log-contract §7.7）。返す文字列は安全化前。
+    （log-contract §7.7）。各 block を**安全化してから**切る（切れ目で JWT・鍵が途中で切れると、
+    パターンに当たらない断片が残る / log-contract §7・レビュー I-4）。
     """
+    clean = redactor.text if redactor is not None else (lambda t: sanitize_text(t)[0])
     chain = _chain(exc)
-    blocks = [_format_one(e) for e in chain]
+    blocks = [clean(_format_one(e)) for e in chain]
     separator = "\n--- next exception in chain ---\n"
     whole = separator.join(blocks)
     if len(whole.encode("utf-8")) <= limit:
@@ -377,7 +382,7 @@ class JsonFormatter(logging.Formatter):
                 event.put("error_type", exception_type_name(exc))
             if "error_message" not in event.fields:
                 event.put("error_message", str(exc))
-            stack, cut = format_exception_chain(exc)
+            stack, cut = format_exception_chain(exc, redactor=event.redactor)
             event.put("exception_stack", stack)
             event.stack_truncated = event.stack_truncated or cut
         elif record.stack_info:
