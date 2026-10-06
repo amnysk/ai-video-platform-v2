@@ -53,7 +53,7 @@ test DB・test namespace・test bucket で接続する作りになっている�
 | `fault-collector-rotation.sh` | Collector 停止中の rotation を inode で続きから読めること（ADR の実測 300/300 を、この構成で再確認） |
 | `fault-bad-lines.sh` | 不正1件による永久滞留が無いこと・Bulk 部分失敗で正常行が落ちないこと・型不整合の退避 |
 | `fault-capacity.sh` | buffer 上限での古い chunk の破棄と検知。**容量制限した tmpfs でだけ**実行し、ホストのディスクを埋めない（tmpfs でなければ中止する）。出力速度を `rate` で絞り、Collector が json-file を読み切ってから（`catchup`）OpenSearch を戻す: 全速では json-file の rotation（20m × 5）が先に一巡し、buffer の破棄ではなく rotation の欠損を測ってしまう（2026-10-06 実測: 全速 200000 行で 118114 行が読まれる前に消え、buffer は 22MB で上限未達）。OpenSearch は healthy まで待ち、件数が 30 秒変わらなくなってから判定する（届き始めた直後の件数で合格にしない） |
-| `fault-secrets.sh` | INV-39 を json-file・buffer・OpenSearch の3か所で確認。隔離スタックの実パスワードも needle に入れる。`--raw` の print は logging と同じ値を出すので、json-file は JSON 行（logging 経由）だけを 0 件の判定に使い、buffer は needle ごとの hit を出す（2026-10-06 の最終版試験で、全行を数えると print の 30 行が混ざり判定できなかった）。infra 系統に入るのは print・stderr だけなので、infra の logging needle の hit は raw と合わせて報告し、終了させない |
+| `fault-secrets.sh` | INV-39 を json-file・buffer・OpenSearch の3か所で確認。隔離スタックの実パスワードも needle に入れる。`--raw` の print は logging と同じ値を出すので、json-file は JSON 行（logging 経由）だけを 0 件の判定に使い、buffer は needle ごとの hit を出す（2026-10-06 の最終版試験で、全行を数えると print の 30 行が混ざり判定できなかった）。infra 系統に入るのは print・stderr だけなので、infra の logging needle の hit は raw と合わせて報告し、終了させない。走査は infra の文書（json-file の行数 − JSON 行数）が全部届くまで待つ（app だけ待つと再送 backoff 中の infra を走査せずに「無い」と出した。2026-10-06 実測で 34 件中 2 件の時点） |
 | `measure.sh` | 本番ホスト共存の条件（ADR-0040 §7 の MemAvailable 閾値）を実測で判断するための記録 |
 
 ## 3. test-runner で JSON ログを出す plugin（`apptest_logging_plugin.py`）と tool の実行ユーザー
