@@ -26,11 +26,16 @@ deploy/logging/fluent-bit deploy/logging/opensearch deploy/logging/scripts/boots
 稼働中の Fluent Bit はこの worktree の `deploy/logging/fluent-bit` を mount して 2026-10-05T23:37:20Z に
 起動したもの。
 
-前任の証拠の置き場（このセッションの scratchpad。原本は別セッションの scratchpad で、触っていない）:
+> **証拠ファイルの置き場について（I-30）**: この文書が挙げる scratchpad（`/tmp/claude-1000/…/scratchpad/…`）と
+> `/run/user/1000/…` は**セッション限りで消える場所**（tmpfs。再起動・セッション終了で消える）。合否の根拠になる数値（件数・
+> event_name 別集計・metrics・資源測定）はすべてこの文書の本文に転記してある。消えた後に追えるのは本文の数値と、
+> OpenSearch（隔離スタック `avp2-oslog-c2-log` の volume が残っている間）への同じ検索コマンドだけ。一時スクリプトの中身は §7 に載せた。
+
+前任の証拠の置き場（このセッションの scratchpad（セッション限りで消える場所。原本は別セッションの scratchpad で、触っていない）:
 `…/scratchpad/prev-c/`（faults.json・measure*.csv・ismwatch.log・run-text.log・run-break.log・snap-*.json）、
 `…/scratchpad/prev-c-run/run-each-20261005T233740Z.tsv`。片付けた exited コンテナ 42 個の `docker logs -t` と
-inspect の要約は `/run/user/1000/avp2-oslog-apptest/avp2-oslog-c/container-logs-20261006T0512Z.tar.gz`
-（同じものを今回の scratchpad `c2/container-logs/` にも置いた）。
+inspect の要約は `/run/user/1000/avp2-oslog-apptest/avp2-oslog-c/container-logs-20261006T0512Z.tar.gz`（セッション限りで消える場所）
+（同じものを今回の scratchpad（セッション限りで消える場所） `c2/container-logs/` にも置いた）。
 
 ## 1. 合否一覧
 
@@ -155,7 +160,7 @@ docker run --rm --network none --entrypoint sh <osd image@digest> -c 'grep -m1 "
    3分で削除、`job_interval` 1分）→ 出力 `ISM policy avp-app updated（既存の管理対象 index は旧版のまま）`。
    前任の run が残した `-000001` を消さないため、admin で `POST avp-{app,infra}-test-write/_rollover` を1回だけ
    手で行い、`-000002` 以降を短縮 policy で作らせた。以後は loggen（`--count 5` を 50 秒おきに3回）と
-   Temporal の infra ログで ISM 任せ。監視ログ: scratchpad `c2/ismwatch.log`（30 秒間隔）。
+   Temporal の infra ログで ISM 任せ。監視ログ: scratchpad（セッション限りで消える場所） `c2/ismwatch.log`（30 秒間隔）。
    - 05:09:50 write index `-000002`（手動）→ **05:12:21 ISM が `-000003` へ rollover**（app・infra とも）。
    - **05:16:58 までに `avp-app-test-000002` が ISM の delete で消えた**。failed 0（全 index で `failed: null`）。
 4. **本番 policy への復帰**: `ldc run --rm -e AVP_ISM_POLICY_DIR=ism bootstrap`（05:17:07）。短縮 policy で
@@ -194,7 +199,7 @@ deploy/logging/test/fault-bad-lines.sh 500 40000          # tag bad-052434-29798
 
 **Bulk 部分失敗の追加試験**（plan の「Bulk 部分失敗」は上の loggen では起きない: 型不整合は Lua が先に直すので
 OpenSearch は 1 件も拒否しなかった）。正常 20 行・試験行 1・正常 20 行を1コンテナずつ出す
-（scratchpad `c2/bulkprobe.py`。`run-e2e.sh tool python -c "$(cat bulkprobe.py)" <tag> <kind>`）:
+（scratchpad（セッション限りで消える場所） `c2/bulkprobe.py`。`run-e2e.sh tool python -c "$(cat bulkprobe.py)" <tag> <kind>`）:
 
 | kind | 試験行 | 届いた件数 / 41 | 結果 |
 |---|---|---|---|
@@ -227,7 +232,7 @@ deploy/logging/test/fault-capacity.sh 200000 400 2000     # tag cap-053827-25090
 ```
 
 （実行した版は `catchup` の非0終了（未読あり）で止まったため、OpenSearch 停止中のまま `catchup` 待ち以降を同じ手順で
-手で実行した。scratchpad `c2/cap-run2.log`・`c2/cap-run2-manual.log`。`catchup || true` に直した版を 569c2e6 として commit）
+手で実行した。scratchpad（セッション限りで消える場所） `c2/cap-run2.log`・`c2/cap-run2-manual.log`。`catchup || true` に直した版を 569c2e6 として commit）
 
 - ホストのディスク: 開始前・停止中とも `/dev/nvme0n1p2 915G 113G 757G 13%`（変化なし）。
 - アプリ側: loggen は OpenSearch 停止中に 200000 行を 123 秒で出し終えた（rate 指定 2000/s に対し実測
@@ -250,7 +255,7 @@ deploy/logging/test/fault-capacity.sh 200000 400 2000     # tag cap-053827-25090
 
 ### 2.6 S-RES（今回: 待機時・障害注入時を記録）
 
-`deploy/logging/test/measure.sh <csv> <回数> 10`。CSV は scratchpad `c2/measure-idle.csv`・`c2/measure-cap.csv`。
+`deploy/logging/test/measure.sh <csv> <回数> 10`。CSV は scratchpad（セッション限りで消える場所） `c2/measure-idle.csv`・`c2/measure-cap.csv`。
 
 | 条件 | 期間（UTC） | OpenSearch mem | OpenSearch CPU 最大 | Fluent Bit mem | Fluent Bit CPU 最大 | MemAvailable |
 |---|---|---|---|---|---|---|
@@ -326,8 +331,8 @@ verify branch で 94d52f4 を merge した commit は 990d7e1、試験の実行�
 | ログ基盤 | project `avp2-oslog-c2-log`（`APPTEST_ISM=prod logging-stack.sh up`。最終版の `fluent-bit.yaml`・Lua を mount、port 19213） |
 | 秘密 | `~/.config/avp-logging-test/c2/`（`init-secrets.sh --env test` で**新規生成**。本番 `~/.config/avp-logging/prod` には触れていない） |
 | 旧スタック | `avp2-oslog-c`・`avp2-oslog-c-log` は停止（volume は残す）。OpenSearch を2つ同時に動かしていない |
-| env | scratchpad `c2/c2.env`（`AVP_APPTEST_PROJECT=avp2-oslog-c2 LOGGING_PROJECT=avp2-oslog-c2-log AVP_LOGGING_SECRETS_DIR=~/.config/avp-logging-test/c2 AVP_LOGGING_OS_PORT=19213 OPENSEARCH_X509_STRICT=1`） |
-| 証拠 | scratchpad `c2/final/`（run-each・text・break のログ、measure*.csv、検索結果） |
+| env | scratchpad（セッション限りで消える場所） `c2/c2.env`（`AVP_APPTEST_PROJECT=avp2-oslog-c2 LOGGING_PROJECT=avp2-oslog-c2-log AVP_LOGGING_SECRETS_DIR=~/.config/avp-logging-test/c2 AVP_LOGGING_OS_PORT=19213 OPENSEARCH_X509_STRICT=1`） |
+| 証拠 | scratchpad（セッション限りで消える場所） `c2/final/`（run-each・text・break のログ、measure*.csv、検索結果）。数値は本文に転記 |
 
 **I-16（CA の keyUsage）: 合格。** 新しい CA は `X509v3 Key Usage: critical  Certificate Sign, CRL Sign`、
 `Basic Constraints: critical CA:TRUE`（旧 CA は Key Usage 無し）。`OPENSEARCH_X509_STRICT=1`（Python 3.13.14 の
@@ -496,7 +501,7 @@ logging 経由と `--raw`（print、stdout・stderr）の両方で出した。
 - logging を通る経路（A の整形器 + Collector）は全種を伏せた。
 - 残るリスク: logging を通らない print で PEM を出すと、改行で行が分かれ、`BEGIN … KEY` を含まない本文の行は
   Collector が秘密と判定できない（行単位の収集の限界）。plan の「残った種類は ADR の残るリスクとして報告」に当たる。
-- needle の値は `/run/user/1000/avp2-oslog-apptest/avp2-oslog-c2/secrets-*`（0600、乱数の偽物）。試験後に削除する。
+- needle の値は `/run/user/1000/avp2-oslog-apptest/avp2-oslog-c2/secrets-*`（セッション限りで消える場所）（0600、乱数の偽物）。試験後に削除した。
 
 **最終統合 c5af8ff（Lua の伏せ字規則 I-22/I-23）で再実行**（verify 7f03f7d、Fluent Bit を `ldc up -d --force-recreate
 --no-deps fluent-bit` で再作成し、コンテナ内の `avp_collector.lua` の sha256 `5862f256…` = c5af8ff の blob を確認）:
@@ -547,7 +552,7 @@ verify 61dc077 以降、Fluent Bit は c5af8ff の Lua（§5.8 で再作成）�
   `app_json` 537 のみ。index 全体の `sa fields --require-contract` は 13959 文書すべて契約フィールドあり。
 - 後続 `bad-after-…` 50/50。`long_line_skipped` 0。
 
-**I-15（300000 bytes の行）**: 同じファイルに「50 行 → 300000 bytes の英数字の1行 → 50 行」（scratchpad `c2/longprobe.py`）、
+**I-15（300000 bytes の行）**: 同じファイルに「50 行 → 300000 bytes の英数字の1行 → 50 行」（scratchpad（セッション限りで消える場所） `c2/longprobe.py`）、
 並行して別コンテナが rate 10/s で 400 行、その後に別コンテナで 50 行。
 
 | 確認 | 結果 |
@@ -721,7 +726,7 @@ sa agg    --term episode_id=$EP --term event_name=reservation.reserved --by prov
 
 ### 5.19 S-RES（記録）
 
-`deploy/logging/test/measure.sh`（10 秒間隔、対象は `avp2-oslog-c2-log` と `avp2-oslog-c2`）。CSV は scratchpad `c2/final/measure-*.csv`。
+`deploy/logging/test/measure.sh`（10 秒間隔、対象は `avp2-oslog-c2-log` と `avp2-oslog-c2`）。CSV は scratchpad（セッション限りで消える場所） `c2/final/measure-*.csv`。
 
 | 条件 | 期間（UTC） | OpenSearch mem / CPU 最大 | Fluent Bit mem / CPU 最大 | runner mem 最大 | MemAvailable |
 |---|---|---|---|---|---|
@@ -798,3 +803,54 @@ D が §5 の証拠（OpenSearch の `avp2-oslog-c2-log` と隔離スタック�
 | **再現した** | §5 の検索で得た数値すべて（S-E2E の 1 Episode の件数・event_name 別・契約フィールド・重複 0、S-CTX、S-REPLAY、S-403、S-422、S-REUSE、S-RESUME（I-20）、S-SEC、S-BAD、S-ROT、S-DUP、S-STOP の件数、§5.18 の c5af8ff での検索） |
 | 記録の訂正（反映済み） | §5.2 の文書数（Activity 実行に属するのは 2,465 件。4289 件は app 総数）。S-SEC の infra の PEM 本文 16 件の内訳（4回 × stdout/stderr の 8 件 + S-DUP の読み直しによる重複 8 件） |
 | **再現できなかった**（証拠が scratchpad の CSV・ログ、または削除済みのスタックにあるため。D の環境からは見えない） | text・ロガー故障注入条件の integration の件数（runner のログ）、S-RES（measure の CSV）、S-CAP（Fluent Bit の metrics・ログは再作成・restart で消えた）、S-IDX（`avp2-oslog-c2-idx` は S-RB の `down -v` で削除） |
+
+## 7. 試験で使った一時スクリプト（scratchpad にしか無かったもの）
+
+repo に置かない使い捨ての probe（`run-e2e.sh tool python -c "$(cat <file>)" <tag> <arg>` で、隔離 app の tool コンテナから実行）。
+
+`bulkprobe.py`（§2.4・§5.10 の Bulk 部分失敗、I-18）:
+
+```python
+# usage: python -c "$(cat bulkprobe.py)" <tag> <kind>   — 20 valid, 1 probe, 20 valid（同じ request_id）
+import json, sys, uuid
+from datetime import UTC, datetime
+tag, kind = sys.argv[1], sys.argv[2]
+def ev(seq, **over):
+    d = {"@timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z", "schema_version": 1,
+         "event_id": uuid.uuid4().hex, "event_name": "log.record", "level": "INFO", "message": f"bulkprobe seq={seq}",
+         "service_name": "loggen", "environment": "test", "git_sha": "unknown", "logger": "avp.loggen",
+         "request_id": tag, "attributes": {"seq": seq}}
+    d.update(over); return json.dumps(d)
+RAW = {  # 値を JSON テキストとして埋め込む（json.dumps では作れない形）
+    "num_overflow": ('"duration_ms": 0', '"duration_ms": 1e400'),
+    "int_overflow": ('"http_status": 0', '"http_status": 99999999999999999999'),
+}
+OVER = {
+    "str_inf": {"duration_ms": "inf"}, "str_nan": {"duration_ms": "nan"},
+    "attributes_scalar": {"attributes": "scalar"}, "int_float": {"scene_revision": 1.5},
+    "bool_number": {"retryable": 1},
+}
+for i in range(20): print(ev(i))
+if kind in RAW:
+    a, b = RAW[kind]; print(ev(-1, duration_ms=0, http_status=0).replace(a, b))
+else:
+    print(ev(-1, **OVER[kind]))
+for i in range(20, 40): print(ev(i))
+```
+
+`longprobe.py`（§5.10 の 300000 bytes の行、I-15）:
+
+```python
+# usage: python -c "$(cat longprobe.py)" <tag> <bytes>  — 50 行、<bytes> の1行（英数字の連なり）、50 行（同じ request_id）
+import json, sys, uuid
+from datetime import UTC, datetime
+tag, size = sys.argv[1], int(sys.argv[2])
+def ev(seq, msg):
+    return json.dumps({"@timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "schema_version": 1, "event_id": uuid.uuid4().hex, "event_name": "log.record", "level": "INFO",
+        "message": msg, "service_name": "loggen", "environment": "test", "git_sha": "unknown",
+        "logger": "avp.loggen", "request_id": tag, "attributes": {"seq": seq}})
+for i in range(50): print(ev(i, f"longprobe seq={i}"), flush=True)
+print(ev(-2, "longprobe long " + ("a1B2c3D4" * (size // 8 + 1))[:size]), flush=True)
+for i in range(50, 100): print(ev(i, f"longprobe seq={i}"), flush=True)
+```
