@@ -21,17 +21,22 @@ hits() { grep -c -F -f "$1" "$2" 2>/dev/null || true; }
 step "1) Docker json-file"
 logpath="$(docker inspect "$name" --format '{{.LogPath}}')"
 echo "lines=$(wc -l <"$logpath")"
-echo "json-file hits(logging needles, 0 であること): $(hits "$dir/needles-logging.txt" "$logpath")"
+# logging 経由の行（JSON 行 = log が "{" で始まる）だけを数える。--raw の print は同じ値を出すので分けて数える
+echo "json-file hits(logging needles in JSON lines, 0 であること): $(grep -F '"log":"{' "$logpath" | grep -c -F -f "$dir/needles-logging.txt" || true)"
+echo "json-file hits(logging needles in all lines, raw の print を含む): $(hits "$dir/needles-logging.txt" "$logpath")"
 echo "json-file hits(raw needles; --raw で意図的に print した分は残る): $(hits "$dir/needles-raw.txt" "$logpath")"
 step "2) Fluent Bit buffer（tmpfs）と位置 DB"
 echo "chunks: $(fb_storage | tr -d '\n' | head -c 300)"
-fb_fs 'echo files=$(find /proc/1/root/fb-buffer /proc/1/root/fb-state -type f | wc -l); echo buffer_hits_logging=$(grep -r -l -F -f /n/needles-logging.txt /proc/1/root/fb-buffer /proc/1/root/fb-state | wc -l); echo buffer_hits_raw=$(grep -r -l -F -f /n/needles-raw.txt /proc/1/root/fb-buffer /proc/1/root/fb-state | wc -l)' \
+fb_fs 'echo files=$(find /proc/1/root/fb-buffer /proc/1/root/fb-state -type f | wc -l); echo buffer_hits_logging=$(grep -r -l -F -f /n/needles-logging.txt /proc/1/root/fb-buffer /proc/1/root/fb-state | wc -l); echo buffer_hits_raw=$(grep -r -l -F -f /n/needles-raw.txt /proc/1/root/fb-buffer /proc/1/root/fb-state | wc -l); i=0; while read -r n; do c=$(grep -r -l -F -e "$n" /proc/1/root/fb-buffer /proc/1/root/fb-state | wc -l); [ "$c" = 0 ] || echo "buffer hit: needle line $i in $c file(s)"; i=$((i+1)); done </n/needles-logging.txt' \
   -v "$dir:/n:ro"
 step "start $os"; docker start "$os" >/dev/null
 step "3) OpenSearch（_source 全走査）"
 sa count --term "request_id=$t" --min 1 --wait 600
 sa absent --needles-file "$dir/needles-logging.txt" --since "$since"
-OPENSEARCH_INDEX="avp-infra-test-*" sa absent --needles-file "$dir/needles-logging.txt" --min-docs 0 --since "$since"
+# infra に入るのは logging を通らない行（--raw の print・stderr）だけ。同じ値なので logging の needle でも当たり得る
+# （例: PEM の print は改行で行が分かれ、BEGIN の無い本文行を Collector は見分けられない）。下の raw と合わせて報告する
+OPENSEARCH_INDEX="avp-infra-test-*" sa absent --needles-file "$dir/needles-logging.txt" --min-docs 0 --since "$since" || true
 OPENSEARCH_INDEX="avp-*" sa absent --needles-file "$dir/needles-raw.txt" --min-docs 0 --since "$since" || true
 OPENSEARCH_INDEX="avp-*" sa count --term "redaction_applied=true" --since "$since" --min 1
+echo "needles の行番号と種類: $(python3 -c "import json,sys; print(list(json.load(open(sys.argv[1]))))" "$dir/secrets.json")"
 echo "needles は $dir（0600）。試験後に消す: rm -r $dir"

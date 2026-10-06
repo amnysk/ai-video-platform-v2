@@ -133,22 +133,26 @@ def count(query: dict) -> int:
 
 
 def iter_hits(query: dict, source: list[str] | bool = True, page: int = 1000):
-    """search_after で全件を回す（PIT を使わない簡易版。試験中の新規書き込みは拾い漏れ得る）。"""
-    after = None
-    while True:
-        body: dict[str, Any] = {
-            "size": page,
-            "query": query,
-            "sort": [{"@timestamp": "asc"}, {"event_id": "asc"}],
-            "_source": source,
-        }
-        if after:
-            body["search_after"] = after
-        hits = request("POST", f"/{_index()}/_search", body)["hits"]["hits"]
-        if not hits:
-            return
-        yield from hits
-        after = hits[-1]["sort"]
+    """scroll で全件を回す（``_doc`` 順）。
+
+    search_after の sort に ``event_id`` を使うと、``event_id`` を持たない infra 系統の index で
+    400（``all shards failed``）になり、infra の全走査（S-SEC）ができなかった（2026-10-06 実測）。
+    """
+    body: dict[str, Any] = {"size": page, "query": query, "sort": ["_doc"], "_source": source}
+    res = request("POST", f"/{_index()}/_search?scroll=2m", body)
+    scroll_id = res.get("_scroll_id")
+    try:
+        while True:
+            hits = res["hits"]["hits"]
+            if not hits:
+                return
+            yield from hits
+            res = request("POST", "/_search/scroll", {"scroll": "2m", "scroll_id": scroll_id})
+            scroll_id = res.get("_scroll_id", scroll_id)
+    finally:
+        if scroll_id:
+            with contextlib.suppress(AssertFailed):
+                request("DELETE", "/_search/scroll", {"scroll_id": scroll_id})
 
 
 def _check_bounds(actual: int, args: argparse.Namespace) -> None:
