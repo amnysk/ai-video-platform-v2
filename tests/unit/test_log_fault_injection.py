@@ -10,13 +10,20 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from contracts.log_contract import EventName
 from infrastructure.logging import emit
-from tests.support.json_log_plugin import BREAK_LOGGING_ENV, FAULT_REPORT_ENV, break_logging
+from tests.support.json_log_plugin import (
+    BREAK_LOGGING_ENV,
+    BY_FILE_KEY,
+    FAULT_REPORT_ENV,
+    break_logging,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 #: 予約台帳・有料 submit/await・provider adapter・画像/動画/代替案/Upload の Activity。
@@ -30,7 +37,20 @@ LEDGER_SUITES = (
     "tests/unit/test_scene_alternative_activity.py",
     "tests/unit/test_scene_identity_reuse.py",
     "tests/unit/test_upload_activities.py",
+    # レビュー I-12: YouTube uploader・Render/Research/Pipeline の Activity
+    "tests/unit/test_youtube_uploader.py",
+    "tests/unit/test_render_activities.py",
+    "tests/unit/test_research_workflow.py",
+    "tests/unit/test_pipeline_activities.py",
 )
+#: 記録の**存在**を caplog 等で見るテストを含む suite（レビュー I-12）。故障注入で記録が消えるので
+#: そこでは落ちてよいが、落ちてよいのは記録を見る行（``LOG_OBSERVATION_MARKERS`` を含む行）だけ。
+#: それより前の業務の検査（``pytest.raises`` の型・台帳の commit）は通っていなければならない
+LOG_OBSERVING_SUITES = (
+    "tests/unit/test_fal_storage.py",
+    "tests/unit/test_log_ledger.py",
+)
+LOG_OBSERVATION_MARKERS = ("caplog", "logs.")
 
 
 def test_the_fault_injection_really_breaks_emission() -> None:
@@ -70,6 +90,20 @@ def test_ledger_suites_pass_unchanged_with_broken_logging(tmp_path) -> None:
     壊した makeRecord に1度も届いていなかった。ここでは root を DEBUG・JSON handler つきにして
     走らせ、注入点ごとの発火回数を数えて 0 でないことを確かめる。
     """
+    done, fired = _run_with_broken_logging(tmp_path, LEDGER_SUITES)
+    assert done.returncode == 0, done.stdout[-4000:]
+    assert " passed" in done.stdout
+    missing = [p for p in REQUIRED_FAULT_POINTS if fired.get(p, 0) == 0]
+    assert not missing, (missing, fired)
+    # suite ごとにも注入が届いていること（レビュー I-12。0 の suite は何も確かめていない）
+    by_file = fired[BY_FILE_KEY]
+    unreached = [s for s in LEDGER_SUITES if by_file.get(s, 0) == 0]
+    assert not unreached, (unreached, by_file)
+
+
+def _run_with_broken_logging(
+    tmp_path: Path, suites: tuple[str, ...], *extra: str
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     report = tmp_path / "faults.json"
     env = {**os.environ, BREAK_LOGGING_ENV: "1", FAULT_REPORT_ENV: str(report)}
     done = subprocess.run(
@@ -82,7 +116,8 @@ def test_ledger_suites_pass_unchanged_with_broken_logging(tmp_path) -> None:
             "tests.support.json_log_plugin",
             "-p",
             "no:cacheprovider",
-            *LEDGER_SUITES,
+            *extra,
+            *suites,
         ],
         cwd=REPO,
         env=env,
@@ -91,8 +126,39 @@ def test_ledger_suites_pass_unchanged_with_broken_logging(tmp_path) -> None:
         timeout=600,
         check=False,
     )
-    assert done.returncode == 0, done.stdout[-4000:]
-    assert " passed" in done.stdout
-    fired = json.loads(report.read_text(encoding="utf-8"))
-    missing = [p for p in REQUIRED_FAULT_POINTS if fired.get(p, 0) == 0]
-    assert not missing, (missing, fired)
+    return done, json.loads(report.read_text(encoding="utf-8"))
+
+
+#: ``--tb=line`` の1行（``<path>:<lineno>: <例外の型>: ...``）
+_TB_LINE = re.compile(r"^(?P<path>/\S+?\.py):(?P<lineno>\d+): (?P<error>[\w.]+)")
+
+
+def test_log_observing_suites_fail_only_where_they_read_the_records(tmp_path) -> None:
+    """記録を見る suite（fal storage の診断行・commit 後のイベント）も故障注入の下で走らせる。
+
+    記録は消えるので記録を見る assert は落ちる。落ちた位置がテストファイルの記録を見る行で
+    あれば、そこまでの業務の処理（例外の型・commit）は注入の下でも変わらなかったことになる。
+    業務コードの中で落ちた（``InjectedLoggingFault`` が漏れた・例外の型が変わった）なら、落ちた
+    位置は業務コードか ``pytest.raises`` の行になるので、ここで捕まえる。
+    """
+    done, fired = _run_with_broken_logging(tmp_path, LOG_OBSERVING_SUITES, "--tb=line")
+    # 1 = テストの失敗（収集エラー等ではない）
+    assert done.returncode in (0, 1), done.stdout[-4000:]
+    crashes = [m for line in done.stdout.splitlines() if (m := _TB_LINE.match(line))]
+    failed = len([line for line in done.stdout.splitlines() if line.startswith("FAILED ")])
+    assert len(crashes) == failed, done.stdout[-4000:]
+    bad: list[str] = []
+    for crash in crashes:
+        path = Path(crash["path"])
+        rel = path.relative_to(REPO).as_posix() if path.is_relative_to(REPO) else str(path)
+        line = path.read_text(encoding="utf-8").splitlines()[int(crash["lineno"]) - 1]
+        if (
+            rel not in LOG_OBSERVING_SUITES
+            or crash["error"].endswith("InjectedLoggingFault")
+            or not any(marker in line for marker in LOG_OBSERVATION_MARKERS)
+        ):
+            bad.append(f"{rel}:{crash['lineno']} {crash['error']}: {line.strip()}")
+    assert not bad, "\n".join(bad)
+    by_file = fired[BY_FILE_KEY]
+    unreached = [s for s in LOG_OBSERVING_SUITES if by_file.get(s, 0) == 0]
+    assert not unreached, (unreached, by_file)

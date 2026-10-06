@@ -90,6 +90,8 @@
 | `test_nothing_imports_opensearch` | アプリは stdout にしか書かない（ADR-0040 §1。OpenSearch の停止が業務に届かない） |
 | `test_log_extra_uses_only_the_avp_key` | `workflow.logger` の `extra=` のキーは `"avp"` だけ（予約属性と衝突すると `makeRecord` が KeyError を投げ、業務へ伝播する）。Workflow の外では `extra=` を直接書かず `emit()` を使う: 直接の `logger.warning(extra=...)` はロガーの故障をそのまま業務の例外にする（故障注入のテストで実際に `test_paid_job` が落ちた） |
 | `test_every_emission_outside_workflows_is_guarded_with_its_arguments` | `emit()`/`defer()` の try は呼ばれた後しか握れない。引数の計算（分類・行→フィールド・`str(exc)`）が except 節の中で投げると業務の例外が置き換わる（レビュー I-2。YouTube uploader の `_observe` が実例）。発行は前処理ごと `with log_guard():` の中に置く。Workflow は `_event` が握るので対象外 |
+| `test_log_guard_bodies_contain_only_log_preparation` | `log_guard()` は `contextlib.suppress(Exception)` なので、本体に業務の処理を入れるとその失敗まで黙って消える（レビュー I-11）。本体に `Raise`・`Return`・`Await` を置かず、呼び出しは `emit`/`defer` と許可リスト `LOG_GUARD_ALLOWED_CALLS`（2026-10-06 時点の全 42 block で実際に使われているログ用の前処理・読み取り・組み込み）だけ。render の guard に `checks.sort()` と `return None` を足すと落ちることを確認。block が 40 未満なら空振りとして落とす |
+| `test_log_guard_check_rejects_business_code_in_the_guard` | 上の検査が `await`・業務の呼び出し（`repo.save()`/`repo.commit()`）・`raise`・`return` を実際に見つけること（許可リストを広げすぎた・走査が壊れた時の空振り防止） |
 | `test_workflow_event_names_and_stages_are_contract_vocabulary` | Workflow は infrastructure を import できず `stage="production"` 等を文字列で書く。`_event` の event_name は `EventName`、`stage` は `LogStage`（`PipelineStage` ⊆ `LogStage` も）であること（レビュー I-8。食い違うと Dashboards の絞り込みから黙って漏れる。`stage="rendering"` に変えると落ちることを確認） |
 | `test_workflow_event_helpers_are_identical` | 各 workflow module の `_event` は同一（1つだけ直す片側更新を止める。共有できないことによる重複の代償） |
 | `test_every_event_name_has_a_documented_emission_point` | `docs/observability/emission-points.md` の表と、実コードの `EventName.X` の参照を突き合わせる。表で「未発行」と書いたものだけが発行箇所を持たなくてよい（発行を足して表を忘れる・表だけ直す片側更新を止める） |
@@ -99,7 +101,8 @@
 | テスト | 守るもの |
 |---|---|
 | `test_the_fault_injection_really_breaks_emission` | 注入（`tests/support/json_log_plugin.break_logging`）が実際に発行を壊していること。効いていなければ次の検査は空振り |
-| `test_ledger_suites_pass_unchanged_with_broken_logging`（レビュー I-1 で強化） | 既存の台帳・有料 submit/await・fal adapter・画像/動画/代替案/Upload の Activity のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ |
+| `test_ledger_suites_pass_unchanged_with_broken_logging`（レビュー I-1・I-12 で強化） | 既存の台帳・有料 submit/await・fal adapter・画像/動画/代替案/Upload の Activity・YouTube uploader・Render/Research/Pipeline の Activity のテスト群を**書き換えずに**、ロガーを壊した状態で全部通す。期待値（台帳の状態・例外の型）は既存テストが持つ。注入点ごとに加えて **suite ごと**の発火回数も > 0（I-12。発火しない suite は何も確かめていない。Research は Activity を本物で動かす `test_research_workflow.py` を使う。`test_research_activity_payloads.py` は発火 0 なので入れない） |
+| `test_log_observing_suites_fail_only_where_they_read_the_records`（レビュー I-12） | 記録の存在を見る suite（`test_fal_storage.py` の ADR-0030 診断行、`test_log_ledger.py` の commit 後イベント）は注入で記録が消えるので全部は通らない。そこで `--tb=line` で落ちた位置を取り、全てがその suite の記録を見る行（`caplog`・`logs.` を含む行）であることを見る。そこまでの業務（`pytest.raises` の型・commit）は注入の下でも変わっていない。業務コードから `InjectedLoggingFault` が漏れると落ちた位置が plugin/業務コードになり捕まる（`_log_http_failure` の guard の外に `logger.error(extra={"avp": ...})` を足して落ちることを確認）。限界: 記録を見る行より後ろの業務の assert は実行されない |
 
 ## commit 後のイベント（`tests/unit/test_log_ledger.py`、unit: SQLite）— log-contract §9
 
@@ -158,6 +161,9 @@ repository のメソッドが session に積み、`after_commit` で出す（`in
 `CallObservation._base`・`reservation_fields`）ごとの発火回数を `AVP_TEST_FAULT_REPORT` に書き、0 でないことを
 assert する。実測（8 suites・184 tests、全件 pass）: make_record.INFO 276 / make_record.WARNING 17 /
 formatter.build 275 / ledger.defer 282 / ledger.after_commit 216 / call_observation 54 / reservation_fields 518。
+I-12 で 12 suites・311 tests（全件 pass）に広げた後の実測: make_record.INFO 374 / make_record.WARNING 91 / make_record.DEBUG 27 /
+formatter.build 445 / ledger.defer 504 / ledger.after_commit 415 / call_observation 54 / reservation_fields 524。suite ごとの発火は
+最少が `test_provider_reservations.py` の 21。記録を見る2 suites（22 tests）は 11 failed・全て記録を見る行で落ち、発火は fal_storage 34 / log_ledger 17。
 強化した注入で初めて、`reservation_fields` と `CallObservation._base` の故障が業務の例外になる経路
 （`await_output` の文脈作成・`_defer_reservation`・`CallObservation.succeeded`）が見つかり、I-2 と同じ形で直した。
 
@@ -175,6 +181,7 @@ workflow の replay（`test_log_workflow_replay.py`）だけでは、旧履歴�
 | テスト | 守るもの |
 |---|---|
 | `test_old_history_replays_deterministically_and_emits_nothing` | 01eb0ee（ログ導入前）で採った履歴21本（Production: 代替映像案で作り直し・代替案の上限・音声ゲートの失敗・成功／Render・Upload: 成功・blocked・入場不可・cancel・処理待ち／Storyboard: 成功・blocked・入場不可／EpisodePipeline: 完了・途中再開・upload gate・停止・子の二重起動／Daily）が今のコードで非決定にならず、replay 中は1件も発行しない。workflow に `workflow.sleep` を足すと4本が落ちることを確認（検査が効いている） |
+| `test_old_script_history_replays_on_the_evidence_worker_too`（レビュー I-3 の残り） | ScriptWorkflow の旧履歴6本（成功・transient 後の再ラウンドで成功・再実行で既存 artifact を再利用・ラウンド上限で blocked・needs_input で即 blocked・未分類で blocked）は上の検査（`WORKFLOWS` に `ScriptWorkflow` を足した）でも replay する。`SCRIPT_EVIDENCE_ENABLED` の worker は同じ型名で `EvidenceScriptWorkflow` を登録するので、そちらでも replay する（patch marker の無い旧履歴で Evidence の分岐に入らない）。`ScriptWorkflow.run` の頭に `workflow.sleep` を足すと 12 件（6本×2）が落ちることを確認 |
 | `test_the_old_histories_cover_every_stage_workflow` | fixture が消えて検査が空振りしない |
 
 履歴の採り方（再現手順）:
@@ -186,8 +193,18 @@ cd .worktrees/tmp-pre-logging
 AVP_CAPTURE_HISTORY_DIR=/tmp/histories <venv>/bin/python -m pytest -p tests.support.history_capture_plugin \
   tests/unit/test_production_scene_recovery_workflow.py tests/unit/test_production_voice_gate.py \
   tests/unit/test_render_workflow.py tests/unit/test_upload_workflow.py \
-  tests/unit/test_pipeline_workflows.py tests/integration/test_storyboard_workflow.py
+  tests/unit/test_pipeline_workflows.py tests/integration/test_storyboard_workflow.py \
+  tests/integration/test_script_workflow.py
 cd - && git worktree remove .worktrees/tmp-pre-logging
 ```
 
-（`tests/integration/test_storyboard_workflow.py` は time-skipping server と SQLite だけで動く。）
+（`tests/integration/test_storyboard_workflow.py`・`test_script_workflow.py` は time-skipping server と SQLite
+だけで動く。本番の Temporal には繋がない。）Script の6本は 2026-10-06 に `git archive 01eb0ee` を scratch へ
+展開して同じ plugin で採った（worktree を作らない形。repo の venv の python を展開先で `-m pytest` すると
+展開先のコードが import される）。対応: `script_succeeded` ← `test_script_is_generated_validated_stored_and_episode_becomes_script_ready`、
+`script_retried_then_succeeded` ← `test_transient_failure_retries_in_a_new_round_and_succeeds`、
+`script_reused_existing` ← `test_rerunning_the_workflow_reuses_the_artifact_without_calling_the_generator` の2回目、
+`script_rounds_exhausted_blocked` ← `test_exhausted_rounds_block_instead_of_failing`、
+`script_needs_input_blocked` ← `test_needs_input_failure_stops_immediately_without_more_paid_calls`、
+`script_unclassified_blocked` ← `test_unclassified_failure_blocks_instead_of_failing`。
+01eb0ee の Script のテストには `failed`（blocked でない）で終わる経路が無いので、その旧履歴は無い。

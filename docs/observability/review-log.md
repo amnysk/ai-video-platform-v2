@@ -11,7 +11,7 @@ Critical なし。3271 passed（unit/contract/architecture）。
 |---|---|---|---|---|
 | I-1 | High | A | 故障注入（INV-38）が INFO 発行・JsonFormatter・after_commit を通っていない（logger が INFO 無効のまま）。root DEBUG + configure_logging(stream=devnull) で注入し、発火回数 > 0 を assert、ledger.defer/_after_commit/CallObservation/reservation_fields も注入点に | 修正（9f8d35d、A）。D の再確認待ち |
 | I-2 | Medium | A | emit() 外の引数計算が未保護（youtube uploader `_observe`/`_error_reasons` が except 節内で例外を置換し得る）。`record_upload_session` にログ用の DB 読み取り追加（§9 違反）→削除 | 修正（87cbe34、A）。D の再確認待ち |
-| I-3 | Medium | A | INV-40 の旧履歴 replay が Production/Render/Upload/Storyboard/Pipeline に無い。01eb0ee で履歴 fixture を採り Replayer で検査 | 修正（caf691f、A）。D 再確認: 解消（01eb0ee の旧コードで 21/21 replay）。残り: ScriptWorkflow の通常・失敗経路の旧履歴が無い（Low、A） |
+| I-3 | Medium | A | INV-40 の旧履歴 replay が Production/Render/Upload/Storyboard/Pipeline に無い。01eb0ee で履歴 fixture を採り Replayer で検査 | 修正（caf691f、A）。D 再確認: 解消（01eb0ee の旧コードで 21/21 replay）。残り: ScriptWorkflow の通常・失敗経路の旧履歴が無い（Low、A）→ 修正（5a67eb7、A。Script 6本を ScriptWorkflow・EvidenceScriptWorkflow の両方で replay）。D の再確認待ち |
 | I-4 | Medium | A | stack を安全化前に切り詰めている（formatter.py:171-188→303）。block ごとに sanitize→切詰 | 修正（d1bcbc5、A）。D の再確認待ち |
 | I-5 | Medium | B | `AVP_ENVIRONMENT` 既定 dev のため prod index に dev が入る。既定を外し unknown、deploy 手順に prod 明記、check-pipeline で不一致検出 | 修正（4f72c42, 3a570c9）。D の再確認待ち |
 | I-6 | Low | B | check-pipeline の lag を系統別に、curl のパスワードを argv に出さない | 修正（3a570c9）。D の再確認待ち |
@@ -25,8 +25,8 @@ Critical/High の残りなし。I-1〜I-10 は解消（I-3 は上記の残りあ
 
 | ID | 重大度 | 担当 | 指摘 | 状態 |
 |---|---|---|---|---|
-| I-11 | Low | A | `log_guard` の本体を AST で制限する検査が無い（`Raise`・`Return`・`Await` 禁止、呼び出しは `emit`/`defer` と許可したログ用関数のみ）。`test_logging_boundaries.py` に追加 | 未修正 |
-| I-12 | Low | A | 故障注入の `LEDGER_SUITES` に `test_fal_storage.py`、uploader・render・research・pipeline の Activity テスト、`test_log_ledger.py` が無い。追加し発火回数 > 0 を assert | 未修正 |
+| I-11 | Low | A | `log_guard` の本体を AST で制限する検査が無い（`Raise`・`Return`・`Await` 禁止、呼び出しは `emit`/`defer` と許可したログ用関数のみ）。`test_logging_boundaries.py` に追加 | 修正（99aafd0、A）。D の再確認待ち |
+| I-12 | Low | A | 故障注入の `LEDGER_SUITES` に `test_fal_storage.py`、uploader・render・research・pipeline の Activity テスト、`test_log_ledger.py` が無い。追加し発火回数 > 0 を assert | 修正（9f3f385、A。記録を見る fal_storage・log_ledger は別検査で「落ちるのは記録を見る行だけ」を確認）。D の再確認待ち |
 | I-13 | Low | B | check-pipeline の app lag 既定 60分が watchdog の毎時実行（35 * * * *）と同周期で誤報しやすい。90分以上にし根拠を platform.md へ | 未修正 |
 | I-14 | Low | B | 本番 `.env` に `AVP_ENVIRONMENT` が無い（キーの有無のみ確認）。platform.md の導入手順をチェックリスト化（`AVP_ENVIRONMENT=prod` 追記・`read_from_head` 二段構え・deploy 前の追いつき確認・systemd timer）。本番 `.env` 自体は触らない | 未修正 |
 
