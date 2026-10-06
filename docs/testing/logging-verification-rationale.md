@@ -47,7 +47,7 @@ test DB・test namespace・test bucket で接続する作りになっている�
 | ファイル | なぜ要るか |
 |---|---|
 | `loggen.py` | A の実装を待たずに B の経路（tail・型検査・Bulk・重複抑制・rotation）を試すための、契約どおりの行と壊した行の発生器。`request_id=<tag>` で件数を数え、`--duplicate-every` で同じ `event_id` の再出力（文書 ID の重複抑制）を作る。壊した行は毎回作り直し、409（同一 ID）と型不整合を混同しない |
-| `search-assert.py` | `count --wait` は接続失敗（再起動直後の TLS EOF・接続拒否）も待つ。停止・復旧系の試験で、OpenSearch の起動待ちを件数不足と取り違えて即失敗しないため。件数・必須フィールド（`REQUIRED_APP_FIELDS` を契約から import。写しを作らない）・`event_id` 重複・`_source` 全走査の非漏洩・alias・ISM・版・bootstrap 前後の設定差分・取り込み遅れを TLS + 認証で assert。標準ライブラリだけで動く。パスワードはファイルからだけ読み、応答本文の値プレビューを出さない |
+| `search-assert.py` | `snapshot` は ISM policy の `last_updated_time` を `ism_template` の中も含めて比較から外す（同じ内容で policy を書き直しただけの差分を、設定の変化と取り違えないため。2026-10-06 に試験用 policy から本番 policy へ戻した後、内容は同じでもこの時刻だけが diff に出た）。`count --wait` は接続失敗（再起動直後の TLS EOF・接続拒否）も待つ。停止・復旧系の試験で、OpenSearch の起動待ちを件数不足と取り違えて即失敗しないため。件数・必須フィールド（`REQUIRED_APP_FIELDS` を契約から import。写しを作らない）・`event_id` 重複・`_source` 全走査の非漏洩・alias・ISM・版・bootstrap 前後の設定差分・取り込み遅れを TLS + 認証で assert。標準ライブラリだけで動く。パスワードはファイルからだけ読み、応答本文の値プレビューを出さない |
 | `inject-secrets.py` | 秘密に見える値を**実行ごとに乱数で**作り（本物の秘密も repo 内の固定値も使わない）、message・キー名・例外 chain・第三者 logger・warnings・thread の未捕捉例外・logging を通らない print の各経路で出す。`attributes` は `enabled:false` で検索できないので、検査は `_source` の全走査で行う |
 | `fault-opensearch-stop.sh` | OpenSearch 停止中にアプリ側が止まらず、再開後に全件・重複 0 で追いつくこと（INV-38、ADR-0040 §5 の retry 上限内） |
 | `fault-collector-rotation.sh` | Collector 停止中の rotation を inode で続きから読めること（ADR の実測 300/300 を、この構成で再確認） |

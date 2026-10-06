@@ -343,6 +343,8 @@ def cmd_snapshot(args) -> dict:
         for k in ("_seq_no", "_primary_term", "_version"):
             p.pop(k, None)
         p.get("policy", {}).pop("last_updated_time", None)
+        for tmpl in p.get("policy", {}).get("ism_template") or []:
+            tmpl.pop("last_updated_time", None)
     Path(args.out).write_text(json.dumps(snap, sort_keys=True, indent=1), encoding="utf-8")
     return {"out": args.out, "indices": snap["indices"]}
 
