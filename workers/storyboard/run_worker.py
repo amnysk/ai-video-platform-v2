@@ -16,6 +16,7 @@ from temporalio.worker import Worker
 from contracts.states import STORYBOARD_WORKFLOW
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.intervention.capture import ExchangeRecordingGenerator
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
 from infrastructure.providers.openmontage_storyboard import (
@@ -62,11 +63,14 @@ async def main() -> None:
     model_label = settings.codex_model or DEFAULT_MODEL_LABEL
 
     generator = OpenMontageGuidedStoryboardGenerator(
-        llm=CodexCliStoryGenerator(
-            binary=binary,
-            model=settings.codex_model,
-            runner=runner,
-            workspace=workspace,
+        # 新方式の Episode で実際の prompt を捕捉するため包む（tape の外では素通し / ADR-0041）
+        llm=ExchangeRecordingGenerator(
+            CodexCliStoryGenerator(
+                binary=binary,
+                model=settings.codex_model,
+                runner=runner,
+                workspace=workspace,
+            )
         ),
         spec=spec,
         workdir=WorkDirectory(settings.ai_video_work_root),

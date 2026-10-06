@@ -40,3 +40,13 @@
 | `test_new_method_records_the_run_and_the_decision_with_the_artifact` | 新方式では実際の prompt・生出力・予約 ID を記録し、判断記録が成果物 revision と snapshot を指す | Activity 全体（予約→呼び出し→成果物→記録）の順序を通す | prompt の取り違え、結果 revision の欠落、tool 参照の欠落 |
 | `test_capture_failure_fails_the_activity_and_records_no_artifact` | 記録が無ければ下流（有料生成）へ流さない。再開は LLM を呼び直さず、prompt は組み直して明記 | 故障注入（`agent-runs/` への put だけ失敗）＋同じ round の再開 | 記録失敗を握りつぶして成果物だけ残す／再開で LLM を二重に呼ぶ／組み直した prompt を captured と偽る |
 | `test_reusing_an_existing_artifact_does_not_add_runs` | 同じ入力の再実行（再利用）は実行記録を増やさない | 同じ Activity を2回 | 再利用のたびに agent_run・判断記録が増える |
+
+## storyboard Activity の記録（`tests/unit/test_intervention_storyboard_capture.py`）
+
+| テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
+|---|---|---|---|
+| `test_legacy_storyboard_writes_nothing_new[None / legacy]` | 日次・古い Episode の storyboard は新しい表・保存物を何も作らない | 実 Activity | legacy の挙動変化 |
+| `test_new_method_records_the_actual_prompt_and_links_the_script` | 生成器の内側で組まれた prompt を実物のまま記録し、入力台本 revision・予約 ID・`derived_from`（台本→storyboard）を残す | 実 Activity + prompt を内側で組む生成器（本物の adapter と同じ形） | 組み直し・推測の prompt を記録、上流 revision の欠落、辺の欠落 |
+| `test_without_a_recorded_exchange_the_prompt_is_unavailable_not_invented` | 捕捉できなかった prompt は `unavailable`（補完しない） | tape を通さない生成器 | 空・推測の prompt を captured として記録 |
+| `test_capture_failure_fails_the_storyboard_activity_without_an_artifact` | 記録できなければ storyboard を現行にしない（有料の production へ流れない） | 故障注入 | 記録の無い storyboard から有料素材が作られる |
+| `test_the_storyboard_worker_routes_its_llm_through_the_exchange_recorder` | 本番の配線が LLM を包んでいる（包まなければ常に unavailable になる） | worker の配線は起動しないと通らないため source で検査 | 配線漏れで prompt が一度も捕捉されない |
