@@ -814,28 +814,49 @@ repo に置かない使い捨ての probe（`run-e2e.sh tool python -c "$(cat <f
 # usage: python -c "$(cat bulkprobe.py)" <tag> <kind>   — 20 valid, 1 probe, 20 valid（同じ request_id）
 import json, sys, uuid
 from datetime import UTC, datetime
+
 tag, kind = sys.argv[1], sys.argv[2]
+
+
 def ev(seq, **over):
-    d = {"@timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z", "schema_version": 1,
-         "event_id": uuid.uuid4().hex, "event_name": "log.record", "level": "INFO", "message": f"bulkprobe seq={seq}",
-         "service_name": "loggen", "environment": "test", "git_sha": "unknown", "logger": "avp.loggen",
-         "request_id": tag, "attributes": {"seq": seq}}
-    d.update(over); return json.dumps(d)
+    d = {
+        "@timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "schema_version": 1,
+        "event_id": uuid.uuid4().hex,
+        "event_name": "log.record",
+        "level": "INFO",
+        "message": f"bulkprobe seq={seq}",
+        "service_name": "loggen",
+        "environment": "test",
+        "git_sha": "unknown",
+        "logger": "avp.loggen",
+        "request_id": tag,
+        "attributes": {"seq": seq},
+    }
+    d.update(over)
+    return json.dumps(d)
+
+
 RAW = {  # 値を JSON テキストとして埋め込む（json.dumps では作れない形）
     "num_overflow": ('"duration_ms": 0', '"duration_ms": 1e400'),
     "int_overflow": ('"http_status": 0', '"http_status": 99999999999999999999'),
 }
 OVER = {
-    "str_inf": {"duration_ms": "inf"}, "str_nan": {"duration_ms": "nan"},
-    "attributes_scalar": {"attributes": "scalar"}, "int_float": {"scene_revision": 1.5},
+    "str_inf": {"duration_ms": "inf"},
+    "str_nan": {"duration_ms": "nan"},
+    "attributes_scalar": {"attributes": "scalar"},
+    "int_float": {"scene_revision": 1.5},
     "bool_number": {"retryable": 1},
 }
-for i in range(20): print(ev(i))
+for i in range(20):
+    print(ev(i))
 if kind in RAW:
-    a, b = RAW[kind]; print(ev(-1, duration_ms=0, http_status=0).replace(a, b))
+    a, b = RAW[kind]
+    print(ev(-1, duration_ms=0, http_status=0).replace(a, b))
 else:
     print(ev(-1, **OVER[kind]))
-for i in range(20, 40): print(ev(i))
+for i in range(20, 40):
+    print(ev(i))
 ```
 
 `longprobe.py`（§5.10 の 300000 bytes の行、I-15）:
@@ -844,13 +865,32 @@ for i in range(20, 40): print(ev(i))
 # usage: python -c "$(cat longprobe.py)" <tag> <bytes>  — 50 行、<bytes> の1行（英数字の連なり）、50 行（同じ request_id）
 import json, sys, uuid
 from datetime import UTC, datetime
+
 tag, size = sys.argv[1], int(sys.argv[2])
+
+
 def ev(seq, msg):
-    return json.dumps({"@timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-        "schema_version": 1, "event_id": uuid.uuid4().hex, "event_name": "log.record", "level": "INFO",
-        "message": msg, "service_name": "loggen", "environment": "test", "git_sha": "unknown",
-        "logger": "avp.loggen", "request_id": tag, "attributes": {"seq": seq}})
-for i in range(50): print(ev(i, f"longprobe seq={i}"), flush=True)
+    return json.dumps(
+        {
+            "@timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "schema_version": 1,
+            "event_id": uuid.uuid4().hex,
+            "event_name": "log.record",
+            "level": "INFO",
+            "message": msg,
+            "service_name": "loggen",
+            "environment": "test",
+            "git_sha": "unknown",
+            "logger": "avp.loggen",
+            "request_id": tag,
+            "attributes": {"seq": seq},
+        }
+    )
+
+
+for i in range(50):
+    print(ev(i, f"longprobe seq={i}"), flush=True)
 print(ev(-2, "longprobe long " + ("a1B2c3D4" * (size // 8 + 1))[:size]), flush=True)
-for i in range(50, 100): print(ev(i, f"longprobe seq={i}"), flush=True)
+for i in range(50, 100):
+    print(ev(i, f"longprobe seq={i}"), flush=True)
 ```
