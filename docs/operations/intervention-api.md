@@ -141,7 +141,40 @@ curl -sH "$H" $AVP_INTERVENTION_URL/v1/intervention/episodes/$EP/change-sets/<id
 
 CLI（`scripts/intervene.py`）は同じ API を呼ぶだけの薄い道具（§6）。
 
-## 6. 担当 A / B への依存（統合前の状態）
+## 6. CLI（`scripts/intervene.py`）
+
+標準ライブラリ（`urllib`）だけで HTTP API を呼ぶ。DB・store には触れない（repo のコードを import しない）。
+token は**環境変数 `AVP_INTERVENTION_TOKEN` だけ**から読む（引数に取らない = シェル履歴・`ps` に残さない）。
+base URL は `--url` か `AVP_INTERVENTION_URL`（既定 `http://localhost:8000`）。localhost 以外へ平文 http で送るときは警告する。
+
+```bash
+scripts/intervene.py show EP                                   # Episode を読む
+scripts/intervene.py decisions EP                              # 判断記録
+scripts/intervene.py packet EP --format md -o packet.md        # ReviewPacket（json / md / html）
+scripts/intervene.py comment EP --body "ここを短く" --segment-id s3   # コメント（--scene-id / --revision-id 等）
+scripts/intervene.py hold EP --reason "確認したい"                # 停止の要求
+scripts/intervene.py propose EP --file proposal.json           # 変更案（ProposeChangePayload の JSON）
+scripts/intervene.py import EP --file proposals.json           # 変更案ファイル（ChangeProposalFile）の取り込み
+scripts/intervene.py change-sets EP                            # 変更案の一覧
+scripts/intervene.py diff EP --change-set CS                   # 差分・影響範囲・見積り
+scripts/intervene.py diff EP --a REV1 --b REV2                 # 2つの revision の比較
+scripts/intervene.py apply EP --change-set CS --max-cost 0.50  # 適用（見積りがこれを超えたら適用しない）
+scripts/intervene.py reject EP --change-set CS --reason "不要"
+scripts/intervene.py resume EP [--start-stage voice]           # 再開
+scripts/intervene.py release-checkpoint EP --point before_upload --manifest-id M
+scripts/intervene.py status COMMAND_ID                         # command の状態（received ≠ applied）
+scripts/intervene.py commands EP
+scripts/intervene.py hash-token                                # $AVP_INTERVENTION_TOKEN の sha256（設定の key）
+```
+
+- command 系（comment / hold / propose / apply / reject / resume / release-checkpoint）は毎回 uuid4 の command_id を作り、
+  **送る前に stderr へ `command_id=...` を出す**。接続が切れて結果が分からないとき（終了コード 3）は、表示された
+  `--command-id` を付けて同じ内容で再送する（API は保存済みの状態を `200` で返し、二重にならない）。
+- 楽観的な競合検出には `--expected-control-revision` / `--expected-target-revision`（読み取りで得た値）。
+- 終了コード: `0` 成功（2xx）、`1` API がエラーを返した（応答の `detail` を表示）、`2` 使い方・token 未設定、`3` 応答なし。
+- `set_mode` の CLI はない（人専用。必要なら所有者が curl で送る）。予算・Schedule・公開設定の CLI もない（INV-47）。
+
+## 7. 担当 A / B への依存（統合前の状態）
 
 `apps/api/intervention_backend.py::load_real_modules` が唯一の接続点（遅延 import）。この branch の時点では
 A / B のモジュールが無いので、次は **fake でしか動かしていない**（統合後に親が確認する）:

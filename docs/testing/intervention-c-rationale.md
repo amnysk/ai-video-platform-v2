@@ -83,3 +83,23 @@ fake を `InterventionModules` で渡す。`receive_command` の fake は store 
 ## 統合後に親が確かめること（fake でしか動かしていない部分）
 `apps/api/intervention_backend.py::load_real_modules` と `TemporalCommandStarter` は `# pragma: no cover` で、この branch
 ではテストしていない。仮定は [intervention-api.md §6](../operations/intervention-api.md)。
+
+## CLI（`tests/unit/test_intervene_cli.py`）
+
+`scripts/intervene.py` を path から読み込み、`main(argv, env=, transport=)` に fake transport を渡す（実ネットワークに
+出ない）。1件だけ、CLI → ASGI（httpx）→ 実 router → store（SQLite）を通す。
+
+| テスト | 何の失敗を捕まえるか |
+|---|---|
+| `test_the_cli_imports_only_the_standard_library` | CLI が DB・store を直接触るようになる（設計 §10「DB への直接書き込みより検証を通る API」）。標準ライブラリ以外の import を禁じる |
+| `test_the_token_comes_only_from_the_environment` | token を引数で受ける（シェル履歴・`ps` に残る）／token 無しで送る |
+| `test_show_reads_the_episode_view_with_a_bearer_token` / `test_the_base_url_can_come_from_the_environment` | URL の組み立て・認証ヘッダの誤り |
+| `test_packet_writes_the_requested_format_to_a_file` | `md` を API の `markdown` に写し忘れる（422）・ファイルに書かない |
+| `test_diff_shows_a_change_set_or_compares_two_revisions` / `test_status_reads_a_command` | 差分・費用確認と状態確認の経路の誤り |
+| `test_comment_builds_an_envelope_with_a_fresh_uuid4_command_id` | command_id を使い回す（別の操作が 409 / 同一視される）・id を表示しない（再送できない） |
+| `test_command_id_and_expected_revisions_can_be_given_for_a_safe_retry` | 再送用の id・期待版を envelope に載せない |
+| `test_each_command_maps_to_its_envelope` / `test_propose_sends_the_payload_file_as_a_propose_change` / `test_import_posts_the_change_proposal_file_unchanged` | 各操作の型・payload の取り違え（例: apply の上限費用が落ちる） |
+| `test_there_is_no_cli_command_for_budget_schedule_or_visibility` | INV-47 の CLI 側。予算・Schedule・公開設定・mode の操作を足す |
+| `test_http_errors_exit_nonzero_and_print_the_detail` / `test_a_network_error_tells_how_to_retry_safely` | 409 等を成功扱いにする・応答なしで再送方法（同じ id）を示さない・例外文言から token が出る |
+| `test_hash_token_prints_the_sha256_of_the_env_token` | 設定の key と CLI の token の hash 方法がずれる |
+| `test_the_cli_round_trips_through_the_real_router` | CLI と router の形の食い違い（fake transport の検査だけでは見えない）。受付・状態・同一再送 200・違う内容 409 を通す |
