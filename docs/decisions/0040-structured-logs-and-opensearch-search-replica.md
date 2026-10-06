@@ -129,6 +129,12 @@ ingested_at）→ Dashboards`。
   `retries_failed_total` に出る。
 - **許容できる OpenSearch 停止時間**は retry 上限と buffer 上限の短い方で決まる。上の設定の上限は cap 300秒 × 72 回だが、backoff は base〜cap の乱数（平均 約140秒/回）なので**実測で約2時間49分**で尽きる（platform.md §7）、buffer 1GiB は現在の出力量なら数日分なので、retry 側が律速する。これを超える停止では古い record から破棄される（`dropped_records_total` で検知）。長く止めるときは Fluent Bit も止める（位置 DB から再開でき、rotation 一巡までは欠損しない）。実測で調整する。
 - tail: `buffer_max_size 256k`、`skip_long_lines on`（既定 32k を超える行でファイルの監視が止まるのを防ぐ。Docker は `<` を `\u003c` に escape するので包装後の行は生の行より膨らむ）。skip は `long_line_skipped` 系の metrics で監視する。
+  **追記（2026-10-06、I-15）**: `buffer_max_size`・`skip_long_lines` は Docker が 16KiB ごとに分けた partial の
+  1つずつにしか効かず、`multiline.parser docker` が結合した後の行には上限が無い（5.1.2 で実測。service の
+  `multiline_buffer_limit` も効かなかった）。結合後の長い行で Collector の安全化 Lua が O(n²) になり、
+  Fluent Bit 全体（全ファイルの tail）が CPU 100% のまま止まった。Collector が結合後の行を
+  `COLLECTOR_LINE_MAX_BYTES`（= `buffer_max_size`）で切って infra 系統へ送り（`collector_errors=line_too_long`）、
+  安全化の規則を線形にした。詳細は platform.md §3。
 - buffer: filesystem、`storage.total_limit_size` 1GiB（超えたら古い chunk から破棄）、メモリ上限つき。
   **有限バッファでは無欠損と無停止を同時に保証できない**ので、業務を止めない側を選び、破棄・再送・
   滞留を監視する。

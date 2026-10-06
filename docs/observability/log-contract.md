@@ -82,7 +82,7 @@ ADR-0040。語彙・型・上限・設定キーの**唯一の宣言元**は
 | `ingested_at` | date | OpenSearch の ingest pipeline が付ける取り込み時刻（Collector 側） |
 | `log_source` | keyword | `LogSource`（Collector 側） |
 | `stream` / `container_name` / `compose_service` / `compose_project` / `host_name` | keyword | Docker json-file の `attrs` と Collector のホスト名（Collector 側。Docker socket は使わない） |
-| `collector_errors` | keyword（配列） | Collector が型検査で `attributes.collector_moved` へ退避したフィールド名、`@timestamp_replaced` 等（Collector 側）|
+| `collector_errors` | keyword（配列） | Collector が型検査で `attributes.collector_moved` へ退避したフィールド名、`@timestamp_replaced`・`json_parse_failed`・`line_too_long`（`COLLECTOR_LINE_MAX_BYTES` を超えて切った行）等（Collector 側）|
 
 ### 2.0 infra（unstructured）系統のフィールド
 

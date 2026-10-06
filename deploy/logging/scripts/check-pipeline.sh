@@ -2,20 +2,26 @@
 # ログ基盤の確認（ADR-0040 §5/§7）。OpenSearch の**外**から、ホストで動かす。異常があれば非0で終了する。
 #
 #   deploy/logging/scripts/check-pipeline.sh [--env prod] [--project avp2-logging]
-#       [--secrets-dir DIR] [--os-url URL] [--max-lag-min 60] [--max-lag-infra-min 60]
-#       [--max-chunks 2000]
-#       [--state-dir DIR] [--enforce-memory]
+#       [--secrets-dir DIR] [--os-url URL] [--max-lag-min 90] [--max-lag-infra-min 60]
+#       [--max-chunks 2000] [--max-behind-bytes 262144]
+#       [--target-project avp2] [--containers-dir DIR]
+#       [--state-dir DIR] [--enforce-memory] [--catchup-only]
 #
 # 見るもの:
 #   Fluent Bit  health、開いたファイル数（0 = containers/ が読めていない。無音の失敗）、破棄・再送失敗・
 #               長すぎる行の skip（前回からの増分）、filesystem buffer の chunk 数
+#   追いつき    位置 DB の offset と収集対象 project の各 *-json.log* の大きさの差（I-17）。位置 DB は
+#               WAL ごと一時ディレクトリへ複製して読む（Fluent Bit には触れない）。差が残っていて
+#               input_records_total{name="tail.0"} が前回から増えていなければ tail の停滞（I-15）
 #   OpenSearch  到達性・cluster の状態、系統（app / infra）ごとの最終 ingested_at と lag、
-#               index の env と文書の environment の食い違い（直近24時間）、index サイズ、ディスク使用率
+#               index の env と文書の environment の食い違い（直近24時間）、Collector が切った長い行
+#               （line_too_long、直近24時間。WARN）、index サイズ、ディスク使用率
 #   証明書      CA・ノード証明書の残り日数（30日未満で異常）
 #   ホスト      Docker root のディスク、MemAvailable（ADR-0040 §7 の閾値）
 #
 # --enforce-memory: MemAvailable が 2GiB 未満なら Dashboards、1.5GiB 未満なら OpenSearch を止める。
 #   止めるのは --project のコンテナだけ（アプリの project には触れない）。既定は報告だけ。
+# --catchup-only: Fluent Bit と追いつきだけを見る（deploy の前。platform.md §6）。
 #
 # 資格情報: 読み取り専用ユーザー avp_viewer のパスワード <secrets-dir>/viewer.pw と CA <secrets-dir>/pki/ca.pem
 #   （init-secrets.sh が作る。0600）。admin 証明書は使わない。パスワードは curl の argv に出さず、
@@ -27,9 +33,13 @@ ENV_NAME="${AVP_LOGGING_ENV:-prod}"
 PROJECT="avp2-logging"
 SECRETS_DIR=""
 OS_URL="https://127.0.0.1:${AVP_LOGGING_OS_PORT:-9200}"
-MAX_LAG_MIN=60
+MAX_LAG_MIN=90
 MAX_LAG_INFRA_MIN=60
 MAX_CHUNKS=2000
+MAX_BEHIND_BYTES=262144
+TARGET_PROJECT="${AVP_LOG_TARGET_PROJECT:-avp2}"
+CONTAINERS_DIR="${AVP_LOG_CONTAINERS_DIR:-$HOME/.local/share/docker/containers}"
+CATCHUP_ONLY=0
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/avp-logging"
 ENFORCE=0
 MEM_STOP_DASHBOARDS_KB=$((2 * 1024 * 1024))
@@ -47,9 +57,13 @@ while [[ $# -gt 0 ]]; do
     --max-lag-min) MAX_LAG_MIN="$2"; shift 2 ;;
     --max-lag-infra-min) MAX_LAG_INFRA_MIN="$2"; shift 2 ;;
     --max-chunks) MAX_CHUNKS="$2"; shift 2 ;;
+    --max-behind-bytes) MAX_BEHIND_BYTES="$2"; shift 2 ;;
+    --target-project) TARGET_PROJECT="$2"; shift 2 ;;
+    --containers-dir) CONTAINERS_DIR="$2"; shift 2 ;;
+    --catchup-only) CATCHUP_ONLY=1; shift ;;
     --state-dir) STATE_DIR="$2"; shift 2 ;;
     --enforce-memory) ENFORCE=1; shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -64,7 +78,7 @@ fail() { echo "FAIL  $*"; FAILS=$((FAILS + 1)); }
 
 # アプリの project を止める誤用を拒む
 case "$PROJECT" in
-  avp2|"${AVP_LOG_TARGET_PROJECT:-avp2}")
+  avp2|"$TARGET_PROJECT")
     echo "refusing: --project $PROJECT はアプリの project" >&2; exit 2 ;;
 esac
 
@@ -76,6 +90,11 @@ fb_get() {
   # Fluent Bit は外への経路の無い internal network にだけいる。同じ network の one-shot から読む
   docker run --rm --network "${PROJECT}_internal" --entrypoint curl "$OS_IMAGE" \
     -s --max-time 10 "http://fluent-bit:2020$1" 2>/dev/null
+}
+tail_records_of() {
+  # tail が読んだ record 数（stdin の Prometheus テキストから）
+  awk '$1 ~ /^fluentbit_input_records_total\{name="tail\.0"\}/ { printf "%d\n", $2; found = 1 }
+       END { if (!found) print 0 }' | head -n1
 }
 metric_sum() {
   # Prometheus のテキストから、名前が一致する系列の合計
@@ -93,18 +112,21 @@ else
   rfailed="$(metric_sum fluentbit_output_retries_failed_total "$metrics")"
   retries="$(metric_sum fluentbit_output_retries_total "$metrics")"
   skipped="$(metric_sum fluentbit_input_long_line_skipped_total "$metrics")"
+  # tail が読んだ record 数（停滞の判定に使う。I-15）
+  tail_records="$(tail_records_of <<<"$metrics")"
   if [[ "$opened" -eq 0 ]]; then
     fail "fluent-bit: 開いたファイルが 0（containers/ が読めていない・mount 不成立。無音になる失敗）"
   else
     ok "fluent-bit: files_opened=$opened retries=$retries"
   fi
-  prev_dropped=0 prev_rfailed=0 prev_skipped=0
+  prev_dropped=0 prev_rfailed=0 prev_skipped=0 prev_tail_records=-1
   # shellcheck disable=SC1090
   [[ -f "$STATE_FILE" ]] && source "$STATE_FILE"
   # 再起動でカウンタが戻ったら 0 から数え直す
   [[ "$dropped" -lt "$prev_dropped" ]] && prev_dropped=0
   [[ "$rfailed" -lt "$prev_rfailed" ]] && prev_rfailed=0
   [[ "$skipped" -lt "$prev_skipped" ]] && prev_skipped=0
+  [[ "$tail_records" -lt "$prev_tail_records" ]] && prev_tail_records=-1
   d_dropped=$((dropped - prev_dropped)) d_rfailed=$((rfailed - prev_rfailed)) d_skipped=$((skipped - prev_skipped))
   if [[ $d_dropped -gt 0 || $d_rfailed -gt 0 ]]; then
     fail "fluent-bit: 破棄 +$d_dropped records / 再送上限超過 +$d_rfailed chunks（前回から。累計 $dropped / $rfailed）"
@@ -114,7 +136,8 @@ else
   if [[ $d_skipped -gt 0 ]]; then
     fail "fluent-bit: buffer_max_size を超える行の skip +$d_skipped（累計 $skipped）"
   fi
-  printf 'prev_dropped=%d\nprev_rfailed=%d\nprev_skipped=%d\n' "$dropped" "$rfailed" "$skipped" >"$STATE_FILE"
+  printf 'prev_dropped=%d\nprev_rfailed=%d\nprev_skipped=%d\nprev_tail_records=%d\n' \
+    "$dropped" "$rfailed" "$skipped" "$tail_records" >"$STATE_FILE"
   storage="$(fb_get /api/v1/storage)"
   chunks="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["storage_layer"]["chunks"]["total_chunks"])' <<<"$storage" 2>/dev/null || echo -1)"
   if [[ "$chunks" -lt 0 ]]; then
@@ -124,6 +147,66 @@ else
   else
     ok "fluent-bit: buffer chunks=$chunks"
   fi
+fi
+
+# ---------------------------------------------------------------- 追いつき（I-17）・tail の停滞（I-15）
+# 位置 DB（named volume <project>_fbstate）を WAL ごと一時ディレクトリへ複製して読む。Fluent Bit は
+# db.locking で DB を排他的に開いているので元は開かない。複製は read-only mount の one-shot で行う
+DB_COPY=""
+cleanup_db() { [[ -n "$DB_COPY" ]] && rm -rf "$DB_COPY"; }
+check_catchup() {
+  local ids out code behind
+  DB_COPY="$(mktemp -d)"
+  # 位置 DB の所有者はコンテナ内 root（Fluent Bit が root で動く）。複製もコンテナ内 root で行う
+  if ! docker run --rm --network none --user 0:0 --security-opt no-new-privileges:true \
+      -v "${PROJECT}_fbstate:/fb-state:ro" -v "$DB_COPY:/out" \
+      --entrypoint bash "$OS_IMAGE" -c 'cp /fb-state/tail.db* /out/ && chmod 0644 /out/tail.db*' \
+      >/dev/null 2>&1 || [[ ! -s "$DB_COPY/tail.db" ]]; then
+    fail "追いつき: 位置 DB を複製できない（volume ${PROJECT}_fbstate）"
+    return
+  fi
+  ids="$(docker ps -a --no-trunc -q --filter "label=com.docker.compose.project=$TARGET_PROJECT")"
+  if [[ -z "$ids" ]]; then
+    warn "追いつき: project $TARGET_PROJECT のコンテナが無い"
+    return
+  fi
+  # shellcheck disable=SC2046
+  out="$(python3 "$(dirname "$0")/catchup.py" --db "$DB_COPY/tail.db" --containers "$CONTAINERS_DIR" \
+    --max-behind-bytes "$MAX_BEHIND_BYTES" $(printf -- '--id %s ' $ids))"
+  code=$?
+  behind="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("behind_bytes", -1))' <<<"$out" 2>/dev/null || echo -1)"
+  # json-file の行は Docker が1行ずつ丸ごと書くので、未読が残っているのに前回の確認から1行も読んで
+  # いなければ tail が止まっている（I-15: health・skip・chunk には出ない）。未読の量は問わない
+  # 前回の確認以来の静かな時間の直後に書かれた行を停滞と見誤らないよう、数秒おいて records を読み直す
+  local now_records="${tail_records:-0}"
+  if [[ $code -le 1 && "$behind" -gt 0 && "${prev_tail_records:--1}" -ge 0 &&
+        "$now_records" -eq "${prev_tail_records:--1}" ]]; then
+    sleep 5
+    now_records="$(fb_get /api/v1/metrics/prometheus | tail_records_of)"
+  fi
+  if [[ $code -le 1 && "$behind" -gt 0 && "${prev_tail_records:--1}" -ge 0 &&
+        "$now_records" -eq "${prev_tail_records:--1}" ]]; then
+    fail "fluent-bit: tail の停滞（未読 ${behind} bytes があり、input_records_total{tail.0} が前回の確認から増えていない。I-15。platform.md §3）: $out"
+  elif [[ $code -eq 0 ]]; then
+    ok "追いつき: 未読 ${behind} bytes（≤ $MAX_BEHIND_BYTES、project $TARGET_PROJECT）"
+  elif [[ $code -eq 1 ]]; then
+    fail "追いつき: 未読 ${behind} bytes（> $MAX_BEHIND_BYTES。deploy でコンテナを作り直すと失われる）: $out"
+  else
+    fail "追いつき: 位置 DB を読めない: $out"
+  fi
+}
+if [[ -n "${health:-}" ]]; then
+  check_catchup
+fi
+cleanup_db
+
+if [[ $CATCHUP_ONLY -eq 1 ]]; then
+  if [[ $FAILS -gt 0 ]]; then
+    echo "result: $FAILS 件の異常"
+    exit 1
+  fi
+  echo "result: ok"
+  exit 0
 fi
 
 # ---------------------------------------------------------------- OpenSearch
@@ -184,6 +267,13 @@ else
       fail "opensearch[app]: 直近24時間に environment≠$ENV_NAME の文書が $mismatch 件（アプリの .env の AVP_ENVIRONMENT を確認）"
     else
       ok "opensearch[app]: 直近24時間の environment はすべて $ENV_NAME"
+    fi
+    # Collector が COLLECTOR_LINE_MAX_BYTES で切った行（I-15）。業務の異常ではないので WARN
+    too_long="$(os_get "/avp-infra-$ENV_NAME-*/_count" -X POST -d '{"query":{"bool":{"filter":[
+      {"range":{"ingested_at":{"gte":"now-24h"}}},{"term":{"collector_errors":"line_too_long"}}]}}}' |
+      python3 -c 'import json,sys; print(json.load(sys.stdin)["count"])' 2>/dev/null || echo -1)"
+    if [[ "$too_long" -gt 0 ]]; then
+      warn "opensearch[infra]: 直近24時間に Collector が切った長い行 $too_long 件（collector_errors:line_too_long。残りは失われた）"
     fi
     os_get "/_cat/indices/avp-*-$ENV_NAME-*?h=index,docs.count,store.size&s=index" | sed 's/^/      /'
     disk="$(os_get '/_cat/allocation?h=disk.percent' | tr -dc '0-9\n' | head -n1)"

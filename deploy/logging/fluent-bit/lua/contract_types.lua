@@ -4,6 +4,7 @@ return {
   schema_version = 1,
   keyword_max_chars = 512,
   unstructured_line_max_bytes = 4096,
+  collector_line_max_bytes = 262144,
   app_label = "avp.logging",
   app_label_value = "app",
   unknown = "unknown",
