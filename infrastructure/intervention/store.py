@@ -882,14 +882,19 @@ class InterventionStore:
         correlation_id: str | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
+        agent_run_id: uuid.UUID | str | None = None,
     ) -> AgentRun:
-        """同じ ``idempotency_key`` の再記録は既存行を返す（Activity の再実行）。"""
+        """同じ ``idempotency_key`` の再記録は既存行を返す（Activity の再実行）。
+
+        ``agent_run_id`` を渡すとその id で作る（snapshot の保存キーに id を先に使うため）。
+        """
         existing = await self._session.scalar(
             select(AgentRunRow).where(AgentRunRow.idempotency_key == idempotency_key)
         )
         if existing is not None:
             return _to_agent_run(existing)
         row = AgentRunRow(
+            id=_uuid(agent_run_id) if agent_run_id is not None else uuid.uuid4(),
             idempotency_key=idempotency_key,
             episode_id=_opt_uuid(episode_id),
             topic_plan_id=_opt_uuid(topic_plan_id),
