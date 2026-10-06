@@ -9,10 +9,14 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
+
+import pytest
 
 from contracts.research import ResearchWorkflowOutput
 from contracts.schedule_guard import AnomalyKind
 from contracts.states import ReservationStatus
+from domain.errors import InvalidTransitionError
 from infrastructure.observability.anomaly_notifier import AnomalyNotice, LoggingAnomalyNotifier
 from tests.support.fake_youtube import FAKE_SESSION_PREFIX
 from tests.support.log_capture import capture_json
@@ -24,6 +28,7 @@ from tests.unit.test_upload_activities import (  # noqa: F401 — fixture を使
 )
 from workers.render.activities import _log_validation
 from workers.research.activities import _finished
+from workers.upload import activities as upload_activities
 
 
 async def test_upload_started_succeeded_then_reused_existing(h: Harness) -> None:  # noqa: F811
@@ -87,29 +92,85 @@ async def test_anomaly_keeps_the_grep_key_and_adds_the_event() -> None:
     assert event["level"] == "ERROR"
 
 
-async def test_concurrent_upload_attempts_log_one_success_and_one_reuse(h: Harness) -> None:  # noqa: F811
-    """並行2試行で動画は1本。``upload.succeeded`` もその1本を送った試行の1件だけで、
-    後から台帳の spent を見つけた試行は ``upload.reused_existing``（YouTube に送っていない）。
-    レビュー I-20（担当C V-3: 2件目も ``reconciled_by=upload_response`` の succeeded だった）。"""
+async def test_an_attempt_that_finds_the_result_already_recorded_logs_reuse(
+    h: Harness,  # noqa: F811
+) -> None:
+    """並行2試行の一方が予約を取った**後**に、他方が投稿して spent を記録した（順序を固定）。
+
+    動画は1本。``upload.succeeded`` は送った試行の1件だけで、後から台帳の spent を見た試行は
+    ``upload.reused_existing``（``found_at=record``。YouTube へ送っていない）、``reservation.spent``
+    も1件（no-op の再記録では出さない）。レビュー I-20（担当C V-3）・I-21（並行のまま走らせると
+    負けた側が job の遷移で止まる回があり、この経路に届くかがタイミング次第だった）。
+    """
     await _admitted(h)
-    first, second = h.activities(), h.activities()
+    winner, loser = h.activities(), h.activities()
+    reserve = loser._reserve
+
+    async def reserve_then_let_the_winner_finish(*args: Any, **kwargs: Any) -> Any:
+        reservation = await reserve(*args, **kwargs)
+        assert reservation.status is ReservationStatus.RESERVED
+        await h.upload(winner, "run-1")  # 負けた側が予約を読んだ後に、勝った側が投稿し spent を記録
+        return reservation
+
+    loser._reserve = reserve_then_let_the_winner_finish  # type: ignore[method-assign]
     with capture_json(logging.INFO) as logs:
-        results = await asyncio.gather(
-            h.upload(first, "run-1"), h.upload(second, "run-1"), return_exceptions=True
-        )
-    # SQLite では負けた試行が受領の書き込みで IntegrityError になることがある（既存の
-    # test_concurrent_attempts_on_the_same_key_create_one_video と同じ。Temporal の再試行で解ける）
-    # 業務: 動画1本・台帳の予約1つ（投稿の安全性はこの変更で変えない）。YouTube の session の
-    # 作成は動画を作らないので負けた試行も呼び得る（_drive の (b)）が、台帳に残るのは1つだけ
+        result = await h.upload(loser, "run-1")
     assert h.fake.videos_created == 1
     (reservation,) = await h.reservations()
     assert reservation.status is ReservationStatus.SPENT
-    [video_id] = {r.video_id for r in results if not isinstance(r, BaseException)}
     succeeded = logs.events("upload.succeeded")
     reused = logs.events("upload.reused_existing")
     assert len(succeeded) == 1, [e["attributes"] for e in succeeded]
     assert len(reused) == 1
-    assert succeeded[0]["attributes"]["video_id"] == video_id
-    assert reused[0]["attributes"]["video_id"] == video_id
-    # 台帳の spent も1回（2つ目の試行の no-op の再記録では出さない）
+    assert reused[0]["attributes"]["found_at"] == "record"
+    assert succeeded[0]["attributes"]["video_id"] == result.video_id
+    assert reused[0]["attributes"]["video_id"] == result.video_id
+    assert len(logs.events("reservation.spent")) == 1
+
+
+async def test_an_attempt_rejected_by_the_job_transition_logs_no_upload_outcome(
+    h: Harness,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """並行2試行の一方が job を ``queued`` と読んだ直後に、他方が job を ``running`` にした
+    （インターリーブを固定）。読んだ側は job の遷移規則（running + started）で拒否され、投稿に
+    入らない（業務の規則のまま）。その試行は upload の結果を何も出さない: ``upload.succeeded`` は
+    投稿した試行の1件、``upload.reused_existing`` 0、``reservation.spent`` 1（レビュー I-21。D が
+    30回に1回見た経路）。
+    """
+    await _admitted(h)
+    winner, loser = h.activities(), h.activities()
+    entered, winner_started = asyncio.Event(), asyncio.Event()
+    armed = {"first_read": True}
+    original_get = upload_activities.JobRepository.get
+
+    async def get_then_wait(self: Any, job_id: Any) -> Any:
+        job = await original_get(self, job_id)
+        if armed["first_read"]:  # 負けた側の最初の読み取り（queued）だけ止める
+            armed["first_read"] = False
+            entered.set()
+            await winner_started.wait()
+        return job
+
+    monkeypatch.setattr(upload_activities.JobRepository, "get", get_then_wait)
+    upload = winner._upload
+
+    async def mark_started(*args: Any, **kwargs: Any) -> Any:
+        winner_started.set()  # 勝った側の job.start は commit 済み
+        return await upload(*args, **kwargs)
+
+    winner._upload = mark_started  # type: ignore[method-assign]
+    with capture_json(logging.INFO) as logs:
+        losing = asyncio.create_task(h.upload(loser, "run-1"))
+        await entered.wait()
+        won = await h.upload(winner, "run-1")
+        with pytest.raises(InvalidTransitionError, match="running"):
+            await losing
+    assert h.fake.videos_created == 1
+    (reservation,) = await h.reservations()
+    assert reservation.status is ReservationStatus.SPENT
+    succeeded = logs.events("upload.succeeded")
+    assert len(succeeded) == 1, [e["attributes"] for e in succeeded]
+    assert succeeded[0]["attributes"]["video_id"] == won.video_id
+    assert logs.events("upload.reused_existing") == []
     assert len(logs.events("reservation.spent")) == 1

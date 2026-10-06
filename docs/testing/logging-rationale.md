@@ -145,7 +145,10 @@ repository のメソッドが session に積み、`after_commit` で出す（`in
 | `test_upload_started_succeeded_then_reused_existing` | Upload の開始・成功と、再実行で既存動画を使った（YouTube を呼ばない）ことが動画 ID つきで見える。INFO 運用で session URI が出ない。DEBUG の SQL ログは行の値（session URI）を出すことを実測したので、`sqlalchemy.engine`・`aiosqlite` は `AVP_LOG_LEVEL=DEBUG` でも WARNING に固定する |
 | `test_render_validation_reports_failed_checks` | Render の技術検査のどの項目が落ちたか（判定は `domain.render.qa` のまま） |
 | `test_research_finished_carries_the_research_request_id` | Research の依頼 ID は `research_request_id`（API の `request_id` と混ぜない） |
-| `test_concurrent_upload_attempts_log_one_success_and_one_reuse` | 並行2試行（同じ upload key）で動画は1本・予約は1つ（業務は変えない）。`upload.succeeded` は1件で、後から台帳の spent を見た試行は `upload.reused_existing`、`reservation.spent` も1件（レビュー I-20）。修正前は 8/8 回で succeeded が2件（`reconciled_by` は2件目も `upload_response`。負けた試行が `_drive` で台帳の spent を読み、先に書いた試行の値を写していた）。負けた試行の YouTube session 作成（動画を作らない）は設計上あり得るので数えない。SQLite では負けた試行が受領の書き込みで IntegrityError になり得る（既存の並行テストと同じ。Activity の再試行で解ける） |
+| `test_an_attempt_that_finds_the_result_already_recorded_logs_reuse` | 並行2試行の一方が予約を読んだ後に他方が投稿・spent を記録する順序を**固定**して走らせる（`_reserve` の後で勝った側を最後まで走らせる）。動画1本・予約1つ（業務は変えない）。`upload.succeeded` は1件、負けた側は `upload.reused_existing`（`found_at=record`）、`reservation.spent` も1件（レビュー I-20）。修正前のコード（rowcount の判定を外す）で落ちることを確認 |
+| `test_an_attempt_rejected_by_the_job_transition_logs_no_upload_outcome` | もう一つの並行の順序: 負けた側が job を `queued` と読んだ直後に勝った側が `running` にした（`JobRepository.get` の後で止め、勝った側の job.start の commit 後に進める）。負けた側は job の遷移規則（running + started）で `InvalidTransitionError` になり投稿に入らない（業務の規則のまま）。upload の結果は何も出さない: succeeded 1（勝った側）・reused 0・spent 1（レビュー I-21） |
+
+I-21: I-20 で足した並行テストは `asyncio.gather` で2試行を同時に走らせており、負けた側が reuse まで進むか job の遷移で止まるかがタイミング次第だった（D が30回に1回、こちらでも60回に3回再現。止まった回は `InvalidTransitionError('job transition rejected: running + started')`）。ログ発行の不具合ではなくテストの前提の誤りなので、2つの順序をそれぞれ固定した上の2本に置き換えた。置き換え後 100 回連続で 0 失敗。
 | `test_anomaly_keeps_the_grep_key_and_adds_the_event` | 運用の grep が使う `OPERATIONAL_ANOMALY anomaly=` の文言を維持したまま `anomaly.recorded` にする |
 
 ## Workflow（`tests/unit/test_log_workflow_replay.py`、unit: time-skipping server）— INV-40
