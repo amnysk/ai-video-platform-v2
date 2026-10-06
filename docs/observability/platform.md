@@ -132,6 +132,20 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
   | 修正後・200k（上限内 → app、message は `[REDACTED]`） | 100 / 100 | 読み続けた | 1% 未満 |
 
 - 観測: 切った行は infra の文書 `collector_errors:line_too_long` で検索できる。
+- **限界（I-24、記録のみ）**: `COLLECTOR_LINE_MAX_BYTES` で切るのは Lua に渡った後。それまでは docker multiline が
+  結合した行全体がメモリに載る（Fluent Bit 側に効く上限が無い。上記）。数十〜数百 MB の1行では Fluent Bit
+  （`mem_limit` 256MiB）が OOM で落ち、`restart: unless-stopped` で再起動すると位置 DB の offset（その行の
+  前）から同じ行を読み直して、また落ちる可能性がある（未実測）。アプリの行は `EVENT_MAX_BYTES`（12288）で
+  切られるので、起きるのは契約外の出力（`print` の巨大な値・別プロセスの出力）だけ。
+  - 兆候: `docker inspect -f '{{.State.OOMKilled}} {{.RestartCount}}' avp2-logging-fluent-bit-1` が `true` で
+    再起動回数が増え続ける、check-pipeline の追いつきが FAIL のまま。
+  - 対処（手順は未実測。実施前に隔離環境で確かめる）: (1) `$C stop fluent-bit`。(2) 原因のファイルと行を
+    特定する（位置 DB の複製を `scripts/catchup.py` で読むと、未読の最も大きいファイルが `worst` に出る。
+    その offset から先で、`log` が改行で終わる最初の json-file の行の末尾が巨大な行の終わり）。
+    (3) 位置 DB（volume `<project>_fbstate` の `tail.db`）のその inode の `offset` を、その行の末尾の次の
+    byte に書き換える（Fluent Bit が止まっている間に、volume を rw で mount した one-shot の python3・sqlite3 で。
+    WAL を含めて開く）。(4) `$C start fluent-bit`。飛ばすのはその1行だけで、同じファイルの後続の行は
+    読まれる（巨大な行は検索側に残らない）。発生源のアプリを直すのが先。
 
 `/api/v1/storage` の `storage_layer.chunks.total_chunks`（buffer に溜まっている chunk）、
 `/api/v2/health` の `status`（`hc_*` の閾値を超えると `error`）。
@@ -184,6 +198,9 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
   その複製を読む（Fluent Bit は `db.locking` で DB を排他的に開いている。元の DB は開かない・止めない）。
   位置 DB に無いファイルは全量を未読と数える。差が `--max-behind-bytes`（既定 262144 = 1行の上限）を超えたら
   異常。対象は `docker ps -a --filter label=com.docker.compose.project=<target>` のコンテナだけ。
+  既知の限界（I-25、記録のみ）: 位置 DB の複製とファイルの大きさを読む間にも書き込みが続くので、書き込みの
+  多い瞬間は差が出て誤報しうる（再実行で消えれば無視してよい）。照合は inode だけなので、消えたファイルの
+  inode を新しいファイルが再利用すると古い offset で照合され、未読を見逃しうる。
 - **tail の停滞**（I-15）: 未読が残っているのに `input_records_total{name="tail.0"}` が前回の確認から
   増えていなければ異常（5秒おいて読み直してから判定）。Fluent Bit のイベントループが止まると health は ok、
   skip も chunk も変わらないので、これ以外では lag でしか見えない。対処は Fluent Bit の restart と、
