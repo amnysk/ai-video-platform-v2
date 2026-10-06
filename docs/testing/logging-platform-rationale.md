@@ -118,3 +118,12 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
   固定している（秘密の混入を止める検査）。ADR-0040 §3（Accepted）でアプリの各サービスに
   `AVP_SERVICE_NAME`（秘密ではない）を足すので、許可する集合にそれを加え、値がサービス名であることを検査する。
   `AVP_ENVIRONMENT`・`AVP_LOG_FORMAT` は `x-core-env` 経由なので既存の「app-env と同じ集合」に含まれる。
+
+## 6. `tests/unit/test_logging_init_secrets.py`（I-16）
+
+- **自前 CA が keyUsage（keyCertSign・cRLSign）と critical な basicConstraints を持ち、発行した node・admin
+  証明書が `openssl verify -x509_strict` を通る**: Python 3.13 から `ssl.create_default_context()` は
+  `VERIFY_X509_STRICT` を立て、keyUsage の無い CA を拒否する（担当C の試験で発見。試験用スクリプトは strict を
+  外して回避していた）。運用の確認スクリプトを Python で書いた途端に TLS が通らなくなるので、生成する側で固定する。
+  OpenSSL の `-x509_strict` は Python と同じ flag なので、ネットワークを使わずに同じ判定ができる。
+  修正前の init-secrets.sh では3件とも落ちる（確認済み）。

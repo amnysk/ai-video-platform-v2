@@ -133,6 +133,13 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
 - **読み取り用の資格情報の決まった場所**（確認スクリプト・隔離試験が使う）:
   ユーザー `avp_viewer`、パスワード `<AVP_LOGGING_SECRETS_DIR>/viewer.pw`、CA `<AVP_LOGGING_SECRETS_DIR>/pki/ca.pem`、
   URL `https://127.0.0.1:<AVP_LOGGING_OS_PORT>`。
+- CA は `basicConstraints=critical,CA:TRUE`・`keyUsage=critical,keyCertSign,cRLSign`・SKI を持ち、node・admin
+  証明書は SKI・AKI を持つ（I-16）。これが無いと Python 3.13 以降の `ssl.create_default_context()`
+  （`VERIFY_X509_STRICT` が既定）や `openssl verify -x509_strict` が「CA cert does not include key usage
+  extension」で拒否する。**2026-10-06 より前に作った証明書は再生成しないと直らない**（`init-secrets.sh` は既存の
+  ファイルを上書きしない）: `pki/` の `ca.*`・`node.*`・`admin.*` を退避 → `init-secrets.sh` → `security-init` →
+  `$C up -d --force-recreate opensearch fluent-bit`（Dashboards を使っていれば同じく）→ `securityadmin`。
+  DN は変わらないのでパスワード・ロールはそのまま。
 - 証明書はホストの openssl で作る（OpenSearch / Dashboards のイメージに openssl が無い）。named volume への
   配置と internal_users の hash 化は one-shot（`security-init`）で行う。DN は RFC2253 順
   （`CN=…,OU=avp2-logging`。逆順だと admin 証明書が 401 になる。実測）。
