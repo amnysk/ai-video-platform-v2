@@ -289,3 +289,106 @@ def test_workflow_event_helpers_are_identical() -> None:
                 bodies[path.relative_to(REPO).as_posix()] = ast.unparse(node)
     assert len(bodies) >= 6
     assert len(set(bodies.values())) == 1, sorted(bodies)
+
+
+#: ``with log_guard():`` の本体で呼んでよいもの（``ast.unparse(call.func)`` の完全一致）。
+#: 2026-10-06 時点の全 block で実際に使われている呼び出しから作った（レビュー I-11）。
+#: 業務の処理（DB の書き込み・外部呼び出し・状態の変更）を guard の中へ入れると、その失敗まで
+#: 黙って握りつぶされる。足すときは「ログのための前処理か」を確かめてからここへ足す。
+LOG_GUARD_ALLOWED_CALLS = frozenset(
+    {
+        # 発行
+        "emit",
+        "defer",
+        # ログ用のフィールド組み立て・分類
+        "reservation_fields",
+        "classify",
+        "_error_reasons",
+        "_error_type_from_body",
+        "_provider_request_id",
+        "_auth_category",
+        "allowed_headers",
+        "_worker_id",
+        "_config_version",
+        "self._base",
+        "_OPERATIONS.get",
+        "logging.getLogger",
+        # 読み取り（ヘッダ・環境・dict）
+        "response.headers.get",
+        "env.get",
+        "fields.get",
+        "fields.pop",
+        "attributes.items",
+        "detail.split",
+        # 時刻
+        "datetime.now",
+        "datetime.now(UTC).isoformat",
+        "notice.anomaly_date.isoformat",
+        "time.monotonic",
+        # 組み込み
+        "str",
+        "type",
+        "len",
+        "list",
+        "isinstance",
+    }
+)
+#: guard の本体に置かない構文。suppress の中の raise は握りつぶされ、return・await は
+#: 業務の制御を「ログが壊れたら飛ばされる」block の中へ入れてしまう。
+LOG_GUARD_FORBIDDEN_NODES = (ast.Raise, ast.Return, ast.Await)
+
+
+def _log_guard_violations(tree: ast.AST, rel: str) -> tuple[int, list[str]]:
+    blocks = 0
+    bad: list[str] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.With | ast.AsyncWith)
+            and any(ast.unparse(item.context_expr) == "log_guard()" for item in node.items)
+        ):
+            continue
+        blocks += 1
+        for stmt in node.body:
+            for inner in ast.walk(stmt):
+                where = f"{rel}:{getattr(inner, 'lineno', node.lineno)}"
+                if isinstance(inner, LOG_GUARD_FORBIDDEN_NODES):
+                    bad.append(f"{where} {type(inner).__name__} inside log_guard()")
+                elif isinstance(inner, ast.Call):
+                    name = ast.unparse(inner.func)
+                    if name not in LOG_GUARD_ALLOWED_CALLS:
+                        bad.append(f"{where} call {name}(...) inside log_guard()")
+    return blocks, bad
+
+
+def test_log_guard_bodies_contain_only_log_preparation() -> None:
+    """``log_guard()`` は ``contextlib.suppress(Exception)``。本体に業務の処理を入れると、その失敗も
+    黙って消える（レビュー I-11）。本体は発行と許可したログ用の前処理だけ。"""
+    blocks = 0
+    bad: list[str] = []
+    for path in _py("apps", "workers", "infrastructure"):
+        found, problems = _log_guard_violations(_tree(path), path.relative_to(REPO).as_posix())
+        blocks += found
+        bad.extend(problems)
+    assert blocks >= 40  # 検査が空振りしない（2026-10-06 時点で 42 block）
+    assert not bad, "\n".join(bad)
+
+
+def test_log_guard_check_rejects_business_code_in_the_guard() -> None:
+    """上の検査そのものが違反を見つけること（許可リストが広がりすぎて空振りしないこと）。"""
+    source = """
+async def f(repo, logger):
+    with log_guard():
+        emit(logger, "x")
+        await repo.save()
+        repo.commit()
+        raise ValueError
+        return 1
+"""
+    _, bad = _log_guard_violations(ast.parse(source), "example.py")
+    assert [b.split(" ", 1)[1] for b in bad] == [
+        "Await inside log_guard()",
+        "call repo.save(...) inside log_guard()",
+        "call repo.commit(...) inside log_guard()",
+        "Raise inside log_guard()",
+        "Return inside log_guard()",
+    ]
