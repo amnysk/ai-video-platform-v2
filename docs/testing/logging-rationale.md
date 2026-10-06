@@ -181,6 +181,7 @@ workflow の replay（`test_log_workflow_replay.py`）だけでは、旧履歴�
 | テスト | 守るもの |
 |---|---|
 | `test_old_history_replays_deterministically_and_emits_nothing` | 01eb0ee（ログ導入前）で採った履歴21本（Production: 代替映像案で作り直し・代替案の上限・音声ゲートの失敗・成功／Render・Upload: 成功・blocked・入場不可・cancel・処理待ち／Storyboard: 成功・blocked・入場不可／EpisodePipeline: 完了・途中再開・upload gate・停止・子の二重起動／Daily）が今のコードで非決定にならず、replay 中は1件も発行しない。workflow に `workflow.sleep` を足すと4本が落ちることを確認（検査が効いている） |
+| `test_old_script_history_replays_on_the_evidence_worker_too`（レビュー I-3 の残り） | ScriptWorkflow の旧履歴6本（成功・transient 後の再ラウンドで成功・再実行で既存 artifact を再利用・ラウンド上限で blocked・needs_input で即 blocked・未分類で blocked）は上の検査（`WORKFLOWS` に `ScriptWorkflow` を足した）でも replay する。`SCRIPT_EVIDENCE_ENABLED` の worker は同じ型名で `EvidenceScriptWorkflow` を登録するので、そちらでも replay する（patch marker の無い旧履歴で Evidence の分岐に入らない）。`ScriptWorkflow.run` の頭に `workflow.sleep` を足すと 12 件（6本×2）が落ちることを確認 |
 | `test_the_old_histories_cover_every_stage_workflow` | fixture が消えて検査が空振りしない |
 
 履歴の採り方（再現手順）:
@@ -192,8 +193,18 @@ cd .worktrees/tmp-pre-logging
 AVP_CAPTURE_HISTORY_DIR=/tmp/histories <venv>/bin/python -m pytest -p tests.support.history_capture_plugin \
   tests/unit/test_production_scene_recovery_workflow.py tests/unit/test_production_voice_gate.py \
   tests/unit/test_render_workflow.py tests/unit/test_upload_workflow.py \
-  tests/unit/test_pipeline_workflows.py tests/integration/test_storyboard_workflow.py
+  tests/unit/test_pipeline_workflows.py tests/integration/test_storyboard_workflow.py \
+  tests/integration/test_script_workflow.py
 cd - && git worktree remove .worktrees/tmp-pre-logging
 ```
 
-（`tests/integration/test_storyboard_workflow.py` は time-skipping server と SQLite だけで動く。）
+（`tests/integration/test_storyboard_workflow.py`・`test_script_workflow.py` は time-skipping server と SQLite
+だけで動く。本番の Temporal には繋がない。）Script の6本は 2026-10-06 に `git archive 01eb0ee` を scratch へ
+展開して同じ plugin で採った（worktree を作らない形。repo の venv の python を展開先で `-m pytest` すると
+展開先のコードが import される）。対応: `script_succeeded` ← `test_script_is_generated_validated_stored_and_episode_becomes_script_ready`、
+`script_retried_then_succeeded` ← `test_transient_failure_retries_in_a_new_round_and_succeeds`、
+`script_reused_existing` ← `test_rerunning_the_workflow_reuses_the_artifact_without_calling_the_generator` の2回目、
+`script_rounds_exhausted_blocked` ← `test_exhausted_rounds_block_instead_of_failing`、
+`script_needs_input_blocked` ← `test_needs_input_failure_stops_immediately_without_more_paid_calls`、
+`script_unclassified_blocked` ← `test_unclassified_failure_blocks_instead_of_failing`。
+01eb0ee の Script のテストには `failed`（blocked でない）で終わる経路が無いので、その旧履歴は無い。
