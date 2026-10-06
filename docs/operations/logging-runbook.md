@@ -152,7 +152,7 @@ q "$OS/avp-app-prod-*/_search" -d '{"size":0,"aggs":{"d":{"terms":{"field":"even
   （業務には影響しない）。原因（OpenSearch 停止・400 の型不整合）を直し、欠けた時間帯は
   json-file（rotation 前なら）か DB・Temporal で補う。
 - `files_opened_total == 0` が続く = Collector が何も読めていない（権限・mount 不成立）。
-- **stall**（2026-10-06 の隔離試験で再現。verification-results の F-B1）: Docker が partial に分けた
+- **stall**（2026-10-06 の隔離試験で再現。review-log の I-15）: Docker が partial に分けた
   1行が結合後に `buffer_max_size`（256k）を超えると、tail が CPU 100% のまま全ファイルの読み取りを
   止める。health は ok・`long_line_skipped` は 0・buffer chunk も増えない。見えるのは最終
   `ingested_at` の lag と `input_records_total{name="tail.0"}` が増えないこと、`docker stats` の CPU。
@@ -164,7 +164,7 @@ q "$OS/avp-app-prod-*/_search" -d '{"size":0,"aggs":{"d":{"terms":{"field":"even
 - **deploy-workers の前に** Collector の追いつきを確認する（コンテナ再作成で未読の json-file が
   消えるため）: 位置 DB の offset と各 `*-json.log` のサイズの差が 0 に近いこと。
   `check-pipeline.sh` はこの差を見ない（buffer の chunk 数と最終 `ingested_at` だけ。
-  verification-results の F-B3）。当面は試験用の `deploy/logging/test/catchup.py` を使う:
+  review-log の I-17）。当面は試験用の `deploy/logging/test/catchup.py` を使う:
 
   ```bash
   LOGGING_PROJECT=avp2-logging AVP_LOG_TARGET_PROJECT=avp2 \
