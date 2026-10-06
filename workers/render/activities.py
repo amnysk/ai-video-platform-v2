@@ -34,6 +34,7 @@ from contracts.artifacts import (
     parse_script_artifact,
     parse_storyboard_artifact,
 )
+from contracts.log_contract import EventName, LogStage, Outcome
 from contracts.render import (
     FINAL_VIDEO_MIME_TYPE,
     RENDER_ARTIFACT_SCHEMA_VERSION,
@@ -104,6 +105,7 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
 )
+from infrastructure.logging.emit import emit, log_guard
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
 from infrastructure.render.binary import file_sha256
 from infrastructure.storage.artifact_store import ArtifactStore
@@ -494,6 +496,9 @@ class RenderActivities:
             sources_verified=inputs.sources_verified,
             manifest=inputs.manifest,
         )
+        _log_validation(
+            episode_id, [c for c in pre_upload if c.check != CHECK_MEDIA_READBACK], "pre_upload"
+        )
         raise_for_failed_checks([c for c in pre_upload if c.check != CHECK_MEDIA_READBACK])
 
         media_key = episode_media_object_key(
@@ -519,6 +524,7 @@ class RenderActivities:
             sources_verified=inputs.sources_verified,
             manifest=inputs.manifest,
         )
+        _log_validation(episode_id, list(report.checks), "final")
 
         def _src(ref: ArtifactRef) -> dict[str, str]:
             return {
@@ -979,3 +985,27 @@ __all__ = [
     "parse_admission_token",
     "required_free_bytes",
 ]
+
+
+def _log_validation(episode_id: str, checks: Sequence[Any], phase: str) -> None:
+    """Render の尺・音声等の技術検査の結果（ADR-0040）。判定は ``domain.render.qa`` のまま。"""
+    with log_guard():
+        failed = [c for c in checks if not c.passed]
+        emit(
+            logger,
+            EventName.RENDER_VALIDATION_FAILED if failed else EventName.RENDER_VALIDATION_PASSED,
+            logging.WARNING if failed else logging.INFO,
+            "render validation %s (%s): %s of %s check(s) failed",
+            "failed" if failed else "passed",
+            phase,
+            len(failed),
+            len(checks),
+            episode_id=episode_id,
+            stage=LogStage.RENDER.value,
+            outcome=(Outcome.FAILED if failed else Outcome.SUCCEEDED).value,
+            attributes={
+                "phase": phase,
+                "failed_checks": [{"check": c.check, "detail": c.detail} for c in failed][:20],
+                "checks": [c.check for c in checks][:50],
+            },
+        )

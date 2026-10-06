@@ -22,6 +22,7 @@ Episode は互いに独立。ある日の Episode が止まっても翌日の tr
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -31,6 +32,7 @@ from temporalio.exceptions import ApplicationError, ChildWorkflowError, Workflow
 from temporalio.workflow import ParentClosePolicy
 
 with workflow.unsafe.imports_passed_through():
+    from contracts.log_contract import EventName, Outcome
     from contracts.pipeline import (
         DAILY_EPISODE_WORKFLOW,
         EPISODE_PIPELINE_WORKFLOW,
@@ -71,6 +73,22 @@ with workflow.unsafe.imports_passed_through():
     )
 
 #: ADR-0025 の Planner 導入を履歴に記録する patch id（旧履歴の replay を旧経路へ振り分ける）
+
+
+def _event(level: int, event: EventName, msg: str, *args: object, **fields: object) -> None:
+    """業務イベント（ADR-0040 / INV-40）。replay 中は SDK の logger が抑止する。
+
+    Workflow は ``infrastructure`` を import しない。``extra`` は ``"avp"`` の1キーだけで、
+    event_id は sandbox の外の整形器が決定的に導く。ログの故障で workflow task を落とさない。
+    """
+    try:
+        payload = {k: v for k, v in fields.items() if v is not None}
+        payload["event_name"] = event.value
+        workflow.logger.log(level, msg, *args, extra={"avp": payload})
+    except Exception:
+        pass
+
+
 TOPIC_PLANNER_PATCH_ID = "topic-planner-0025"
 
 STATE_ACTIVITY_TIMEOUT = timedelta(seconds=30)
@@ -112,6 +130,7 @@ class DailyEpisodeWorkflow:
             PIPELINE_CHECK_PAUSED, CheckPausedRequest(), CheckPausedResult
         )
         if paused.paused:
+            _slot_skipped(slot, DailyOutcome.PAUSED, paused.reason)
             return DailyEpisodeResult(
                 outcome=DailyOutcome.PAUSED, slot_date=slot, reason=paused.reason
             )
@@ -136,6 +155,7 @@ class DailyEpisodeWorkflow:
             ClaimDailySlotResult,
         )
         if claim.outcome == ClaimOutcome.LIMIT_REACHED or claim.episode_id is None:
+            _slot_skipped(slot, DailyOutcome.LIMIT_REACHED, f"daily limit {request.daily_limit}")
             return DailyEpisodeResult(
                 outcome=DailyOutcome.LIMIT_REACHED,
                 slot_date=slot,
@@ -144,6 +164,7 @@ class DailyEpisodeWorkflow:
             )
         if planned and claim.topic_plan_id is None:
             # plan の無い Episode の pipeline は始めない（INV-21）
+            _slot_skipped(slot, DailyOutcome.NO_TOPIC_PLAN, "no topic plan", claim.episode_id)
             return DailyEpisodeResult(
                 outcome=DailyOutcome.NO_TOPIC_PLAN,
                 slot_date=slot,
@@ -165,6 +186,9 @@ class DailyEpisodeWorkflow:
                 id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
             )
         except WorkflowAlreadyStartedError:
+            _slot_skipped(
+                slot, DailyOutcome.ALREADY_STARTED, f"{child_id} already started", claim.episode_id
+            )
             return DailyEpisodeResult(
                 outcome=DailyOutcome.ALREADY_STARTED,
                 slot_date=slot,
@@ -173,6 +197,17 @@ class DailyEpisodeWorkflow:
                 topic_plan_id=claim.topic_plan_id,
                 reason=f"{child_id} already started (claim {claim.outcome})",
             )
+        _event(
+            logging.INFO,
+            EventName.STAGE_STARTED,
+            "daily pipeline started for %s episode=%s",
+            slot,
+            claim.episode_id,
+            stage="pipeline",
+            episode_id=claim.episode_id,
+            outcome=Outcome.STARTED.value,
+            attributes={"slot_date": slot, "child_workflow_id": child_id},
+        )
         return DailyEpisodeResult(
             outcome=DailyOutcome.STARTED,
             slot_date=slot,
@@ -277,17 +312,49 @@ class EpisodePipelineWorkflow:
         result = EpisodePipelineResult(episode_id=ep, outcome=PipelineOutcome.COMPLETED, status="")
         stages = list(PipelineStage)
         start_index = stages.index(PipelineStage(request.start_stage))
+        _event(
+            logging.INFO,
+            EventName.STAGE_STARTED,
+            "episode pipeline started at %s",
+            request.start_stage,
+            stage="pipeline",
+            episode_id=ep,
+            outcome=Outcome.STARTED.value,
+            attributes={"start_stage": request.start_stage},
+        )
         for index, stage in enumerate(stages):
             if index < start_index:
                 # 統一再開（ADR-0032）: 途中入場より前の工程は完了済みとして扱う。
                 # 子 workflow を起動しない（再課金しない / INV-17）
                 result.completed_stages.append(stage.value)
+                _event(
+                    logging.INFO,
+                    EventName.STAGE_SKIPPED,
+                    "stage %s skipped (resume starts at %s)",
+                    stage.value,
+                    request.start_stage,
+                    stage=stage.value,
+                    episode_id=ep,
+                    outcome=Outcome.SKIPPED.value,
+                    attributes={"reason": "resume", "start_stage": request.start_stage},
+                )
                 continue
             if stage is PipelineStage.UPLOAD:
                 gate: UploadGateResult = await _state_activity(
                     PIPELINE_UPLOAD_GATE, UploadGateRequest(episode_id=ep), UploadGateResult
                 )
                 if not gate.allowed:
+                    _event(
+                        logging.INFO,
+                        EventName.UPLOAD_SKIPPED,
+                        "upload skipped episode=%s: %s",
+                        ep,
+                        gate.reason,
+                        stage=stage.value,
+                        episode_id=ep,
+                        outcome=Outcome.SKIPPED.value,
+                        attributes={"reason": gate.reason, "status": gate.status},
+                    )
                     result.outcome = PipelineOutcome.UPLOAD_SKIPPED
                     result.stopped_stage = stage.value
                     result.reason = gate.reason
@@ -323,13 +390,50 @@ class EpisodePipelineWorkflow:
             if status != expected:
                 return self._stop(result, stage, f"{name} returned {status!r}, expected {expected}")
             result.completed_stages.append(stage.value)
+        _event(
+            logging.INFO,
+            EventName.STAGE_SUCCEEDED,
+            "episode pipeline completed status=%s",
+            result.status,
+            stage="pipeline",
+            episode_id=ep,
+            outcome=Outcome.SUCCEEDED.value,
+            attributes={"completed_stages": list(result.completed_stages)},
+        )
         return result
 
     @staticmethod
     def _stop(
         result: EpisodePipelineResult, stage: PipelineStage, reason: str
     ) -> EpisodePipelineResult:
+        _event(
+            logging.WARNING,
+            EventName.STAGE_BLOCKED,
+            "pipeline stopped at %s: %s",
+            stage.value,
+            reason,
+            stage="pipeline",
+            episode_id=result.episode_id,
+            outcome=Outcome.BLOCKED.value,
+            attributes={"stopped_stage": stage.value, "reason": reason, "status": result.status},
+        )
         result.outcome = PipelineOutcome.STOPPED
         result.stopped_stage = stage.value
         result.reason = reason
         return result
+
+
+def _slot_skipped(
+    slot: str, outcome: DailyOutcome, reason: str | None, episode_id: str | None = None
+) -> None:
+    _event(
+        logging.INFO,
+        EventName.SCHEDULE_SLOT_SKIPPED,
+        "daily slot %s skipped: %s",
+        slot,
+        outcome.value,
+        stage="schedule",
+        episode_id=episode_id,
+        outcome=Outcome.SKIPPED.value,
+        attributes={"slot_date": slot, "daily_outcome": outcome.value, "reason": reason},
+    )

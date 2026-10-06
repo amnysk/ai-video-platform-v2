@@ -1,0 +1,95 @@
+"""Research の Provider の組み立て（ADR-0037 §6 / §8）。知っているのは ``fake`` と ``none`` だけ。
+
+理由は docs/testing/research-execution-rationale.md。
+"""
+
+from __future__ import annotations
+
+from contracts.research import RESEARCH_PROVIDER_MODES, ResearchKind
+from domain.research.evidence_handler import EvidenceHandler
+from domain.research.trend_handler import TrendHandler
+from infrastructure.config import Settings
+from infrastructure.research.fake_providers import FakeContentFetcher, FakeSearchProvider
+from infrastructure.research.quota_costs import YOUTUBE_FULL_SEARCH_UNITS
+from infrastructure.research.registry import (
+    build_cost_model,
+    build_handlers,
+    build_providers,
+    provider_config_version,
+    provider_is_configured,
+    provider_is_real,
+)
+
+
+def _settings(**overrides: object) -> Settings:
+    return Settings(_env_file=None, **overrides)  # type: ignore[call-arg]
+
+
+def test_the_default_provider_is_none_and_builds_nothing_that_can_call_out() -> None:
+    """既定は ``none``（fail-closed）。.env や環境変数に左右されない宣言上の既定を見る。"""
+    assert Settings.model_fields["research_provider"].default == "none"
+    providers = build_providers(_settings())
+    assert providers.mode == "none"
+    assert providers.search is None and providers.fetcher is None
+    assert providers.configured is False
+    assert providers.is_real is False
+
+
+def test_fake_builds_the_fixed_corpus_providers() -> None:
+    providers = build_providers(_settings(research_provider="fake"))
+    assert isinstance(providers.search, FakeSearchProvider)
+    assert isinstance(providers.fetcher, FakeContentFetcher)
+    assert providers.configured is True
+    assert providers.is_real is False
+
+
+def test_only_fake_and_none_are_modes_and_an_unknown_value_falls_back_to_none() -> None:
+    """未知・誤記の ``RESEARCH_PROVIDER`` で ``Settings()`` を落とさない（ADR-0037 §8.5）。
+
+    script-worker も B6 でこの値を受け取るので、起動エラーにすると Research を OFF にしていても
+    日次の企画・台本の worker が止まる。未知の値は ``none``（依頼は ``blocked``）へ落とす。
+    """
+    assert set(RESEARCH_PROVIDER_MODES) == {"fake", "none"}
+    for value in ("youtube", "FAKE ", "", "some-future-provider"):
+        settings = _settings(research_provider=value)
+        assert settings.research_provider == "none"
+        assert build_providers(settings).configured is False
+    assert _settings(research_provider="fake").research_provider == "fake"
+
+
+def test_unknown_modes_count_as_real_and_unconfigured() -> None:
+    """将来の実 Provider は、登録されるまで「実物・未設定」として扱う（どちらも止める側）。"""
+    assert provider_is_real("fake") is False and provider_is_real("none") is False
+    assert provider_is_real("some-future-provider") is True
+    assert provider_is_configured("fake") is True
+    assert provider_is_configured("none") is False
+    assert provider_is_configured("some-future-provider") is False
+
+
+def test_the_provider_config_version_separates_fake_results_from_other_modes() -> None:
+    """Fake の結果を別の Provider 設定の依頼に再利用させない（``request_hash`` に入る）。"""
+    assert provider_config_version("fake") != provider_config_version("none")
+    assert provider_config_version("fake").endswith("+fake")
+
+
+def test_exactly_the_evidence_and_trend_handlers_are_registered() -> None:
+    """Evidence（ADR-0038）と Trend（ADR-0039）の Handler だけが、設定に依らず登録される。
+
+    ``none`` の依頼は Handler があっても実行器の門で先に ``blocked`` になる。種別と Handler の
+    対応（``kind`` / ``artifact_type``）も固定する。
+    """
+    for mode in ("fake", "none"):
+        handlers = build_handlers(_settings(research_provider=mode))
+        assert set(handlers) == {ResearchKind.EVIDENCE, ResearchKind.TREND}
+        assert isinstance(handlers[ResearchKind.EVIDENCE], EvidenceHandler)
+        assert isinstance(handlers[ResearchKind.TREND], TrendHandler)
+        for kind, handler in handlers.items():
+            assert handler.kind is kind
+
+
+def test_the_cost_model_estimates_youtube_quota_from_the_shared_constant() -> None:
+    model = build_cost_model(_settings())
+    assert model.youtube_units_per_search == YOUTUBE_FULL_SEARCH_UNITS
+    assert model.quota_units_for("youtube") == YOUTUBE_FULL_SEARCH_UNITS
+    assert model.quota_units_for("web") is None
+    assert model.usd_per_call == {}

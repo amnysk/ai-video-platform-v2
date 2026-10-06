@@ -14,6 +14,7 @@ from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from contracts.log_contract import ClassificationBasis, EventName, Outcome
 from contracts.operations import (
     ClaimOutcome,
     DailyEpisodeSlot,
@@ -65,6 +66,8 @@ from infrastructure.db.models import (
     TopicCandidateRow,
     TopicPlanRow,
 )
+from infrastructure.logging.emit import log_guard
+from infrastructure.logging.ledger import defer, reservation_fields
 
 
 def _as_uuid(value: uuid.UUID | str) -> uuid.UUID:
@@ -417,7 +420,9 @@ class ArtifactMetadataRepository:
             if content_fingerprint is not None:
                 existing.content_fingerprint = content_fingerprint
             await self._session.flush()
-            return _to_artifact(existing)
+            restored = _to_artifact(existing)
+            self._defer_stored(restored, restored=True, input_hash=existing.input_hash)
+            return restored
 
         max_version = await self._session.scalar(
             select(func.max(ArtifactMetadataRow.version)).where(
@@ -447,7 +452,31 @@ class ArtifactMetadataRepository:
         )
         self._session.add(row)
         await self._session.flush()
-        return _to_artifact(row)
+        stored = _to_artifact(row)
+        self._defer_stored(stored, restored=False, input_hash=row.input_hash)
+        return stored
+
+    def _defer_stored(
+        self, meta: ArtifactMetadata, *, restored: bool, input_hash: str | None
+    ) -> None:
+        """commit 後に ``artifact.stored``（log-contract §9）。"""
+        with log_guard():
+            defer(
+                self._session,
+                __name__,
+                EventName.ARTIFACT_STORED,
+                _INFO,
+                "artifact stored type=%s version=%s",
+                meta.artifact_type.value,
+                meta.version,
+                episode_id=meta.episode_id,
+                scene_id=meta.scene_id,
+                artifact_id=meta.id,
+                artifact_type=meta.artifact_type.value,
+                input_hash=input_hash,
+                outcome=Outcome.SUCCEEDED.value,
+                attributes={"version": meta.version, "restored": restored},
+            )
 
     async def _supersede_current(
         self,
@@ -468,6 +497,21 @@ class ArtifactMetadataRepository:
         )
         for current in (await self._session.scalars(current_stmt)).all():
             current.superseded_at = now
+            with log_guard():
+                defer(
+                    self._session,
+                    __name__,
+                    EventName.ARTIFACT_SUPERSEDED,
+                    _INFO,
+                    "artifact superseded type=%s version=%s",
+                    artifact_type.value,
+                    current.version,
+                    episode_id=str(episode_uuid),
+                    scene_id=scene_id,
+                    artifact_id=str(current.id),
+                    artifact_type=artifact_type.value,
+                    attributes={"version": current.version},
+                )
         await self._session.flush()
 
     async def find_current_by_type(
@@ -795,7 +839,9 @@ class ProviderReservationRepository:
         )
         self._session.add(row)
         await self._session.flush()
-        return _to_reservation(row)
+        reservation = _to_reservation(row)
+        _defer_reservation(self._session, EventName.RESERVATION_RESERVED, "reserved", reservation)
+        return reservation
 
     async def mark_dispatched(self, reservation_id: uuid.UUID | str) -> ProviderReservation:
         """subprocess を起動する**直前**に呼び、commit してから起動する。
@@ -827,7 +873,11 @@ class ProviderReservationRepository:
         fresh = await self._session.get(table, _as_uuid(reservation_id), populate_existing=True)
         if fresh is None:
             raise InvalidTransitionError(f"reservation not found: {reservation_id}")
-        return _to_reservation(fresh)
+        reservation = _to_reservation(fresh)
+        _defer_reservation(
+            self._session, EventName.RESERVATION_DISPATCHED, "dispatched", reservation
+        )
+        return reservation
 
     async def record_provider_job_ref(
         self, reservation_id: uuid.UUID | str, provider_job_ref: str
@@ -861,7 +911,14 @@ class ProviderReservationRepository:
         if fresh is None:
             raise InvalidTransitionError(f"reservation not found: {reservation_id}")
         if getattr(result, "rowcount", 0) == 1:
-            return _to_reservation(fresh)
+            reservation = _to_reservation(fresh)
+            _defer_reservation(
+                self._session,
+                EventName.RESERVATION_JOB_REF_RECORDED,
+                "job ref recorded",
+                reservation,
+            )
+            return reservation
         if fresh.provider_job_ref == provider_job_ref:
             return _to_reservation(fresh)
         if fresh.provider_job_ref is not None:
@@ -913,7 +970,24 @@ class ProviderReservationRepository:
             .values(provider_job_ref=session_ref)
             .execution_options(synchronize_session=False)
         )
-        return getattr(result, "rowcount", 0) == 1
+        written = getattr(result, "rowcount", 0) == 1
+        if written:
+            # 値は引数から作る（ログのための DB 往復を足さない / log-contract §9）。
+            # session URI そのものは出さない（capability。INV-20）
+            with log_guard():
+                defer(
+                    self._session,
+                    __name__,
+                    EventName.RESERVATION_JOB_REF_RECORDED,
+                    _INFO,
+                    "reservation upload session recorded %s",
+                    str(reservation_id),
+                    reservation_id=str(reservation_id),
+                    reservation_status=ReservationStatus.RESERVED.value,
+                    provider=ProviderCall.YOUTUBE_UPLOAD.value,
+                    attributes={"replaced": replaces is not None},
+                )
+        return written
 
     async def mark_upload_dispatched(
         self, reservation_id: uuid.UUID | str, session_ref: str
@@ -945,7 +1019,15 @@ class ProviderReservationRepository:
         )
         # (送ってよいか, この呼び出しが dispatched_at を立てたか)。立てた呼び出しだけが
         # offset 0 から送ってよい。他は status query で受理位置を確かめる
-        return ok, ok and getattr(changed, "rowcount", 0) == 1
+        dispatched = ok and getattr(changed, "rowcount", 0) == 1
+        if dispatched and fresh is not None:
+            _defer_reservation(
+                self._session,
+                EventName.RESERVATION_DISPATCHED,
+                "upload dispatched",
+                _to_reservation(fresh),
+            )
+        return ok, dispatched
 
     async def record_upload_result(
         self, reservation_id: uuid.UUID | str, result_ref: str, *, reconciled_by: str
@@ -953,6 +1035,19 @@ class ProviderReservationRepository:
         """結果（video id）を書き、同時に ``spent`` にする。受領 Artifact より先に commit。
 
         同じ結果での再記録は no-op。異なる結果・abandoned への記録は ``InvalidTransitionError``。
+        """
+        reservation, _ = await self.record_upload_result_once(
+            reservation_id, result_ref, reconciled_by=reconciled_by
+        )
+        return reservation
+
+    async def record_upload_result_once(
+        self, reservation_id: uuid.UUID | str, result_ref: str, *, reconciled_by: str
+    ) -> tuple[ProviderReservation, bool]:
+        """``record_upload_result`` と同じ。加えて**この呼び出しが** ``spent`` にしたかを返す。
+
+        ``False`` は同じ結果が既に記録されていた（並行する試行が先に記録した等）no-op。
+        ``reservation.spent`` は実際に書いた時だけ出す（レビュー I-20。no-op で2件目を出さない）。
         """
         if not result_ref:
             raise ValueError("result_ref must be non-empty")
@@ -962,7 +1057,7 @@ class ProviderReservationRepository:
         if isinstance(target, Rejected):  # pragma: no cover - 表の定義で起きない
             raise InvalidTransitionError(target.reason)
         table = ProviderReservationRow
-        await self._session.execute(
+        written = await self._session.execute(
             update(table)
             .where(
                 table.id == _as_uuid(reservation_id),
@@ -977,6 +1072,7 @@ class ProviderReservationRepository:
             )
             .execution_options(synchronize_session=False)
         )
+        changed = getattr(written, "rowcount", 0) == 1
         fresh = await self._session.get(table, _as_uuid(reservation_id), populate_existing=True)
         if fresh is None:
             raise InvalidTransitionError(f"reservation not found: {reservation_id}")
@@ -984,7 +1080,17 @@ class ProviderReservationRepository:
             ReservationStatus(fresh.status) is ReservationStatus.SPENT
             and fresh.provider_result_ref == result_ref
         ):
-            return _to_reservation(fresh)
+            reservation = _to_reservation(fresh)
+            if changed:
+                _defer_reservation(
+                    self._session,
+                    EventName.RESERVATION_SPENT,
+                    "spent",
+                    reservation,
+                    reconciled_by=reservation.reconciled_by,
+                    video_id=result_ref,
+                )
+            return reservation, changed
         raise InvalidTransitionError(
             f"reservation {reservation_id} is {fresh.status} with a different or missing "
             "result ref; refusing to record another result"
@@ -1050,7 +1156,17 @@ class ProviderReservationRepository:
         if input_rejected_by_provider:
             row.input_rejected_by_provider = True
         await self._session.flush()
-        return _to_reservation(row)
+        reservation = _to_reservation(row)
+        _defer_reservation(
+            self._session,
+            EventName.RESERVATION_SPENT,
+            "spent",
+            reservation,
+            reconciled_by=reconciled_by,
+            input_rejected_by_provider=input_rejected_by_provider,
+            failure_class=failure_class.value if failure_class is not None else None,
+        )
+        return reservation
 
     async def abandon(
         self, reservation_id: uuid.UUID | str, *, reconciled_by: str
@@ -1115,6 +1231,23 @@ class ProviderAuthIncidentRepository:
         )
         self._session.add(row)
         await self._session.flush()
+        with log_guard():
+            defer(
+                self._session,
+                __name__,
+                EventName.PROVIDER_AUTH_INCIDENT_RECORDED,
+                _WARNING,
+                "provider auth incident recorded provider=%s http_status=%s",
+                provider.value,
+                http_status,
+                provider=provider.value,
+                http_status=http_status,
+                episode_id=str(episode_id) if episode_id is not None else None,
+                error_category=_auth_category(http_status),
+                classification_basis=ClassificationBasis.HTTP_STATUS_ONLY.value
+                if http_status in (401, 403)
+                else None,
+            )
 
     async def count_unresolved_within_window(
         self, provider: ProviderCall, *, since: datetime
@@ -2082,6 +2215,38 @@ class ProviderRejectionRepository:
         )
         self._session.add(row)
         await self._session.flush()
+        with log_guard():
+            defer(
+                self._session,
+                __name__,
+                EventName.SCENE_REJECTED,
+                _WARNING,
+                "scene rejected by provider=%s category=%s",
+                provider.value,
+                rejection.category.value,
+                episode_id=str(episode_id),
+                scene_id=scene_id,
+                provider=provider.value,
+                reservation_id=str(reservation_id) if reservation_id else None,
+                input_hash=input_hash,
+                http_status=rejection.http_status,
+                error_code=list(rejection.types) or None,
+                # RejectionCategory の値は ErrorCategory と同じ文字列（contract test が検査）
+                error_category=rejection.category.value,
+                classification_basis=(
+                    ClassificationBasis.PROVIDER_ERROR_TYPE.value
+                    if rejection.types
+                    else ClassificationBasis.NONE.value
+                ),
+                outcome=Outcome.REJECTED.value,
+                response_excerpt={
+                    "types": list(rejection.types),
+                    "locs": list(rejection.locs),
+                    "reason": rejection.reason,
+                    "message": rejection.message,
+                    "rejected_input": rejection.rejected_input.value,
+                },
+            )
         return _to_rejection(row)
 
     async def list_for_scene(
@@ -2175,3 +2340,42 @@ class ProviderRejectionRepository:
             )
             for row in (await self._session.scalars(stmt)).all()
         ]
+
+
+# ------------------------------------------------------------------ commit 後のログ（ADR-0040）
+
+_INFO = 20
+_WARNING = 30
+
+
+def _defer_reservation(
+    session: AsyncSession,
+    event: EventName,
+    what: str,
+    reservation: ProviderReservation,
+    **attributes: Any,
+) -> None:
+    """予約台帳の変更を commit 後に出す（log-contract §9。書き手が何か所あってもここ1つ）。"""
+    with log_guard():
+        defer(
+            session,
+            __name__,
+            event,
+            _INFO,
+            "reservation %s %s provider=%s round=%s",
+            what,
+            reservation.id,
+            reservation.provider.value,
+            reservation.round,
+            **reservation_fields(reservation),
+            attributes={k: v for k, v in attributes.items() if v is not None} or None,
+        )
+
+
+def _auth_category(http_status: int | None) -> str | None:
+    """HTTP status だけからの推定（credentials とは断定しない / log-contract §2.1）。"""
+    if http_status == 403:
+        return "access_denied"
+    if http_status == 401:
+        return "auth_rejected"
+    return None

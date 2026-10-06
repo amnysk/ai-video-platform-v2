@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from decimal import Decimal
+
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -28,6 +31,13 @@ from contracts.render import (
     DEFAULT_RENDER_MIN_FREE_BYTES,
     DEFAULT_RENDER_PROFILE_ID,
     DEFAULT_RENDER_TIMEOUT_SECONDS,
+)
+from contracts.research import (
+    DEFAULT_RESEARCH_PROVIDER,
+    EVIDENCE_REVERIFY_DAYS,
+    RESEARCH_PROVIDER_MODES,
+    TREND_FRESH_HOURS,
+    ResearchProviderMode,
 )
 from contracts.schedule_guard import (
     DEFAULT_BLOCKED_GRACE_MINUTES,
@@ -176,6 +186,39 @@ class Settings(BaseSettings):
     #: True なら planning worker が YouTube Analytics を live で取る（YOUTUBE_* の OAuth を使う）。
     #: False なら保存済み snapshot があればそれ（stale）、無ければ Analytics 無しで企画する
     youtube_analytics_enabled: bool = False
+
+    # --- Research（ADR-0037） ---
+    #: ``fake``（固定コーパス。実ネットワークに出ない）か ``none``（既定。依頼は ``blocked``）。
+    #: 実 Provider は registry に無い（選定は所有者の判断と ADR を待つ）
+    research_provider: ResearchProviderMode = DEFAULT_RESEARCH_PROVIDER
+    #: 鮮度キャッシュの窓（ADR-0037 §5）。既定は ``contracts/research.py`` が唯一の宣言元
+    trend_fresh_hours: int = TREND_FRESH_HOURS
+    evidence_reverify_days: int = EVIDENCE_REVERIFY_DAYS
+    #: 依頼が上限を指定しなかったときに凍結する金額・quota の上限。未設定なら実 Provider の依頼は
+    #: ``blocked``（ADR-0037 §6）。Fake / none には影響しない
+    research_max_cost_usd: Decimal | None = None
+    research_max_youtube_units: int | None = None
+    #: B6 の opt-in（既定 OFF）。OFF のとき planning worker は Research のコードを読み込まず、
+    #: prompt・版・Temporal の履歴は接続前と同じ（ADR-0039 §B6 / ADR-0038 §B6、INV-37）。
+    #: Topic Planner が確定済みの最新 Trend（検証済み・鮮度つき）を prompt に参考として載せる
+    planner_trend_enabled: bool = False
+    #: 台本の後に Evidence を依頼して照合する（助言だけ。結果で Episode を止めない）
+    script_evidence_enabled: bool = False
+
+    @field_validator("research_provider", mode="before")
+    @classmethod
+    def _research_provider_fails_closed(cls, v: object) -> object:
+        """未知・誤記の値は ``none``（依頼は ``blocked``）へ落とし、起動は止めない。
+
+        ADR-0037 §8.5。script-worker もこの値を読むので、検証エラーにすると
+        Research を使っていない日次の企画・台本まで止まる。
+        """
+        if v in RESEARCH_PROVIDER_MODES:
+            return v
+        logging.getLogger(__name__).warning(
+            "unknown RESEARCH_PROVIDER %r; falling back to %r", v, DEFAULT_RESEARCH_PROVIDER
+        )
+        return DEFAULT_RESEARCH_PROVIDER
 
     @field_validator("topic_strategy_profile_id")
     @classmethod

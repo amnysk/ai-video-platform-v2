@@ -1,0 +1,13 @@
+# 例（インストールはしない）。systemd --user 用。docs/observability/platform.md §5。
+#   cp deploy/logging/systemd/avp-logging-check.* ~/.config/systemd/user/
+#   （ExecStart のパスを実際の checkout に直す）
+#   systemctl --user daemon-reload && systemctl --user enable --now avp-logging-check.timer
+# 結果は journal に残る: journalctl --user -u avp-logging-check
+[Unit]
+Description=AVP logging pipeline check (ADR-0040)
+After=docker.service
+
+[Service]
+Type=oneshot
+# 本番では --enforce-memory を付ける（MemAvailable の閾値で avp2-logging のコンテナだけを止める）
+ExecStart=%h/projects/ai-video-platform-v2/deploy/logging/scripts/check-pipeline.sh --env prod --enforce-memory

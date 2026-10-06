@@ -1,0 +1,20 @@
+# ユーザーとロールの対応（ADR-0040 §6）。admin は証明書（admin_dn）だけで、パスワードのユーザーは持たない。
+_meta:
+  type: "rolesmapping"
+  config_version: 2
+all_access:
+  reserved: true
+  users: []
+  backend_roles: []
+avp_log_writer:
+  reserved: true
+  users: ["avp_fluentbit"]
+avp_log_viewer:
+  reserved: true
+  users: ["avp_viewer"]
+kibana_user:
+  reserved: true
+  users: ["avp_viewer"]
+kibana_server:
+  reserved: true
+  users: ["avp_dashboards"]

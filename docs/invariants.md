@@ -310,3 +310,110 @@ provider がこちらの入力（URL のファイル）を取得できなかっ�
 / `tests/integration/test_input_fetch_retry_e2e.py::test_transient_input_fetch_failure_is_retried_once_with_a_new_url_through_upload`
 / `::test_second_input_fetch_failure_stops_and_resume_does_not_submit_again`
 / `tests/contract/test_migration_frozen_vocabulary.py::test_0014_legacy_file_download_error_is_backfilled_as_unreachable_not_rejected`
+
+## L. Research（ADR-0037）
+
+### INV-36 Research 依頼の外部呼び出しは、依頼ごとの上限を超えない
+1 つの Research 依頼が行う外部呼び出し（検索・本文取得・評価）は、依頼を受けた時点で凍結した
+`limits` から決まる種別ごとの上限（`contracts.research.call_ceiling`）を超えない。呼び出しは
+`research_calls` に呼ぶ前に予約し、`reserved` / `spent` / `abandoned` のどの行も枠を数え、
+`call_seq` は再利用しない。アプリの採番に誤りがあっても、DB の `UNIQUE(request_id, provider_call, call_seq)`
+と `call_seq >= 1` が上限より多い行を拒否する。dispatch した呼び出しは `abandoned` にできない。
+**機械検査**: `tests/unit/test_research_call_ledger.py::test_the_ceiling_stops_the_next_reservation_before_insert`
+/ `::test_abandoned_and_spent_calls_still_count_and_seq_is_never_reused`
+/ `::test_re_reserving_the_same_key_returns_the_same_call_and_uses_no_budget`
+/ `::test_the_database_rejects_a_duplicate_call_seq`
+/ `::test_a_racing_writer_does_not_push_the_count_past_the_ceiling`
+/ `tests/contract/test_migration_0015_research.py::test_the_database_rejects_a_second_row_with_the_same_call_seq`
+/ `tests/contract/test_migration_0015_research.py::test_the_database_rejects_invalid_ledger_rows`
+/ `tests/unit/test_research_executor.py::test_reaching_the_ledger_ceiling_stops_the_calls_and_finishes_partial`
+/ `tests/unit/test_research_executor.py::test_an_ambiguous_call_is_not_resent_and_blocks_the_request`
+（本物の並行トランザクションでの検査は未移植。PostgreSQL の integration テストは Worker の段で足す）
+
+### INV-37 Research は本番の表と課金コードに触れず、Episode 本番工程は Research を待たない
+Research は `jobs` / `artifact_metadata` / `provider_reservations` / `provider_rejections` に書かず、
+本番のリポジトリ（`infrastructure/db/repositories.py`）と課金コード（`infrastructure/production/`、
+`PaidJobRunner`）を import しない。research の表は research の表だけを FK で指し、本番の表は research の表を
+指さない。本番の工程（production / render / upload / storyboard / pipeline / 課金）は Research を
+import しない。Research の結果が `completed` でなければ、呼び出し側は「調査なし」として調査前の挙動で続ける。
+「待たない」は既定（opt-in OFF）の意味で、唯一の例外は `SCRIPT_EVIDENCE_ENABLED` の台本工程である。そこでは
+`script_ready` の前に上限つき（`SCRIPT_EVIDENCE_START_TO_CLOSE` × `SCRIPT_EVIDENCE_RETRY_POLICY` の試行回数）で
+照合を待つが、どの結果・失敗・timeout でも Episode は止まらない（助言。ADR-0038 §B6）。
+**機械検査**: `tests/architecture/test_research_isolation.py`
+/ `tests/contract/test_migration_0015_research.py::test_upgrade_adds_only_research_tables_and_leaves_production_tables_alone`
+/ `tests/contract/test_migration_0015_research.py::test_research_tables_only_reference_research_tables`
+/ `tests/architecture/test_research_isolation.py::test_research_execution_does_not_wire_a_real_provider`
+/ `tests/architecture/test_daily_does_not_wait_for_research.py`（日次・pipeline・企画・台本は Research の
+workflow・queue・起動・実行器を名指さない。ADR-0037 §8.5）
+/ `tests/unit/test_research_opt_in_off_path.py`（B6: 企画・台本への opt-in 接続は既定 OFF。OFF の worker は
+Research のコードを読み込まず、登録する workflow・Activity、Topic の prompt テンプレートと版、台本の同一性は
+f209e7c と同じ）
+/ `tests/unit/test_planner_trend_opt_in.py::test_off_prompt_and_version_are_byte_identical_to_f209e7c`
+（OFF と「Trend 無し」の Planner の prompt・版は f209e7c の golden とバイト単位で同じ）
+/ `tests/unit/test_script_evidence_workflow_opt_in.py::test_the_f209e7c_off_history_replays_on_both_workers`
+/ `tests/unit/test_script_evidence_workflow_opt_in.py::test_a_new_off_run_has_the_same_history_shape_as_f209e7c`
+（OFF の ScriptWorkflow の履歴は接続前と同じ。ON の照合は結果によらず `script_ready` へ進む助言:
+`::test_an_on_run_checks_evidence_once_and_always_reaches_script_ready`）
+/ `tests/architecture/test_research_opt_in_boundary.py`（接続は `workers/planning` の 3 モジュールに閉じる。
+Workflow と本番工程はそれを import しない）
+/ `tests/architecture/test_research_isolation.py::test_the_planning_links_do_not_touch_production_billing_or_artifacts`
+（B6 で追加。ADR-0038 §B6 / ADR-0039 §B6）
+
+## M. 構造化ログ（ADR-0040）
+
+### INV-38 ログの障害は業務を止めず、業務状態・課金・例外の型を変えず、自動判断の根拠にならない
+ログの発行・整形・収集・検索基盤の障害は業務処理を失敗・停止させず、業務状態・課金・例外の型を変えない。
+発行ヘルパー（`infrastructure.logging.emit`）は record の生成を含めて例外を握り、整形器は失敗を固定形で
+出し直し、Activity interceptor・API middleware は記録してから**同じ例外オブジェクト**を再送出する。
+アプリは stdout にしか書かず、OpenSearch を import・接続しない。ログ検索の結果を課金判定・再実行・
+再開・投稿の自動判断に使わない（人手の照合の手がかりにはしてよい。確定は DB・Temporal・provider 側）。
+予約台帳・成果物のイベントは commit が成功した後にだけ出る。
+**機械検査**: `tests/unit/test_log_fault_injection.py::test_ledger_suites_pass_unchanged_with_broken_logging`
+（既存の台帳・有料 submit/await・fal adapter のテストを書き換えずにロガーを壊して全部通す）
+/ `tests/unit/test_log_fault_injection.py::test_the_fault_injection_really_breaks_emission`
+/ `tests/unit/test_log_emit.py::test_emit_never_raises_even_when_the_logger_is_broken`
+/ `tests/unit/test_log_activity_interceptor.py::test_a_broken_logger_does_not_change_the_activity_outcome`
+/ `tests/unit/test_log_activity_interceptor.py::test_failure_is_recorded_and_the_same_object_is_reraised`
+/ `tests/unit/test_log_api.py::test_an_exception_is_logged_and_reraised_unchanged`
+/ `tests/unit/test_log_formatter.py::test_a_broken_record_falls_back_to_the_fixed_minimal_form`
+/ `tests/unit/test_log_ledger.py::test_rolled_back_or_uncommitted_changes_are_not_logged`
+/ `tests/architecture/test_logging_boundaries.py::test_nothing_imports_opensearch`
+/ `tests/architecture/test_logging_boundaries.py::test_log_extra_uses_only_the_avp_key`
+（自動判断に使わないことは機械で検査できない。運用文書と ADR-0040 で禁じる）
+
+### INV-39 秘密・provider 応答全文・prompt 全文・メディアのバイト列は stdout に出る前に除去される
+Python logging を経由する全ての記録（第三者 logger・`warnings`・未捕捉例外・Temporal Core の転送を含む）は、
+stdout に出る前に同じ整形器で安全化される: 秘密を示すキーの値、Bearer/Basic/Key・fal key・JWT・private key・
+Google token・`sk-`・DSN の userinfo・SQLAlchemy の `[parameters: …]`・長い base64 を置換し、URL の
+query・userinfo を落として許可 host（adapter の定数から導く）以外の path を縮約し、provider 応答は許可した
+項目だけを入れる。置換してから切り詰める。迂回経路（logging 設定前の起動失敗・native クラッシュの stderr・
+migrate の alembic・CLI provider の stderr を含む例外文）は log-contract §7.6 に残るリスクとして記録する。
+**機械検査**: `tests/unit/test_log_redaction.py::test_value_patterns_are_replaced`
+/ `tests/unit/test_log_redaction.py::test_message_attributes_and_exception_text_are_cleaned`
+/ `tests/unit/test_log_redaction.py::test_third_party_logger_goes_through_the_same_formatter`
+/ `tests/unit/test_log_redaction.py::test_uncaught_exception_goes_through_the_formatter`
+/ `tests/unit/test_log_redaction.py::test_warnings_are_captured`
+/ `tests/unit/test_log_redaction.py::test_temporal_core_logs_are_forwarded_not_written_to_stderr`
+/ `tests/unit/test_log_redaction.py::test_allowed_hosts_are_derived_from_the_adapter_constants`
+/ `tests/unit/test_log_redaction.py::test_other_hosts_are_shrunk_to_a_hash`
+/ `tests/unit/test_log_provider_calls.py::test_422_content_policy_uses_the_provider_error_type`
+/ `tests/unit/test_log_activity_events.py::test_upload_started_succeeded_then_reused_existing`
+/ `tests/unit/test_log_api.py::test_route_template_episode_id_and_request_id`
+
+### INV-40 Workflow のログ発行は決定性を崩さず、replay で業務イベントを重複発行しない
+Workflow のコードは `infrastructure` を import せず、`workflow.logger` と `extra={"avp": {...}}` だけで発行し、
+時刻・乱数・UUID・I/O を足さない（コマンドを足さない）。replay 中の発行は SDK が抑止する。`event_id` は
+sandbox の外の整形器が `uuid5(workflow_id:run_id:history_length:seq:event_name)` で導く。workflow task が
+発行の後に失敗・timeout した場合の再発行（別 ID）は起こり得る（task の試行単位で at-least-once）。
+**機械検査**: `tests/unit/test_log_workflow_replay.py::test_workflow_events_are_emitted_once_and_replay_emits_nothing`
+/ `tests/architecture/test_logging_boundaries.py::test_workflow_modules_do_not_import_infrastructure`
+/ `tests/unit/test_log_formatter.py::test_workflow_event_id_is_deterministic_and_every_input_matters`
+/ `tests/unit/test_log_formatter.py::test_workflow_event_id_does_not_collide_across_a_grid`
+/ `tests/unit/test_log_old_history_replay.py::test_old_history_replays_deterministically_and_emits_nothing`
+（ログ導入前 01eb0ee のコードで採った Production（代替映像案の成功・上限を含む）・Render・Upload・Storyboard・
+Script（成功・再ラウンド後の成功・既存の再利用・blocked 3経路）・EpisodePipeline・Daily の履歴を、今のコードの
+Replayer で replay。非決定にならず1件も発行しない）
+/ `tests/unit/test_log_old_history_replay.py::test_old_script_history_replays_on_the_evidence_worker_too`
+/ `tests/unit/test_log_old_history_replay.py::test_the_old_histories_cover_every_stage_workflow`
+/ `tests/architecture/test_logging_boundaries.py::test_workflow_event_names_and_stages_are_contract_vocabulary`
+/ `tests/unit/test_pipeline_workflows.py`（既存の履歴 fixture の replay がログ発行を足した後も通る）

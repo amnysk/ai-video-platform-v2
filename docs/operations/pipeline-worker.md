@@ -112,3 +112,37 @@ Daily の流れ: `pipeline_check_paused` → 子 `TopicPlannerWorkflow`（queue 
 `script_input_hash` に locale・topic_plan_id・content profile が入ったため、**反映前に作られた Episode を
 Script 工程から再実行すると既存台本は再利用されず、Codex で台本を作り直す**（下流の storyboard 以降も古くなる）。
 反映前の Episode は Script から再実行しない。進行中の Production / Render / Upload の再開は影響を受けない。
+
+## Research への opt-in 接続（B6。ADR-0039 §B6 / ADR-0038 §B6。既定 OFF）
+
+planning worker（queue `script`。Topic Planner と台本）だけが読む設定。**既定は両方 OFF** で、OFF のときの挙動・
+prompt・版・Temporal の履歴は接続前と同じ（OFF の worker は Research のコードを読み込まない）。
+
+| 変数 | 既定 | 意味 |
+|---|---|---|
+| `PLANNER_TREND_ENABLED` | `false` | Topic Planner が確定済みの最新 Trend（検証済み・`fresh` / `stale`）の要約を prompt に参考として載せる。使える Trend が無ければ従来の prompt。載せた plan の `prompt_version` は `topic_en@2+topic_trend_en@1` |
+| `SCRIPT_EVIDENCE_ENABLED` | `false` | 台本の後に Evidence を依頼し（Gateway 経由）、最大 15 分待って `completed` なら照合する。**結果は助言**で、どの結果でも `script_ready` へ進む。自動の書き直しはしない |
+| `YOUTUBE_CHANNEL_ID` | — | 上の 2 つに必須（Trend・Evidence の依頼を束ねる channel id）。無ければ ON にしても接続しない（警告ログ） |
+| `RESEARCH_PROVIDER` | `none` | Evidence の依頼の門。api・research-worker と**同じ値**にする（食い違うと依頼は `blocked` =「調査なし」） |
+| `TREND_FRESH_HOURS` | `24` | Trend の `fresh` の窓（`stale` は 7 日まで）。compose の script-worker には渡していない（既定値） |
+
+### 有効にする
+
+1. research-worker が動いていて、`RESEARCH_PROVIDER` が api・research-worker・script-worker で同じであることを
+   確かめる（`none` のままなら Evidence は常に `blocked`、Trend は作られない）。
+2. Trend を使うなら、先に `POST /research/requests` で Trend を依頼して `completed` にしておく（定期更新は無い。
+   docs/operations/research-worker.md）。地域・言語は Strategy profile（`market_country` / `language`）で引く。
+3. `.env`（ホストプロセス）または compose の環境で `PLANNER_TREND_ENABLED=true` / `SCRIPT_EVIDENCE_ENABLED=true` と
+   `YOUTUBE_CHANNEL_ID` を設定し、planning worker を**再起動**する。起動ログの
+   `planner trend=True, script evidence=True` で確認する。
+4. 結果はログで見る: Planner は `planning <日> with fresh|stale trend <依頼ID> ...`、台本は
+   `script evidence for episode <id>: verified|no_research|timeout|no_claims|error (research <依頼ID> <状態>,
+   verdict ..., verification <ID>)`。照合結果は research の成果物（`GET /research/requests/{id}`）。
+
+### 無効にする・再開との関係
+
+- 設定を `false` に戻して planning worker を再起動する。ON で始まった台本工程の実行は OFF の worker でもそのまま
+  再現・完了できる（履歴の patch marker で分岐を決める。ADR-0038 §B6）。drain は要らない。
+- 統一再開（`POST /episodes/{id}/resume`）が台本工程から始めるときも、その時点の planning worker の設定に従う
+  （入力で運ぶものは無い。再開の API は変えていない / INV-30）。
+- 有効にしても Daily・pipeline は Research を待たない。台本工程だけが最大約 20 分長くなりうる。

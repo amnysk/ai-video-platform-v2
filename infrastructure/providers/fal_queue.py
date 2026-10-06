@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from contracts.log_contract import ProviderOperation
 from contracts.states import RejectionCategory
 from domain.errors import (
     MediaValidationError,
@@ -43,6 +44,7 @@ from domain.errors import (
     UnreconciledReservationError,
 )
 from domain.production.ports import ProviderJobRef
+from infrastructure.logging.provider import CallObservation
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +326,20 @@ class FalQueueClient:
     # ------------------------------------------------------------------ submit
 
     async def submit(self, endpoint_id: str, payload: dict[str, Any]) -> FalSubmission:
+        # 観測の記録（ADR-0040）。受理の INFO は台帳の reservation_id を知る PaidJobRunner が出す
+        obs = CallObservation(logger, ProviderOperation.SUBMIT, endpoint=endpoint_id)
+        try:
+            submission = await self._submit(endpoint_id, payload, obs)
+        except Exception as exc:
+            obs.failed(exc)
+            raise
+        obs.provider_request_id = submission.request_id
+        obs.succeeded(logging.DEBUG)
+        return submission
+
+    async def _submit(
+        self, endpoint_id: str, payload: dict[str, Any], obs: CallObservation
+    ) -> FalSubmission:
         url = f"{self._base_url}/{endpoint_id.strip('/')}"
         try:
             response = await self._api.post(url, json=payload, timeout=self._submit_timeout)
@@ -339,13 +355,16 @@ class FalQueueClient:
             ) from exc
 
         status = response.status_code
+        obs.response(status, response.headers)
         body = _json_or_none(response)
         if status >= 500:
             raise ProviderSubmitAmbiguousError(f"fal submit outcome unknown: HTTP {status}")
         if status == 429:
             raise ProviderJobFailedError("fal submit not accepted: HTTP 429 (rate limited)")
         if status in (401, 403):
-            raise ProviderUnavailableError(f"fal submit refused: HTTP {status} (credentials)")
+            raise ProviderUnavailableError(
+                f"fal submit refused: HTTP {status} (credentials)", http_status=status
+            )
         if status >= 400:
             if _retryable_header(response) is True:
                 raise ProviderJobFailedError(
@@ -391,8 +410,21 @@ class FalQueueClient:
     # ------------------------------------------------------------------ status / result
 
     async def status(self, submission: FalSubmission) -> FalStatus:
+        obs = CallObservation(logger, ProviderOperation.STATUS, endpoint=submission.endpoint_id)
+        obs.provider_request_id = submission.request_id
+        try:
+            result = await self._status(submission, obs)
+        except Exception as exc:
+            obs.failed(exc)
+            raise
+        # poll の1回は DEBUG（状態の変化は PaidJobRunner が INFO で出す / log-contract §6）
+        obs.succeeded(logging.DEBUG, attributes={"raw_status": result.raw_status})
+        return result
+
+    async def _status(self, submission: FalSubmission, obs: CallObservation) -> FalStatus:
         self._check_queue_url(submission.status_url)
         response = await self._get(self._api, submission.status_url, what="status")
+        obs.response(response.status_code, response.headers)
         body = _json_or_none(response)
         if response.status_code >= 400:
             self._raise_poll_http_error(response, body, what="status")
@@ -406,8 +438,20 @@ class FalQueueClient:
 
     async def result(self, submission: FalSubmission) -> dict[str, Any]:
         """完了したジョブの結果。**HTTP 200 でも body の error を検査する**。"""
+        obs = CallObservation(logger, ProviderOperation.RESULT, endpoint=submission.endpoint_id)
+        obs.provider_request_id = submission.request_id
+        try:
+            body = await self._result(submission, obs)
+        except Exception as exc:
+            obs.failed(exc)
+            raise
+        obs.succeeded()
+        return body
+
+    async def _result(self, submission: FalSubmission, obs: CallObservation) -> dict[str, Any]:
         self._check_queue_url(submission.response_url)
         response = await self._get(self._api, submission.response_url, what="result")
+        obs.response(response.status_code, response.headers)
         body = _json_or_none(response)
         types = _error_types_from_body(body)
         header_type = response.headers.get("x-fal-error-type")
@@ -453,11 +497,29 @@ class FalQueueClient:
         max_bytes: int = DEFAULT_DOWNLOAD_MAX_BYTES,
     ) -> int:
         """ストリーミングで取得して ``write`` へ渡す。上限超過は ``MediaValidationError``。"""
+        obs = CallObservation(logger, ProviderOperation.DOWNLOAD)
+        try:
+            total = await self._download(url, write, max_bytes=max_bytes, obs=obs)
+        except Exception as exc:
+            obs.failed(exc)
+            raise
+        obs.succeeded(attributes={"bytes": total})
+        return total
+
+    async def _download(
+        self,
+        url: str,
+        write: Callable[[bytes], Awaitable[None]],
+        *,
+        max_bytes: int,
+        obs: CallObservation,
+    ) -> int:
         if urlparse(url).scheme != "https":
             raise ProviderJobFailedError("fal media url must be https")
         total = 0
         try:
             async with self._cdn.stream("GET", url) as response:
+                obs.response(response.status_code, response.headers)
                 if response.status_code >= 400:
                     if response.status_code in (404, 410):
                         raise ProviderJobFailedError(
@@ -494,7 +556,9 @@ class FalQueueClient:
     def _raise_poll_http_error(response: httpx.Response, body: Any, *, what: str) -> None:
         status = response.status_code
         if status in (401, 403):
-            raise ProviderUnavailableError(f"fal {what} refused: HTTP {status} (credentials)")
+            raise ProviderUnavailableError(
+                f"fal {what} refused: HTTP {status} (credentials)", http_status=status
+            )
         # 参照に対する GET は冪等。429 / 5xx / その他は再 await で回復しうる。
         raise TransientError(f"fal {what} failed: HTTP {status}: {_short(body)}")
 

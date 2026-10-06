@@ -11,17 +11,24 @@ Activity は入力から結果を作るだけで、round の回し方・次の�
 - ``topic_select_and_save``: 決定論の重複判定・採点・選択（domain）→
   plan と全候補を1 transaction で保存
 
+Trend（ADR-0039 §B6、opt-in・既定 OFF）: ``trend`` が注入されたときだけ、
+``topic_generate_candidates`` が確定済みの Trend の要約を読み（短い timeout。
+失敗は「Trend 無し」）、あれば prompt に Trend の節を足して版 ``TOPIC_TREND_PROMPT_VERSION``
+を返す。``trend`` が無い・要約が無いときの prompt・版・Activity の入出力は接続前と同じ
+（``PlanningContext`` などの形も変えない）。
+
 Planner のコアは content profile の中身で分岐しない。形式の説明は prompt へ渡すデータだけ。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, fields
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -72,6 +79,7 @@ from infrastructure.db.repositories import (
     TopicPlanRepository,
 )
 from prompts import TOPIC_PROMPT_VERSION, render_topic_prompt
+from prompts.topic_trend import TOPIC_TREND_PROMPT_VERSION, add_trend_section
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +91,16 @@ RECENT_TOPICS_IN_PROMPT = 30
 #: prompt に載せる過去の Topic タイトル1件の最大文字数。Memory は過去の LLM 出力・手入力由来の
 #: 信頼しないデータなので、長い文（指示の注入）を載せない
 MAX_MEMORY_TITLE_CHARS = 120
+#: Trend の要約を読む上限（秒）。DB と ArtifactStore を読むだけ。超えたら「Trend 無し」で続ける
+TREND_LOOKUP_TIMEOUT_SECONDS = 10.0
+
+
+class TrendBriefSource(Protocol):
+    """Trend の要約（ADR-0039 §B6）。実装は ``workers/planning/topic_trend.py``。"""
+
+    async def brief(self, request: TopicPlannerInput) -> str | None:
+        """prompt に載せる要約（JSON 文字列）。使える Trend が無ければ ``None``。"""
+        ...
 
 
 # ------------------------------------------------------------------ snapshot の直列化
@@ -210,6 +228,7 @@ class TopicPlannerActivities:
         clock: Callable[[], datetime],
         timeout_seconds: int,
         policy: PlannerPolicy = DEFAULT_PLANNER_POLICY,
+        trend: TrendBriefSource | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._generator = generator
@@ -218,6 +237,8 @@ class TopicPlannerActivities:
         self._clock = clock
         self._timeout_seconds = timeout_seconds
         self._policy = policy
+        #: None（既定）なら Trend を読まない（ADR-0039 §B6）
+        self._trend = trend
 
     def all_activities(self) -> Sequence[Callable[..., object]]:
         """Worker へ登録する Activity（``TOPIC_PLANNER_ACTIVITY_NAMES`` と一致する）。"""
@@ -325,6 +346,11 @@ class TopicPlannerActivities:
             # prompt に埋めるスキーマと検査するモデルは同じ1つから導出する（AGENTS.md §8）
             schema_json=json.dumps(schema, ensure_ascii=False, sort_keys=True),
         )
+        prompt_version = TOPIC_PROMPT_VERSION
+        if self._trend is not None:
+            with_trend = await self._with_trend(prompt, ctx.request)
+            if with_trend is not None:
+                prompt, prompt_version = with_trend, TOPIC_TREND_PROMPT_VERSION
         result = await self._generator.generate(
             GenerationRequest(
                 episode_id=f"topic-plan-{ctx.request.plan_date}-r{request.round}",
@@ -336,8 +362,23 @@ class TopicPlannerActivities:
         batch = self._validate(result.text)
         return GenerateCandidatesResult(
             candidates=[c.model_dump(mode="json") for c in batch.candidates],
-            prompt_version=TOPIC_PROMPT_VERSION,
+            prompt_version=prompt_version,
         )
+
+    async def _with_trend(self, prompt: str, request: TopicPlannerInput) -> str | None:
+        """Trend の節を足した prompt。
+
+        読めない・遅い・差し込めないときは ``None``（Trend 前の prompt で続ける）。
+        """
+        assert self._trend is not None
+        try:
+            summary = await asyncio.wait_for(
+                self._trend.brief(request), timeout=TREND_LOOKUP_TIMEOUT_SECONDS
+            )
+            return add_trend_section(prompt, summary) if summary is not None else None
+        except Exception as exc:  # noqa: BLE001 - Trend は補助。Planner を止めない（INV-37）
+            logger.warning("trend unavailable (%s); planning without trend", type(exc).__name__)
+            return None
 
     @staticmethod
     def _validate(raw_text: str) -> TopicCandidateBatch:

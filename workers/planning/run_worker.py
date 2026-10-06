@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from temporalio.client import Client
 from temporalio.worker import Worker
 
 from contracts.topic_planning import TOPIC_PLANNER_TASK_QUEUE
@@ -23,14 +26,16 @@ from infrastructure.analytics.youtube_analytics import (
 )
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
 from infrastructure.providers.process import SubprocessRunner
+from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.youtube.errors import YouTubeAuthError
 from infrastructure.youtube.oauth import RefreshTokenCredentials
 from workers.planning.activities import ScriptActivities
-from workers.planning.topic_activities import TopicPlannerActivities
+from workers.planning.topic_activities import TopicPlannerActivities, TrendBriefSource
 from workers.planning.topic_workflows import TopicPlannerWorkflow
 from workers.planning.workflows import ScriptWorkflow
 
@@ -42,6 +47,54 @@ SCRIPT_TASK_QUEUE = TOPIC_PLANNER_TASK_QUEUE
 ANALYTICS_HTTP_TIMEOUT_SECONDS = 30.0
 
 WORKFLOWS = [ScriptWorkflow, TopicPlannerWorkflow]
+
+
+class ResearchRegistrations:
+    """Research への opt-in 接続（ADR-0038 §B6 / ADR-0039 §B6）が worker に足すもの。
+
+    既定（両方 OFF）は何も足さない: 登録する workflow は ``WORKFLOWS``、Activity は従来のまま、
+    Planner は Trend を読まない。
+    """
+
+    def __init__(
+        self,
+        *,
+        trend: TrendBriefSource | None = None,
+        workflows: Sequence[type] = tuple(WORKFLOWS),
+        activities: Sequence[Callable[..., object]] = (),
+    ) -> None:
+        self.trend = trend
+        self.workflows = list(workflows)
+        self.activities = list(activities)
+
+
+def research_registrations(
+    settings: Settings,
+    *,
+    client: Client | None,
+    session_factory: async_sessionmaker[AsyncSession],
+    store: ArtifactStore,
+    clock: Callable[[], datetime],
+) -> ResearchRegistrations:
+    """設定が OFF なら Research のコードを import しない。
+
+    接続の組み立ては ``workers/planning/research_wiring.py`` だけが行う。
+    """
+    if not (settings.planner_trend_enabled or settings.script_evidence_enabled):
+        return ResearchRegistrations()
+    from workers.planning.research_wiring import build_research_links
+    from workers.planning.workflows import EvidenceScriptWorkflow
+
+    links = build_research_links(
+        settings, session_factory=session_factory, store=store, client=client, clock=clock
+    )
+    if links.evidence is None:
+        return ResearchRegistrations(trend=links.trend)
+    return ResearchRegistrations(
+        trend=links.trend,
+        workflows=[EvidenceScriptWorkflow, TopicPlannerWorkflow],
+        activities=links.evidence.all_activities(),
+    )
 
 
 def build_analytics_provider(
@@ -90,7 +143,6 @@ async def log_analytics_scope_status(provider: YouTubeAnalyticsProvider) -> None
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings()
 
     client = await connect_with_retry(settings)
@@ -119,6 +171,14 @@ async def main() -> None:
         timeout_seconds=settings.codex_timeout_seconds,
     )
 
+    research = research_registrations(
+        settings,
+        client=client,
+        session_factory=session_factory,
+        store=store,
+        clock=lambda: datetime.now(UTC),
+    )
+
     async with httpx.AsyncClient(timeout=ANALYTICS_HTTP_TIMEOUT_SECONDS) as http:
         analytics = build_analytics_provider(settings, http)
         if analytics is not None:
@@ -130,18 +190,27 @@ async def main() -> None:
             analytics_provider_id=PROVIDER_ID,
             clock=lambda: datetime.now(UTC),
             timeout_seconds=settings.codex_timeout_seconds,
+            trend=research.trend,
         )
         logger.info(
-            "script worker listening on task queue %s (codex=%s, live analytics=%s)",
+            "script worker listening on task queue %s (codex=%s, live analytics=%s, "
+            "planner trend=%s, script evidence=%s)",
             SCRIPT_TASK_QUEUE,
             binary,
             analytics is not None,
+            research.trend is not None,
+            bool(research.activities),
         )
         async with Worker(
             client,
+            interceptors=worker_interceptors(),
             task_queue=SCRIPT_TASK_QUEUE,
-            workflows=WORKFLOWS,
-            activities=[*activities.all_activities(), *topic_activities.all_activities()],
+            workflows=research.workflows,
+            activities=[
+                *activities.all_activities(),
+                *topic_activities.all_activities(),
+                *research.activities,
+            ],
         ):
             await asyncio.Event().wait()
 

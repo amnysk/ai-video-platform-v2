@@ -20,6 +20,7 @@ from contracts.production_activities import (
 )
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
 from infrastructure.providers.codex_scene_alternative import CodexSceneAlternativePlanner
 from infrastructure.providers.process import SubprocessRunner
@@ -31,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings()
     client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
@@ -68,6 +68,7 @@ async def main() -> None:
     )
     async with Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=SCENE_ALTERNATIVE_TASK_QUEUE,
         activities=activities.all_activities(),
     ):

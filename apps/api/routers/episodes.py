@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
 
@@ -29,6 +30,7 @@ from apps.api.schemas import (
     StartUploadResponse,
 )
 from apps.api.workflow_starter import WorkflowStarter, render_workflow_id, upload_workflow_id
+from contracts.log_contract import EventName, LogStage, Outcome
 from contracts.render import DEFAULT_RENDER_PROFILE_ID, get_render_profile
 from contracts.states import (
     PRODUCTION_ADMISSIBLE_STATUSES,
@@ -44,6 +46,9 @@ from infrastructure.db.repositories import (
     JobRepository,
     ProviderReservationRepository,
 )
+from infrastructure.logging.emit import emit, log_guard
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/episodes", tags=["episodes"])
 
@@ -374,11 +379,24 @@ async def resume_episode(
     ここに依存する。アプリ側でロックを自作しない）。
     `claim_daily_slot` は呼ばない（``DailyEpisodeWorkflow`` を経由しない。日次枠を消費しない）。
     """
+    ep = str(episode_id)
+    with log_guard():
+        emit(
+            logger,
+            EventName.EPISODE_RESUME_REQUESTED,
+            logging.INFO,
+            "resume requested episode=%s",
+            ep,
+            episode_id=ep,
+            stage=LogStage.RESUME.value,
+        )
     loaded = await _load_resume_plan(episode_id, session_factory)
     if loaded is None:
+        _resume_rejected(ep, status.HTTP_404_NOT_FOUND, "episode not found")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
     current_status, plan = loaded
     if not plan.resumable or plan.target_stage is None:
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, plan.reason or "not resumable")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=plan.reason or f"episode {episode_id} is not resumable",
@@ -389,10 +407,29 @@ async def resume_episode(
             episode_id=str(episode_id), start_stage=plan.target_stage
         )
     except WorkflowAlreadyStartedError as exc:
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, "pipeline workflow already running")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"pipeline workflow already running for episode {episode_id}",
         ) from exc
+    with log_guard():
+        emit(
+            logger,
+            EventName.EPISODE_RESUME_STARTED,
+            logging.INFO,
+            "resume started episode=%s target_stage=%s",
+            ep,
+            plan.target_stage,
+            episode_id=ep,
+            stage=LogStage.RESUME.value,
+            workflow_id=workflow_id,
+            outcome=Outcome.STARTED.value,
+            attributes={
+                "target_stage": plan.target_stage,
+                "stages_to_run": list(plan.stages_to_run),
+                "episode_status": str(current_status),
+            },
+        )
 
     return ResumeResponse(
         episode_id=str(episode_id),
@@ -401,6 +438,23 @@ async def resume_episode(
         target_stage=plan.target_stage,
         stages_to_run=list(plan.stages_to_run),
     )
+
+
+def _resume_rejected(episode_id: str, http_status: int, reason: str) -> None:
+    with log_guard():
+        emit(
+            logger,
+            EventName.EPISODE_RESUME_REJECTED,
+            logging.INFO,
+            "resume rejected episode=%s status=%s",
+            episode_id,
+            http_status,
+            episode_id=episode_id,
+            stage=LogStage.RESUME.value,
+            http_status=http_status,
+            outcome=Outcome.REJECTED.value,
+            attributes={"reason": reason},
+        )
 
 
 @router.get("/{episode_id}", response_model=EpisodeView)

@@ -1,0 +1,11 @@
+# 例（インストールはしない）。avp-logging-check.service を 5 分ごとに動かす。
+[Unit]
+Description=Run the AVP logging pipeline check every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from datetime import date
 
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
 from temporalio.client import Client
 
+from contracts.log_contract import EventName, LogStage, Outcome
 from contracts.operations import OperationalSwitch
 from contracts.pipeline import (
     PIPELINE_CHECK_PAUSED,
@@ -35,6 +37,7 @@ from infrastructure.db.repositories import (
     OperationalSwitchRepository,
     ProviderReservationRepository,
 )
+from infrastructure.logging.emit import emit, log_guard
 from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
 from infrastructure.temporal.schedules import TemporalScheduleControl
 from infrastructure.temporal.watchdog import (
@@ -124,6 +127,29 @@ class PipelineActivities:
             )
             # commit 後に応答を失っても、再試行は同じ trigger_id で EXISTING を引く
             await session.commit()
+        # commit の後（log-contract §9）。LIMIT_REACHED は枠を取れていない（Workflow が
+        # schedule.slot.skipped を出す）
+        if claim.episode_id is not None:
+            with log_guard():
+                emit(
+                    logging.getLogger(__name__),
+                    EventName.SCHEDULE_SLOT_ACQUIRED,
+                    logging.INFO,
+                    "daily slot %s claim=%s episode=%s",
+                    request.slot_date,
+                    claim.outcome.value,
+                    claim.episode_id,
+                    episode_id=claim.episode_id,
+                    stage=LogStage.SCHEDULE.value,
+                    outcome=Outcome.SUCCEEDED.value,
+                    attributes={
+                        "slot_date": request.slot_date,
+                        "claim": claim.outcome.value,
+                        "slot_index": claim.slot_index,
+                        "trigger_id": request.trigger_id,
+                        "topic_plan_id": episode.topic_plan_id if episode is not None else None,
+                    },
+                )
         return ClaimDailySlotResult(
             outcome=claim.outcome.value,
             episode_id=claim.episode_id,

@@ -8,6 +8,10 @@ x-core-env: &core-env
   DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-avp}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-avp}
   TEMPORAL_ADDRESS: temporal:7233
   TEMPORAL_NAMESPACE: default
+  # ADR-0040: 構造化ログ（service_name は各サービスの AVP_SERVICE_NAME）。text は rollback 用
+  # 既定値を持たない（未設定は整形器が unknown にする）。本番の .env には AVP_ENVIRONMENT=prod（I-5）
+  AVP_ENVIRONMENT: ${AVP_ENVIRONMENT:-}
+  AVP_LOG_FORMAT: ${AVP_LOG_FORMAT:-json}
 
 x-app-env: &app-env
   <<: *core-env
@@ -16,6 +20,21 @@ x-app-env: &app-env
   MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-change-me}
   MINIO_BUCKET: ${MINIO_BUCKET:-artifacts}
   TEMPORAL_TASK_QUEUE: episode-skeleton
+
+# ADR-0040 §1: json-file のローテーションと、各行の attrs（Collector が compose project・サービス・
+# avp.logging の label で振り分ける）。既定の blocking モードのまま（non-blocking は黙って欠損する）。
+# 変更の反映にはコンテナの再作成が要る（次の deploy-workers）。
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+    labels: "com.docker.compose.service,com.docker.compose.project,avp.logging"
+    tag: "{{.Name}}"
+
+# アプリ（app / worker イメージ）の行を Collector が JSON として扱う印（contracts/log_contract.APP_LOG_LABEL）
+x-app-labels: &app-labels
+  avp.logging: app
 
 # 常駐 Worker の共通部（ADR-0024）。起動する worker は command、見張る queue は healthcheck で決める。
 # worker_entry は起動直後の設定不足などで落ちたとき backoff してから終了するので、
@@ -31,6 +50,8 @@ x-worker: &worker
   # 権限を持たせない（rootless の AVP_UID=0 でも host 上は非特権。rootful 誤用の被害も狭める）
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
+  logging: *logging
+  labels: *app-labels
 
 x-worker-health: &worker-health
   interval: 30s
@@ -53,6 +74,7 @@ x-work-root: &work-root
 
 services:
   postgres:
+    logging: *logging
     restart: unless-stopped
     image: postgres:17-alpine
     profiles: [core]
@@ -72,6 +94,7 @@ services:
       retries: 20
 
   minio:
+    logging: *logging
     restart: unless-stopped
     image: minio/minio:latest
     profiles: [core]
@@ -94,6 +117,7 @@ services:
       retries: 20
 
   temporal:
+    logging: *logging
     image: temporalio/auto-setup:latest
     profiles: [core]
     depends_on:
@@ -114,6 +138,7 @@ services:
       start_period: 30s
 
   temporal-ui:
+    logging: *logging
     restart: unless-stopped
     image: temporalio/ui:latest
     profiles: [core]
@@ -124,6 +149,8 @@ services:
     ports: ["8233:8080"]
 
   migrate:
+    logging: *logging
+    labels: *app-labels
     # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は app を明示する（revision label つき）
     build: {context: ., target: app}
     image: avp2-app:local
@@ -131,11 +158,14 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
     environment:
+      AVP_SERVICE_NAME: migrate
       <<: *app-env
     command: ["alembic", "upgrade", "head"]
     restart: "no"
 
   api:
+    logging: *logging
+    labels: *app-labels
     # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は app を明示する（revision label つき）
     build: {context: ., target: app}
     image: avp2-app:local
@@ -146,13 +176,19 @@ services:
       temporal: {condition: service_started}
       minio: {condition: service_started}
     environment:
+      AVP_SERVICE_NAME: api
       <<: *app-env
+      # ADR-0037 §8.5: Research の受け付けの門（予算・Provider）。research-worker と同じ値を読む
+      RESEARCH_PROVIDER: ${RESEARCH_PROVIDER:-none}
     ports: ["8000:8000"]
     restart: unless-stopped
-    command:
-      ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    # ADR-0040 §1: uvicorn.run(log_config=None, access_log=False) + 共通のログ設定。access log は
+    # api.request.completed で置き換える
+    command: ["python", "-m", "apps.api.serve"]
 
   dummy-worker:
+    logging: *logging
+    labels: *app-labels
     # 骨組み worker は既存の app（base + revision label）イメージのまま（worker イメージの依存を要しない）
     # Dockerfile の最終 stage は worker。api / migrate / dummy-worker は app を明示する（revision label つき）
     build: {context: ., target: app}
@@ -162,6 +198,7 @@ services:
     restart: unless-stopped
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: dummy-worker
       <<: *app-env
     command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.dummy.run_worker"]
     healthcheck:
@@ -180,6 +217,7 @@ services:
     security_opt: ["no-new-privileges:true", "seccomp=unconfined"]
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: script-worker
       <<: *app-env
       HOME: /home/avp
       CODEX_BINARY: /usr/local/bin/codex
@@ -192,6 +230,11 @@ services:
       YOUTUBE_CHANNEL_ID: ${YOUTUBE_CHANNEL_ID:-}
       # refresh token は値を env に置かず、ro mount したファイルのパスだけを渡す（repo 外・0600）
       YOUTUBE_REFRESH_TOKEN_PATH: /run/avp/youtube/${YOUTUBE_REFRESH_TOKEN_FILE:-youtube-refresh-token}
+      # Research への opt-in 接続（ADR-0039 §B6 / ADR-0038 §B6）。既定 OFF（接続前と同じ動き）
+      PLANNER_TREND_ENABLED: ${PLANNER_TREND_ENABLED:-false}
+      SCRIPT_EVIDENCE_ENABLED: ${SCRIPT_EVIDENCE_ENABLED:-false}
+      # Evidence の依頼の門（予算・Provider）。api・research-worker と同じ値を読む（ADR-0037 §8.5）
+      RESEARCH_PROVIDER: ${RESEARCH_PROVIDER:-none}
     volumes:
       # Codex の認証・設定。token 更新を書き戻すので rw（中身はイメージに焼かない）
       - type: bind
@@ -215,6 +258,7 @@ services:
     security_opt: ["no-new-privileges:true", "seccomp=unconfined"]
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: storyboard-worker
       <<: *app-env
       HOME: /home/avp
       CODEX_BINARY: /usr/local/bin/codex
@@ -243,6 +287,7 @@ services:
     <<: *worker
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: production-worker
       <<: *app-env
     command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.production.run_worker"]
     healthcheck:
@@ -253,6 +298,7 @@ services:
     <<: *worker
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: production-image-worker
       <<: *app-env
       FAL_KEY: ${FAL_KEY:-}
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
@@ -268,6 +314,7 @@ services:
     <<: *worker
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: production-voice-worker
       <<: *app-env
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
       PIPER_PYTHON: /opt/piper/venv/bin/python
@@ -289,6 +336,7 @@ services:
     <<: *worker
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: production-video-worker
       <<: *app-env
       FAL_KEY: ${FAL_KEY:-}
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
@@ -308,6 +356,7 @@ services:
     security_opt: ["no-new-privileges:true", "seccomp=unconfined"]
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: scene-alternative-worker
       <<: *app-env
       HOME: /home/avp
       CODEX_BINARY: /usr/local/bin/codex
@@ -329,6 +378,7 @@ services:
     stop_grace_period: 120s
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: render-worker
       <<: *app-env
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
       # コンテナ内の固定パス。host 側は AVP_FFMPEG_DIR / RENDER_FONT_HOST_PATH
@@ -361,6 +411,7 @@ services:
     stop_grace_period: 120s
     depends_on: *deps-minio
     environment:
+      AVP_SERVICE_NAME: upload-worker
       <<: *app-env
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
       YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
@@ -388,6 +439,7 @@ services:
       migrate: {condition: service_completed_successfully}
       temporal: {condition: service_healthy}
     environment:
+      AVP_SERVICE_NAME: pipeline-worker
       <<: *core-env
       PAUSED: ${PAUSED:-false}
       UPLOADS_PAUSED: ${UPLOADS_PAUSED:-false}
@@ -396,7 +448,23 @@ services:
       <<: *worker-health
       test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "pipeline"]
 
+  research-worker:
+    # ADR-0037 §8.5: Research（Trend / Evidence）の workflow と Activity。Episode の工程は待たない（INV-37）。
+    # RESEARCH_PROVIDER: none（既定。依頼は外部を呼ばずに blocked）| fake（固定コーパス）。実 Provider は未配線。
+    # YOUTUBE_* / CODEX_* / FAL_KEY は持たせない
+    <<: *worker
+    depends_on: *deps-minio
+    environment:
+      AVP_SERVICE_NAME: research-worker
+      <<: *app-env
+      RESEARCH_PROVIDER: ${RESEARCH_PROVIDER:-none}
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.research.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "research"]
+
   prometheus:
+    logging: *logging
     image: prom/prometheus:latest
     profiles: [observability]
     ports: ["9090:9090"]
@@ -404,6 +472,7 @@ services:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   grafana:
+    logging: *logging
     image: grafana/grafana:latest
     profiles: [observability]
     depends_on: [prometheus]

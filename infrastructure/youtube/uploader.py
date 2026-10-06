@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from contracts.log_contract import EventName, Outcome, ProviderOperation
+from contracts.states import ProviderCall
 from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES, YOUTUBE_CHUNK_ALIGNMENT_BYTES
 from domain.upload.ports import (
     UploadCompleted,
@@ -32,6 +35,8 @@ from domain.upload.ports import (
     UploadSessionRef,
     VideoProcessingState,
 )
+from infrastructure.logging.emit import emit, log_guard
+from infrastructure.logging.provider import classify
 from infrastructure.youtube.errors import (
     YouTubeAuthError,
     YouTubeQuotaError,
@@ -94,6 +99,60 @@ _SECRETISH_RE = re.compile(r"(upload_id|access_token|refresh_token|code)=[^&\s\"
 def redact(text: str) -> str:
     """URL の query に載る権限・token を伏せる。"""
     return _SECRETISH_RE.sub(r"\1=<redacted>", text)
+
+
+#: ``_request`` の operation 名 → ``provider_operation``（ADR-0040）
+_OPERATIONS: dict[str, ProviderOperation] = {
+    "start upload session": ProviderOperation.UPLOAD_SESSION,
+    "query upload status": ProviderOperation.QUERY_STATUS,
+    "send upload chunk": ProviderOperation.UPLOAD_MEDIA,
+    "own channel": ProviderOperation.CHANNEL_LOOKUP,
+    "list own channel": ProviderOperation.FIND_EXISTING,
+    "list uploads": ProviderOperation.FIND_EXISTING,
+    "list videos": ProviderOperation.FIND_EXISTING,
+    "video processing status": ProviderOperation.PROCESSING_CHECK,
+}
+#: 1回の upload で何度も呼ぶ操作は DEBUG（INFO で溢れさせない）
+_QUIET_OPERATIONS = frozenset({ProviderOperation.UPLOAD_MEDIA, ProviderOperation.QUERY_STATUS})
+
+
+def _observe(
+    operation: str,
+    started: float,
+    *,
+    response: httpx.Response | None = None,
+    exc: BaseException | None = None,
+) -> None:
+    """1回の呼び出しの観測。URL（session URI を含む）・token は出さない（INV-20）。"""
+    with log_guard():
+        op = _OPERATIONS.get(operation)
+        status = response.status_code if response is not None else None
+        failed = exc is not None or (status is not None and status >= 400)
+        if failed:
+            category, basis = classify(exc, status)
+            level = logging.WARNING
+        else:
+            category, basis = None, None
+            level = logging.DEBUG if op in _QUIET_OPERATIONS else logging.INFO
+        emit(
+            logger,
+            EventName.PROVIDER_CALL_FAILED if failed else EventName.PROVIDER_CALL_SUCCEEDED,
+            level,
+            "youtube %s -> %s",
+            operation,
+            status if status is not None else type(exc).__name__,
+            provider=ProviderCall.YOUTUBE_UPLOAD.value,
+            provider_operation=op.value if op is not None else None,
+            http_status=status,
+            outcome=(Outcome.FAILED if failed else Outcome.SUCCEEDED).value,
+            error_type=type(exc).__name__ if exc is not None else None,
+            error_category=category,
+            classification_basis=basis,
+            duration_ms=(time.monotonic() - started) * 1000,
+            attributes={"reasons": _error_reasons(response)}
+            if failed and response is not None
+            else None,
+        )
 
 
 def validate_chunk_bytes(chunk_bytes: int) -> int:
@@ -190,6 +249,24 @@ class YouTubeResumableUploader:
         **kwargs: Any,
     ) -> httpx.Response:
         """Bearer を付けて送る。401 なら token を1回だけ更新して再送する。"""
+        started = time.monotonic()
+        try:
+            response = await self._send(method, url, operation, headers=headers, **kwargs)
+        except Exception as exc:
+            _observe(operation, started, exc=exc)
+            raise
+        _observe(operation, started, response=response)
+        return response
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        operation: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
         for attempt in (0, 1):
             token = await self._credentials.access_token()
             merged = {**(headers or {}), "Authorization": f"Bearer {token}"}

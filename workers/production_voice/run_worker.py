@@ -16,6 +16,7 @@ from contracts.states import PRODUCTION_VOICE_TASK_QUEUE
 from domain.errors import ProviderUnavailableError
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.providers.piper_voice import PiperVoiceGenerator
 from infrastructure.providers.process import SubprocessRunner
@@ -28,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     settings = Settings()
 
     try:
@@ -65,6 +65,7 @@ async def main() -> None:
     )
     async with Worker(
         client,
+        interceptors=worker_interceptors(),
         task_queue=PRODUCTION_VOICE_TASK_QUEUE,
         activities=activities.all_activities(),
         max_concurrent_activities=settings.voice_concurrency,

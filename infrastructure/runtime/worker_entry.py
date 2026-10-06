@@ -18,6 +18,10 @@ import time
 from collections.abc import Callable, Mapping
 from types import FrameType
 
+from contracts.log_contract import EventName, Outcome
+from infrastructure.logging.emit import emit, log_guard
+from infrastructure.logging.setup import configure_logging
+
 logger = logging.getLogger("worker_entry")
 
 DEFAULT_MIN_UPTIME_SECONDS = 30.0
@@ -42,18 +46,36 @@ def run(
     backoff = _float_env(env, "AVP_WORKER_FAILURE_BACKOFF_SECONDS", DEFAULT_FAILURE_BACKOFF_SECONDS)
     started = clock()
     # どの版のコードかをログから辿れる（イメージの ENV AVP_GIT_REVISION。workers.md §10）
-    logger.info(
-        "worker %s starting revision=%s", module_name, env.get("AVP_GIT_REVISION") or "unknown"
-    )
+    with log_guard():
+        emit(
+            logger,
+            EventName.SERVICE_STARTED,
+            logging.INFO,
+            "worker %s starting revision=%s",
+            module_name,
+            env.get("AVP_GIT_REVISION") or "unknown",
+            outcome=Outcome.STARTED.value,
+            attributes={"module": module_name},
+        )
     try:
         module = importlib.import_module(module_name)
         asyncio.run(module.main())
+        _stopped(module_name, "completed")
         return 0
     except KeyboardInterrupt:
-        logger.info("worker %s interrupted; exiting", module_name)
+        with log_guard():
+            emit(
+                logger,
+                EventName.SERVICE_STOPPED,
+                logging.INFO,
+                "worker %s interrupted; exiting",
+                module_name,
+                outcome=Outcome.SUCCEEDED.value,
+            )
         return 0
     except SystemExit as exc:
         if exc.code is None or exc.code == 0:
+            _stopped(module_name, "exited")
             return 0
         code = exc.code if isinstance(exc.code, int) else 1
         detail = f"SystemExit: {exc.code}"
@@ -62,13 +84,20 @@ def run(
         detail = type(exc).__name__
     elapsed = clock() - started
     if elapsed < min_uptime:
-        logger.error(
-            "worker %s failed after %.1fs (%s); backing off %.0fs before exit",
-            module_name,
-            elapsed,
-            detail,
-            backoff,
-        )
+        with log_guard():
+            emit(
+                logger,
+                EventName.SERVICE_START_FAILED,
+                logging.ERROR,
+                "worker %s failed after %.1fs (%s); backing off %.0fs before exit",
+                module_name,
+                elapsed,
+                detail,
+                backoff,
+                outcome=Outcome.FAILED.value,
+                error_type=detail.split(":", 1)[0],
+                duration_ms=elapsed * 1000,
+            )
         try:
             sleep(backoff)
         except KeyboardInterrupt:
@@ -76,8 +105,33 @@ def run(
             logger.info("worker %s interrupted during backoff; exiting", module_name)
             return 0
     else:
-        logger.error("worker %s failed after %.1fs (%s)", module_name, elapsed, detail)
+        with log_guard():
+            emit(
+                logger,
+                EventName.SERVICE_STOPPED,
+                logging.ERROR,
+                "worker %s failed after %.1fs (%s)",
+                module_name,
+                elapsed,
+                detail,
+                outcome=Outcome.FAILED.value,
+                error_type=detail.split(":", 1)[0],
+                duration_ms=elapsed * 1000,
+            )
     return code
+
+
+def _stopped(module_name: str, how: str) -> None:
+    with log_guard():
+        emit(
+            logger,
+            EventName.SERVICE_STOPPED,
+            logging.INFO,
+            "worker %s %s",
+            module_name,
+            how,
+            outcome=Outcome.SUCCEEDED.value,
+        )
 
 
 def _on_sigterm(signum: int, frame: FrameType | None) -> None:
@@ -93,7 +147,8 @@ def cli(argv: list[str] | None = None) -> int:
     if len(args) != 1:
         print("usage: python -m infrastructure.runtime.worker_entry <module>", file=sys.stderr)
         return 2
-    logging.basicConfig(level=logging.INFO)
+    # 1行1 JSON を stdout へ（ADR-0040）。各 worker の main() は logging を設定しない
+    configure_logging()
     signal.signal(signal.SIGTERM, _on_sigterm)
     return run(args[0])
 

@@ -25,6 +25,7 @@ host プロセス方式（`scripts/run-*-worker.sh`）はデバッグ用の代�
 | upload-worker | `workers.upload.run_worker` | upload, upload-media | upload | `YOUTUBE_*`、token ディレクトリ（ro）、作業領域 |
 | pipeline-worker | `workers.pipeline.run_worker` | pipeline | pipeline | `PAUSED` / `UPLOADS_PAUSED`（DB と Temporal だけ。MinIO の資格情報は渡さない） |
 | scene-alternative-worker | `workers.production.scene_alternative.run_worker` | production-scene-alternative | production-scene-alternative（max-age 25 分） | `~/.codex`（rw）、Codex sandbox 用の権限。provider に拒否されたシーンの代替映像案だけを計画する（ADR-0035。有料の画像・動画は呼ばない） |
+| research-worker | `workers.research.run_worker` | research | research | `RESEARCH_PROVIDER`（既定 `none` = 依頼は外部を呼ばずに `blocked`、`fake` = 固定コーパス）。`YOUTUBE_*` / `CODEX_*` / `FAL_KEY` は渡さない。Episode の工程はこの worker を待たない（ADR-0037 §8.5。運用: [research-worker.md](./research-worker.md)） |
 
 - イメージは1枚（`avp2-worker:local`、Dockerfile の `worker` target）: Codex CLI 0.154.0、
   `/opt/piper/venv` の piper-tts 1.8.0、git。api / migrate / dummy-worker は `base`（`avp2-app:local`）
@@ -53,7 +54,9 @@ poll したことを Temporal に問い合わせる。
 2. `.env` を `.env.example` から作り、「常駐 Worker」節を埋める（`COMPOSE_PROFILES=core` を含む）。
    コンテナ内のパスは compose に固定してあり、`.env` には **host 側の置き場**（`AVP_FFMPEG_DIR` /
    `OPENMONTAGE_HOST_PATH` / `PIPER_VOICES_HOST_DIR` / `YOUTUBE_TOKEN_HOST_DIR` など）だけを書く。
-   秘密（`FAL_KEY` / `YOUTUBE_CLIENT_SECRET` 等）は `.env` にだけ置き、compose には書かない
+   秘密（`FAL_KEY` / `YOUTUBE_CLIENT_SECRET` 等）は `.env` にだけ置き、compose には書かない。
+   **本番の `.env` には `AVP_ENVIRONMENT=prod`**（ADR-0040。compose は既定値を持たず、未設定のログは
+   `environment=unknown` になる）
 3. **rootless Docker なら `AVP_UID=0` / `AVP_GID=0`**。rootless では host uid 1000 がコンテナの root に写るため、
    コンテナ uid 1000 では host の 0600 ファイル（refresh token、`~/.codex/config.toml`）を読めない。
    コンテナ root は host 上では非特権の uid 1000 のまま。**rootful Docker では使わない**
