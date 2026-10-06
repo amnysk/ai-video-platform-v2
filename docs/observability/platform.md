@@ -194,35 +194,67 @@ systemd user timer の例: `deploy/logging/systemd/avp-logging-check.{service,ti
 
 ## 6. 導入・停止・rollback（設定面）
 
+### 6.1 本番導入のチェックリスト（I-14）
+
+上から順に、各項目の「確認」を満たしてから次へ進む。`C` と `CHECK` は全項目で使う。
+
 ```bash
-C="docker compose -f deploy/logging/compose.logging.yaml"
-deploy/logging/scripts/init-secrets.sh --env prod          # 1. 秘密（repo 外）
-$C run --rm security-init                                  # 2. 証明書・internal_users・sentinel
-$C up -d --wait opensearch                                 # 3. OpenSearch
-$C run --rm bootstrap                                      # 4. index 基盤（冪等）
-AVP_LOG_READ_FROM_HEAD=false $C up -d fluent-bit           # 5. 位置 DB を作る（既存の大きなログを読まない）
-#    files_opened が増えたのを scripts/fb-metrics.sh で確認してから
-$C up -d fluent-bit                                        # 6. read_from_head=true で作り直す
-$C --profile dashboards-setup run --rm dashboards-keystore # 7. Dashboards（使うときだけ）
-$C --profile dashboards up -d dashboards
-$C --profile dashboards-setup run --rm dashboards-import
+C="docker compose -f deploy/logging/compose.logging.yaml"     # project avp2-logging
+CHECK=deploy/logging/scripts/check-pipeline.sh                  # --env prod が既定
 ```
 
-- **本番のアプリの `.env`（`compose.yaml` のディレクトリ）に `AVP_ENVIRONMENT=prod` を書く**。compose は
-  既定値を持たない（I-5: 既定 `dev` だと本番の行が `avp-app-prod-*` に `environment=dev` で入った）。
-  未設定なら整形器が `unknown` にする。Collector の `AVP_LOGGING_ENV`（index 名）とは別の設定なので、
-  食い違いは `check-pipeline.sh` が検出する（§5）。
-- アプリ側の変更（`compose.yaml` の `logging:`・label・env）は、コンテナの**再作成**で反映される
-  （次の deploy-workers）。再作成で消える未読の json-file は検知できない欠損になるので、deploy の前に
-  `check-pipeline.sh` で Collector が追いついている（buffer chunk が 0 付近、lag が小さい）ことを見る。
+- [ ] **1. アプリの `.env` に `AVP_ENVIRONMENT=prod`**: 本番のアプリの `.env`（`compose.yaml` のディレクトリ。
+  `docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' avp2-api-1` で分かる）に
+  1行追記する。compose は既定値を持たない（I-5: 既定 `dev` だと本番の行が `avp-app-prod-*` に `environment=dev`
+  で入った）。未設定なら整形器が `unknown` にする。反映は手順 7 の再作成のとき。
+  確認: `grep -c '^AVP_ENVIRONMENT=prod$' <dir>/.env` が 1（値以外を表示しない）。
+  2026-10-06 時点で本番の `.env` にはこのキーが無い（キーの有無だけを確認、担当B）。
+- [ ] **2. 秘密**: `deploy/logging/scripts/init-secrets.sh --env prod`（repo の外。既存は上書きしない）。
+  確認: `~/.config/avp-logging/prod` が 0700、各ファイル 0600。CA が keyUsage を持つ（§4、I-16）。
+- [ ] **3. 証明書・internal_users・sentinel**: `$C --profile setup run --rm security-init`。
+- [ ] **4. OpenSearch と index 基盤**: `$C up -d --wait opensearch` → `$C --profile setup run --rm bootstrap`
+  （冪等）。確認: bootstrap が `FAIL` を出さずに終わる。
+- [ ] **5. Fluent Bit（1段目: `read_from_head=false`）**: `AVP_LOG_READ_FROM_HEAD=false $C up -d fluent-bit`。
+  既存の大きなログ（ローテーション無しで最大 約77MB）を全量取り込まずに、位置 DB を今の末尾で作る。
+  確認: `deploy/logging/scripts/fb-metrics.sh | grep files_opened_total` が 0 より大きい。
+- [ ] **6. Fluent Bit（2段目: `read_from_head=true`）**: `$C up -d fluent-bit`（作り直す。位置 DB は volume に
+  残る）。位置 DB にあるファイルは offset から続け、以後に新しく現れたファイル（手順 7 で作り直すコンテナ・
+  停止中の rotation）は先頭から読む。`false` のままだと停止・再起動のたびに、その間に作られたファイルを失う。
+  確認: `$CHECK --catchup-only` が `result: ok`。
+- [ ] **7. アプリの再作成（deploy-workers）の直前に追いつき確認**: `$CHECK --catchup-only`（I-17）。
+  再作成で消えるコンテナの未読の json-file は検知できない欠損になる。`FAIL 追いつき` なら数分待って
+  やり直す。`FAIL tail の停滞` なら `$C restart fluent-bit` して原因の行を調べる（§3「長い行」）。
+  確認: `result: ok` のすぐ後に deploy する。新しい `logging:`・label・`AVP_ENVIRONMENT` はこの再作成で入る。
+- [ ] **8. 取り込みの確認**: deploy から数分後に `$CHECK`（全項目）。確認: app・infra の lag が出る、
+  `environment` の食い違いが 0 件（手順 1 の書き忘れはここで分かる）。
+- [ ] **9. systemd user timer**: `deploy/logging/systemd/avp-logging-check.{service,timer}` を
+  `~/.config/systemd/user/` へ複製し、`ExecStart` のパスを実際の checkout に直して
+  `systemctl --user daemon-reload && systemctl --user enable --now avp-logging-check.timer`。
+  確認: `systemctl --user list-timers avp-logging-check.timer` に次回時刻、`journalctl --user -u avp-logging-check`
+  に `result:`。ログアウト後も動かすには `loginctl enable-linger`（未設定なら）。
+- [ ] **10. Dashboards（使うときだけ）**: `$C --profile dashboards-setup run --rm dashboards-keystore` →
+  `$C --profile dashboards up -d dashboards` → `$C --profile dashboards-setup run --rm dashboards-import`。
+  使い終わったら `$C --profile dashboards stop dashboards`（メモリ。§7）。
+
+**rollback**（どの段階でも。アプリの業務は変わらない。ログは検索用の副本で SSoT ではない）:
+
+- [ ] Collector と検索側を止める: `systemctl --user disable --now avp-logging-check.timer` →
+  `$C --profile dashboards down`（volume は残る。再開は手順 4 から。位置 DB があるので手順 5 は不要）。
+- [ ] アプリのログ形式を戻すなら `.env` に `AVP_LOG_FORMAT=text` を足して次の deploy で再作成（json-file の
+  ローテーション・label は残っても害は無い）。手順 1 の `AVP_ENVIRONMENT=prod` は残してよい。
+- [ ] 消すなら `$C --profile dashboards down -v`（検索用ログと位置 DB が失われる。秘密は repo 外に残る）。
+  入れ直すときは手順 2 から（位置 DB が無いので手順 5 の1段目が必要。`fluent-bit-guard` が強制する）。
+
+### 6.2 運用中の注意
+
 - 位置 DB が無い状態で `read_from_head=true` のまま起動しようとすると `fluent-bit-guard` が止める。
   sentinel の無い volume（project 名の違いで新しく作られた空の volume）でも OpenSearch・Fluent Bit は起動しない。
+- アプリ側の変更（`compose.yaml` の `logging:`・label・env）は、コンテナの**再作成**で反映される。deploy の
+  たびに手順 7 の `--catchup-only` を先に流す。
 - パスワード・ロールの変更: `init-secrets.sh`（変えるファイルを消して再生成）→ `security-init` →
   `$C run --rm securityadmin`。初回の security index は `allow_default_init_securityindex` が作る。
 - 長い停止: OpenSearch を止めるときは Fluent Bit も止める（位置 DB から再開でき、rotation が一巡する
   まで欠損しない）。
-- rollback: `$C down`（volume は残る）。アプリの挙動は変わらない。アプリ側は `AVP_LOG_FORMAT=text` で
-  従来の形式に戻せる。消すなら `$C down -v`（検索用ログは失われる。SSoT ではない）。
 
 ## 7. 資源・共存条件・許容停止時間
 
