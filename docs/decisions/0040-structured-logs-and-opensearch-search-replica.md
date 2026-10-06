@@ -120,7 +120,7 @@ ingested_at）→ Dashboards`。
 - **検知できない欠損**（受け入れる）: Collector 停止が `max-size × max-file ÷ 出力速度` を超えて
   rotation が一巡した分、コンテナの**再作成**（deploy-workers）で消えた未読ファイル、rotation 境界を
   またぐ partial 行（結合されず順序も入れ替わる、実測）、Fluent Bit の restart の瞬間に rewrite_tag の
-  emitter にあった数行（追記 2026-10-06、I-26。platform.md §3。直すには rewrite_tag を外す経路の変更が要る）。deploy 前に確認スクリプトで Collector の
+  emitter にあった数行（追記 2026-10-06、I-26。platform.md §3。直すには rewrite_tag を外す経路の変更が要る）。所有者が 2026-10-07 に「受け入れる欠損」として了承。根本対処は後続の ADR 課題）。deploy 前に確認スクリプトで Collector の
   追いつき（位置 DB の offset とファイルサイズの差）を見る手順を runbook に入れる。
 - 出力: `write_operation create`、`id_key event_id`、`suppress_type_name on`（OpenSearch 3.x は `_type`
   を 400 で拒否）、`buffer_size 4M`（応答が溢れると部分失敗を解析できず chunk 全体を再送する）、
