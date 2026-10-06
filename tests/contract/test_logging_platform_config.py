@@ -349,3 +349,94 @@ def test_check_pipeline_checks_each_series_and_the_environment() -> None:
     src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
     assert 'check_lag app "$MAX_LAG_MIN"' in src and 'check_lag infra "$MAX_LAG_INFRA_MIN"' in src
     assert "must_not" in src and "environment" in src and "now-24h" in src
+
+
+def _size(value: str) -> int:
+    """Fluent Bit の size 表記（``256k`` 等。k/m は 1024 倍）を bytes に。"""
+    m = re.fullmatch(r"(\d+)([kKmM]?)", value)
+    assert m, value
+    return int(m.group(1)) * {"": 1, "k": 1024, "m": 1024 * 1024}[m.group(2).lower()]
+
+
+def test_collector_caps_joined_lines_at_the_tail_buffer_size(fb) -> None:
+    """partial を結合した行には tail の buffer_max_size が効かない（実測）。
+
+    Collector が同じ大きさで切る（I-15）。
+    """
+    from contracts.log_contract import COLLECTOR_LINE_MAX_BYTES
+
+    tail = _one(fb["pipeline"]["inputs"], name="tail")
+    assert _size(tail["buffer_max_size"]) == COLLECTOR_LINE_MAX_BYTES
+    lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
+    assert "C.collector_line_max_bytes" in lua
+    assert 'ERR_LINE_TOO_LONG = "line_too_long"' in lua
+
+
+def test_sanitize_has_no_backtracking_userinfo_rule() -> None:
+    """``%a[%w%+%.%-]*://`` は長い英数字の連なりで O(n²) になり、Collector 全体を止めた（I-15）。"""
+    lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
+    assert "%a[%w%+%.%-]*://" not in lua
+    assert "%[parameters: .-%]" not in lua
+
+
+def test_check_pipeline_checks_catchup_without_touching_fluent_bit() -> None:
+    """deploy 前の追いつき確認を check-pipeline で行う（I-17）。位置 DB は WAL ごと複製して読む。"""
+    src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
+    assert "--catchup-only" in src
+    assert 'catchup.py" --db "$DB_COPY/tail.db"' in src
+    # 元の volume は read-only で mount し、tail.db・-wal・-shm をまとめて複製する
+    assert '"${PROJECT}_fbstate:/fb-state:ro"' in src
+    assert "cp /fb-state/tail.db* /out/" in src
+    assert '--filter "label=com.docker.compose.project=$TARGET_PROJECT"' in src
+    assert (LOGGING / "scripts" / "catchup.py").is_file()
+
+
+def test_check_pipeline_detects_a_stalled_tail() -> None:
+    """tail の停滞は health・skip・chunk に出ない（I-15）。
+
+    未読が残り records が増えないことで見る。
+    """
+    src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
+    assert 'fluentbit_input_records_total\\{name="tail\\.0"\\}' in src
+    assert "prev_tail_records" in src
+    assert "line_too_long" in src
+
+
+def test_app_lag_default_leaves_margin_over_the_watchdog_period() -> None:
+    """静かな日の app 系統は毎時の watchdog の行だけになる（I-13）。
+
+    既定の lag が watchdog の周期と同じだと、次の実行の取り込みと確認が競って誤報する。
+    周期 + 30分以上。
+    """
+    from contracts.schedule_guard import DEFAULT_WATCHDOG_CRON
+
+    minute, hour, *_ = DEFAULT_WATCHDOG_CRON.split()
+    assert minute.isdigit() and hour == "*", "毎時の cron を前提にしている"
+    period_min = 60
+    src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
+    m = re.search(r"^MAX_LAG_MIN=(\d+)$", src, re.M)
+    assert m is not None
+    assert int(m.group(1)) >= period_min + 30
+
+
+def test_broken_json_is_rerouted_to_infra(fb) -> None:
+    """JSON として壊れた app の行は infra 系統へ（ADR-0040 §1。I-19）。
+
+    avp_app が印を付け、rewrite_tag が avp.infra として流し直す
+    （avp_infra が unstructured にする）。
+    """
+    filters = fb["pipeline"]["filters"]
+    names = [(f["name"], f["match"], f.get("call")) for f in filters]
+    app_lua = names.index(("lua", "avp.app", "avp_app"))
+    infra_lua = names.index(("lua", "avp.infra", "avp_infra"))
+    reroute = [
+        i for i, f in enumerate(filters) if f["name"] == "rewrite_tag" and f["match"] == "avp.app"
+    ]
+    assert len(reroute) == 1
+    flt = filters[reroute[0]]
+    assert app_lua < reroute[0]
+    assert flt["rule"] == ["$_avp_reroute ^infra$ avp.infra false"]
+    assert flt["emitter_storage.type"] == "filesystem"
+    assert infra_lua > app_lua
+    lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
+    assert 'REROUTE_KEY = "_avp_reroute"' in lua
