@@ -167,9 +167,10 @@ def cmd_count(args) -> dict:
     q = build_query(args.term, args.since)
     deadline = time.monotonic() + args.wait
     while True:
-        _refresh()
-        n = count(q)
         try:
+            # 再起動直後の OpenSearch（TLS の EOF・接続拒否）も --wait の間は待つ
+            _refresh()
+            n = count(q)
             _check_bounds(n, args)
             return {"count": n}
         except AssertFailed:

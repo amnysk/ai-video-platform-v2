@@ -47,12 +47,12 @@ test DB・test namespace・test bucket で接続する作りになっている�
 | ファイル | なぜ要るか |
 |---|---|
 | `loggen.py` | A の実装を待たずに B の経路（tail・型検査・Bulk・重複抑制・rotation）を試すための、契約どおりの行と壊した行の発生器。`request_id=<tag>` で件数を数え、`--duplicate-every` で同じ `event_id` の再出力（文書 ID の重複抑制）を作る。壊した行は毎回作り直し、409（同一 ID）と型不整合を混同しない |
-| `search-assert.py` | 件数・必須フィールド（`REQUIRED_APP_FIELDS` を契約から import。写しを作らない）・`event_id` 重複・`_source` 全走査の非漏洩・alias・ISM・版・bootstrap 前後の設定差分・取り込み遅れを TLS + 認証で assert。標準ライブラリだけで動く。パスワードはファイルからだけ読み、応答本文の値プレビューを出さない |
+| `search-assert.py` | `count --wait` は接続失敗（再起動直後の TLS EOF・接続拒否）も待つ。停止・復旧系の試験で、OpenSearch の起動待ちを件数不足と取り違えて即失敗しないため。件数・必須フィールド（`REQUIRED_APP_FIELDS` を契約から import。写しを作らない）・`event_id` 重複・`_source` 全走査の非漏洩・alias・ISM・版・bootstrap 前後の設定差分・取り込み遅れを TLS + 認証で assert。標準ライブラリだけで動く。パスワードはファイルからだけ読み、応答本文の値プレビューを出さない |
 | `inject-secrets.py` | 秘密に見える値を**実行ごとに乱数で**作り（本物の秘密も repo 内の固定値も使わない）、message・キー名・例外 chain・第三者 logger・warnings・thread の未捕捉例外・logging を通らない print の各経路で出す。`attributes` は `enabled:false` で検索できないので、検査は `_source` の全走査で行う |
 | `fault-opensearch-stop.sh` | OpenSearch 停止中にアプリ側が止まらず、再開後に全件・重複 0 で追いつくこと（INV-38、ADR-0040 §5 の retry 上限内） |
 | `fault-collector-rotation.sh` | Collector 停止中の rotation を inode で続きから読めること（ADR の実測 300/300 を、この構成で再確認） |
 | `fault-bad-lines.sh` | 不正1件による永久滞留が無いこと・Bulk 部分失敗で正常行が落ちないこと・型不整合の退避 |
-| `fault-capacity.sh` | buffer 上限での古い chunk の破棄と検知。**容量制限した tmpfs でだけ**実行し、ホストのディスクを埋めない（tmpfs でなければ中止する） |
+| `fault-capacity.sh` | buffer 上限での古い chunk の破棄と検知。**容量制限した tmpfs でだけ**実行し、ホストのディスクを埋めない（tmpfs でなければ中止する）。出力速度を `rate` で絞り、Collector が json-file を読み切ってから（`catchup`）OpenSearch を戻す: 全速では json-file の rotation（20m × 5）が先に一巡し、buffer の破棄ではなく rotation の欠損を測ってしまう（2026-10-06 実測: 全速 200000 行で 118114 行が読まれる前に消え、buffer は 22MB で上限未達）。OpenSearch は healthy まで待ち、件数が 30 秒変わらなくなってから判定する（届き始めた直後の件数で合格にしない） |
 | `fault-secrets.sh` | INV-39 を json-file・buffer・OpenSearch の3か所で確認。隔離スタックの実パスワードも needle に入れる |
 | `measure.sh` | 本番ホスト共存の条件（ADR-0040 §7 の MemAvailable 閾値）を実測で判断するための記録 |
 
