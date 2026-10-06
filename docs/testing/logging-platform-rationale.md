@@ -127,3 +127,21 @@ Fluent Bit の Lua 実装（LuaJIT）と msgpack 変換の癖（配列と map �
   外して回避していた）。運用の確認スクリプトを Python で書いた途端に TLS が通らなくなるので、生成する側で固定する。
   OpenSSL の `-x509_strict` は Python と同じ flag なので、ネットワークを使わずに同じ判定ができる。
   修正前の init-secrets.sh では3件とも落ちる（確認済み）。
+
+## 7. `tests/unit/test_logging_catchup.py` と check-pipeline の検査（I-17、I-15 の検知）
+
+- **位置 DB の offset とファイルの大きさの差を inode で照合し、位置 DB に無いファイルは全量を未読と数える**:
+  rotation でファイル名は変わるが inode は同じ。位置 DB に無いファイル（Collector が見つけていない・
+  停止中に作られた）を数えないと、まさに失われる分を見落とす。
+- **収集対象 project のコンテナだけを見る**: containers/ にはログ基盤自身・別の試験環境のファイルもある。
+  それらは Collector が捨てる（project の完全一致）ので、未読として数えると常に異常になる。
+- **WAL ごと複製した DB で最新の offset が読める**: Fluent Bit は `db.locking` で DB を排他的に開いたまま
+  WAL に書く（隔離環境で確認: 元の DB は `database is locked`、`tail.db-wal` に 4MB）。DB 本体だけを複製すると
+  checkpoint 前の古い offset を読み、追いついているのに未読と判定する。
+- **読めない DB は別の終了コード**: 「未読がある」と「確認できない」を check-pipeline が区別して表示する。
+- contract（`test_logging_platform_config.py`）: check-pipeline が `--catchup-only` を持ち、位置 DB の volume を
+  read-only で mount して `tail.db*` をまとめて複製すること、対象 project で絞ること、停滞の判定に
+  `input_records_total{name="tail.0"}` と前回値を使うこと、`line_too_long` を数えることを固定する。停滞は
+  health・skip・chunk のどれにも出ない（隔離環境で実測: CPU 100% のまま health ok）ので、この組み合わせが
+  唯一の検知になる。修正前の Lua で停滞させた Fluent Bit に対し、2回目の確認で `tail の停滞` が FAIL に
+  なることを隔離環境で確認した（platform.md §3）。

@@ -377,3 +377,26 @@ def test_sanitize_has_no_backtracking_userinfo_rule() -> None:
     lua = (LOGGING / "fluent-bit" / "lua" / "avp_collector.lua").read_text(encoding="utf-8")
     assert "%a[%w%+%.%-]*://" not in lua
     assert "%[parameters: .-%]" not in lua
+
+
+def test_check_pipeline_checks_catchup_without_touching_fluent_bit() -> None:
+    """deploy 前の追いつき確認を check-pipeline で行う（I-17）。位置 DB は WAL ごと複製して読む。"""
+    src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
+    assert "--catchup-only" in src
+    assert 'catchup.py" --db "$DB_COPY/tail.db"' in src
+    # 元の volume は read-only で mount し、tail.db・-wal・-shm をまとめて複製する
+    assert '"${PROJECT}_fbstate:/fb-state:ro"' in src
+    assert "cp /fb-state/tail.db* /out/" in src
+    assert '--filter "label=com.docker.compose.project=$TARGET_PROJECT"' in src
+    assert (LOGGING / "scripts" / "catchup.py").is_file()
+
+
+def test_check_pipeline_detects_a_stalled_tail() -> None:
+    """tail の停滞は health・skip・chunk に出ない（I-15）。
+
+    未読が残り records が増えないことで見る。
+    """
+    src = (LOGGING / "scripts" / "check-pipeline.sh").read_text(encoding="utf-8")
+    assert 'fluentbit_input_records_total\\{name="tail\\.0"\\}' in src
+    assert "prev_tail_records" in src
+    assert "line_too_long" in src

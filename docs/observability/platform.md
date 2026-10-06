@@ -164,10 +164,22 @@ Docker json-file はアプリの1行を 16KiB ごとの partial に分けて書�
 
 - Fluent Bit: health、`files_opened_total == 0`、`dropped_records_total`・`retries_failed_total`・
   `long_line_skipped_total` の増分、buffer の chunk 数（`--max-chunks`、既定 2000）
+- **追いつき**（I-17、`scripts/catchup.py`）: 位置 DB の offset と、収集対象 project（`--target-project`、既定
+  `$AVP_LOG_TARGET_PROJECT` か `avp2`）の各コンテナの `*-json.log*` の大きさの差。位置 DB（volume
+  `<project>_fbstate`）は read-only で mount した one-shot が **WAL ごと**一時ディレクトリへ複製し、ホストで
+  その複製を読む（Fluent Bit は `db.locking` で DB を排他的に開いている。元の DB は開かない・止めない）。
+  位置 DB に無いファイルは全量を未読と数える。差が `--max-behind-bytes`（既定 262144 = 1行の上限）を超えたら
+  異常。対象は `docker ps -a --filter label=com.docker.compose.project=<target>` のコンテナだけ。
+- **tail の停滞**（I-15）: 未読が残っているのに `input_records_total{name="tail.0"}` が前回の確認から
+  増えていなければ異常（5秒おいて読み直してから判定）。Fluent Bit のイベントループが止まると health は ok、
+  skip も chunk も変わらないので、これ以外では lag でしか見えない。対処は Fluent Bit の restart と、
+  原因の行の特定（`collector_errors:line_too_long`・該当コンテナのログ）。
+- `--catchup-only`: Fluent Bit と追いつき・停滞だけを見て終わる（deploy の前。§6）
 - OpenSearch: 到達性・cluster の状態、**系統ごと**の最終 `ingested_at` からの経過（app は `--max-lag-min`、
   infra は `--max-lag-infra-min`、既定どちらも 60。infra の行で app の停止が隠れないように）、
   直近24時間の app 文書のうち `environment` が index の env と違う件数（> 0 で異常。アプリの `.env` の
-  `AVP_ENVIRONMENT` の書き忘れ・取り違え）、index サイズ、ディスク使用率（85% 以上で異常）
+  `AVP_ENVIRONMENT` の書き忘れ・取り違え）、直近24時間に Collector が切った長い行
+  （`collector_errors:line_too_long`、> 0 で WARN。終了コードは変えない）、index サイズ、ディスク使用率（85% 以上で異常）
 - 資格情報は viewer のパスワードを 0600 の一時 config で `curl -K` に渡す（argv に出さない）
 - 証明書: CA・ノード証明書の残り 30日未満
 - ホスト: Docker root のディスク（90% 以上で異常）、MemAvailable
@@ -234,10 +246,12 @@ $C --profile dashboards-setup run --rm dashboards-import
 | `buffer_max_size` を超える行（partial でない行） | `long_line_skipped_total` の増分 |
 | `COLLECTOR_LINE_MAX_BYTES` を超える行（partial を結合した行） | infra の `collector_errors:line_too_long`（行の残りは失われる） |
 | 収集・送信の停止 | 系統ごとの最終 `ingested_at` の lag（業務が止まっているのと区別できない） |
+| tail の停滞（イベントループが止まる。I-15） | 未読が残り `input_records_total{tail.0}` が増えない（check-pipeline） |
+| Collector が追いついていない | 位置 DB の offset とファイルの大きさの差（check-pipeline の追いつき。deploy 前は `--catchup-only`） |
 | `environment` の取り違え（`.env` の書き忘れ） | 直近24時間の不一致件数（check-pipeline） |
 | 型不整合・時刻の置換 | 文書の `collector_errors` / `_ignored`（失われない） |
 | Collector 停止中に rotation が一巡した分 | **検知できない** |
-| コンテナ再作成で消えた未読ファイル | **検知できない**（deploy 前の追いつき確認で減らす） |
+| コンテナ再作成で消えた未読ファイル | **検知できない**（deploy 前の `check-pipeline.sh --catchup-only` で減らす） |
 | rotation 境界をまたぐ partial 行 | **検知できない**（結合されず順序も入れ替わる） |
 | `event_id` の衝突（別の記録が同じ ID） | **検知できない**（409 は成功扱い）。導出の unit test で防ぐ |
 
