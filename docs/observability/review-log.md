@@ -58,6 +58,13 @@ B の I-13・I-14・I-16〜I-19 は解消。I-15 の線形化に伏せ字の後�
 | I-24 | Low | B | 結合後の行は Lua に渡るまで全体がメモリに載り、数十〜数百MB の1行で Fluent Bit（256MiB）が OOM→再起動で同じ行を読み直しうる | 記録（092d219、platform.md §3 に限界・兆候・対処の手順。手順は未実測） |
 | I-25 | Low | B | catchup の複製中の書き込みによる誤報、inode 再利用での見逃し | 記録（092d219、platform.md §5 に既知の限界） |
 
+## 担当C 最終版試験（verification-results.md §5、V-8・V-9）で見つかった不具合
+
+| ID | 重大度 | 担当 | 指摘 | 状態 |
+|---|---|---|---|---|
+| I-26 | Medium | B | Fluent Bit の `docker restart` でその瞬間の 1〜2 行が届かない（3/3 回）。行は json-file に残り、位置 DB は先へ進んでいる。metrics に出ない（C の V-8） | 既知の限界として記録（6df86df、B）。原因は rewrite_tag の emitter（Fluent Bit 単体で再現: restart 10 回で 3600 行中 10 行、rewrite_tag 無しなら 0）。設定（grace・emitter_storage・tail の storage.type・flush）では直らない。直すには tail を系統ごとに分けて rewrite_tag を外す設計変更（ADR-0040 §1）が要る |
+| I-27 | Low | B | `dropped_records_total` が実欠損と合わない（届いた + dropped が出力を 100047 上回る）（C の V-9） | 修正（125128d、B。check-pipeline は増えたことの検知だけに使い件数を実数として報告しない。platform.md §3/§8。計上の詳細は未特定）。D の再確認待ち |
+
 ## 未実施
 - 担当C フェーズ2: 途中まで実施（integration を1ファイルずつ隔離 runner で実行、故障注入・ISM 監視・資源測定の一部）。中断のため `verification-results.md` 未作成。最終統合版で再実行する。
 - 上記修正後の D による独立再確認。
