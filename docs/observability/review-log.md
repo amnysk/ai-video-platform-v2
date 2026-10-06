@@ -64,6 +64,7 @@ B の I-13・I-14・I-16〜I-19 は解消。I-15 の線形化に伏せ字の後�
 |---|---|---|---|---|
 | I-26 | Medium | B | Fluent Bit の `docker restart` でその瞬間の 1〜2 行が届かない（3/3 回）。行は json-file に残り、位置 DB は先へ進んでいる。metrics に出ない（C の V-8） | 既知の限界として記録（6df86df、B）。原因は rewrite_tag の emitter（Fluent Bit 単体で再現: restart 10 回で 3600 行中 10 行、rewrite_tag 無しなら 0）。設定（grace・emitter_storage・tail の storage.type・flush）では直らない。直すには tail を系統ごとに分けて rewrite_tag を外す設計変更（ADR-0040 §1）が要る |
 | I-27 | Low | B | `dropped_records_total` が実欠損と合わない（届いた + dropped が出力を 100047 上回る）（C の V-9） | 修正（125128d、B。check-pipeline は増えたことの検知だけに使い件数を実数として報告しない。platform.md §3/§8。計上の詳細は未特定）。D の再確認待ち |
+| I-30 | Low | C | 試験用 `deploy/logging/test/catchup.py` が本番用 `deploy/logging/scripts/catchup.py`（I-17）と同じ処理の二重実装（AGENTS.md §8）。verification-results.md が証拠の置き場として scratchpad・`/run/user/…`（セッション限りで消える）を挙げている | 修正（d2b6dd9、C。`lib.sh` の `catchup` は本番の catchup.py を対象 project のコンテナ ID と許容差 0 で呼び、試験用を削除。同じ位置 DB の複製で両者の未読 1407827 bytes・同じファイルが一致、隔離環境で harness と `check-pipeline.sh --catchup-only` がともに 0。results は消える場所を注記し、数値は本文に転記済み・一時 probe を §7 に収録（C、本 commit の前）。D の再確認待ち |
 
 ## 未実施
 - 担当C フェーズ2: 途中まで実施（integration を1ファイルずつ隔離 runner で実行、故障注入・ISM 監視・資源測定の一部）。中断のため `verification-results.md` 未作成。最終統合版で再実行する。
