@@ -129,7 +129,9 @@ else
   [[ "$tail_records" -lt "$prev_tail_records" ]] && prev_tail_records=-1
   d_dropped=$((dropped - prev_dropped)) d_rfailed=$((rfailed - prev_rfailed)) d_skipped=$((skipped - prev_skipped))
   if [[ $d_dropped -gt 0 || $d_rfailed -gt 0 ]]; then
-    fail "fluent-bit: 破棄 +$d_dropped records / 再送上限超過 +$d_rfailed chunks（前回から。累計 $dropped / $rfailed）"
+    # dropped_records_total は増えたこと（破棄が起きたこと）の検知にだけ使う。件数は実際の欠損と合わない
+    # （I-27: 届いた + dropped が出力を上回った）。欠けた範囲は OpenSearch の件数と json-file で照合する
+    fail "fluent-bit: 破棄が起きた（dropped_records_total +$d_dropped・retries_failed_total +$d_rfailed。件数は欠損の実数ではない。platform.md §3）"
   else
     ok "fluent-bit: 破棄なし（累計 dropped=$dropped retries_failed=$rfailed）"
   fi
