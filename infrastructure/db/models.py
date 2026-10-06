@@ -33,6 +33,23 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from contracts.intervention import (
+    ActorType,
+    AgentRole,
+    AgentRunOutcome,
+    AnnotationKind,
+    ChangeKind,
+    ChangeSetStatus,
+    CommandStatus,
+    CommandType,
+    ControlState,
+    InterventionEvent,
+    InterventionMode,
+    RejectReason,
+    ReviewPoint,
+    RevisionLinkKind,
+    Scope,
+)
 from contracts.operations import OperationalSwitch
 from contracts.research import (
     ResearchArtifactType,
@@ -754,3 +771,375 @@ Index(
     sqlite_where=text("superseded_at IS NULL"),
     postgresql_where=text("superseded_at IS NULL"),
 )
+
+
+# --------------------------------------------------------------------------- 判断記録と介入
+# JP-MAS-001 v2.0 / ADR-0041。論理エンティティとの対応は docs/domain/intervention.md §1。
+# 追記型の表（decision_records / annotations / episode_events / artifact_manifests /
+# revision_links / agent_runs）は行を更新・削除するリポジトリ関数を持たない。
+
+
+class EpisodeControlRow(Base):
+    """Episode の制御軸（mode・control_state・制御版・採用 manifest・待機地点）。
+
+    行の無い Episode は ``legacy`` / ``running`` として読む（古い Episode・日次実行）。
+    dispatch gate はこの行を ``FOR SHARE`` で読み、hold はこの行を更新する（行 lock で直列化）。
+    """
+
+    __tablename__ = "episode_controls"
+    __table_args__ = (
+        _check("mode", InterventionMode, "ck_episode_controls_mode"),
+        _check("control_state", ControlState, "ck_episode_controls_control_state"),
+        CheckConstraint(
+            "control_revision >= 0", name="ck_episode_controls_control_revision_non_negative"
+        ),
+        CheckConstraint("last_event_seq >= 0", name="ck_episode_controls_last_event_seq"),
+        CheckConstraint(
+            "waiting_point IS NULL OR waiting_point IN ("
+            + ", ".join(f"'{v.value}'" for v in ReviewPoint)
+            + ")",
+            name="ck_episode_controls_waiting_point",
+        ),
+    )
+
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), primary_key=True
+    )
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    control_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: 期待版（expected_control_revision）。制御・採用の変更ごとに1増える
+    control_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    review_points: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    active_manifest_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    waiting_point: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    waiting_manifest_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    #: episode_events.seq の採番（行 lock の下で増やす）
+    last_event_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hold_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    held_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ArtifactManifestRow(Base):
+    """採用 manifest（active_revision_set の履歴）。追記型。``members`` は slot → revision_id。"""
+
+    __tablename__ = "artifact_manifests"
+    __table_args__ = (
+        CheckConstraint("seq >= 1", name="ck_artifact_manifests_seq_positive"),
+        _check("actor_type", ActorType, "ck_artifact_manifests_actor_type"),
+        UniqueConstraint("episode_id", "seq", name="uq_artifact_manifests_episode_seq"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    parent_manifest_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    members: Mapped[dict] = mapped_column(JSON, nullable=False)
+    causation_command_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class RevisionLinkRow(Base):
+    """RevisionDependency（上流 revision → 下流 revision）。追記型。"""
+
+    __tablename__ = "revision_links"
+    __table_args__ = (
+        _check("kind", RevisionLinkKind, "ck_revision_links_kind"),
+        UniqueConstraint(
+            "upstream_revision_id",
+            "downstream_revision_id",
+            "kind",
+            name="uq_revision_links_edge",
+        ),
+        Index("ix_revision_links_downstream", "downstream_revision_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    upstream_revision_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("artifact_metadata.id", ondelete="RESTRICT"), nullable=False
+    )
+    downstream_revision_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("artifact_metadata.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    causation_command_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AgentRunRow(Base):
+    """AgentRun + ContextSnapshot + ToolInvocation の参照（設計 §6）。
+
+    prompt 全文・応答全文は MinIO（``agent-runs/…``）に置き、ここは参照と sha256 だけ（INV-39）。
+    課金の正本は予約台帳のまま。``tool_invocations`` は予約・research call の ID を参照する。
+    """
+
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        _check("role", AgentRole, "ck_agent_runs_role"),
+        _check("outcome", AgentRunOutcome, "ck_agent_runs_outcome"),
+        CheckConstraint(
+            "episode_id IS NOT NULL OR topic_plan_id IS NOT NULL",
+            name="ck_agent_runs_scope",
+        ),
+        UniqueConstraint("idempotency_key", name="uq_agent_runs_idempotency_key"),
+        Index("ix_agent_runs_episode", "episode_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    episode_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=True
+    )
+    topic_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("topic_plans.id", ondelete="RESTRICT"), nullable=True
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    step: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    snapshot_object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    snapshot_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    request_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    response_object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    response_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tool_invocations: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    #: 取得できなければ NULL（0 で埋めない）
+    token_usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    output_revision_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_summary: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DecisionRecordRow(Base):
+    """DecisionRecord（設計 §7）。追記型。
+
+    ``payload`` は ``contracts.intervention.DecisionRecordPayload``。
+    """
+
+    __tablename__ = "decision_records"
+    __table_args__ = (
+        _check("actor_type", ActorType, "ck_decision_records_actor_type"),
+        CheckConstraint(
+            "episode_id IS NOT NULL OR topic_plan_id IS NOT NULL",
+            name="ck_decision_records_scope",
+        ),
+        UniqueConstraint("idempotency_key", name="uq_decision_records_idempotency_key"),
+        Index("ix_decision_records_episode", "episode_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    episode_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=True
+    )
+    topic_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("topic_plans.id", ondelete="RESTRICT"), nullable=True
+    )
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("agent_runs.id", ondelete="RESTRICT"), nullable=True
+    )
+    decision_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    result_revision_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    command_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AnnotationRow(Base):
+    """Review／Comment／user_constraint／approval（追記型。解決・撤回も新しい行）。"""
+
+    __tablename__ = "annotations"
+    __table_args__ = (
+        _check("kind", AnnotationKind, "ck_annotations_kind"),
+        _check("actor_type", ActorType, "ck_annotations_actor_type"),
+        UniqueConstraint("command_id", name="uq_annotations_command_id"),
+        Index("ix_annotations_episode", "episode_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    anchor: Mapped[dict] = mapped_column(JSON, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 構造化の中身（user_constraint の rule/target_ids、approval の point 等）
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    refers_to_annotation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("annotations.id", ondelete="RESTRICT"), nullable=True
+    )
+    #: approval が結び付く manifest（INV-45）
+    manifest_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    command_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ChangeSetRow(Base):
+    """ChangeSet／Variant（設計 §9 / §12）。"""
+
+    __tablename__ = "change_sets"
+    __table_args__ = (
+        _check("kind", ChangeKind, "ck_change_sets_kind"),
+        _check("status", ChangeSetStatus, "ck_change_sets_status"),
+        _check("actor_type", ActorType, "ck_change_sets_actor_type"),
+        CheckConstraint(
+            "estimated_cost_usd IS NULL OR estimated_cost_usd >= 0",
+            name="ck_change_sets_cost_non_negative",
+        ),
+        UniqueConstraint("proposed_by_command_id", name="uq_change_sets_command_id"),
+        Index("ix_change_sets_episode", "episode_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    base_revision_id: Mapped[uuid.UUID] = mapped_column(Uuid(), nullable=False)
+    base_manifest_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    proposal: Mapped[dict] = mapped_column(JSON, nullable=False)
+    impact: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    variant_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    applied_revision_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    applied_manifest_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
+    proposed_by_command_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    decided_by_command_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class InterventionCommandRow(Base):
+    """InterventionCommand。行そのものが transactional outbox（``dispatched_at``）。
+
+    ``id`` はクライアントの command_id。同じ id の再送は ``payload_sha256`` で
+    同一入力かを判定する（INV-42）。
+    """
+
+    __tablename__ = "intervention_commands"
+    __table_args__ = (
+        _check("type", CommandType, "ck_intervention_commands_type"),
+        _check("status", CommandStatus, "ck_intervention_commands_status"),
+        _check("actor_type", ActorType, "ck_intervention_commands_actor_type"),
+        _check("granted_scope", Scope, "ck_intervention_commands_granted_scope"),
+        CheckConstraint(
+            "reject_reason IS NULL OR reject_reason IN ("
+            + ", ".join(f"'{v.value}'" for v in RejectReason)
+            + ")",
+            name="ck_intervention_commands_reject_reason",
+        ),
+        CheckConstraint(
+            "dispatch_attempts >= 0", name="ck_intervention_commands_dispatch_attempts"
+        ),
+        Index("ix_intervention_commands_status", "status", "received_at"),
+        Index("ix_intervention_commands_episode", "episode_id", "received_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    granted_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    executor: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expected_control_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expected_target_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reject_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dispatch_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class EpisodeEventRow(Base):
+    """判断・介入イベントの正本（Episode 内の ``seq``）。
+
+    OpenSearch はここからの投影（設計 §14/§15）。
+    """
+
+    __tablename__ = "episode_events"
+    __table_args__ = (
+        _check("event_name", InterventionEvent, "ck_episode_events_event_name"),
+        _check("actor_type", ActorType, "ck_episode_events_actor_type"),
+        CheckConstraint("seq >= 1", name="ck_episode_events_seq_positive"),
+        UniqueConstraint("episode_id", "seq", name="uq_episode_events_episode_seq"),
+        Index("ix_episode_events_unprojected", "projected_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    refs: Mapped[dict] = mapped_column(JSON, nullable=False)
+    command_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
