@@ -154,6 +154,9 @@ Collector が行から作る `@timestamp`（Docker の時刻）・`message`（�
 
 - Activity・API・起動処理: 発行時に `uuid4().hex`。**1回の発行＝1つの ID**。Collector が同じ行を再送しても
   行の中の ID は変わらない。Activity の再試行・provider の再送は別の発行なので別 ID。
+- 判断・介入イベントの投影（`episode_events` の1行）: `uuid5(PROJECTION_EVENT_NAMESPACE, f"{episode_id}:{seq}")`。
+  live の投影と再投影で**同じ値**（§10）。発行側は `extra={"avp": {"projected_event_id": …}}` で渡し、整形器は
+  32桁の小文字 hex の時だけ採用する（それ以外は無視して `uuid4`）。
 - Workflow: Workflow のコードは ID を作らない。sandbox の外で import 済みの整形器が、Workflow スレッド内で
   `uuid5(AVP_WORKFLOW_EVENT_NAMESPACE, f"{workflow_id}:{run_id}:{history_length}:{seq}:{event_name}")`
   を導く（`history_length` は `workflow.info().get_current_history_length()`、`seq` は整形器が
@@ -285,3 +288,21 @@ Collector が行から作る `@timestamp`（Docker の時刻）・`message`（�
   これは課金の確定ではなく観測の記録で、照合は provider 側で確認して確定する。
 - ログ発行が失敗しても（ロガーの故障を注入しても）台帳の状態・例外の型・制御は変わらない（INV-38 の
   機械検査）。
+
+## 10. 判断・介入イベント: 正本とログの投影（ADR-0041 §7、設計 §14/§15）
+
+| | 正本（canonical） | ログの投影（projection） |
+|---|---|---|
+| 置き場所 | PostgreSQL `episode_events`（`(episode_id, seq)` で一意、追記のみ）と、それが指す新表（`decision_records`・`intervention_commands`・`artifact_manifests` 等） | stdout の JSON 1行 → Collector → OpenSearch |
+| 書く時 | 業務の変更と**同じ transaction**（`InterventionStore.append_event`） | その commit が**成功した後**（`ledger.defer`）。rollback では出ない |
+| 失われたら | 失われてはならない（backup/restore の対象。`scripts/consistency-check.py`） | `scripts/intervention-reproject.py` で正本から作り直せる |
+| 内容 | refs の全文（JSON） | `event_name`・`event_seq`・`episode_id`・`command_id`・`actor_type`・参照らしい refs（`*_id` 等のスカラー）だけ。本文・prompt・入れ子は落とし、キー名を `attributes.refs_omitted` に残す（INV-39） |
+| 読む人 | read model・API・ReviewPacket・再投影 | 人の検索・監視だけ。**業務の判断に使わない**（INV-38） |
+
+- `projected_at` は**再投影の処理**が stdout へ渡した時刻。live の投影は stdout へ書けたかを知れない
+  （ログの故障は握る）ので付けない。`projected_at IS NULL` は「再投影で確認していない」の意味で、
+  「ログに無い」とは限らない。OpenSearch に索引されたことの証明でもない。
+- 再投影は同じ `event_id` で出すので、同じ index の中では `_id`（`create`）が重複を捨てる。日付の index を
+  またぐと別文書になり得る（§4）。検索側は `event_id` で重複を除く。
+- 遅延・未投影の監視: 正本の `episode_events` の件数（期間・Episode ごと）と OpenSearch の件数を**人が**突き合わせる。
+  食い違えば再投影する。アプリは OpenSearch を読まない。
