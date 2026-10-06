@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from apps.api.routers import episodes, research
+from apps.api.routers import episodes, intervention, research
 from contracts.log_contract import EventName, Outcome
 from infrastructure.logging.asgi import RequestLoggingMiddleware
 from infrastructure.logging.emit import emit, log_guard
@@ -52,6 +52,9 @@ def create_app() -> FastAPI:
     app.include_router(episodes.router)
     # ADR-0037 §8.5: Research の受け付け・再開・参照（追加だけ。Episode の API は変えない）
     app.include_router(research.router)
+    # JP-MAS-001 / ADR-0041 §8: 介入 API（/v1/intervention）。
+    # INTERVENTION_PRINCIPALS 未設定なら全て 503
+    app.include_router(intervention.router)
 
     @app.get("/healthz", tags=["ops"])
     async def healthz() -> dict[str, str]:

@@ -31,3 +31,55 @@
 | `test_parsing_does_not_log_secrets` | 解析の経路が token・hash をログに書く |
 
 unit で十分な理由: 解析は純粋関数で、外部 I/O はファイル読み込み1回だけ。
+
+## HTTP API（`tests/unit/test_intervention_api.py`）
+
+FastAPI のアプリ（`create_app`）を httpx の ASGI transport で叩く。store・SQLite（`conftest.session_factory`）は
+**本物**、担当 A / B の関数（`receive_command`・read model・ReviewPacket・変更案ファイル）と workflow の start は
+fake を `InterventionModules` で渡す。`receive_command` の fake は store の `insert_command` をそのまま呼ぶ最小の代役
+（B の検証・HOLD_REQUESTED の書き込みは B のテストの範囲）。
+
+### 既定で閉じる・認証（事故 1）
+| テスト | 何の失敗を捕まえるか |
+|---|---|
+| `test_every_intervention_route_is_503_when_unconfigured` | 設定が無いのにどれかの route が開く。route の数と一致を検査するので、route を足して 503 の確認を忘れると落ちる。token があっても 503 |
+| `test_a_misconfigured_principal_file_disables_the_api_without_leaking` | AI に set_mode を与えた設定で API が動く／理由が残らない／ログに hash・token が出る |
+| `test_missing_or_unknown_token_is_401` | Bearer 以外の方式・空・未知の token が通る |
+| `test_reads_require_the_read_scope` | 読み取りに scope が要らない（comment だけの principal で Episode が読める） |
+
+### 読み取り
+| テスト | 何の失敗を捕まえるか |
+|---|---|
+| `test_episode_view_comes_from_the_read_model` / `test_unknown_episode_is_404_for_reads` | read model を呼ばない・無い Episode で read model を呼ぶ（500 になる） |
+| `test_decisions_are_read_from_the_store` | 判断記録の主体（agent / human）が応答から落ちる |
+| `test_compare_revisions_passes_both_ids_to_the_read_model` / `test_compare_rejects_a_revision_of_another_episode` | 別 Episode の revision を URL の Episode 名義で比較できる（権限の境界の漏れ） |
+| `test_review_packet_json_markdown_and_html` | 形式の取り違え・HTML 表示で packet の中身（LLM 出力を含む）がスクリプトとして実行される |
+| `test_change_set_view_shows_diff_impact_and_cost` / `test_an_unestimated_cost_is_not_shown_as_zero` / `test_a_change_set_of_another_episode_is_404` | 見積りの無い変更を「0円」と見せて適用させる・別 Episode の ChangeSet が読める |
+
+### command
+| テスト | 何の失敗を捕まえるか |
+|---|---|
+| `test_a_new_command_is_202_received_and_started_after_commit` | 202 の前に commit していない／start しない／`received` を完了と表示／**AI の command を人の名義で記録**／B に渡す scope を広げる |
+| `test_an_identical_resend_is_200_with_the_stored_status` | 同じ command_id の再送で2行目・2回目の適用を作る（INV-42 の API 側）／終端の command を start し直す |
+| `test_reusing_a_command_id_with_another_payload_is_409` | 違う内容の再送で既存の command を上書きする |
+| `test_missing_scope_is_403_and_nothing_is_persisted` / `test_command_for_an_unknown_episode_is_404` | 権限の無い command が保存される・無い Episode に command を作る |
+| `test_invalid_envelope_or_payload_is_422_invalid_payload` | 形の違う command を B に渡す（B の中で 500 になる） |
+| `test_command_status_distinguishes_received_from_applied` / `test_status_text_never_says_done_unless_applied` | 受付を「修正完了」と表示する（設計 §11・intervention.md §4）。全状態の文言を表で検査するので、状態を足して文言を忘れると落ちる |
+| `test_a_failed_workflow_start_still_returns_202_and_logs_no_secret` | Temporal の一時的な不調で受付済み command を 5xx にする（クライアントが別 id で出し直して二重になる）／例外文言経由で secret がログに出る |
+| `test_importing_a_change_proposal_file_creates_deterministic_commands` / `test_duplicate_proposals_in_one_file_are_distinct_commands` / `test_change_proposal_import_checks_scope_episode_and_shape` | 変更案ファイルの再取り込みで提案が重複する・並べ替えで別 command になる・同じ案2つが1つに潰れる・別 Episode のファイルを取り込む |
+
+### INV-47
+| テスト | 何の失敗を捕まえるか |
+|---|---|
+| `test_budget_schedule_and_visibility_commands_are_422_unsupported` | 予算・Schedule・公開設定らしい型が（人の token でも）受け付けられる。B に届く前に止まり、行が作られないことまで見る |
+| `test_budget_schedule_visibility_fields_cannot_ride_on_other_commands` | 既存の型（set_mode・apply_change・resume・release_checkpoint）の payload に予算・cron・公開範囲を混ぜて通す |
+| `test_the_router_exposes_no_budget_schedule_or_visibility_surface` | 介入 API に GET と2つの受付 POST 以外の書き込み（PUT/PATCH/DELETE や設定変更の route）が増える |
+| `test_an_ai_principal_cannot_set_mode` | AI が mode を変える（人は通ることも見て、検査が「全部拒否」で空振りしていないことを確かめる） |
+| `test_tokens_never_reach_the_logs` | 成功・401・403・422 のどの経路でも token・その hash がログ（record の属性を含む）に出る |
+
+既存の `tests/architecture/test_api_no_heavy_work.py` が `apps/api/` 全体（新しい router・backend を含む）で
+`execute_workflow`・`.result()`・`minio` の直接 import を禁じる（INV-16）。
+
+## 統合後に親が確かめること（fake でしか動かしていない部分）
+`apps/api/intervention_backend.py::load_real_modules` と `TemporalCommandStarter` は `# pragma: no cover` で、この branch
+ではテストしていない。仮定は [intervention-api.md §6](../operations/intervention-api.md)。
