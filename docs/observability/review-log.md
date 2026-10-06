@@ -9,16 +9,16 @@ Critical なし。3271 passed（unit/contract/architecture）。
 
 | ID | 重大度 | 担当 | 指摘 | 状態 |
 |---|---|---|---|---|
-| I-1 | High | A | 故障注入（INV-38）が INFO 発行・JsonFormatter・after_commit を通っていない（logger が INFO 無効のまま）。root DEBUG + configure_logging(stream=devnull) で注入し、発火回数 > 0 を assert、ledger.defer/_after_commit/CallObservation/reservation_fields も注入点に | 修正（9f8d35d、A）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
-| I-2 | Medium | A | emit() 外の引数計算が未保護（youtube uploader `_observe`/`_error_reasons` が except 節内で例外を置換し得る）。`record_upload_session` にログ用の DB 読み取り追加（§9 違反）→削除 | 修正（87cbe34、A）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
-| I-3 | Medium | A | INV-40 の旧履歴 replay が Production/Render/Upload/Storyboard/Pipeline に無い。01eb0ee で履歴 fixture を採り Replayer で検査 | 修正（caf691f、A）。D 再確認: 解消（01eb0ee の旧コードで 21/21 replay）。残り: ScriptWorkflow の通常・失敗経路の旧履歴が無い（Low、A）→ 修正（5a67eb7、A。Script 6本を ScriptWorkflow・EvidenceScriptWorkflow の両方で replay）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
-| I-4 | Medium | A | stack を安全化前に切り詰めている（formatter.py:171-188→303）。block ごとに sanitize→切詰 | 修正（d1bcbc5、A）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
-| I-5 | Medium | B | `AVP_ENVIRONMENT` 既定 dev のため prod index に dev が入る。既定を外し unknown、deploy 手順に prod 明記、check-pipeline で不一致検出 | 修正（4f72c42, 3a570c9）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
-| I-6 | Low | B | check-pipeline の lag を系統別に、curl のパスワードを argv に出さない | 修正（3a570c9）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
-| I-7 | Low | B/契約 | infra フィールド集合を contracts へ、Lua の unstructured 出力 ⊆ infra mapping を test で固定 | 修正（56bf259）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
-| I-8 | Low | A | workflow の `_event()` 重複、stage 文字列 ⊆ LogStage を AST テストで固定 | 修正（4b6a114、A）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
-| I-9 | Low | B | one-shot が pki/ 全体（秘密鍵含む）を mount | 修正（838ce5d、追加修正 dbca5de: securityadmin の DAC_READ_SEARCH）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
-| I-10 | Low | A/B | Dockerfile app stage の CMD を `python -m apps.api.serve` に | 修正（935ced0、A）。D 再確認: 解消（2026-10-07、統合 64d6e1c まで） |
+| I-1 | High | A | 故障注入（INV-38）が INFO 発行・JsonFormatter・after_commit を通っていない（logger が INFO 無効のまま）。root DEBUG + configure_logging(stream=devnull) で注入し、発火回数 > 0 を assert、ledger.defer/_after_commit/CallObservation/reservation_fields も注入点に | 修正（9f8d35d、A）。D 再確認: 解消（2026-10-06、87fd105） |
+| I-2 | Medium | A | emit() 外の引数計算が未保護（youtube uploader `_observe`/`_error_reasons` が except 節内で例外を置換し得る）。`record_upload_session` にログ用の DB 読み取り追加（§9 違反）→削除 | 修正（87cbe34、A）。D 再確認: 解消（2026-10-06、87fd105） |
+| I-3 | Medium | A | INV-40 の旧履歴 replay が Production/Render/Upload/Storyboard/Pipeline に無い。01eb0ee で履歴 fixture を採り Replayer で検査 | 修正（caf691f、A）。D 再確認: 解消（01eb0ee の旧コードで 21/21 replay）。残り: ScriptWorkflow の通常・失敗経路の旧履歴が無い（Low、A）→ 修正（5a67eb7、A。Script 6本を ScriptWorkflow・EvidenceScriptWorkflow の両方で replay）。D 再確認: 解消（2026-10-06、87fd105） |
+| I-4 | Medium | A | stack を安全化前に切り詰めている（formatter.py:171-188→303）。block ごとに sanitize→切詰 | 修正（d1bcbc5、A）。D 再確認: 解消（2026-10-06、87fd105） |
+| I-5 | Medium | B | `AVP_ENVIRONMENT` 既定 dev のため prod index に dev が入る。既定を外し unknown、deploy 手順に prod 明記、check-pipeline で不一致検出 | 修正（4f72c42, 3a570c9）。D 再確認: 解消（2026-10-06、87fd105） |
+| I-6 | Low | B | check-pipeline の lag を系統別に、curl のパスワードを argv に出さない | 修正（3a570c9）。D 再確認: 解消（2026-10-06、87fd105） |
+| I-7 | Low | B/契約 | infra フィールド集合を contracts へ、Lua の unstructured 出力 ⊆ infra mapping を test で固定 | 修正（56bf259）。D 再確認: 解消（2026-10-06、87fd105） |
+| I-8 | Low | A | workflow の `_event()` 重複、stage 文字列 ⊆ LogStage を AST テストで固定 | 修正（4b6a114、A）。D 再確認: 解消（2026-10-06、87fd105） |
+| I-9 | Low | B | one-shot が pki/ 全体（秘密鍵含む）を mount | 修正（838ce5d、追加修正 dbca5de: securityadmin の DAC_READ_SEARCH）。D 再確認: 解消（2026-10-06、87fd105） |
+| I-10 | Low | A/B | Dockerfile app stage の CMD を `python -m apps.api.serve` に | 修正（935ced0、A）。D 再確認: 解消（2026-10-06、87fd105） |
 
 ## 実装レビュー 再確認（2026-10-06、対象 3bebec3..87fd105、担当D）
 Critical/High の残りなし。I-1〜I-10 は解消（I-3 は上記の残りあり）。3305 passed。新規 Low:
