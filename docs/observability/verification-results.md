@@ -643,3 +643,31 @@ Fluent Bit はこの間止めた。2026-10-06T10:35:10〜10:42:37Z、c5af8ff。
 | 1'. 再開 | `ldc up -d --wait opensearch; ldc up -d fluent-bit` | 停止中に runner が書いた JSON 行 541 行が **541 文書**として届いた（位置 DB から続き）。`catchup` behind 0 |
 | 2. `AVP_LOG_FORMAT=text` | §5.1 の text 条件（全 integration） | **137 passed, 6 skipped**（JSON・故障注入と同数）。runner の出力は stdlib の text 形式、app 系統の文書は出ない |
 | 3. compose の `logging:` を戻す | 未実施 | 隔離 app の compose（`compose.apptest.yaml`）の logging 設定を差し替える手段が試験 harness に無い。logging driver の設定は Docker 側の変更でアプリのプロセスに影響しないこと、1・2 段でアプリの合否が変わらないことまでを確認 |
+
+### 5.16 S-VER（合格。Dashboards の `/api/status` を含む）
+
+2026-10-06T10:43〜10:46Z。
+
+| コンポーネント | 稼働版 | image（`docker inspect` の `.Image`） | VERSIONS.md |
+|---|---|---|---|
+| OpenSearch | `sa version --expect 3.8.0` → 3.8.0 | `sha256:fafe3fc3…236a40` | 一致 |
+| Fluent Bit | `fluent-bit --version` → v5.1.2、commit `66910c10a4d7…` | `sha256:d792375c…fe9226` | 一致 |
+| Dashboards | `GET /api/status`（viewer）→ `version.number` **3.8.0**、`build_hash aa72a981…`、`status.overall.state` **green**（認証なしは 401） | `sha256:7fb7ec1b…852bbd` | 一致 |
+
+- Dashboards は `dashboards-keystore` → `--profile dashboards up -d dashboards` で起動（RSS 276MiB / 上限 1GiB、MemAvailable
+  5.89 → 5.63GiB）、確認後に停止した。
+
+### 5.17 check-pipeline.sh（B の最終版を隔離環境で実行）
+
+```bash
+AVP_LOGGING_OS_PORT=19213 deploy/logging/scripts/check-pipeline.sh --env test --project avp2-oslog-c2-log \
+  --secrets-dir ~/.config/avp-logging-test/c2 --target-project avp2-oslog-c2 [--catchup-only] --state-dir <scratchpad>
+```
+
+| 状況 | 結果 |
+|---|---|
+| 通常（10:46Z、全項目） | **rc=0**。health ok、files_opened 128、破棄なし、chunk 0、**追いつき 未読 0 bytes**（I-17）、cluster yellow、app・infra とも最終取り込みから 1 分（app の lag 既定 90 分、I-13）、environment はすべて test、**WARN line_too_long 2 件**（§5.10 の 300000 bytes の行と、§5.12 の位置 DB 削除で読み直した同じ行）、index サイズ、ディスク 17%、証明書の期限（CA 2036-10-03、node 2029-01-08）、MemAvailable 5737MiB |
+| `--catchup-only`、Collector 停止中に 1000 行（§5.11） | **rc=1**、`FAIL fluent-bit: 到達できない` |
+| `--catchup-only`、rotation 一巡の直後（§5.11） | rc=0（追いつき 0 bytes。消えたファイルは見えない） |
+
+- tail の停滞（I-15）の判定経路は、修正後の Fluent Bit では停滞そのものが再現しない（§5.10）ので実機では未発火。
