@@ -417,3 +417,17 @@ Replayer で replay。非決定にならず1件も発行しない）
 / `tests/unit/test_log_old_history_replay.py::test_the_old_histories_cover_every_stage_workflow`
 / `tests/architecture/test_logging_boundaries.py::test_workflow_event_names_and_stages_are_contract_vocabulary`
 / `tests/unit/test_pipeline_workflows.py`（既存の履歴 fixture の replay がログ発行を足した後も通る）
+
+## N. 判断記録と介入（ADR-0041）
+
+### INV-45 manifest が変われば、それに結び付いた approval は stale になり流用されない
+approval（`annotations.kind=approval`）は承認した採用 manifest（`annotations.manifest_id`）に結び付く。
+採用 manifest が別の manifest に替わった時点で（台本・素材・完成品のどれかが新しい revision になれば
+新しい manifest になる）、旧 manifest の approval は現行の合格として扱わない。判定は
+`infrastructure.intervention.read_model.approval_is_current(annotation, control)` の1つだけで、
+`annotation.manifest_id == control.active_manifest_id` のときだけ真（approval 以外・manifest 未結び付け・
+採用 manifest 無しは偽）。読み取りモデルは旧 manifest の approval を `stale_approvals` に列挙し、
+`approval_current=false` で示す。approval の行は消さない（追記型 / INV-41 の趣旨）。
+**機械検査**: `tests/unit/test_intervention_read_model.py::test_approval_is_current_only_for_the_active_manifest`
+/ `tests/unit/test_intervention_read_model.py::test_an_approval_of_the_old_manifest_is_stale_after_the_manifest_changes`
+（checkpoint の解放・投稿の直前にこの述語を通すのは担当B の適用・gate 側。その検査はそちらのテストが持つ）

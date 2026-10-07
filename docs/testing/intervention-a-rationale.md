@@ -60,3 +60,17 @@
 | `test_enabled_capture_records_the_run_and_the_choice_with_the_plan` | 設計 §17-1「企画採用理由から実際の入力・成果物へたどれる」: plan → choose_topic → agent_run → 実際の prompt・生出力 | workflow を変えずに2つの Activity が同じキーを導くことを通しで | 一時置き場から写せない、判断記録が snapshot を指さない、候補が保存済みと食い違う |
 | `test_a_staging_failure_fails_candidate_generation` | ON のとき記録できなければ失敗させる | 故障注入 | 記録が無いまま plan が確定する |
 | `test_a_rerun_of_select_and_save_does_not_duplicate_records` | 保存後に応答を失った再実行で記録が増えない | 同じ Activity を2回 | 再実行で agent_run・判断記録が増える |
+
+## 読み取りモデル・INV-45（`tests/unit/test_intervention_read_model.py`）
+
+| テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
+|---|---|---|---|
+| `test_a_legacy_episode_reads_with_defaults_and_nothing_is_written` | 行の無い Episode は既定値（persisted=false）で読み、現行から manifest を組み、JSON 参照から依存を導き、何も書かない | SQLite で行数を数える | 読み取りが制御行を作る、古い Episode が読めない |
+| `test_a_member_built_from_a_non_adopted_upstream_is_stale_unless_rebound` | 設計 §12: 採用していない上流から作った下流は stale。`rebound_to` は stale にしない（ADR-0041 §6） | 台本の差し替えを実データで | 旧台本の storyboard・音声を現行として示す／結び直しを無視 |
+| `test_approval_is_current_only_for_the_active_manifest` | INV-45 の述語 | 純粋関数 | 旧 manifest・未結び付け・コメントを合格扱い |
+| `test_an_approval_of_the_old_manifest_is_stale_after_the_manifest_changes` | INV-45 / 設計 §17-8「変更した manifest への古い合格判定を流用しない」 | `ensure_manifest` で manifest を実際に替える | 旧合格が新しい完成品の合格として残る |
+| `test_a_comment_on_a_replaced_revision_stays_put_as_an_old_version_comment` | 設計 §8: アンカーを動かさず古い版のコメントとして示す。解決は別行 | 実データ | コメントの自動移動・消失、解決の取り違え |
+| `test_received_commands_are_never_presented_as_done` | intervention.md §4: RECEIVED を修正完了として示さない。ChangeSet の影響・見積り・actor（AI 提案）を出す | 実データ | 受付を完了と誤表示、AI の提案を人の編集として表示 |
+| `test_reservations_are_classified_and_llm_cost_is_unmeasured_not_zero` | 送信済み・成否不明・未送信の区別（intervention.md §5）、費用は台帳＋research の見積り、見積りの無い呼び出しは 0 にしない（§9） | 台帳を実際の遷移で作る | 成否不明を未送信と混同、LLM 費用を 0 と表示 |
+| `test_records_events_and_derived_topic_decisions_are_listed` / `test_unknown_episode_is_none` | 制御・イベントの表示、存在しない Episode | 実データ | 制御状態の取り違え |
+| `test_compare_scripts_per_segment` / `test_compare_storyboards_per_scene_and_others_generically` | 版の比較（台本は segment、storyboard は scene、他は JSON） | 実データ | 位置ずれの比較で無関係な差分を出す |
