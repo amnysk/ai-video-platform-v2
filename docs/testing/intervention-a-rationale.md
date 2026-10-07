@@ -74,3 +74,25 @@
 | `test_reservations_are_classified_and_llm_cost_is_unmeasured_not_zero` | 送信済み・成否不明・未送信の区別（intervention.md §5）、費用は台帳＋research の見積り、見積りの無い呼び出しは 0 にしない（§9） | 台帳を実際の遷移で作る | 成否不明を未送信と混同、LLM 費用を 0 と表示 |
 | `test_records_events_and_derived_topic_decisions_are_listed` / `test_unknown_episode_is_none` | 制御・イベントの表示、存在しない Episode | 実データ | 制御状態の取り違え |
 | `test_compare_scripts_per_segment` / `test_compare_storyboards_per_scene_and_others_generically` | 版の比較（台本は segment、storyboard は scene、他は JSON） | 実データ | 位置ずれの比較で無関係な差分を出す |
+
+## ReviewPacket（`tests/unit/test_intervention_review_packet.py`、`tests/contract/test_review_packet_contract.py`）
+
+| テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
+|---|---|---|---|
+| `test_no_secret_or_signed_url_reaches_the_packet_or_markdown` | AGENTS.md §9・設計 §8: 素材は参照だけ、秘密・signed URL を書き出さない | 素材本体・コメント・command・変更案に token らしき値を仕込み、JSON と Markdown の全文を検索 | 人・AI が入れた文字列経由の漏えい、signed URL の生成 |
+| `test_unknowns_are_listed_instead_of_filled_in` | 欠測・未確認を `missing` に列挙（補完しない）、LLM 費用は unmeasured | 古い Episode の view から | 欠けた記録を黙って省く・0 と表示 |
+| `test_rationale_is_kept_apart_from_tool_refs_and_results` | 理由（種別付き）と tool 参照・結果を別欄にする（設計 §7） | 判断記録を実際に書いて | 自己申告の理由と tool の結果の混同 |
+| `test_markdown_shows_the_script_old_comments_and_unapplied_commands` | 人向けの出力に台本・古い版コメント・未適用 command・unmeasured が出る | Markdown を直接 | 受付を完了と誤表示、古いコメントの欠落 |
+| `test_the_published_json_schema_matches_the_models` | 書き出した schema とモデルの一致（AGENTS.md §7/§8） | ファイル比較 | schema の更新漏れ |
+| `test_each_proposal_is_exactly_a_propose_change_payload` 他 | 変更案ファイルの各案は `ProposeChangePayload` そのもの（担当C の取り込みと同じ検証）、基準 manifest の不一致・未知の欄を拒否 | 契約の検証 | 取り込みで拒否される形を書き出す、予算などの未知の欄を通す |
+
+## 独立レビュアー（`tests/unit/test_intervention_reviewer.py`）
+
+| テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
+|---|---|---|---|
+| `test_a_clean_manifest_passes_and_is_recorded_without_new_revisions` | RoleSpec REVIEWER: revision を作らない・LLM なし。所見は採用 manifest と agent_run に結び付き、判定は rule・自分の snapshot を指す | 実データで run_reviewer を通す | レビュアーが成果物を書き換える、所見がどの manifest のものか分からない |
+| `test_narration_that_does_not_fit_its_scene_is_blocking` | 台本 Activity と同じ予算式で segment に所見を付ける | 実データ | 予算超過の見落とし、アンカーの欠落 |
+| `test_a_storyboard_span_too_short_for_its_narration_is_blocking` | 既存の domain 規則（`check_storyboard_fits_narration`）を再利用 | 実データ | 区間不足の見落とし |
+| `test_final_video_qa_and_its_production_manifest_are_checked` | 完成動画は採用中の production manifest から作られ QA 合格であること | 不一致→一致の2段 | 別の素材一式の完成動画を合格にする |
+| `test_open_comments_stale_approvals_and_failed_verification_are_reported` | 未解決コメント・旧 manifest の承認（INV-45）・照合不合格を助言として出す。自分の所見をコメントとして数えない | 実データ | 旧承認の流用、照合結果の無視、所見の自己増殖 |
+| `test_rerunning_on_the_same_inputs_does_not_add_records` | 同じ入力の再実行で記録が増えない | 2回実行して行数を比べる | 再実行のたびに所見・判定が重複する |
