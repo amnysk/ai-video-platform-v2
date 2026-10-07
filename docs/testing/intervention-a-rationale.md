@@ -85,3 +85,14 @@
 | `test_markdown_shows_the_script_old_comments_and_unapplied_commands` | 人向けの出力に台本・古い版コメント・未適用 command・unmeasured が出る | Markdown を直接 | 受付を完了と誤表示、古いコメントの欠落 |
 | `test_the_published_json_schema_matches_the_models` | 書き出した schema とモデルの一致（AGENTS.md §7/§8） | ファイル比較 | schema の更新漏れ |
 | `test_each_proposal_is_exactly_a_propose_change_payload` 他 | 変更案ファイルの各案は `ProposeChangePayload` そのもの（担当C の取り込みと同じ検証）、基準 manifest の不一致・未知の欄を拒否 | 契約の検証 | 取り込みで拒否される形を書き出す、予算などの未知の欄を通す |
+
+## 独立レビュアー（`tests/unit/test_intervention_reviewer.py`）
+
+| テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
+|---|---|---|---|
+| `test_a_clean_manifest_passes_and_is_recorded_without_new_revisions` | RoleSpec REVIEWER: revision を作らない・LLM なし。所見は採用 manifest と agent_run に結び付き、判定は rule・自分の snapshot を指す | 実データで run_reviewer を通す | レビュアーが成果物を書き換える、所見がどの manifest のものか分からない |
+| `test_narration_that_does_not_fit_its_scene_is_blocking` | 台本 Activity と同じ予算式で segment に所見を付ける | 実データ | 予算超過の見落とし、アンカーの欠落 |
+| `test_a_storyboard_span_too_short_for_its_narration_is_blocking` | 既存の domain 規則（`check_storyboard_fits_narration`）を再利用 | 実データ | 区間不足の見落とし |
+| `test_final_video_qa_and_its_production_manifest_are_checked` | 完成動画は採用中の production manifest から作られ QA 合格であること | 不一致→一致の2段 | 別の素材一式の完成動画を合格にする |
+| `test_open_comments_stale_approvals_and_failed_verification_are_reported` | 未解決コメント・旧 manifest の承認（INV-45）・照合不合格を助言として出す。自分の所見をコメントとして数えない | 実データ | 旧承認の流用、照合結果の無視、所見の自己増殖 |
+| `test_rerunning_on_the_same_inputs_does_not_add_records` | 同じ入力の再実行で記録が増えない | 2回実行して行数を比べる | 再実行のたびに所見・判定が重複する |

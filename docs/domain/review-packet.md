@@ -43,3 +43,25 @@ API は `GET /intervention/episodes/{id}/review-packet?format=json|markdown|html
 | `suggested_command_ids` | 任意。作成側の控え（proposals と同じ順・8〜64 文字）。API は自分で決定的な command_id を導く |
 
 予算・Schedule・公開設定を変える欄は無い（未知の欄は拒否 / INV-47）。
+
+## 独立レビュアー（`infrastructure/intervention/reviewer.py`）
+
+`run_reviewer(session_factory, artifact_store, episode_id)`。RoleSpec `REVIEWER`（`contracts/roles.py`）:
+LLM を呼ばず、成果物の revision を作らない。採用 manifest が無ければ `ensure_manifest` で現行から作り
+（制御行の無い Episode には legacy の行ができる）、その manifest に所見を結び付ける。検査中に採用 manifest が
+替われば `ReviewerConflictError`（所見を古い manifest に付けない）。
+
+| check | 重さ | 規則 |
+|---|---|---|
+| `integrity` | blocking | member の本体が読めない・sha256 が記録と違う・契約違反 |
+| `stale_member` | blocking | 採用していない上流から作られた member（読み取りモデルの stale） |
+| `narration_budget` | blocking | segment の読み上げ単位が尺の予算を超える（`ScriptLocale`、台本 Activity と同じ式） |
+| `storyboard_span` | blocking | storyboard の区間がナレーションに足りない（`check_storyboard_fits_narration`） |
+| `final_video` | blocking | technical_qa が無い・不合格、または production manifest が採用中と違う |
+| `final_video` | advisory | 完成動画が manifest にまだ無い |
+| `evidence` | advisory | 台本照合が無い・別の台本 revision の照合・verdict が passed でない（照合は助言 / ADR-0038） |
+| `open_comments` | advisory | 未解決のコメント（レビュアー自身の所見は数えない） |
+| `stale_approval` | advisory | 採用中でない manifest への承認（INV-45） |
+
+判定は blocking が1つでもあれば `needs_attention`、無ければ `pass`（候補はその1件だけ、`rationale_kind=rule`）。
+入力 snapshot（規則の版・member・stale・コメント・承認・照合）が同じ再実行は既存の記録を返す。
