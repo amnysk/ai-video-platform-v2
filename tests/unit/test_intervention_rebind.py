@@ -476,3 +476,30 @@ async def test_render_without_a_link_still_refuses_a_script_the_storyboard_was_n
         await harness.activities.render_final_video(_req(seed))
     assert info.value.type == "RenderInputIntegrityError"
     assert "storyboard.source_script" in str(info.value)
+
+
+def test_structure_check_rejects_a_visual_edit() -> None:
+    """映像の指示（``visual``）の変更は結び直しで済まない。
+
+    storyboard・画像は旧い visual から作った。
+
+    映像を変えるのは ``scene.override_visual`` か storyboard の作り直し（クロスレビュー HIGH）。
+    """
+    original = _script([dict(s) for s in SCRIPT_SCENES])
+    with pytest.raises(ProductionInputInvalidError, match="visual"):
+        check_rebound_script(original, _script(_edited(visual="炉の跡")))
+
+
+async def test_production_plan_refuses_a_rebound_script_with_another_visual(
+    session_factory,
+) -> None:
+    store = InMemoryArtifactStore()
+    episode = await create_episode(session_factory)
+    _, storyboard_meta = await record_inputs(session_factory, store, episode)
+    changed = await _record_script(session_factory, store, episode, _edited(visual="炉の跡"))
+    await _rebind(session_factory, episode, changed.id, storyboard_meta.id)
+    activities = ProductionActivities(session_factory=session_factory, store=store, bucket=BUCKET)
+    with pytest.raises(ProductionInputInvalidError, match="visual"):
+        await activities.plan(
+            ProductionPlanRequest(episode_id=episode, workflow_id="w", run_id="r")
+        )
