@@ -68,3 +68,26 @@ B の実装が入った後は、統合 branch の integration test が実物の 
 | `test_activity_boundary_keeps_the_type_and_stops_retries` | Activity 境界で型名を保ち non_retryable | `raise_activity_error` を直接 | 境界で別の型に包まれ分類が変わる |
 | `test_held_dispatch_leaves_an_unsent_reservation_that_resume_reuses` | 停止時は provider へ送らず予約は reserved・未 dispatch。再開で同じ予約を使い、新しい予約を作らない（ADR-0041 §3・INV-15） | `PaidJobRunner` の実経路（SQLite・fake 生成器）で gate だけ stub | 成否不明（`ProviderSubmitAmbiguousError`）に包まれ照合待ちで永久停止／再開で二重予約 |
 | `test_held_dispatch_blocks_the_episode_once_without_retry_or_recovery` | Production workflow は1回の submit で blocked（failed でない）・代替案に入らない | time-skipping の Temporal 試験サーバ + 名前登録の mock Activity | workflow がラウンドを重ねる／failed（終端）にして再開できなくする |
+
+## 5. DB とオブジェクトストアの整合検査（`tests/unit/test_intervention_consistency.py`、SQLite・メモリストア）
+
+設計 §14「バックアップと復元で RDB の参照とオブジェクトの整合性を検査する」・§17-11。検査器
+（`infrastructure/intervention/consistency.py`、`scripts/consistency-check.py`）は読み取りだけ。
+実の PostgreSQL + MinIO での復元演習は `scripts/intervention-backup-drill.sh`（隔離スタック）で行う。
+
+| テスト | 守る契約・事故 | 層の理由 | 捕まえる失敗 |
+|---|---|---|---|
+| `test_a_consistent_state_has_no_problems` | 全ての表に行がある整合した状態で誤検知しない | 本物の store・表・fixture（媒体つき Artifact 一式） | 検査が常に NG で、復元の判定に使えない |
+| `test_missing_and_changed_objects_are_reported` | オブジェクト欠落・中身の違い（Artifact・agent_runs の snapshot） | 同上で1件ずつ壊す | MinIO の複製漏れ・別バージョンの上書きを見逃す |
+| `test_missing_media_inside_an_artifact_is_reported_unless_skipped` | Artifact JSON の中の媒体本体（動画・音声）も検査。`--skip-media` で省ける | 同上 | 記述子だけ残り「履歴はあるが再生できない」（設計 §14）を見逃す |
+| `test_dangling_intervention_references_are_reported` | manifest の members・parent、revision_links、episode_controls の参照が解決する | 同上 | DB の一部の表だけ復元・FK の無い参照の欠落 |
+| `test_a_reference_into_another_episode_is_reported` | 参照先が同じ Episode | 同上 | 別 Episode の成果物を採用 manifest に入れた破損 |
+| `test_script_exit_codes` / `test_script_rejects_unknown_arguments` | 不整合で非0、出力形式、直す引数を持たない | script を読み込み fixture を渡す | 演習 script が NG を見落とす（終了コード0） |
+
+## 6. backup/restore 演習（`scripts/intervention-backup-drill.sh`、隔離スタック・実の PostgreSQL 17 / MinIO）
+
+unit test（§5）はメモリストアと SQLite なので、`pg_dump`/`pg_restore` と `mc mirror` を通した後も参照と sha256 が
+保たれることは言えない。演習は実物で通し、**検査が壊れた復元を見つける**ことまで確かめる（1オブジェクト削除 → 終了コード 1）。
+本番 `avp2` は script が拒否する。元データは `tests/support/intervention_world.py:seed_world`（unit test と同じ形）を
+`scripts/intervention-backup-drill-seed.py` が隔離 DB へ入れる（`AVP_ENVIRONMENT=test` でなければ拒否）。
+pytest に入れていないのは、`docker compose exec`（postgres・minio コンテナ）を test-runner の中から呼べないため。
