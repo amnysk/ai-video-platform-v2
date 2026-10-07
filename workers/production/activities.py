@@ -74,6 +74,7 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
 )
+from infrastructure.intervention.rebind import bound_script_ref, verify_rebound
 from infrastructure.storage.artifact_store import ArtifactStore
 from workers.production.run_inspector import WorkflowRunInspector
 
@@ -204,7 +205,7 @@ class ProductionActivities:
     async def plan(self, request: ProductionPlanRequest) -> ProductionPlan:
         """現行 storyboard と、それが参照する台本から作業一覧を作る。"""
         storyboard_loaded, storyboard = await self._load_current_storyboard(request.episode_id)
-        script_loaded, script = await self._load_source_script(storyboard)
+        script_loaded, script = await self._load_source_script(storyboard_loaded, storyboard)
         work = plan_production(script, storyboard)
         return ProductionPlan(
             storyboard_artifact_id=storyboard_loaded.meta.id,
@@ -255,10 +256,11 @@ class ProductionActivities:
         return loaded, storyboard
 
     async def _load_source_script(
-        self, storyboard: StoryboardArtifact
+        self, storyboard_loaded: _Loaded, storyboard: StoryboardArtifact
     ) -> tuple[_Loaded, ScriptArtifact]:
-        ref = storyboard.source_script
+        """storyboard が使う台本（結び直しを考慮。ADR-0041 §6 の唯一の解決 bound_script_ref）。"""
         async with self._session_factory() as session:
+            ref = await bound_script_ref(session, storyboard_loaded.meta, storyboard)
             meta = await ArtifactMetadataRepository(session).get(ref.artifact_id)
         if meta is None or meta.artifact_type is not ArtifactType.SCRIPT:
             raise ProductionInputMissingError(
@@ -273,6 +275,9 @@ class ProductionActivities:
             script = ScriptArtifact.model_validate(loaded.payload)
         except Exception as exc:
             raise ProductionInputInvalidError(f"script invalid: {str(exc)[:500]}") from exc
+        if ref.rebound:
+            async with self._session_factory() as session:
+                await verify_rebound(session, self._store, storyboard, script)
         return loaded, script
 
     # ------------------------------------------------------------------ マニフェスト
@@ -303,7 +308,7 @@ class ProductionActivities:
                 f"current storyboard {storyboard_loaded.meta.id} != planned "
                 f"{request.storyboard_artifact_id} (storyboard changed during production)"
             )
-        script_loaded, script = await self._load_source_script(storyboard)
+        script_loaded, script = await self._load_source_script(storyboard_loaded, storyboard)
         if script_loaded.meta.id != request.script_artifact_id:
             raise ProductionInputInvalidError(
                 f"storyboard source script {script_loaded.meta.id} != planned "
