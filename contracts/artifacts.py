@@ -8,7 +8,15 @@ import uuid
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from contracts.artifact_refs import (
     SCRIPT_SCENE_ID_PATTERN,
@@ -457,9 +465,13 @@ class SceneVisualOverrideArtifact(FrozenModel):
     framing: str | None = Field(default=None, max_length=120)
     camera_movement: str | None = Field(default=None, max_length=120)
     rationale: str = Field(min_length=1, max_length=SCENE_VISUAL_OVERRIDE_MAX_RATIONALE_CHARS)
-    #: この案が対処する ``provider_rejections`` の行
-    rejection_ids: list[str] = Field(min_length=1)
+    #: この案が対処する ``provider_rejections`` の行。provider 拒否からの代替案では1件以上
+    rejection_ids: list[str] = Field(default_factory=list)
     planner: GeneratorMetadata
+    #: JP-MAS-001 / ADR-0041 §7: 人の介入（ChangeSet の適用）による差し替え。その ChangeSet の id。
+    #: None（既定）は ADR-0035 の代替映像案。None のときは正準 JSON に**出さない**（既存の案の
+    #: バイト列・sha256 を変えない）
+    change_set_id: str | None = None
 
     @field_validator("rejection_ids")
     @classmethod
@@ -467,6 +479,27 @@ class SceneVisualOverrideArtifact(FrozenModel):
         for item in value:
             check_canonical_uuid(item)
         return value
+
+    @field_validator("change_set_id")
+    @classmethod
+    def _canonical_change_set_id(cls, value: str | None) -> str | None:
+        if value is not None:
+            check_canonical_uuid(value)
+        return value
+
+    @model_validator(mode="after")
+    def _addresses_a_rejection_or_a_change_set(self) -> SceneVisualOverrideArtifact:
+        """代替映像案は拒否に対処するもの、介入の差し替えは ChangeSet に由来するもの。"""
+        if self.change_set_id is None and not self.rejection_ids:
+            raise ValueError("rejection_ids must not be empty for a provider-rejection alternative")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_change_set(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if data.get("change_set_id") is None:
+            data.pop("change_set_id", None)
+        return data
 
 
 def build_scene_visual_override_artifact(

@@ -66,6 +66,7 @@ from infrastructure.db.models import (
     TopicCandidateRow,
     TopicPlanRow,
 )
+from infrastructure.intervention.gate import check_dispatch_allowed
 from infrastructure.logging.emit import log_guard
 from infrastructure.logging.ledger import defer, reservation_fields
 
@@ -514,6 +515,20 @@ class ArtifactMetadataRepository:
                 )
         await self._session.flush()
 
+    async def retire_current(
+        self,
+        episode_id: uuid.UUID | str,
+        artifact_type: ArtifactType,
+        scene_id: str | None = None,
+    ) -> None:
+        """現行世代を、後継を作らずに降ろす（ADR-0041 §7: 適用した変更で stale になった下流）。
+
+        行は消さない（INV-11 / INV-41）。降ろし方は ``record`` の新世代と同じ
+        ``_supersede_current``。
+        同じ内容が後で再び作られたら ``record`` の A→B→A の規則で復帰する。
+        """
+        await self._supersede_current(_as_uuid(episode_id), artifact_type, _now(), scene_id)
+
     async def find_current_by_type(
         self,
         episode_id: uuid.UUID | str,
@@ -854,7 +869,11 @@ class ProviderReservationRepository:
         更新0行は「既に呼んだかもしれない行」なので ``UnreconciledReservationError``（人手照合）。
         """
         table = ProviderReservationRow
-        await self._row(reservation_id)  # 行が無ければ InvalidTransitionError
+        row = await self._row(reservation_id)  # 行が無ければ InvalidTransitionError
+        if row.status == ReservationStatus.RESERVED.value and row.dispatched_at is None:
+            # ADR-0041 / INV-44・INV-46: hold・必須記録の gate。同じ transaction で制御行を
+            # FOR SHARE で読み、条件付き UPDATE の前に判定する（拒否なら予約は未 dispatch のまま）
+            await check_dispatch_allowed(self._session, row.episode_id)
         result = await self._session.execute(
             update(table)
             .where(
@@ -999,6 +1018,15 @@ class ProviderReservationRepository:
         session が差し替わっていた・閉じた予約なら ``ok`` は False（送ってはならない）。
         """
         table = ProviderReservationRow
+        current = await self._session.get(table, _as_uuid(reservation_id))
+        if (
+            current is not None
+            and current.status == ReservationStatus.RESERVED.value
+            and current.dispatched_at is None
+        ):
+            # ADR-0041 / INV-44・INV-46: 新しい投稿の開始だけを gate に通す。dispatch 済みの
+            # session の再入（受理位置からの続き）は新しい dispatch ではない（HELD の in_flight）
+            await check_dispatch_allowed(self._session, current.episode_id)
         changed = await self._session.execute(
             update(table)
             .where(
