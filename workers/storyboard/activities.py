@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,6 +24,7 @@ from contracts.artifacts import (
     build_storyboard_artifact,
     parse_storyboard_artifact,
 )
+from contracts.intervention import AgentRole, InterventionMode
 from contracts.states import (
     ArtifactType,
     EpisodeStatus,
@@ -61,6 +63,25 @@ from infrastructure.db.repositories import (
     ProviderReservation,
     ProviderReservationRepository,
 )
+from infrastructure.intervention.capture import (
+    AgentRunRecorder,
+    ExchangeTape,
+    PromptSource,
+    RunCapture,
+    StoredSnapshot,
+    recording_exchanges,
+    request_document,
+    reservation_invocation,
+    response_document,
+    tool_refs,
+)
+from infrastructure.intervention.records import (
+    PLAN_STORYBOARD,
+    generation_decision_payload,
+    record_derived_links,
+    record_generation_decision,
+)
+from infrastructure.intervention.store import InterventionStore
 from infrastructure.storage.artifact_store import ArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -217,6 +238,8 @@ class StoryboardActivities:
         self._prompt_template_id = prompt_template_id
         self._prompt_template_version = prompt_template_version
         self._model_label = model_label or DEFAULT_MODEL_LABEL
+        #: 新方式（mode != legacy）の Episode の実行記録（ADR-0041）。legacy では使わない
+        self._recorder = AgentRunRecorder(store)
 
     def all_activities(self) -> Sequence[Callable[..., object]]:
         """Workerへ登録するActivity。ここが登録漏れの唯一の防波堤。"""
@@ -420,6 +443,8 @@ class StoryboardActivities:
         provider = ProviderCall.CODEX_STORYBOARD
         key = idempotency_key(provider=provider.value, input_hash=input_hash, round=request.round)
         raw_key_prefix = f"{PROVIDER_RAW_PREFIX}/{request.episode_id}"
+        # 新方式の Episode だけ実行記録を残す（ADR-0041）。legacy は読むだけで何も書かない
+        capture = await self._capture_enabled(request.episode_id)
 
         # (2) evidence の無い予約が残っていれば、**新しい呼び出しを開始しない**（ADR-0013）
         async with self._session_factory() as session:
@@ -449,9 +474,12 @@ class StoryboardActivities:
                 await session.commit()
 
         raw_key = f"{raw_key_prefix}/{reservation.id}.txt"
-        raw_text = await self._raw_output(
-            request=request, call=call, paid=paid, reservation=reservation, raw_key=raw_key
-        )
+        # prompt は生成器の内側で組まれる。配線で包んだ LLM 呼び出しを tape に写す（新方式だけ）
+        tape_scope = recording_exchanges() if capture else nullcontext(None)
+        with tape_scope as tape:
+            raw_text = await self._raw_output(
+                request=request, call=call, paid=paid, reservation=reservation, raw_key=raw_key
+            )
 
         # (6) ここで初めて解釈・検証する。失敗は retryable（ADR-0014）
         artifact = self._build(raw_text, loaded=loaded, episode_id=request.episode_id)
@@ -473,6 +501,22 @@ class StoryboardActivities:
                 f"expected={digest} put={put.sha256} readback={readback_sha}"
             )
 
+        run_capture: RunCapture | None = None
+        stored: StoredSnapshot | None = None
+        if capture:
+            run_capture = self._run_capture(
+                request=request,
+                loaded=loaded,
+                input_hash=input_hash,
+                key=key,
+                reservation=reservation,
+                raw_text=raw_text,
+                raw_output_key=reservation.raw_output_key or raw_key,
+                tape=tape,
+            )
+            # 行より先に snapshot を保存する。失敗は Activity の失敗（記録の無い成果物を作らない）
+            stored = await self._recorder.write(run_capture)
+
         async with self._session_factory() as session:
             meta = await ArtifactMetadataRepository(session).record(
                 episode_id=request.episode_id,
@@ -487,9 +531,90 @@ class StoryboardActivities:
             )
             await ProviderReservationRepository(session).attach_artifact(reservation.id, meta.id)
             await JobRepository(session).succeed(request.job_id)
+            if run_capture is not None and stored is not None:
+                # 成果物と同じ transaction（「成果物はあるが記録が無い」を作らない）
+                run = await self._recorder.insert(
+                    session, run_capture, stored, output_revision_id=meta.id
+                )
+                await record_generation_decision(
+                    session,
+                    episode_id=request.episode_id,
+                    agent_run=run,
+                    payload=generation_decision_payload(
+                        decision_type=PLAN_STORYBOARD,
+                        question=f"Plan the storyboard for script revision {loaded.meta.id}",
+                        candidate_summary=_storyboard_summary(artifact),
+                        result_revision=meta.id,
+                        input_snapshot_ref=stored.snapshot_key,
+                        tool_invocation_refs=tool_refs(run_capture.tool_invocations),
+                        target_revisions=(loaded.meta.id,),
+                    ),
+                )
+                await record_derived_links(session, request.episode_id, meta.id, artifact)
             await session.commit()
 
         return _result(meta, reused=False)
+
+    async def _capture_enabled(self, episode_id: str) -> bool:
+        """新方式（mode != legacy）の Episode か。行が無ければ legacy（書かない）。"""
+        async with self._session_factory() as session:
+            control = await InterventionStore(session).get_control(episode_id)
+        return control.mode is not InterventionMode.LEGACY
+
+    def _run_capture(
+        self,
+        *,
+        request: GenerateStoryboardRequest,
+        loaded: _LoadedScript,
+        input_hash: str,
+        key: str,
+        reservation: ProviderReservation,
+        raw_text: str,
+        raw_output_key: str,
+        tape: ExchangeTape | None,
+    ) -> RunCapture:
+        """記録する内容。prompt は tape に写った実際の依頼だけ（無ければ unavailable）。"""
+        exchange = None if tape is None else tape.last_for(request.episode_id)
+        return RunCapture(
+            idempotency_key=f"agent_run:{PLAN_STORYBOARD}:{reservation.id}",
+            role=AgentRole.WRITER_DIRECTOR,
+            step=PLAN_STORYBOARD,
+            model=self._model_label,
+            prompt_version=f"{self._prompt_template_id}@{self._prompt_template_version}",
+            prompt=None if exchange is None else exchange.request.prompt,
+            prompt_source=PromptSource.UNAVAILABLE if exchange is None else PromptSource.CAPTURED,
+            input_refs={
+                "source_script": {
+                    "artifact_id": loaded.meta.id,
+                    "sha256": loaded.meta.sha256,
+                    "schema_version": loaded.meta.schema_version,
+                },
+                "generator_id": self._generator.generator_id,
+                "generation_spec_id": self._generator.generation_spec_id,
+                "input_hash": input_hash,
+            },
+            request=None if exchange is None else request_document(exchange.request),
+            response=response_document(
+                None if exchange is None else exchange.result,
+                raw_text=raw_text,
+                raw_output_key=raw_output_key,
+            ),
+            tool_invocations=(
+                reservation_invocation(
+                    reservation.id,
+                    provider=ProviderCall.CODEX_STORYBOARD.value,
+                    round=request.round,
+                    idempotency_key=key,
+                ),
+            ),
+            episode_id=request.episode_id,
+            notes=()
+            if exchange is not None
+            else (
+                "prompt not captured: the provider call was not observed in this attempt "
+                "(resumed from stored raw output, or the LLM is not wrapped)",
+            ),
+        )
 
     async def _raw_output(
         self,
@@ -666,6 +791,13 @@ class StoryboardActivities:
                 error_summary=f"{type(exc).__name__}: {exc}",
             )
             await session.commit()
+
+
+def _storyboard_summary(artifact: dict[str, object]) -> str:
+    """判断記録の候補の要約（生成物そのものから。補完しない）。"""
+    storyboard = parse_storyboard_artifact(artifact)
+    kinds = ", ".join(s.visual_kind.value for s in storyboard.scenes)
+    return f"{len(storyboard.scenes)} scenes; {storyboard.total_duration_ms} ms; kinds: {kinds}"
 
 
 def _result(meta: ArtifactMetadata, *, reused: bool) -> StoryboardResult:

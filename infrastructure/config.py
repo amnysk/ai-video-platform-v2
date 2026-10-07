@@ -212,6 +212,15 @@ class Settings(BaseSettings):
     #: 読み込みと検査（AI に人専用 scope を与えない等）は ``apps/api/auth.py``。
     intervention_principals: SecretStr | None = None
 
+    # --- JP-MAS-001 判断記録の捕捉（ADR-0041、担当A） ---
+    #: Topic Planner（producer）の実行記録（ContextSnapshot・agent_run）と choose_topic の
+    #: 判断記録を残す。Planner は Episode より前に走るので mode で切り替えられず、この設定が唯一の
+    #: 入口。既定 OFF（OFF のとき planning worker は何も書かず、prompt・履歴も変わらない）。
+    #: ON のとき snapshot を保存できなければ候補生成を失敗させる（needs_input）。
+    #: Episode の工程（script / storyboard）は ``episode_controls.mode != legacy`` で決まり、
+    #: この設定とは無関係
+    topic_planner_capture_enabled: bool = False
+
     @field_validator("research_provider", mode="before")
     @classmethod
     def _research_provider_fails_closed(cls, v: object) -> object:

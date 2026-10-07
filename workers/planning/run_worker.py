@@ -142,6 +142,11 @@ async def log_analytics_scope_status(provider: YouTubeAnalyticsProvider) -> None
         logger.info("youtube analytics scope granted")
 
 
+def topic_capture_store(settings: Settings, store: ArtifactStore) -> ArtifactStore | None:
+    """Topic Planner の実行記録の保存先。``TOPIC_PLANNER_CAPTURE_ENABLED``（既定 OFF）時だけ。"""
+    return store if settings.topic_planner_capture_enabled else None
+
+
 async def main() -> None:
     settings = Settings()
 
@@ -191,6 +196,7 @@ async def main() -> None:
             clock=lambda: datetime.now(UTC),
             timeout_seconds=settings.codex_timeout_seconds,
             trend=research.trend,
+            capture_store=topic_capture_store(settings, store),
         )
         logger.info(
             "script worker listening on task queue %s (codex=%s, live analytics=%s, "
