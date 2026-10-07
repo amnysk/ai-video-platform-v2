@@ -149,11 +149,14 @@ async def budget_view(
     )
 
 
-def check_additional_cost(view: BudgetView, estimated_usd: Decimal) -> RejectReason | None:
+def check_additional_cost(view: BudgetView, estimated_usd: Decimal | None) -> RejectReason | None:
     """追加の見積り費用がこの Episode・今月の残予算に収まるか。収まらなければ理由。
 
-    0 円の変更（ローカル TTS・render だけ）は換算が無くても通す。
+    0 円の変更（ローカル TTS・render だけ）は換算が無くても通す。見積りが不明（None）な有料の
+    変更は検証できない。
     """
+    if estimated_usd is None:
+        return RejectReason.BUDGET_UNVERIFIABLE
     if estimated_usd <= 0:
         return None
     if view.usd_jpy_rate is None:

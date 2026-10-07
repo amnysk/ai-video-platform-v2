@@ -168,4 +168,6 @@ API の command・read は `INTERVENTION_PRINCIPALS`（設定。token の sha256
 支出は予約台帳（`provider_reservations.estimated_cost_usd`、reserved + spent）と `research_calls` から数え、
 LLM（Codex）の費用は記録が無いので `unmeasured` として別に示す（0 として足さない）。
 有料の見積りを伴う ChangeSet は、換算が未設定・残予算不足なら `REJECTED budget_unverifiable` / `budget_exceeded`。
+有料の見積りは、そのシーンの画像・動画を前回送ったときに adapter が予約台帳へ書いた `estimated_cost_usd`
+（fal adapter を介入のコードから import しない / INV-18）。材料が無ければ見積り不明で `budget_unverifiable`。
 **既存の日次経路に予算の強制は無い**（調査で確認。今回は新方式の適用時の検査だけを足す。全経路の強制は未実装として報告）。

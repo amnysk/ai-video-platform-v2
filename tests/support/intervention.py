@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from contracts.artifacts import VisualSubject
@@ -13,11 +14,15 @@ from contracts.intervention import (
     CommandType,
     Scope,
 )
-from contracts.states import ArtifactType, EpisodeStatus
+from contracts.states import ArtifactType, EpisodeStatus, ProviderCall
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key
 from domain.episode.transitions import EpisodeEvent
-from infrastructure.db.repositories import ArtifactMetadataRepository, EpisodeRepository
+from infrastructure.db.repositories import (
+    ArtifactMetadataRepository,
+    EpisodeRepository,
+    ProviderReservationRepository,
+)
 from infrastructure.intervention.budget import BudgetPolicy
 from infrastructure.intervention.commands import (
     CommandOutcome,
@@ -30,6 +35,9 @@ from infrastructure.intervention.store import Actor
 from tests.support.production import sample_script, sample_storyboard
 
 ALL_SCOPES = frozenset(Scope)
+#: fal の見積り式の値（画像1枚・5秒の動画）。テストは adapter を import しない（INV-18）
+IMAGE_USD = Decimal("0.0400")
+VIDEO_USD = Decimal("1.2095")
 HUMAN = Principal(Actor(ActorType.HUMAN, "owner"), ALL_SCOPES)
 AI = Principal(Actor(ActorType.AI_ASSISTANT, "assistant"), ALL_SCOPES - {Scope.SET_MODE})
 NOW = datetime(2026, 10, 7, 3, 0, tzinfo=UTC)
@@ -191,6 +199,29 @@ async def seed_script_and_storyboard(session, artifact_store, episode_id: str):
                 input_hash=f"{artifact_type.value}-{sb}".ljust(64, "0")[:64],
             )
             media[f"{artifact_type.value}:{sb}"] = meta
+    # Production が送った画像・動画の予約（adapter が書いた見積り。精算済み）
+    reservations = ProviderReservationRepository(session)
+    for n in range(1, 5):
+        for provider, cost in (
+            (ProviderCall.FAL_IMAGE, IMAGE_USD),
+            (ProviderCall.FAL_VIDEO, VIDEO_USD),
+        ):
+            row = await reservations.reserve(
+                episode_id=episode_id,
+                provider=provider,
+                idempotency_key=f"{episode_id}:{provider.value}:sb{n}:1",
+                input_hash="r" * 64,
+                round=1,
+                scene_id=f"sb{n}",
+                estimated_cost_usd=cost,
+            )
+            await session.commit()
+            await reservations.mark_dispatched(row.id)
+            await reservations.record_provider_job_ref(row.id, f"job-{provider.value}-sb{n}")
+            await reservations.mark_spent(row.id, raw_output_key=f"provider-raw/{row.id}")
+            kind = "scene_image" if provider is ProviderCall.FAL_IMAGE else "scene_video"
+            await reservations.attach_artifact(row.id, media[f"{kind}:sb{n}"].id)
+            await session.commit()
     manifest = await store_artifact(
         session,
         artifact_store,

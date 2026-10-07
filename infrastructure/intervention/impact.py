@@ -1,8 +1,11 @@
 """ChangeSet の影響範囲と見積り（``docs/domain/intervention.md`` §7、設計 §9 / §12）。
 
-素材の**再生成**範囲と、品質を**再確認**する範囲を分ける（設計 §12）。見積りは既存の provider の
-見積り式（fal の画像は1枚あたり、動画は秒あたり）をそのまま使い、ローカル TTS・render は 0、
-LLM は記録が無いので ``unmeasured``（0 として足さない）。
+素材の**再生成**範囲と、品質を**再確認**する範囲を分ける（設計 §12）。有料の見積りは、その
+シーンの画像・動画を前回送ったときに provider adapter 自身が予約台帳へ書いた見積り
+（``provider_reservations.estimated_cost_usd``。同じシーン・同じ尺なので同じ式の値）を使う。
+fal adapter を直接 import しない（INV-18: 有料 adapter の入口を数えられる場所に限る）。
+台帳に材料が無ければ見積りは不明（None）で、予算を検証できない変更として扱う。
+ローカル TTS・render は 0、LLM は記録が無いので ``unmeasured``（0 として足さない）。
 
 - ``script.edit_scenes``: 再生成（現行から降ろす）= 全シーンの音声・production_manifest・
   final_video。再利用 = 画像・動画・storyboard（結び直し）。有料の見積り 0
@@ -24,11 +27,6 @@ from contracts.pipeline import PipelineStage
 from contracts.states import ArtifactType
 from infrastructure.intervention.budget import UNMEASURED
 from infrastructure.intervention.store import manifest_slot
-from infrastructure.providers.fal_seedance_video import (
-    SEEDANCE_COST_PER_SECOND_USD,
-    seedance_seconds,
-)
-from infrastructure.providers.fal_seedream_image import SEEDREAM_COST_USD
 
 #: 変更が降ろす（再生成させる）Episode 単位の下流
 _EPISODE_DOWNSTREAM: tuple[ArtifactType, ...] = (
@@ -57,7 +55,8 @@ class Impact:
     reuse: tuple[str, ...]
     #: 採用 manifest に結び付いていて再確認が要る approval（annotation id）
     rereview: tuple[str, ...]
-    estimated_paid_cost_usd: Decimal
+    #: None = 有料の再生成を伴うが見積りの材料が無い（予算を検証できない。0 として扱わない）
+    estimated_paid_cost_usd: Decimal | None
     cost_breakdown: tuple[dict[str, Any], ...]
     #: 再開時に最低限ここから走らせる工程
     restart_stage: PipelineStage
@@ -71,7 +70,9 @@ class Impact:
             "regenerate": list(self.regenerate),
             "reuse": list(self.reuse),
             "rereview": list(self.rereview),
-            "estimated_paid_cost_usd": str(self.estimated_paid_cost_usd),
+            "estimated_paid_cost_usd": (
+                None if self.estimated_paid_cost_usd is None else str(self.estimated_paid_cost_usd)
+            ),
             "cost_breakdown": [dict(item) for item in self.cost_breakdown],
             "llm_cost": UNMEASURED,
             "local_cost": "0 (local TTS / render)",
@@ -140,22 +141,12 @@ def script_edit_impact(
     )
 
 
-def image_cost_usd() -> Decimal:
-    """``FalSeedreamImageGenerator.estimate_cost_usd`` と同じ（1枚あたり）。"""
-    return SEEDREAM_COST_USD
-
-
-def video_cost_usd(scene_duration_ms: int) -> Decimal:
-    """``FalSeedanceVideoGenerator.estimate_cost_usd`` に、生成器が実際に頼む尺を入れた値。"""
-    seconds = seedance_seconds(scene_duration_ms)
-    return Decimal(seconds) * SEEDANCE_COST_PER_SECOND_USD
-
-
 def scene_override_impact(
     *,
     members: Mapping[str, str],
     scene_id: str,
-    scene_duration_ms: int,
+    image_usd: Decimal | None,
+    video_usd: Decimal | None,
     constraints: Sequence[ConstraintRule],
     approvals: Sequence[str],
 ) -> Impact:
@@ -169,8 +160,7 @@ def scene_override_impact(
         if ":" in slot and slot.split(":", 1)[1] != scene_id and not slot.startswith("scene_voice")
     ]
     reuse += _prefixed(members, ArtifactType.SCENE_VOICE)
-    image = image_cost_usd()
-    video = video_cost_usd(scene_duration_ms)
+    total = None if image_usd is None or video_usd is None else image_usd + video_usd
     violations = tuple(
         f"{c.annotation_id}:{c.rule}:{target}"
         for c in constraints
@@ -184,14 +174,19 @@ def scene_override_impact(
         regenerate=tuple(scene_slots + _episode_downstream(members)),
         reuse=tuple(sorted(set(reuse))),
         rereview=tuple(approvals),
-        estimated_paid_cost_usd=image + video,
+        estimated_paid_cost_usd=total,
         cost_breakdown=(
-            {"item": "scene_image", "scene_id": scene_id, "usd": str(image), "basis": "per image"},
+            {
+                "item": "scene_image",
+                "scene_id": scene_id,
+                "usd": None if image_usd is None else str(image_usd),
+                "basis": "latest provider estimate for this scene (ledger)",
+            },
             {
                 "item": "scene_video",
                 "scene_id": scene_id,
-                "usd": str(video),
-                "basis": f"{seedance_seconds(scene_duration_ms)}s x per-second",
+                "usd": None if video_usd is None else str(video_usd),
+                "basis": "latest provider estimate for this scene (ledger)",
             },
         ),
         restart_stage=PipelineStage.PRODUCTION,

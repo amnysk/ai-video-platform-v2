@@ -3,7 +3,7 @@
 ADR-0041、契約は `docs/domain/intervention.md` §2–§9。担当 B が持つ不変条件は INV-41〜44・INV-46。
 単体テストは SQLite（`tests/conftest.py`）と Temporal の time-skipping 環境で、外部（LLM・fal・YouTube）は
 呼ばない。PostgreSQL の行 lock でしか起きない競合（hold と dispatch）は
-`tests/integration/test_intervention_gate_race.py` に書き、隔離環境（担当 D）で実行する。
+隔離環境の integration（担当 B2 / D。まだ書いていない）で検査する。
 
 ## dispatch gate（`tests/unit/test_intervention_gate.py`）
 
@@ -74,7 +74,9 @@ store・manifest・台帳は実物（SQLite）、成果物は InMemoryArtifactSt
 - `test_reject_change_closes_a_proposal_once` / `test_changes_are_refused_while_a_stage_runs_or_after_upload`:
   走っている工程が旧版で下流を作り直す・投稿済みを再投稿する経路を作らない。
 - `test_a_paid_change_without_a_rate_is_unverifiable_and_with_a_rate_is_checked`: 換算未設定は
-  `budget_unverifiable`（推測で通さない）、上限超過は `budget_exceeded`。
+  `budget_unverifiable`（推測で通さない）、上限超過は `budget_exceeded`。見積りはそのシーンの前回の予約に
+  adapter が書いた値（fal adapter を import しない / INV-18）。
+- `test_a_paid_change_without_a_ledger_estimate_is_unverifiable`: 見積りの材料が無いとき 0 円として通さない。
 - `test_scene_override_reuses_the_override_artifact_and_regenerates_only_that_scene`: 差し替えは ADR-0035 の
   `scene_visual_override` として保存され、画像・動画の Activity と同じ読み口（`load_current_override`）が読む。
   他シーンの現行は変わらない（INV-33）。

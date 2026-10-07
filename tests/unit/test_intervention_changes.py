@@ -32,6 +32,8 @@ from infrastructure.production.effective_scene_loader import load_current_overri
 from tests.support.intervention import (
     AI,
     HUMAN,
+    IMAGE_USD,
+    VIDEO_USD,
     envelope,
     make_episode,
     receive,
@@ -197,6 +199,17 @@ async def test_script_edit_does_not_touch_image_or_video_identity(
     音声・production_manifest・final_video だけが現行から降りる（ローカル TTS・render で作り直す）。
     """
     episode_id, script, storyboard, media = await _setup(session, artifact_store)
+
+    async def paid_reservations() -> list[str]:
+        async with session_factory() as s:
+            repo = ProviderReservationRepository(s)
+            return [
+                r.id
+                for provider in (ProviderCall.FAL_IMAGE, ProviderCall.FAL_VIDEO)
+                for r in await repo.list_for_episode_provider(episode_id, provider)
+            ]
+
+    before = await paid_reservations()
     proposed = await _propose(session_factory, artifact_store, episode_id, _script_edit(script.id))
     applied = await _apply_change(
         session_factory, artifact_store, episode_id, proposed.result["change_set_id"]
@@ -215,11 +228,7 @@ async def test_script_edit_does_not_touch_image_or_video_identity(
     assert members["storyboard"] == storyboard.id
     assert "production_manifest" not in members
     assert applied.result["estimated_paid_cost_usd"] == "0"
-    async with session_factory() as s:
-        reservations = await ProviderReservationRepository(s).list_for_episode_provider(
-            episode_id, ProviderCall.FAL_IMAGE
-        )
-    assert reservations == []
+    assert await paid_reservations() == before
 
 
 async def test_a_stale_base_revision_is_a_conflict_and_marks_the_change_set(
@@ -353,7 +362,8 @@ async def test_a_paid_change_without_a_rate_is_unverifiable_and_with_a_rate_is_c
     episode_id, _script, storyboard, _media = await _setup(session, artifact_store)
     proposed = await _propose(session_factory, artifact_store, episode_id, _override(storyboard.id))
     cost = Decimal(proposed.result["impact"]["estimated_paid_cost_usd"])
-    assert cost > 0  # 画像1枚 + 5秒の動画（既存の見積り式）
+    # 画像1枚 + 動画1本。前回の送信で adapter が台帳に書いた見積り
+    assert cost == IMAGE_USD + VIDEO_USD
     assert proposed.result["budget_check"] == RejectReason.BUDGET_UNVERIFIABLE.value
     cs_id = proposed.result["change_set_id"]
     unverifiable = await _apply_change(session_factory, artifact_store, episode_id, cs_id)
@@ -518,3 +528,28 @@ async def test_received_proposal_is_not_applied_until_the_command_runs(
         assert await InterventionStore(s).list_change_sets(episode_id) == []
         rows = (await s.scalars(select(ArtifactMetadataRow.id))).all()
     assert len(rows) > 0
+
+
+async def test_a_paid_change_without_a_ledger_estimate_is_unverifiable(
+    session, session_factory, artifact_store
+) -> None:
+    """見積りの材料（その シーンの前回の予約の見積り）が無ければ 0 とみなさず検証不能。"""
+    episode_id, _script, storyboard, _media = await _setup(session, artifact_store)
+    payload = _override(storyboard.id)
+    async with session_factory() as s:
+        from sqlalchemy import update
+
+        from infrastructure.db.models import ProviderReservationRow
+
+        await s.execute(
+            update(ProviderReservationRow)
+            .where(ProviderReservationRow.scene_id == "sb2")
+            .values(estimated_cost_usd=None)
+        )
+        await s.commit()
+    proposed = await _propose(session_factory, artifact_store, episode_id, payload)
+    assert proposed.result["impact"]["estimated_paid_cost_usd"] is None
+    outcome = await _apply_change(
+        session_factory, artifact_store, episode_id, proposed.result["change_set_id"], policy=RATE
+    )
+    assert outcome.reject_reason is RejectReason.BUDGET_UNVERIFIABLE

@@ -297,6 +297,20 @@ async def _in_flight_for_scene(ctx: ApplyContext, scene_id: str) -> list[dict[st
     return pending
 
 
+async def _ledger_estimates(ctx: ApplyContext, scene_id: str) -> tuple[Decimal | None, ...]:
+    """シーンの画像・動画を前回送ったときに adapter が台帳へ書いた見積り（最新の予約）。"""
+    repo = ProviderReservationRepository(ctx.session)
+    found: list[Decimal | None] = []
+    for provider in (ProviderCall.FAL_IMAGE, ProviderCall.FAL_VIDEO):
+        rows = [
+            r
+            for r in await repo.list_for_episode_provider(ctx.episode_id, provider)
+            if r.scene_id == scene_id and r.estimated_cost_usd is not None
+        ]
+        found.append(rows[-1].estimated_cost_usd if rows else None)
+    return tuple(found)
+
+
 # --------------------------------------------------------------------------- 提案
 
 
@@ -324,10 +338,12 @@ async def _impact_for(
     assert storyboard_row is not None
     storyboard = StoryboardArtifact.model_validate(await _load_json(ctx, storyboard_row))
     scene = _find_scene(storyboard, change.scene_id)
+    image_usd, video_usd = await _ledger_estimates(ctx, change.scene_id)
     impact = scene_override_impact(
         members=members,
         scene_id=change.scene_id,
-        scene_duration_ms=scene.duration_ms,
+        image_usd=image_usd,
+        video_usd=video_usd,
         constraints=constraints,
         approvals=approvals,
     )
@@ -379,7 +395,7 @@ async def propose_change(ctx: ApplyContext) -> Decision:
         {
             "change_set_id": change_set.change_set_id,
             "kind": change.kind.value,
-            "estimated_paid_cost_usd": str(impact.estimated_paid_cost_usd),
+            "estimated_paid_cost_usd": impact.as_dict()["estimated_paid_cost_usd"],
             "constraint_conflict": impact.constraint_conflict,
         },
         command_id=ctx.command.command_id,
@@ -550,7 +566,7 @@ async def apply_change(ctx: ApplyContext) -> Decision:
             "stale": list(impact.regenerate),
             "rereview": list(impact.rereview),
             "restart_stage": impact.restart_stage.value,
-            "estimated_paid_cost_usd": str(impact.estimated_paid_cost_usd),
+            "estimated_paid_cost_usd": impact.as_dict()["estimated_paid_cost_usd"],
             "note": (
                 "applied as a new revision; regenerating the stale outputs needs a resume "
                 "(the final video is not regenerated yet)"
@@ -585,11 +601,13 @@ async def _check_policy(ctx: ApplyContext, impact: Impact, payload: ApplyChangeP
             RejectReason.USER_CONSTRAINT_VIOLATION,
             violations=list(impact.constraint_violations),
         )
-    if not human and cost > 0:
+    if not human and (cost is None or cost > 0):
         # AI は 0 円・制約に触れない変更だけを適用できる
         raise _reject(RejectReason.FORBIDDEN, detail="paid changes need a human")
-    if payload.max_estimated_cost_usd is not None and cost > Decimal(
-        str(payload.max_estimated_cost_usd)
+    if (
+        payload.max_estimated_cost_usd is not None
+        and cost is not None
+        and cost > Decimal(str(payload.max_estimated_cost_usd))
     ):
         raise _reject(
             RejectReason.BUDGET_EXCEEDED,
@@ -599,7 +617,11 @@ async def _check_policy(ctx: ApplyContext, impact: Impact, payload: ApplyChangeP
     view = await budget_view(ctx.session, ctx.episode_id, ctx.budget_policy, ctx.now)
     refusal = check_additional_cost(view, cost)
     if refusal is not None:
-        raise _reject(refusal, estimated_paid_cost_usd=str(cost), budget=view.as_dict())
+        raise _reject(
+            refusal,
+            estimated_paid_cost_usd=None if cost is None else str(cost),
+            budget=view.as_dict(),
+        )
 
 
 async def _write_script(ctx: ApplyContext, prepared: dict[str, Any]) -> tuple[str, dict[str, Any]]:

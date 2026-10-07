@@ -434,6 +434,7 @@ ChangeSet の作者を actor とする判断記録（`override_diff`）、古い
 / `tests/unit/test_intervention_changes.py::test_an_old_version_result_cannot_become_the_adopted_member_after_a_change`
 / `tests/unit/test_intervention_changes.py::test_ai_may_apply_only_zero_cost_changes_that_respect_user_constraints`
 / `tests/unit/test_intervention_changes.py::test_a_paid_change_without_a_rate_is_unverifiable_and_with_a_rate_is_checked`
+/ `tests/unit/test_intervention_changes.py::test_a_paid_change_without_a_ledger_estimate_is_unverifiable`
 
 ### INV-42 同じ command_id の再送・復旧は1つの論理変更にしかならない
 介入 command は `intervention_commands` の行（`id` = クライアントの command_id）として受け付け、同じ id・同じ
@@ -471,7 +472,7 @@ Episode の新しい有料 dispatch・投稿を `EpisodeHeldError` で拒否す�
 / `tests/unit/test_intervention_gate.py::test_a_reservation_refused_by_the_gate_is_reused_after_resume`
 / `tests/unit/test_intervention_commands.py::test_hold_is_requested_in_the_receiving_transaction_and_not_reported_as_done`
 / `tests/unit/test_intervention_commands.py::test_hold_becomes_held_and_lists_in_flight_unknown_and_undispatched`
-（PostgreSQL の行 lock での hold と dispatch の競合は隔離環境の integration で検査する予定。単体は SQLite）
+（PostgreSQL の行 lock での hold と dispatch の競合の integration テストは未作成。単体は SQLite）
 
 ### INV-46 新方式（mode != legacy）では、必須記録の無い有料生成・投稿を開始しない
 `episode_controls.mode` が `legacy` 以外の Episode では、有料 dispatch・投稿の開始許可
