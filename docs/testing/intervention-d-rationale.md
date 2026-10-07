@@ -53,3 +53,18 @@ ADR-0041 §6 / 設計 §17-7。`script.edit_scenes`（文だけの修正）で s
 | `test_render_inputs_accept_the_rebound_script_only_when_passed_in` | domain は純粋のまま、解決済みの参照を Activity から受け取る。既定は従来の検査 | 純粋関数 | domain が DB を読む／既定で検査が緩む |
 | `test_render_uses_the_rebound_script_and_keeps_the_scene_videos` | 新台本の音声・マニフェストから描き直し、シーン動画は同じ Artifact | Render Activity（fake エンジン） | 結び直した Episode が render で止まる／動画を作り直す |
 | `test_render_without_a_link_still_refuses_a_script_the_storyboard_was_not_made_from` | link 無しは従来どおり `RenderInputIntegrityError` | 同上 | 既存の整合検査が緩む |
+
+## 4. 停止の失敗分類（`tests/unit/test_intervention_hold_classification.py`）
+
+dispatch gate（担当 B。`mark_dispatched` / `mark_upload_dispatched` の中）は **stub** する
+（`ProviderReservationRepository.mark_dispatched` を monkeypatch。repositories.py は編集しない）。
+B の実装が入った後は、統合 branch の integration test が実物の gate で同じ性質を見る。
+結果: 既存の分類（`NeedsInputError` の継承から型名表を導出）だけで条件を満たし、**コードの変更は不要だった**。
+
+| テスト | 守る契約・事故 | 層の理由 | 捕まえる失敗 |
+|---|---|---|---|
+| `test_gate_errors_are_needs_input_and_never_retried` | 停止は needs_input・retry しない | 型名表は workflow 側の唯一の分類 | 停止が transient 扱いになり、Activity が retry し続ける |
+| `test_gate_errors_are_not_reconciliation_or_round_errors` | 停止は照合待ち・待ち直し・新ラウンド・代替映像案のどれでもない | workflow の型名集合を直接見る | 停止で新ラウンド（新しい予約・課金）や代替案（Codex 呼び出し）が始まる／ログで unreconciled と誤分類 |
+| `test_activity_boundary_keeps_the_type_and_stops_retries` | Activity 境界で型名を保ち non_retryable | `raise_activity_error` を直接 | 境界で別の型に包まれ分類が変わる |
+| `test_held_dispatch_leaves_an_unsent_reservation_that_resume_reuses` | 停止時は provider へ送らず予約は reserved・未 dispatch。再開で同じ予約を使い、新しい予約を作らない（ADR-0041 §3・INV-15） | `PaidJobRunner` の実経路（SQLite・fake 生成器）で gate だけ stub | 成否不明（`ProviderSubmitAmbiguousError`）に包まれ照合待ちで永久停止／再開で二重予約 |
+| `test_held_dispatch_blocks_the_episode_once_without_retry_or_recovery` | Production workflow は1回の submit で blocked（failed でない）・代替案に入らない | time-skipping の Temporal 試験サーバ + 名前登録の mock Activity | workflow がラウンドを重ねる／failed（終端）にして再開できなくする |
