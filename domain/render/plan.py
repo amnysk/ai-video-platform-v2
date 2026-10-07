@@ -69,8 +69,13 @@ def check_render_inputs(
     storyboard: Pinned[StoryboardArtifact],
     voices: Mapping[str, Pinned[SceneVoiceArtifact]],
     videos: Mapping[str, Pinned[SceneVideoArtifact]],
+    bound_script: ArtifactRef | None = None,
 ) -> None:
-    """マニフェストと渡された入力の整合性。"""
+    """マニフェストと渡された入力の整合性。
+
+    ``bound_script`` は storyboard が使う台本（Activity が ``revision_links`` の結び直しを
+    解決して渡す。ADR-0041 §6）。省略時は ``storyboard.source_script``（従来どおり）。
+    """
     episode_id = manifest.episode_id
     _check_ref(
         "storyboard",
@@ -81,9 +86,11 @@ def check_render_inputs(
     _check_ref(
         "script", script.ref, manifest.source_script.artifact_id, manifest.source_script.sha256
     )
-    source_script = storyboard.artifact.source_script
+    if bound_script is None:
+        source_script = storyboard.artifact.source_script
+        bound_script = ArtifactRef(source_script.artifact_id, source_script.sha256)
     _check_ref(
-        "storyboard.source_script", script.ref, source_script.artifact_id, source_script.sha256
+        "storyboard.source_script", script.ref, bound_script.artifact_id, bound_script.sha256
     )
     for label, found in (
         ("script", script.artifact.episode_id),
@@ -146,10 +153,16 @@ def build_render_plan(
     profile: RenderProfile,
     policy: TimelinePolicy,
     engine: RenderEngineIdentity,
+    bound_script: ArtifactRef | None = None,
 ) -> RenderPlan:
     """固定した入力 + profile + policy + engine から描画計画を決定的に組む。"""
     check_render_inputs(
-        manifest=manifest, script=script, storyboard=storyboard, voices=voices, videos=videos
+        manifest=manifest,
+        script=script,
+        storyboard=storyboard,
+        voices=voices,
+        videos=videos,
+        bound_script=bound_script,
     )
     layout = build_timeline(
         storyboard.artifact,

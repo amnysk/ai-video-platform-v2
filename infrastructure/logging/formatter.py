@@ -49,6 +49,12 @@ from infrastructure.logging.redaction import Redactor, sanitize_text
 
 #: Workflow の event_id の名前空間（固定値。変えると同じ記録の ID が変わる）
 WORKFLOW_EVENT_NAMESPACE = uuid.UUID("5b0f3d64-2d7e-5a43-9a51-6c0a4f1e40aa")
+#: 正本の行から**決定的に**導いた event_id を渡す ``extra={"avp": {...}}`` のキー
+#: （判断・介入イベントの投影 / ADR-0041。``infrastructure.intervention.projection``）。
+#: 32桁の小文字 hex だけを受け付け、それ以外は無視して通常どおり ``uuid4`` を振る。
+#: 同じ行の再投影が OpenSearch の同じ ``_id`` になる
+PROJECTED_EVENT_ID_KEY = "projected_event_id"
+_HEX32 = frozenset("0123456789abcdef")
 #: ``(run_id, history_length)`` ごとの seq を覚えておく数。溢れたら古いものから忘れる
 WORKFLOW_SEQ_CACHE_SIZE = 4096
 #: stack で例外ごとに残す frame の数（先頭・末尾）
@@ -218,6 +224,12 @@ def workflow_event_id(
     return uuid.uuid5(WORKFLOW_EVENT_NAMESPACE, key).hex
 
 
+def _projected_event_id(value: Any) -> str | None:
+    if isinstance(value, str) and len(value) == 32 and set(value) <= _HEX32:
+        return value
+    return None
+
+
 def _current_history_length() -> int | None:
     """Workflow スレッドの中でだけ値がある。外（Activity・API）では ``None``。"""
     try:
@@ -345,6 +357,7 @@ class JsonFormatter(logging.Formatter):
         avp = getattr(record, RECORD_EXTRA_KEY, None)
         avp = dict(avp) if isinstance(avp, Mapping) else {}
         event_name = str(avp.pop("event_name", "") or EventName.LOG_RECORD.value)
+        projected_id = _projected_event_id(avp.pop(PROJECTED_EVENT_ID_KEY, None))
 
         # 文脈 → Temporal の info → 発行側の値（後ろが勝つ）
         for key, value in current_context().items():
@@ -394,7 +407,7 @@ class JsonFormatter(logging.Formatter):
         out: dict[str, Any] = {
             "@timestamp": _timestamp(record.created),
             "schema_version": LOG_SCHEMA_VERSION,
-            "event_id": self._event_id(event_name, workflow_info),
+            "event_id": projected_id or self._event_id(event_name, workflow_info),
             "event_name": event.keyword(event_name),
             "level": _level_name(record.levelno),
             "message": message,
@@ -533,4 +546,5 @@ __all__ = [
     "format_exception_chain",
     "truncate_bytes",
     "workflow_event_id",
+    "PROJECTED_EVENT_ID_KEY",
 ]

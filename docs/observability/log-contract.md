@@ -52,7 +52,7 @@ ADR-0040。語彙・型・上限・設定キーの**唯一の宣言元**は
 | `activity_id` / `activity_type` / `task_queue` | keyword | Temporal の activity info |
 | `activity_attempt` | integer | activity info の `attempt`（**Temporal の Activity 再試行**。1始まり） |
 | `request_id` | keyword | **API の1リクエスト**（受信 `X-Request-ID` が `[A-Za-z0-9._-]{1,64}` ならそれ、無ければ生成）。Research の `request_id`（依頼 ID）はここに入れず `research_request_id` へ |
-| `correlation_id` | keyword | 予約のみ。v1 では発行しない（resume は決定的な `workflow_id` で結合できる） |
+| `correlation_id` | keyword | 判断・介入の行が持つ `correlation_id`（API・command・agent run を跨いで結ぶ）。それ以外の処理では発行しない（resume は決定的な `workflow_id` で結合できる） |
 | `trace_id` / `span_id` | keyword | 将来の Traces 用（W3C 形式）。**実在する値がある時だけ**。v1 では発行しない |
 | `http_method` / `http_route` | keyword | API のメソッドと route template（`/episodes/{episode_id}/resume`。実 path・query ではない） |
 | `provider` | keyword | 予約台帳の呼び出しは `ProviderCall` の値（`fal_image` 等、台帳の `provider` 列と同じ）。台帳外の呼び出しは `ProviderLabel`（`fal_storage`、`youtube_analytics`、`youtube_oauth`、`piper`、`openmontage`、`research_search`、`research_fetch`）|
@@ -64,6 +64,16 @@ ADR-0040。語彙・型・上限・設定キーの**唯一の宣言元**は
 | `reservation_status` | keyword | commit 済みの予約状態（`ReservationStatus`） |
 | `artifact_id` / `artifact_type` | keyword | `artifact_metadata.id` / `ArtifactType` |
 | `input_hash` | keyword | 入力指紋（sha256 hex。秘密ではない） |
+| `event_seq` | long | 判断・介入イベントの Episode 内通番（`episode_events.seq`）。投影・再投影のときだけ。`(episode_id, event_seq)` で正本の1行に戻れる |
+| `manifest_id` | keyword | 採用 manifest（`artifact_manifests.id`）。その処理が manifest を知っている時だけ |
+| `agent_run_id` | keyword | 役割実行の記録（`agent_runs.id`）。prompt・応答の本文は載せず、MinIO の参照は DB 側にだけ持つ |
+| `decision_id` | keyword | 判断記録（`decision_records.id`） |
+| `command_id` | keyword | 介入 command（`intervention_commands.id`。クライアントが決めた冪等キー） |
+| `actor_type` | keyword | 変更・判断の主体（`contracts.intervention.ActorType`: `human` / `ai_assistant` / `agent` / `system`）。actor の個人 ID は `attributes.actor_id` |
+| `model` | keyword | agent の model 識別子（設定値。CLI が実際に使ったモデルとは限らない／ADR-0041） |
+| `prompt_version` | keyword | agent の prompt の版。prompt 本文ではない |
+| `usage_input` / `usage_output` | long | agent の入力・出力の token 数（設計 §15 の token_usage）。**取得できない時は付けない**（0 で埋めない）。名前に `token` を含めないのは §7.2 の鍵名による伏せ字に当てないため |
+| `estimated_cost_usd` / `actual_cost_usd` | double | 見積り・実費（USD）。課金の正本は予約台帳（`provider_reservations`）。ログの値で課金を判断しない（INV-38） |
 | `outcome` | keyword | `Outcome` |
 | `http_status` | integer | **観測した** HTTP status |
 | `duration_ms` | double | 処理時間 |
@@ -130,11 +140,23 @@ Collector が行から作る `@timestamp`（Docker の時刻）・`message`（�
 | 成功済み scene の再利用 | `PaidJobRunner.submit` の `Reused`（ADR-0033 の完全性検証後） | `artifact.reused` |
 | Upload の既存動画再利用 | 予約の `provider_result_ref`・受領 Artifact（INV-14） | `upload.reused_existing` |
 | 運用異常 | `operational_anomalies`（`avp.anomaly` logger。`OPERATIONAL_ANOMALY anomaly=` の文言は維持） | `anomaly.recorded` |
+| 判断・介入イベント（設計 §15） | `episode_events`（正本。`seq`・`event_name`・`refs`・`command_id`・`actor_type`。ADR-0041） | `event_name`（同じ文字列）+ `event_seq` + `refs` の ID 群。§10 |
+| artifact_revision | `artifact_metadata` の1行（`id` = revision_id） | `artifact_id`（新しいフィールドを作らない） |
+| manifest_id / agent_run_id / decision_id / command_id | `artifact_manifests.id` / `agent_runs.id` / `decision_records.id` / `intervention_commands.id` | 同名 |
+| actor_type | 新表の `actor_type` 列（`ActorType`） | `actor_type`（個人 ID は `attributes.actor_id`） |
+| branch_id | **該当する永続 ID は無い**（別案は `change_sets.variant_group`） | 使わない。`attributes.variant_group` |
+| tool_name / tool_call_id | `agent_runs.tool_invocations` の各要素が既存の `provider_reservations.id` / `research_calls.id` を参照 | `provider`（tool_name）・`reservation_id` / `research_call_id`（tool_call_id）。新しい ID を作らない |
+| model / prompt_version / token_usage | `agent_runs.model` / `prompt_version` / `token_usage`（JSON。取得できなければ NULL） | `model` / `prompt_version` / `usage_input`・`usage_output` |
+| estimated_cost / actual_cost | `agent_runs.estimated_cost_usd`・`provider_reservations.estimated_cost_usd`（実費の記録は無い） | `estimated_cost_usd` / `actual_cost_usd`（実費は記録がある時だけ） |
+| duration / retry_count / outcome | 既存 | `duration_ms` / `activity_attempt`・`provider_attempt` / `outcome` |
 
 ## 4. event_id
 
 - Activity・API・起動処理: 発行時に `uuid4().hex`。**1回の発行＝1つの ID**。Collector が同じ行を再送しても
   行の中の ID は変わらない。Activity の再試行・provider の再送は別の発行なので別 ID。
+- 判断・介入イベントの投影（`episode_events` の1行）: `uuid5(PROJECTION_EVENT_NAMESPACE, f"{episode_id}:{seq}")`。
+  live の投影と再投影で**同じ値**（§10）。発行側は `extra={"avp": {"projected_event_id": …}}` で渡し、整形器は
+  32桁の小文字 hex の時だけ採用する（それ以外は無視して `uuid4`）。
 - Workflow: Workflow のコードは ID を作らない。sandbox の外で import 済みの整形器が、Workflow スレッド内で
   `uuid5(AVP_WORKFLOW_EVENT_NAMESPACE, f"{workflow_id}:{run_id}:{history_length}:{seq}:{event_name}")`
   を導く（`history_length` は `workflow.info().get_current_history_length()`、`seq` は整形器が
@@ -245,6 +267,15 @@ Collector が行から作る `@timestamp`（Docker の時刻）・`message`（�
 | `upload.started` / `upload.succeeded` / `upload.reused_existing` / `upload.skipped` / `upload.failed` | Upload |
 | `research.request.started` / `research.request.finished` | Research |
 | `anomaly.recorded` | 運用異常の記録 |
+| `decision.recorded` / `agent.run.recorded` | 判断記録・役割実行の記録（ADR-0041）。以下この節の行は全て `episode_events` の投影（§10） |
+| `intervention.command.received` / `intervention.command.finished` | 介入 command の受付・終端（`outcome` に command の状態） |
+| `intervention.comment.added` | コメント・レビュー指摘・制約の記録 |
+| `intervention.hold.requested` / `intervention.hold.effective` | 停止の受付（HOLD_REQUESTED）と有効化（HELD） |
+| `intervention.change.proposed` / `intervention.change.applied` / `intervention.change.conflicted` / `intervention.variant.selected` | ChangeSet の提案・適用・競合・別案の採用 |
+| `review.invalidated` / `review.resolved` | manifest の変更による承認の失効・注記の解決 |
+| `checkpoint.waiting` / `checkpoint.released` | 待機地点での待機・解放 |
+| `intervention.resume.requested` / `intervention.resume.completed` | 再開の受付・pipeline の start 結果 |
+| `intervention.mode.changed` | 運転モードの変更 |
 
 ## 9. 課金と commit 境界
 
@@ -257,3 +288,21 @@ Collector が行から作る `@timestamp`（Docker の時刻）・`message`（�
   これは課金の確定ではなく観測の記録で、照合は provider 側で確認して確定する。
 - ログ発行が失敗しても（ロガーの故障を注入しても）台帳の状態・例外の型・制御は変わらない（INV-38 の
   機械検査）。
+
+## 10. 判断・介入イベント: 正本とログの投影（ADR-0041 §7、設計 §14/§15）
+
+| | 正本（canonical） | ログの投影（projection） |
+|---|---|---|
+| 置き場所 | PostgreSQL `episode_events`（`(episode_id, seq)` で一意、追記のみ）と、それが指す新表（`decision_records`・`intervention_commands`・`artifact_manifests` 等） | stdout の JSON 1行 → Collector → OpenSearch |
+| 書く時 | 業務の変更と**同じ transaction**（`InterventionStore.append_event`） | その commit が**成功した後**（`ledger.defer`）。rollback では出ない |
+| 失われたら | 失われてはならない（backup/restore の対象。`scripts/consistency-check.py`） | `scripts/intervention-reproject.py` で正本から作り直せる |
+| 内容 | refs の全文（JSON） | `event_name`・`event_seq`・`episode_id`・`command_id`・`actor_type`・参照らしい refs（`*_id` 等のスカラー）だけ。本文・prompt・入れ子は落とし、キー名を `attributes.refs_omitted` に残す（INV-39） |
+| 読む人 | read model・API・ReviewPacket・再投影 | 人の検索・監視だけ。**業務の判断に使わない**（INV-38） |
+
+- `projected_at` は**再投影の処理**が stdout へ渡した時刻。live の投影は stdout へ書けたかを知れない
+  （ログの故障は握る）ので付けない。`projected_at IS NULL` は「再投影で確認していない」の意味で、
+  「ログに無い」とは限らない。OpenSearch に索引されたことの証明でもない。
+- 再投影は同じ `event_id` で出すので、同じ index の中では `_id`（`create`）が重複を捨てる。日付の index を
+  またぐと別文書になり得る（§4）。検索側は `event_id` で重複を除く。
+- 遅延・未投影の監視: 正本の `episode_events` の件数（期間・Episode ごと）と OpenSearch の件数を**人が**突き合わせる。
+  食い違えば再投影する。アプリは OpenSearch を読まない。

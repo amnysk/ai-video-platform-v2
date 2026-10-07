@@ -170,6 +170,54 @@
           "type": "keyword",
           "ignore_above": 512
         },
+        "event_seq": {
+          "type": "long",
+          "ignore_malformed": true
+        },
+        "manifest_id": {
+          "type": "keyword",
+          "ignore_above": 512
+        },
+        "agent_run_id": {
+          "type": "keyword",
+          "ignore_above": 512
+        },
+        "decision_id": {
+          "type": "keyword",
+          "ignore_above": 512
+        },
+        "command_id": {
+          "type": "keyword",
+          "ignore_above": 512
+        },
+        "actor_type": {
+          "type": "keyword",
+          "ignore_above": 512
+        },
+        "model": {
+          "type": "keyword",
+          "ignore_above": 512
+        },
+        "prompt_version": {
+          "type": "keyword",
+          "ignore_above": 512
+        },
+        "usage_input": {
+          "type": "long",
+          "ignore_malformed": true
+        },
+        "usage_output": {
+          "type": "long",
+          "ignore_malformed": true
+        },
+        "estimated_cost_usd": {
+          "type": "double",
+          "ignore_malformed": true
+        },
+        "actual_cost_usd": {
+          "type": "double",
+          "ignore_malformed": true
+        },
         "outcome": {
           "type": "keyword",
           "ignore_above": 512
