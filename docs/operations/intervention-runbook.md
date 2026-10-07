@@ -25,8 +25,16 @@ JP-MAS-001 v2.0 / [ADR-0041](../decisions/0041-decision-records-and-intervention
   scene_recovery は従来どおり `storyboard.source_script` を使う（`infrastructure/intervention/rebind.py`）。
 - 判断・介入のログ（`decision.recorded`、`intervention.*` 等）は新しい `event_name` を足しただけで、既存のイベント・
   mapping の型は変えていない（追加のみ。`LOG_SCHEMA_VERSION` は据え置き）。
-- migration 0016 の巻き戻しは新しい表を消すだけ（既存データは触らない）。**消すと判断・介入の正本が失われる**ので、
-  巻き戻す前に §5 の backup を取る。
+- migration 0016 の巻き戻し（downgrade）は新しい表を消すだけ（既存データは触らない）。ただし
+  **0016 を知っているアプリ・worker のイメージは、従来の経路でも新しい表を読む**（production / voice / render /
+  scene_recovery は `rebind.bound_script_ref` で毎回 `revision_links` を引き、`append_event` は `episode_controls`・
+  `episode_events` に書く）。表だけ先に消すと、旧 Episode・日次実行の工程まで `UndefinedTable` で失敗する。
+  手順は次の順に限る:
+  1. §5 の backup を取る（**消すと判断・介入の正本が失われる**）。
+  2. API・全 worker を 0016 より前のイメージへ戻す（`make deploy` 等、既存の手順。走っている Activity は
+     旧イメージで再実行される）。新しいイメージのコンテナが残っていないことを確かめる。
+  3. その後で `alembic downgrade 0015`。
+  逆順（表を先に消す）は不可。
 
 ## 3. ログの投影が欠けた・OpenSearch が止まった（再投影）
 
