@@ -16,6 +16,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
+from contracts.intervention import ReviewPoint
 from contracts.operations import ClaimOutcome
 from contracts.production_activities import (
     DEFAULT_AWAIT_REEXECUTIONS,
@@ -118,6 +119,16 @@ STAGE_PROVIDERS: dict[PipelineStage, tuple[ProviderCall, ...]] = {
     PipelineStage.PRODUCTION: (ProviderCall.FAL_IMAGE, ProviderCall.FAL_VIDEO),
     PipelineStage.RENDER: (),
     PipelineStage.UPLOAD: (ProviderCall.YOUTUBE_UPLOAD,),
+}
+
+
+#: 待機地点（``contracts.intervention.ReviewPoint``）は、この工程の子 workflow を起動する**前**
+#: （ADR-0041 §5）。script の前の待機地点は無い（台本は最初の工程）。
+STAGE_REVIEW_POINT: dict[PipelineStage, ReviewPoint] = {
+    PipelineStage.STORYBOARD: ReviewPoint.BEFORE_STORYBOARD,
+    PipelineStage.PRODUCTION: ReviewPoint.BEFORE_PRODUCTION,
+    PipelineStage.RENDER: ReviewPoint.BEFORE_RENDER,
+    PipelineStage.UPLOAD: ReviewPoint.BEFORE_UPLOAD,
 }
 
 
