@@ -79,6 +79,7 @@ from infrastructure.db.repositories import (
     ProviderReservation,
     ProviderReservationRepository,
 )
+from infrastructure.intervention.rebind import bound_script_ref, verify_rebound
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.storage.artifact_store import ArtifactStore
 
@@ -122,7 +123,7 @@ class SceneAlternativeActivities:
 
     async def plan(self, request: PlanSceneAlternativeRequest) -> SceneAlternativeOutcome:
         storyboard_meta, storyboard = await self._load_storyboard(request)
-        script = await self._load_script(storyboard)
+        script = await self._load_script(storyboard_meta, storyboard)
         try:
             (original,) = [s for s in storyboard.scenes if s.scene_id == request.scene_id]
         except ValueError as exc:
@@ -420,16 +421,20 @@ class SceneAlternativeActivities:
         payload = await self._verified_json(meta)
         return meta, StoryboardArtifact.model_validate(payload)
 
-    async def _load_script(self, storyboard: StoryboardArtifact) -> ScriptArtifact:
+    async def _load_script(
+        self, storyboard_meta: ArtifactMetadata, storyboard: StoryboardArtifact
+    ) -> ScriptArtifact:
+        """storyboard が使う台本（結び直しを考慮。ADR-0041 §6 の唯一の解決 bound_script_ref）。"""
         async with self._session_factory() as session:
-            meta = await ArtifactMetadataRepository(session).get(
-                storyboard.source_script.artifact_id
-            )
+            ref = await bound_script_ref(session, storyboard_meta, storyboard)
+            meta = await ArtifactMetadataRepository(session).get(ref.artifact_id)
         if meta is None:
-            raise ProductionInputMissingError(
-                f"script {storyboard.source_script.artifact_id} not found"
-            )
-        return ScriptArtifact.model_validate(await self._verified_json(meta))
+            raise ProductionInputMissingError(f"script {ref.artifact_id} not found")
+        script = ScriptArtifact.model_validate(await self._verified_json(meta))
+        if ref.rebound:
+            async with self._session_factory() as session:
+                await verify_rebound(session, self._store, storyboard, script)
+        return script
 
     async def _read_override(self, meta: ArtifactMetadata) -> SceneVisualOverrideArtifact:
         return parse_scene_visual_override_artifact(await self._verified_json(meta))

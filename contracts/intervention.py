@@ -416,6 +416,9 @@ class DecisionCandidate(_Frozen):
     #: 数値評価。``assessment_kind`` を必ず伴う（自己評価を実測として扱わない）
     scores: dict[str, float] | None = None
     assessment_kind: AssessmentKind | None = None
+    #: モデルの自己評価（常に ``self_assessed``）。規則の点数（``scores``）と同じ候補に両方が
+    #: あるとき、種別を混ぜないために分けて持つ（Topic の audience_fit / visual_fit）
+    self_assessed_scores: dict[str, float] | None = None
     rejected_reason: str | None = Field(default=None, max_length=2000)
 
 

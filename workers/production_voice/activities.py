@@ -57,6 +57,7 @@ from domain.production.voice_fit import (
 )
 from domain.storyboard.coverage import script_scene_spans
 from infrastructure.db.repositories import ArtifactMetadataRepository, JobRepository
+from infrastructure.intervention.rebind import bound_script_ref, verify_rebound
 from infrastructure.media.destination import FileMediaDestination
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
 from infrastructure.storage.artifact_store import ArtifactStore, readback_sha256
@@ -156,14 +157,17 @@ class VoiceActivities:
         )
         storyboard = _parse(StoryboardArtifact, storyboard_loaded)
         script = _parse(ScriptArtifact, script_loaded)
-        if (
-            storyboard.source_script.artifact_id != script_loaded.meta.id
-            or storyboard.source_script.sha256 != script_loaded.meta.sha256
-        ):
+        # storyboard が使う台本（結び直しを考慮。ADR-0041 §6 の唯一の解決 bound_script_ref）
+        async with self._session_factory() as session:
+            bound = await bound_script_ref(session, storyboard_loaded.meta, storyboard)
+        if bound.artifact_id != script_loaded.meta.id or bound.sha256 != script_loaded.meta.sha256:
             raise ProductionInputInvalidError(
                 f"storyboard {storyboard_loaded.meta.id} was not made from current script "
                 f"{script_loaded.meta.id}"
             )
+        if bound.rebound:
+            async with self._session_factory() as session:
+                await verify_rebound(session, self._store, storyboard, script)
 
         scene = next((s for s in script.scenes if s.id == request.script_scene_id), None)
         if scene is None:

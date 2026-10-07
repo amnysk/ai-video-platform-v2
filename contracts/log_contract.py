@@ -103,6 +103,20 @@ LOG_FIELDS: tuple[LogField, ...] = (
     LogField("artifact_id", _T.KEYWORD),
     LogField("artifact_type", _T.KEYWORD),
     LogField("input_hash", _T.KEYWORD),
+    # --- 判断記録と介入（ADR-0041 / 設計 §15）。正本は PostgreSQL の表で、ここは参照（ID）だけ
+    LogField("event_seq", _T.LONG),
+    LogField("manifest_id", _T.KEYWORD),
+    LogField("agent_run_id", _T.KEYWORD),
+    LogField("decision_id", _T.KEYWORD),
+    LogField("command_id", _T.KEYWORD),
+    LogField("actor_type", _T.KEYWORD),
+    # --- agent（LLM 実行役）の共通情報。prompt・応答の本文は載せない（INV-39）
+    LogField("model", _T.KEYWORD),
+    LogField("prompt_version", _T.KEYWORD),
+    LogField("usage_input", _T.LONG),
+    LogField("usage_output", _T.LONG),
+    LogField("estimated_cost_usd", _T.DOUBLE),
+    LogField("actual_cost_usd", _T.DOUBLE),
     # --- 結果
     LogField("outcome", _T.KEYWORD),
     LogField("http_status", _T.INTEGER),
@@ -382,6 +396,27 @@ class EventName(StrEnum):
     RESEARCH_REQUEST_FINISHED = "research.request.finished"
     # 運用異常（既存 operational_anomalies の記録）
     ANOMALY_RECORDED = "anomaly.recorded"
+    # 判断記録と介入（ADR-0041）。``contracts.intervention.InterventionEvent`` と
+    # 同じ名前・同じ文字列。正本は ``episode_events``、ログは commit 後の投影と再投影
+    # （一致は contract test が検査する）
+    DECISION_RECORDED = "decision.recorded"
+    AGENT_RUN_RECORDED = "agent.run.recorded"
+    COMMAND_RECEIVED = "intervention.command.received"
+    COMMAND_FINISHED = "intervention.command.finished"
+    COMMENT_ADDED = "intervention.comment.added"
+    HOLD_REQUESTED = "intervention.hold.requested"
+    HOLD_EFFECTIVE = "intervention.hold.effective"
+    CHANGE_PROPOSED = "intervention.change.proposed"
+    CHANGE_APPLIED = "intervention.change.applied"
+    CHANGE_CONFLICTED = "intervention.change.conflicted"
+    VARIANT_SELECTED = "intervention.variant.selected"
+    REVIEW_INVALIDATED = "review.invalidated"
+    REVIEW_RESOLVED = "review.resolved"
+    CHECKPOINT_WAITING = "checkpoint.waiting"
+    CHECKPOINT_RELEASED = "checkpoint.released"
+    RESUME_REQUESTED = "intervention.resume.requested"
+    RESUME_COMPLETED = "intervention.resume.completed"
+    MODE_CHANGED = "intervention.mode.changed"
 
 
 # --------------------------------------------------------------------------- 上限（UTF-8 bytes）

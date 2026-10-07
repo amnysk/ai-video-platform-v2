@@ -474,6 +474,18 @@ Episode の新しい有料 dispatch・投稿を `EpisodeHeldError` で拒否す�
 / `tests/unit/test_intervention_commands.py::test_hold_becomes_held_and_lists_in_flight_unknown_and_undispatched`
 （PostgreSQL の行 lock での hold と dispatch の競合の integration テストは未作成。単体は SQLite）
 
+### INV-45 manifest が変われば、それに結び付いた approval は stale になり流用されない
+approval（`annotations.kind=approval`）は承認した採用 manifest（`annotations.manifest_id`）に結び付く。
+採用 manifest が別の manifest に替わった時点で（台本・素材・完成品のどれかが新しい revision になれば
+新しい manifest になる）、旧 manifest の approval は現行の合格として扱わない。判定は
+`infrastructure.intervention.read_model.approval_is_current(annotation, control)` の1つだけで、
+`annotation.manifest_id == control.active_manifest_id` のときだけ真（approval 以外・manifest 未結び付け・
+採用 manifest 無しは偽）。読み取りモデルは旧 manifest の approval を `stale_approvals` に列挙し、
+`approval_current=false` で示す。approval の行は消さない（追記型 / INV-41 の趣旨）。
+**機械検査**: `tests/unit/test_intervention_read_model.py::test_approval_is_current_only_for_the_active_manifest`
+/ `tests/unit/test_intervention_read_model.py::test_an_approval_of_the_old_manifest_is_stale_after_the_manifest_changes`
+（checkpoint の解放・投稿の直前にこの述語を通すのは担当B の適用・gate 側。その検査はそちらのテストが持つ）
+
 ### INV-46 新方式（mode != legacy）では、必須記録の無い有料生成・投稿を開始しない
 `episode_controls.mode` が `legacy` 以外の Episode では、有料 dispatch・投稿の開始許可
 （`mark_dispatched` / `mark_upload_dispatched` の同じ transaction の dispatch gate
@@ -484,3 +496,26 @@ Episode の新しい有料 dispatch・投稿を `EpisodeHeldError` で拒否す�
 **機械検査**: `tests/unit/test_intervention_gate.py::test_new_mode_requires_a_record_for_the_current_script_and_storyboard`
 / `tests/unit/test_intervention_gate.py::test_legacy_mode_with_a_row_does_not_require_records`
 / `tests/unit/test_intervention_gate.py::test_an_episode_without_a_control_row_dispatches_and_nothing_is_written`
+
+### INV-47 介入 API は予算上限・Schedule・公開設定を変更できず、AI の principal は人専用 scope を得られない
+介入 API（`/v1/intervention`、`apps/api/routers/intervention.py`）の書き込みは command の受付（`POST .../commands` と
+変更案ファイルの取り込み `POST .../change-proposals`）だけで、他の route は GET。command 型の語彙
+（`contracts.intervention.CommandType`）に予算上限・Schedule・公開設定を変える型は無く、未知の型は
+`422 unsupported_command`、既存の型の payload に余分な項目（予算・cron・公開範囲など）を混ぜると `422 invalid_payload`
+（payload model は `extra="forbid"`）。principal は設定 `INTERVENTION_PRINCIPALS`（token の sha256 → actor・scope）で
+決まり、AI（`ai_assistant` / `agent`）に `HUMAN_ONLY_SCOPES`（`set_mode`）を与える設定は読み込まない
+（介入 API は `503 intervention_misconfigured`）。設定が無ければ介入 API は全て `503 intervention_disabled`（既定で閉じる）。
+command には実際に使った scope（`granted_scope`）と主体を記録する。
+**機械検査**: `tests/contract/test_migration_0016_intervention.py::test_no_command_type_changes_budget_schedule_or_visibility`
+/ `tests/unit/test_intervention_api.py::test_budget_schedule_and_visibility_commands_are_422_unsupported`
+/ `tests/unit/test_intervention_api.py::test_budget_schedule_visibility_fields_cannot_ride_on_other_commands`
+/ `tests/unit/test_intervention_api.py::test_the_router_exposes_no_budget_schedule_or_visibility_surface`
+/ `tests/unit/test_intervention_api.py::test_an_ai_principal_cannot_set_mode`
+/ `tests/unit/test_intervention_api.py::test_every_intervention_route_is_503_when_unconfigured`
+/ `tests/unit/test_intervention_api.py::test_a_misconfigured_principal_file_disables_the_api_without_leaking`
+/ `tests/unit/test_intervention_api.py::test_a_new_command_is_202_received_and_started_after_commit`（`granted_scope`・主体の記録。保存は担当 B の `receive_command` の fake を通した store）
+/ `tests/unit/test_intervention_auth.py::test_ai_principals_cannot_be_granted_human_only_scopes`
+/ `tests/unit/test_intervention_auth.py::test_system_actor_cannot_be_an_api_principal`
+/ `tests/unit/test_intervention_auth.py::test_settings_default_is_unconfigured`
+（Settings の予算・Schedule の値を API から変える経路が無いことは route の表面と command 語彙で検査する。
+担当 B の `receive_command` が `granted_scope` を `REQUIRED_SCOPE` から記録することは B のテストと統合後の検査に依る）
