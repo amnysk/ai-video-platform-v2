@@ -83,3 +83,11 @@ B の実装が入った後は、統合 branch の integration test が実物の 
 | `test_dangling_intervention_references_are_reported` | manifest の members・parent、revision_links、episode_controls の参照が解決する | 同上 | DB の一部の表だけ復元・FK の無い参照の欠落 |
 | `test_a_reference_into_another_episode_is_reported` | 参照先が同じ Episode | 同上 | 別 Episode の成果物を採用 manifest に入れた破損 |
 | `test_script_exit_codes` / `test_script_rejects_unknown_arguments` | 不整合で非0、出力形式、直す引数を持たない | script を読み込み fixture を渡す | 演習 script が NG を見落とす（終了コード0） |
+
+## 6. backup/restore 演習（`scripts/intervention-backup-drill.sh`、隔離スタック・実の PostgreSQL 17 / MinIO）
+
+unit test（§5）はメモリストアと SQLite なので、`pg_dump`/`pg_restore` と `mc mirror` を通した後も参照と sha256 が
+保たれることは言えない。演習は実物で通し、**検査が壊れた復元を見つける**ことまで確かめる（1オブジェクト削除 → 終了コード 1）。
+本番 `avp2` は script が拒否する。元データは `tests/support/intervention_world.py:seed_world`（unit test と同じ形）を
+`scripts/intervention-backup-drill-seed.py` が隔離 DB へ入れる（`AVP_ENVIRONMENT=test` でなければ拒否）。
+pytest に入れていないのは、`docker compose exec`（postgres・minio コンテナ）を test-runner の中から呼べないため。
