@@ -26,18 +26,20 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from contracts.artifacts import parse_script_artifact
 from contracts.intervention import (
     TERMINAL_COMMAND_STATUSES,
     AnnotationKind,
     CommandStatus,
     RevisionLinkKind,
 )
-from contracts.research import ResearchCallStatus
+from contracts.research import ResearchArtifactType, ResearchCallStatus
 from contracts.states import ArtifactType, ReservationStatus
 from infrastructure.db.models import (
     ArtifactMetadataRow,
     EpisodeRow,
     ProviderReservationRow,
+    ResearchArtifactRow,
     ResearchCallRow,
     ResearchRequestRow,
 )
@@ -276,6 +278,40 @@ class LinkView(_View):
     kind: str
 
 
+class ScriptSegmentView(_View):
+    segment_id: str
+    narration: str
+    visual: str
+    duration_ms: int
+
+
+class ScriptView(_View):
+    """採用 manifest の台本の本文（ReviewPacket・レビュアーが読む）。"""
+
+    revision_id: str
+    title: str
+    hook: str
+    language: str
+    total_duration_ms: int
+    segments: list[ScriptSegmentView]
+
+
+class EvidenceView(_View):
+    """Episode を参照する research の成果物（参照だけ。research は所有者のまま / INV-37）。"""
+
+    research_artifact_id: str
+    artifact_type: str
+    request_id: str
+    bucket: str
+    object_key: str
+    sha256: str
+    is_current: bool
+    #: ``research_script_verification`` だけ（読めなければ None）
+    verdict: str | None
+    #: 照合した台本の revision（``script_ref.artifact_id``）
+    script_revision_id: str | None
+
+
 class EpisodeView(_View):
     schema_version: str = READ_MODEL_SCHEMA_VERSION
     episode_id: str
@@ -302,6 +338,9 @@ class EpisodeView(_View):
     derived_links: list[LinkView]
     #: 本体を読めなかった revision
     unreadable_revisions: list[str]
+    #: 採用 manifest の台本（無い・読めなければ None）
+    script: ScriptView | None = None
+    evidence: list[EvidenceView] = []
 
 
 class FieldChange(_View):
@@ -488,6 +527,8 @@ class EpisodeReadModel:
                     for e in derived.edges
                 ],
                 unreadable_revisions=list(derived.unreadable),
+                script=await self._script(members_map.get("script"), artifacts),
+                evidence=await self._evidence(session, episode.id),
             )
             # 読み取りだけ。get_control 等が始めた transaction は書かずに閉じる
             await session.rollback()
@@ -554,6 +595,66 @@ class EpisodeReadModel:
                     upstream=upstream_views,
                     stale=bool(reasons),
                     stale_reasons=reasons,
+                )
+            )
+        return views
+
+    async def _script(
+        self, revision_id: str | None, artifacts: Mapping[str, ArtifactMetadataRow]
+    ) -> ScriptView | None:
+        row = None if revision_id is None else artifacts.get(revision_id)
+        if row is None:
+            return None
+        try:
+            script = parse_script_artifact(await self._store.get_json(row.object_key))
+        except Exception:  # noqa: BLE001 - 読めない台本は None（ReviewPacket が欠落として示す）
+            return None
+        return ScriptView(
+            revision_id=str(row.id),
+            title=script.title,
+            hook=script.hook,
+            language=script.language,
+            total_duration_ms=script.total_duration_ms,
+            segments=[
+                ScriptSegmentView(
+                    segment_id=s.id,
+                    narration=s.narration,
+                    visual=s.visual,
+                    duration_ms=s.duration_ms,
+                )
+                for s in script.scenes
+            ],
+        )
+
+    async def _evidence(self, session: AsyncSession, episode_id: uuid.UUID) -> list[EvidenceView]:
+        rows = await session.execute(
+            select(ResearchArtifactRow)
+            .join(ResearchRequestRow, ResearchRequestRow.id == ResearchArtifactRow.request_id)
+            .where(ResearchRequestRow.episode_id == episode_id)
+            .order_by(ResearchArtifactRow.created_at, ResearchArtifactRow.id)
+        )
+        views = []
+        for (row,) in rows:
+            verdict = script_revision = None
+            if row.artifact_type == ResearchArtifactType.RESEARCH_SCRIPT_VERIFICATION.value:
+                try:
+                    body = await self._store.get_json(row.object_key)
+                    verdict = body.get("verdict")
+                    ref = body.get("script_ref") or {}
+                    script_revision = ref.get("artifact_id")
+                except Exception:  # noqa: BLE001 - 読めなければ verdict は None
+                    pass
+            views.append(
+                EvidenceView(
+                    research_artifact_id=str(row.id),
+                    artifact_type=row.artifact_type,
+                    request_id=str(row.request_id),
+                    bucket=row.bucket,
+                    object_key=row.object_key,
+                    sha256=row.sha256,
+                    is_current=row.superseded_at is None,
+                    verdict=None if verdict is None else str(verdict),
+                    script_revision_id=None if script_revision is None else str(script_revision),
                 )
             )
         return views

@@ -149,6 +149,11 @@ async def test_a_legacy_episode_reads_with_defaults_and_nothing_is_written(
     assert members["script"].sha256 == s1.sha256
     assert members["script"].object_key == s1.object_key
     assert members["storyboard"].stale is False
+    # 採用中の台本の本文（ReviewPacket・レビュアーが読む）
+    assert view.script is not None and view.script.revision_id == s1.id
+    assert [g.segment_id for g in view.script.segments] == ["s1", "s2", "s3"]
+    assert view.script.segments[0].narration == "a"
+    assert view.evidence == []
     # 古い Episode の依存は JSON 参照から導出（書かない）
     assert [(e.upstream_revision_id, e.downstream_revision_id) for e in view.derived_links] == [
         (s1.id, sb.id)
