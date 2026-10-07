@@ -515,6 +515,20 @@ class ArtifactMetadataRepository:
                 )
         await self._session.flush()
 
+    async def retire_current(
+        self,
+        episode_id: uuid.UUID | str,
+        artifact_type: ArtifactType,
+        scene_id: str | None = None,
+    ) -> None:
+        """現行世代を、後継を作らずに降ろす（ADR-0041 §7: 適用した変更で stale になった下流）。
+
+        行は消さない（INV-11 / INV-41）。降ろし方は ``record`` の新世代と同じ
+        ``_supersede_current``。
+        同じ内容が後で再び作られたら ``record`` の A→B→A の規則で復帰する。
+        """
+        await self._supersede_current(_as_uuid(episode_id), artifact_type, _now(), scene_id)
+
     async def find_current_by_type(
         self,
         episode_id: uuid.UUID | str,

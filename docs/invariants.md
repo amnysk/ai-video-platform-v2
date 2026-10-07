@@ -420,6 +420,40 @@ Replayer で replay。非決定にならず1件も発行しない）
 
 ## N. 判断記録と介入（ADR-0041）
 
+### INV-42 同じ command_id の再送・復旧は1つの論理変更にしかならない
+介入 command は `intervention_commands` の行（`id` = クライアントの command_id）として受け付け、同じ id・同じ
+payload（`payload_sha256`）の再送は既存の行を返し、違う payload は `DuplicateCommandError`（API 409）。
+適用（`infrastructure.intervention.commands.apply_command`）は Episode の制御行を lock して直列化し、
+command が既に終端（applied / conflict / rejected / failed）なら保存済みの result を**そのまま返す**
+（状態・revision・manifest・イベントを増やさない）。子 pipeline の start の結果は result に追記され、
+記録後の再配送は pipeline を二度 start しない。
+**機械検査**: `tests/unit/test_intervention_commands.py::test_same_id_and_payload_returns_the_existing_command`
+/ `tests/unit/test_intervention_commands.py::test_same_id_with_another_payload_is_refused`
+/ `tests/unit/test_intervention_commands.py::test_applying_the_same_command_twice_is_one_logical_change`
+/ `tests/unit/test_intervention_commands.py::test_comment_is_applied_at_receipt_and_reapply_returns_the_stored_result`
+/ `tests/unit/test_intervention_commands.py::test_resume_runs_again_from_the_next_stage`
+
+### INV-43 期待版の不一致は CONFLICT で返し、上書きしない
+`expected_control_revision`（Episode の制御版）が現在値と違う command は `conflict`
+（`stale_control_revision`）で終わり、制御状態・採用を変えない。checkpoint の解放は承認する manifest が
+現在の採用 manifest と一致しなければ `conflict`（古い manifest への承認を流用しない）。
+**機械検査**: `tests/unit/test_intervention_commands.py::test_a_stale_expected_control_revision_is_a_conflict_and_changes_nothing`
+/ `tests/unit/test_intervention_commands.py::test_release_checkpoint_binds_the_approval_to_the_active_manifest`
+
+### INV-44 hold の受付後に新しい dispatch は始まらず、HELD は送信済み・成否不明を列挙する
+`request_hold` は受付の transaction で `episode_controls.control_state = hold_requested` にし、dispatch gate
+（`mark_dispatched` / `mark_upload_dispatched` の同じ transaction で制御行を `FOR SHARE` で読む）は `running` 以外の
+Episode の新しい有料 dispatch・投稿を `EpisodeHeldError` で拒否する。拒否された予約は `reserved` かつ未 dispatch の
+まま残り、resume 後に同じ予約（同じ冪等キー）で再利用される。適用で `held` にしたときの result は、送信済み
+（`in_flight`）・成否不明（`unknown_outcome`）・未送信（`undispatched`）の予約を列挙する（provider の job 参照は載せない）。
+停止は「以後の追加課金ゼロ」を意味しない（送信済みは完了・課金されうる）。
+**機械検査**: `tests/unit/test_intervention_gate.py::test_a_non_running_episode_refuses_dispatch_and_leaves_the_reservation_unsent`
+/ `tests/unit/test_intervention_gate.py::test_upload_dispatch_is_refused_while_held_but_an_in_flight_session_is_not_reopened`
+/ `tests/unit/test_intervention_gate.py::test_a_reservation_refused_by_the_gate_is_reused_after_resume`
+/ `tests/unit/test_intervention_commands.py::test_hold_is_requested_in_the_receiving_transaction_and_not_reported_as_done`
+/ `tests/unit/test_intervention_commands.py::test_hold_becomes_held_and_lists_in_flight_unknown_and_undispatched`
+（PostgreSQL の行 lock での hold と dispatch の競合は隔離環境の integration で検査する予定。単体は SQLite）
+
 ### INV-46 新方式（mode != legacy）では、必須記録の無い有料生成・投稿を開始しない
 `episode_controls.mode` が `legacy` 以外の Episode では、有料 dispatch・投稿の開始許可
 （`mark_dispatched` / `mark_upload_dispatched` の同じ transaction の dispatch gate
