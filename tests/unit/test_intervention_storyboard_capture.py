@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from sqlalchemy import func, select
 
-from contracts.intervention import AgentRole, InterventionMode, RevisionLinkKind
+from contracts.intervention import ActorType, AgentRole, InterventionMode, RevisionLinkKind
 from contracts.states import ArtifactType, ProviderCall
 from domain.script.ports import GenerationRequest
 from domain.storyboard.ports import StoryboardRawResult, StoryboardRequest
@@ -34,7 +34,7 @@ from infrastructure.intervention.capture import (
     AgentRunCaptureError,
     ExchangeRecordingGenerator,
 )
-from infrastructure.intervention.store import ControlChange, InterventionStore
+from infrastructure.intervention.store import Actor, ControlChange, InterventionStore
 from infrastructure.storage.memory_store import InMemoryArtifactStore
 from tests.support.fakes import FakeStoryboardGenerator, FakeStoryGenerator
 from tests.support.storyboard import create_episode_at_script_ready, good_storyboard
@@ -91,6 +91,21 @@ async def _episode(session_factory, store, mode: InterventionMode | None) -> str
             control = InterventionStore(session)
             await control.lock_control(episode_id)
             await control.update_control(episode_id, ControlChange(mode=mode))
+            # 新方式の台本は記録を伴って作られる（INV-46 の gate が storyboard の dispatch の前に
+            # 検査する）。ここでは台本工程を通さずに置いた台本なので、その記録を下ごしらえで足す
+            script = await ArtifactMetadataRepository(session).find_current_by_type(
+                episode_id, ArtifactType.SCRIPT
+            )
+            assert script is not None
+            if mode is not InterventionMode.LEGACY:
+                await control.insert_decision(
+                    idempotency_key=f"fixture-script-{script.id}",
+                    decision_type="write_script",
+                    actor=Actor(ActorType.HUMAN, "fixture"),
+                    payload={"fixture": True},
+                    episode_id=episode_id,
+                    result_revision_id=script.id,
+                )
             await session.commit()
     return episode_id
 
@@ -136,7 +151,11 @@ async def test_new_method_records_the_actual_prompt_and_links_the_script(session
         )
         intervention = InterventionStore(session)
         (run,) = await intervention.list_agent_runs(episode_id=episode_id)
-        (decision,) = await intervention.list_decisions(episode_id=episode_id)
+        (decision,) = [
+            d
+            for d in await intervention.list_decisions(episode_id=episode_id)
+            if d.decision_type != "write_script"  # 下ごしらえの台本の記録を除く
+        ]
         links = await intervention.links(episode_id=episode_id)
         (reservation,) = await ProviderReservationRepository(session).list_for_episode_provider(
             episode_id, ProviderCall.CODEX_STORYBOARD
