@@ -18,6 +18,7 @@ repositories を import せず、表を直接読む。
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection, Iterable
 
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,13 +27,22 @@ from contracts.intervention import (
     CO_PRODUCTION_REVIEW_POINTS,
     AnnotationKind,
     ControlState,
+    InterventionEvent,
     InterventionMode,
     ReviewPoint,
 )
+from contracts.pipeline import STAGE_REVIEW_POINT, ControlGateResult, PipelineStage
 from contracts.states import ArtifactType
 from domain.errors import EpisodeHeldError, MissingDecisionRecordError
 from infrastructure.db.models import AgentRunRow, ArtifactMetadataRow, DecisionRecordRow
-from infrastructure.intervention.store import EpisodeControl, InterventionStore
+from infrastructure.intervention.manifests import ensure_manifest
+from infrastructure.intervention.store import (
+    SYSTEM_ACTOR,
+    Annotation,
+    ControlChange,
+    EpisodeControl,
+    InterventionStore,
+)
 
 #: 待機地点を持つ運転モード（``docs/domain/intervention.md`` §2）
 REVIEWING_MODES: frozenset[InterventionMode] = frozenset(
@@ -106,27 +116,101 @@ def effective_review_points(control: EpisodeControl) -> tuple[ReviewPoint, ...]:
     return control.review_points
 
 
-async def approval_is_current(
+def approval_matches(
+    annotation: Annotation,
+    manifest_id: str | None,
+    *,
+    point: ReviewPoint | None = None,
+    withdrawn: Collection[str | None] = (),
+) -> bool:
+    """approval の有効性の**唯一の規則**（INV-45、AGENTS.md §8）。
+
+    approval が ``manifest_id``（採用 manifest）に結び付き、撤回（``resolution`` 注記が指す）されて
+    おらず、``point`` を渡したらその待機地点のものであること。manifest が変われば古い approval は
+    一致しない（流用されない）。approval 以外は常に False。read model
+    （``read_model.approval_is_current``）と control gate の両方がこれを通す。
+    """
+    return (
+        annotation.kind is AnnotationKind.APPROVAL
+        and annotation.manifest_id is not None
+        and manifest_id is not None
+        and annotation.manifest_id == manifest_id
+        and annotation.annotation_id not in withdrawn
+        and (point is None or (annotation.payload or {}).get("point") == point.value)
+    )
+
+
+def withdrawn_annotation_ids(annotations: Iterable[Annotation]) -> frozenset[str]:
+    return frozenset(
+        a.refers_to_annotation_id
+        for a in annotations
+        if a.kind is AnnotationKind.RESOLUTION and a.refers_to_annotation_id is not None
+    )
+
+
+async def has_current_approval(
     store: InterventionStore,
     episode_id: uuid.UUID | str,
     point: ReviewPoint,
     manifest_id: str,
 ) -> bool:
-    """``(point, manifest)`` に結び付いた、撤回されていない approval があるか（INV-45 の読み方）。
-
-    approval は manifest に結び付く。manifest が変われば古い approval はここで一致しない
-    （流用されない）。撤回は ``resolution`` 注記が approval を指す（元の行は消さない）。
-    """
+    """``(point, manifest)`` に結び付いた、撤回されていない approval があるか。"""
     annotations = await store.list_annotations(episode_id)
-    withdrawn = {
-        a.refers_to_annotation_id
-        for a in annotations
-        if a.kind is AnnotationKind.RESOLUTION and a.refers_to_annotation_id is not None
-    }
+    withdrawn = withdrawn_annotation_ids(annotations)
     return any(
-        a.kind is AnnotationKind.APPROVAL
-        and a.manifest_id == manifest_id
-        and (a.payload or {}).get("point") == point.value
-        and a.annotation_id not in withdrawn
-        for a in annotations
+        approval_matches(a, manifest_id, point=point, withdrawn=withdrawn) for a in annotations
+    )
+
+
+async def evaluate_stage_gate(
+    session: AsyncSession, episode_id: uuid.UUID | str, stage: PipelineStage
+) -> ControlGateResult:
+    """pipeline が工程の子 workflow を起動する前の判定（``pipeline_control_gate`` の本体）。
+
+    1. 採用 manifest を現行から確定する（``ensure_manifest``）
+    2. ``running`` 以外 → 起動しない（停止中・待機中・取消要求）
+    3. この工程の前が待機地点で、``(地点, 採用 manifest)`` の approval が無い →
+       ``waiting_review`` にして ``checkpoint.waiting`` を記録し、起動しない
+    commit は呼び出し側。自動承認しない（期限の方針は ``keep_waiting`` だけ）。
+    """
+    store = InterventionStore(session)
+    control = await store.lock_control(episode_id)
+    manifest = await ensure_manifest(session, store, episode_id, SYSTEM_ACTOR)
+    if control.control_state is not ControlState.RUNNING:
+        return ControlGateResult(
+            proceed=False,
+            reason=f"control_state is {control.control_state.value}",
+            control_state=control.control_state.value,
+            waiting_point=None if control.waiting_point is None else control.waiting_point.value,
+            manifest_id=manifest.manifest_id,
+        )
+    point = STAGE_REVIEW_POINT.get(stage)
+    if (
+        point is not None
+        and point in effective_review_points(control)
+        and not await has_current_approval(store, episode_id, point, manifest.manifest_id)
+    ):
+        await store.update_control(
+            episode_id,
+            ControlChange(
+                control_state=ControlState.WAITING_REVIEW,
+                waiting_point=point,
+                waiting_manifest_id=manifest.manifest_id,
+            ),
+        )
+        await store.append_event(
+            episode_id,
+            InterventionEvent.CHECKPOINT_WAITING,
+            SYSTEM_ACTOR,
+            {"point": point.value, "manifest_id": manifest.manifest_id, "stage": stage.value},
+        )
+        return ControlGateResult(
+            proceed=False,
+            reason=f"waiting for review at {point.value}",
+            control_state=ControlState.WAITING_REVIEW.value,
+            waiting_point=point.value,
+            manifest_id=manifest.manifest_id,
+        )
+    return ControlGateResult(
+        proceed=True, control_state=control.control_state.value, manifest_id=manifest.manifest_id
     )

@@ -416,3 +416,23 @@ async def test_cancel_is_recorded_at_receipt_and_cannot_be_resumed(
     )
     resume = await submit(session_factory, artifact_store, episode_id, envelope(CommandType.RESUME))
     assert resume.reject_reason is RejectReason.INVALID_STATE
+
+
+async def test_the_recorded_scope_is_the_one_the_command_type_requires(
+    session, session_factory
+) -> None:
+    """command 行の ``granted_scope`` は principal の全 scope ではなく、型が要求する scope。"""
+    from contracts.intervention import REQUIRED_SCOPE
+
+    episode_id = await make_episode(session)
+    payloads = {
+        CommandType.COMMENT: {"anchor": {}, "body": "x"},
+        CommandType.SET_USER_CONSTRAINT: {"rule": "keep_scene_visual", "target_ids": ["sb1"]},
+        CommandType.REQUEST_HOLD: {},
+        CommandType.RESUME: {},
+        CommandType.SET_MODE: {"mode": "legacy"},
+        CommandType.REJECT_CHANGE: {"change_set_id": "00000000-0000-0000-0000-000000000000"},
+    }
+    for command_type, payload in payloads.items():
+        received = await receive(session_factory, episode_id, envelope(command_type, payload))
+        assert received.command.granted_scope is REQUIRED_SCOPE[command_type], command_type

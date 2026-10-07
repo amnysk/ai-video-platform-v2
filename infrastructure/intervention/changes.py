@@ -67,6 +67,7 @@ from infrastructure.intervention.commands import (
     ApplyContext,
     Decision,
 )
+from infrastructure.intervention.gate import approval_matches, withdrawn_annotation_ids
 from infrastructure.intervention.impact import (
     ConstraintRule,
     Impact,
@@ -166,17 +167,11 @@ async def _constraints(store: InterventionStore, episode_id: str) -> list[Constr
 
 async def _approvals_on(store: InterventionStore, episode_id: str, manifest_id: str) -> list[str]:
     annotations = await store.list_annotations(episode_id)
-    withdrawn = {
-        a.refers_to_annotation_id
-        for a in annotations
-        if a.kind is AnnotationKind.RESOLUTION and a.refers_to_annotation_id is not None
-    }
+    withdrawn = withdrawn_annotation_ids(annotations)
     return [
         a.annotation_id
         for a in annotations
-        if a.kind is AnnotationKind.APPROVAL
-        and a.manifest_id == manifest_id
-        and a.annotation_id not in withdrawn
+        if approval_matches(a, manifest_id, withdrawn=withdrawn)
     ]
 
 
@@ -194,7 +189,15 @@ def build_edited_script(current: dict[str, Any], change: ScriptEditScenes) -> _S
     """台本の文面だけを差し替えた新しい ScriptArtifact（pydantic で検証済み）を作る。
 
     シーンの id・順序・尺は変えない（変わるなら storyboard を作り直す必要があり、初期は適用不可）。
+    映像の文（``visual``）の修正は受け付けない（画像は storyboard から作られるので何も変わらない。
+    映像を変えるのは ``scene.override_visual``）。
     """
+    if any(e.visual is not None for e in change.edits):
+        # 画像・動画は storyboard から作られ、台本の visual は読まれない。適用しても映像は変わらない
+        raise _reject(
+            RejectReason.UNSUPPORTED_CHANGE,
+            detail="script visual text does not change any image; use scene.override_visual",
+        )
     script = ScriptArtifact.model_validate(current)
     by_id = {scene.id: scene for scene in script.scenes}
     unknown = [e.segment_id for e in change.edits if e.segment_id not in by_id]

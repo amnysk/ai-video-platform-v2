@@ -43,6 +43,7 @@ from infrastructure.db.models import (
     ResearchCallRow,
     ResearchRequestRow,
 )
+from infrastructure.intervention.gate import approval_matches
 from infrastructure.intervention.records import (
     derive_links,
     derive_topic_decision,
@@ -66,13 +67,9 @@ def approval_is_current(annotation: Annotation, control: EpisodeControl) -> bool
 
     manifest が変われば（台本・素材・完成品のどれかが替われば新しい manifest になる）旧 manifest の
     approval は現行の合格にならない。承認・投稿の判断はこの述語を通す。approval 以外は常に False。
+    規則の宣言元は ``gate.approval_matches``（control gate と同じ規則。AGENTS.md §8）。
     """
-    return (
-        annotation.kind is AnnotationKind.APPROVAL
-        and annotation.manifest_id is not None
-        and control.active_manifest_id is not None
-        and annotation.manifest_id == control.active_manifest_id
-    )
+    return approval_matches(annotation, control.active_manifest_id)
 
 
 # --------------------------------------------------------------------------- view
