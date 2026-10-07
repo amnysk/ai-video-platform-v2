@@ -431,3 +431,26 @@ approval（`annotations.kind=approval`）は承認した採用 manifest（`annot
 **機械検査**: `tests/unit/test_intervention_read_model.py::test_approval_is_current_only_for_the_active_manifest`
 / `tests/unit/test_intervention_read_model.py::test_an_approval_of_the_old_manifest_is_stale_after_the_manifest_changes`
 （checkpoint の解放・投稿の直前にこの述語を通すのは担当B の適用・gate 側。その検査はそちらのテストが持つ）
+
+### INV-47 介入 API は予算上限・Schedule・公開設定を変更できず、AI の principal は人専用 scope を得られない
+介入 API（`/v1/intervention`、`apps/api/routers/intervention.py`）の書き込みは command の受付（`POST .../commands` と
+変更案ファイルの取り込み `POST .../change-proposals`）だけで、他の route は GET。command 型の語彙
+（`contracts.intervention.CommandType`）に予算上限・Schedule・公開設定を変える型は無く、未知の型は
+`422 unsupported_command`、既存の型の payload に余分な項目（予算・cron・公開範囲など）を混ぜると `422 invalid_payload`
+（payload model は `extra="forbid"`）。principal は設定 `INTERVENTION_PRINCIPALS`（token の sha256 → actor・scope）で
+決まり、AI（`ai_assistant` / `agent`）に `HUMAN_ONLY_SCOPES`（`set_mode`）を与える設定は読み込まない
+（介入 API は `503 intervention_misconfigured`）。設定が無ければ介入 API は全て `503 intervention_disabled`（既定で閉じる）。
+command には実際に使った scope（`granted_scope`）と主体を記録する。
+**機械検査**: `tests/contract/test_migration_0016_intervention.py::test_no_command_type_changes_budget_schedule_or_visibility`
+/ `tests/unit/test_intervention_api.py::test_budget_schedule_and_visibility_commands_are_422_unsupported`
+/ `tests/unit/test_intervention_api.py::test_budget_schedule_visibility_fields_cannot_ride_on_other_commands`
+/ `tests/unit/test_intervention_api.py::test_the_router_exposes_no_budget_schedule_or_visibility_surface`
+/ `tests/unit/test_intervention_api.py::test_an_ai_principal_cannot_set_mode`
+/ `tests/unit/test_intervention_api.py::test_every_intervention_route_is_503_when_unconfigured`
+/ `tests/unit/test_intervention_api.py::test_a_misconfigured_principal_file_disables_the_api_without_leaking`
+/ `tests/unit/test_intervention_api.py::test_a_new_command_is_202_received_and_started_after_commit`（`granted_scope`・主体の記録。保存は担当 B の `receive_command` の fake を通した store）
+/ `tests/unit/test_intervention_auth.py::test_ai_principals_cannot_be_granted_human_only_scopes`
+/ `tests/unit/test_intervention_auth.py::test_system_actor_cannot_be_an_api_principal`
+/ `tests/unit/test_intervention_auth.py::test_settings_default_is_unconfigured`
+（Settings の予算・Schedule の値を API から変える経路が無いことは route の表面と command 語彙で検査する。
+担当 B の `receive_command` が `granted_scope` を `REQUIRED_SCOPE` から記録することは B のテストと統合後の検査に依る）
