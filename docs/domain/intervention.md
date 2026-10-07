@@ -143,6 +143,16 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
 | `scene.override_visual`（1シーンの映像の差し替え） | `scene_visual_override`（既存 ADR-0035 の型） | そのシーンの画像・動画・manifest・完成動画・approval | そのシーンの画像・動画・manifest・render | 他シーン（INV-33） |
 | シーンの並べ替え・尺の変更 | 初期は**適用不可**（REJECTED `unsupported_change`）。storyboard の再生成が全シーンの画像を作り直す（`storyboard_sha256` が全画像の入力指紋に入る）ため、見積りと共に人が別手順で判断する | — | — | — |
 
+適用の規則（担当 B の実装）:
+- 「stale にする」は**現行から降ろす**こと（`ArtifactMetadataRepository.retire_current`。行は消さない）。採用 manifest は
+  常に現行と一致し、resume は現行に出力の無い最初の工程から pipeline を走らせる。
+- 適用は工程が走っていない間だけ（Episode が `in_progress` なら `invalid_state`）。投稿済み・終端の Episode は不可。
+- 送信済み（成否未確定）の有料 job があるシーンの `scene.override_visual` は `invalid_state`。旧版の入力で送った
+  結果が差し替えの後に届くと、画像・動画の Activity は入力の不一致で保存を拒み課金済みの結果が宙に浮くため、
+  結果が旧版の revision として保存されてから適用する（旧版は新しい manifest に入らない）。
+- 台本の修正は台本工程の再利用キー（`input_hash`）を引き継ぐ（台本工程の再実行が人の修正を上書きしない）。
+- 人の差し替えは `scene_visual_override` に `change_set_id` を持ち、`rejection_ids` は空（ADR-0035 の代替案は1件以上）。
+
 既知の制限: 音声の入力指紋は台本全体の sha256 を含むので、`script.edit_scenes` は**全シーンの音声**を作り直す
 （無料のローカル TTS。有料素材は作り直さない）。音声単位の再利用は別 ADR。
 

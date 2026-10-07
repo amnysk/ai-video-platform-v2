@@ -420,6 +420,21 @@ Replayer で replay。非決定にならず1件も発行しない）
 
 ## N. 判断記録と介入（ADR-0041）
 
+### INV-41 ユーザー修正は新 revision として保存し、旧版・コメントを消さない
+ChangeSet の適用（`infrastructure.intervention.changes.apply_change`）は、新しい成果物を不変のオブジェクトとして
+保存し `artifact_metadata` に新しい世代を記録する（旧行は superseded として残り、旧オブジェクトも残る）。
+`revision_links`（`parent`、構成・尺が同じ台本修正は storyboard への `rebound_to`）、新しい採用 manifest、
+ChangeSet の作者を actor とする判断記録（`override_diff`）、古い manifest の approval ごとの `review.invalidated` を
+同じ commit に入れる。影響範囲の下流（音声・production_manifest・final_video／そのシーンの画像・動画）は現行から
+降ろすだけで行は消さない。台本の文面の修正は画像・動画（有料）の現行・入力指紋・storyboard を変えない。
+送信済みの有料 job があるシーンの差し替えは受け付けない（旧版の結果が新しい採用 manifest に混ざらない）。
+**機械検査**: `tests/unit/test_intervention_changes.py::test_script_edit_creates_a_new_revision_and_keeps_the_old_one_and_comments`
+/ `tests/unit/test_intervention_changes.py::test_script_edit_does_not_touch_image_or_video_identity`
+/ `tests/unit/test_intervention_changes.py::test_scene_override_reuses_the_override_artifact_and_regenerates_only_that_scene`
+/ `tests/unit/test_intervention_changes.py::test_an_old_version_result_cannot_become_the_adopted_member_after_a_change`
+/ `tests/unit/test_intervention_changes.py::test_ai_may_apply_only_zero_cost_changes_that_respect_user_constraints`
+/ `tests/unit/test_intervention_changes.py::test_a_paid_change_without_a_rate_is_unverifiable_and_with_a_rate_is_checked`
+
 ### INV-42 同じ command_id の再送・復旧は1つの論理変更にしかならない
 介入 command は `intervention_commands` の行（`id` = クライアントの command_id）として受け付け、同じ id・同じ
 payload（`payload_sha256`）の再送は既存の行を返し、違う payload は `DuplicateCommandError`（API 409）。
@@ -437,8 +452,12 @@ command が既に終端（applied / conflict / rejected / failed）なら保存�
 `expected_control_revision`（Episode の制御版）が現在値と違う command は `conflict`
 （`stale_control_revision`）で終わり、制御状態・採用を変えない。checkpoint の解放は承認する manifest が
 現在の採用 manifest と一致しなければ `conflict`（古い manifest への承認を流用しない）。
+ChangeSet の基準 revision・`expected_target_revision` が現行でなければ `conflict`（ChangeSet は `conflicted`）。
 **機械検査**: `tests/unit/test_intervention_commands.py::test_a_stale_expected_control_revision_is_a_conflict_and_changes_nothing`
 / `tests/unit/test_intervention_commands.py::test_release_checkpoint_binds_the_approval_to_the_active_manifest`
+/ `tests/unit/test_intervention_changes.py::test_a_stale_base_revision_is_a_conflict_and_marks_the_change_set`
+/ `tests/unit/test_intervention_changes.py::test_an_expected_target_revision_mismatch_is_a_conflict`
+/ `tests/unit/test_intervention_changes.py::test_proposals_against_a_stale_base_are_conflicts_and_do_not_create_change_sets`
 
 ### INV-44 hold の受付後に新しい dispatch は始まらず、HELD は送信済み・成否不明を列挙する
 `request_hold` は受付の transaction で `episode_controls.control_state = hold_requested` にし、dispatch gate

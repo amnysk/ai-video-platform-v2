@@ -52,3 +52,34 @@ ADR-0041、契約は `docs/domain/intervention.md` §2–§9。担当 B が持�
   現在の manifest への承認はその manifest に結び付く。
 - `test_set_mode_by_a_human_uses_the_default_co_production_points` /
   `test_cancel_is_recorded_at_receipt_and_cannot_be_resumed`: mode の既定地点、cancel は記録だけで resume 不可。
+
+## ChangeSet（`tests/unit/test_intervention_changes.py`）
+
+守る契約: INV-41（新 revision・旧版と注記が残る）、INV-43（古い版の上書きをしない）、予算と AI の権限
+（§8・§9）、そして**課金の安全**（修正で無関係な有料素材を作り直さない／旧版の結果を新しい採用に混ぜない）。
+store・manifest・台帳は実物（SQLite）、成果物は InMemoryArtifactStore、有料 provider は呼ばない。
+
+- `test_script_edit_creates_a_new_revision_and_keeps_the_old_one_and_comments`: 新しい世代・旧行と旧オブジェクトが
+  残る・`parent` と `rebound_to`・新 manifest（親と原因 command）・判断記録の actor と差分・コメントの anchor が
+  旧版を指したまま・古い manifest の approval だけが `review.invalidated`・INV-46 の必須記録を満たす、を1本で
+  見る。どれか1つでも欠けると「誰が何を変えたか」を後から辿れない。
+- `test_script_edit_does_not_touch_image_or_video_identity`: 台本の修正で画像・動画の現行行と入力指紋
+  （有料の再生成の判定キー）、storyboard が変わらず、有料予約も作られない。音声・manifest だけ降りる。
+- `test_a_stale_base_revision_is_a_conflict_and_marks_the_change_set` /
+  `test_an_expected_target_revision_mismatch_is_a_conflict` /
+  `test_proposals_against_a_stale_base_are_conflicts_and_do_not_create_change_sets`: 人と AI が同じ版を
+  変えたとき後着が上書きしない（設計 §17-4）。
+- `test_ai_may_apply_only_zero_cost_changes_that_respect_user_constraints`: 制約に触れる AI の案は保存されるが
+  AI は適用できない／有料の変更は AI に適用させない／判断記録の actor は AI のまま。
+- `test_reject_change_closes_a_proposal_once` / `test_changes_are_refused_while_a_stage_runs_or_after_upload`:
+  走っている工程が旧版で下流を作り直す・投稿済みを再投稿する経路を作らない。
+- `test_a_paid_change_without_a_rate_is_unverifiable_and_with_a_rate_is_checked`: 換算未設定は
+  `budget_unverifiable`（推測で通さない）、上限超過は `budget_exceeded`。
+- `test_scene_override_reuses_the_override_artifact_and_regenerates_only_that_scene`: 差し替えは ADR-0035 の
+  `scene_visual_override` として保存され、画像・動画の Activity と同じ読み口（`load_current_override`）が読む。
+  他シーンの現行は変わらない（INV-33）。
+- `test_a_planner_override_without_change_set_keeps_its_json_shape`: 契約に足した `change_set_id` が既存の
+  代替映像案の正準 JSON（sha256）を変えない。
+- `test_an_old_version_result_cannot_become_the_adopted_member_after_a_change`: 送信済み job のあるシーンの
+  差し替えは拒否し、結果が旧版の入力指紋で保存された後なら適用でき、旧版は行として残るが新しい manifest に入らず、
+  旧指紋での再利用も起きない。差し替えの拒否を外すとこのテストが落ちることを手で確認した。
