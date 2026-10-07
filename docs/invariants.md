@@ -420,6 +420,83 @@ Replayer で replay。非決定にならず1件も発行しない）
 
 ## N. 判断記録と介入（ADR-0041）
 
+### INV-41 ユーザー修正は新 revision として保存し、旧版・コメントを消さない
+ChangeSet の適用（`infrastructure.intervention.changes.apply_change`）は、新しい成果物を不変のオブジェクトとして
+保存し `artifact_metadata` に新しい世代を記録する（旧行は superseded として残り、旧オブジェクトも残る）。
+`revision_links`（`parent`、構成・尺が同じ台本修正は storyboard への `rebound_to`）、新しい採用 manifest、
+ChangeSet の作者を actor とする判断記録（`override_diff`）、古い manifest の approval ごとの `review.invalidated` を
+同じ commit に入れる。影響範囲の下流（音声・production_manifest・final_video／そのシーンの画像・動画）は現行から
+降ろすだけで行は消さない。台本の文面の修正は画像・動画（有料）の現行・入力指紋・storyboard を変えない。
+送信済みの有料 job があるシーンの差し替えは受け付けない（旧版の結果が新しい採用 manifest に混ざらない）。
+**機械検査**: `tests/unit/test_intervention_changes.py::test_script_edit_creates_a_new_revision_and_keeps_the_old_one_and_comments`
+/ `tests/unit/test_intervention_changes.py::test_script_edit_does_not_touch_image_or_video_identity`
+/ `tests/unit/test_intervention_changes.py::test_scene_override_reuses_the_override_artifact_and_regenerates_only_that_scene`
+/ `tests/unit/test_intervention_changes.py::test_an_old_version_result_cannot_become_the_adopted_member_after_a_change`
+/ `tests/unit/test_intervention_changes.py::test_ai_may_apply_only_zero_cost_changes_that_respect_user_constraints`
+/ `tests/unit/test_intervention_changes.py::test_a_paid_change_without_a_rate_is_unverifiable_and_with_a_rate_is_checked`
+/ `tests/unit/test_intervention_changes.py::test_a_paid_change_without_a_ledger_estimate_is_unverifiable`
+
+### INV-42 同じ command_id の再送・復旧は1つの論理変更にしかならない
+介入 command は `intervention_commands` の行（`id` = クライアントの command_id）として受け付け、同じ id・同じ
+payload（`payload_sha256`）の再送は既存の行を返し、違う payload は `DuplicateCommandError`（API 409）。
+適用（`infrastructure.intervention.commands.apply_command`）は Episode の制御行を lock して直列化し、
+command が既に終端（applied / conflict / rejected / failed）なら保存済みの result を**そのまま返す**
+（状態・revision・manifest・イベントを増やさない）。子 pipeline の start の結果は result に追記され、
+記録後の再配送は pipeline を二度 start しない。
+**機械検査**: `tests/unit/test_intervention_commands.py::test_same_id_and_payload_returns_the_existing_command`
+/ `tests/unit/test_intervention_commands.py::test_same_id_with_another_payload_is_refused`
+/ `tests/unit/test_intervention_commands.py::test_applying_the_same_command_twice_is_one_logical_change`
+/ `tests/unit/test_intervention_commands.py::test_comment_is_applied_at_receipt_and_reapply_returns_the_stored_result`
+/ `tests/unit/test_intervention_commands.py::test_resume_runs_again_from_the_next_stage`
+
+### INV-43 期待版の不一致は CONFLICT で返し、上書きしない
+`expected_control_revision`（Episode の制御版）が現在値と違う command は `conflict`
+（`stale_control_revision`）で終わり、制御状態・採用を変えない。checkpoint の解放は承認する manifest が
+現在の採用 manifest と一致しなければ `conflict`（古い manifest への承認を流用しない）。
+ChangeSet の基準 revision・`expected_target_revision` が現行でなければ `conflict`（ChangeSet は `conflicted`）。
+**機械検査**: `tests/unit/test_intervention_commands.py::test_a_stale_expected_control_revision_is_a_conflict_and_changes_nothing`
+/ `tests/unit/test_intervention_commands.py::test_release_checkpoint_binds_the_approval_to_the_active_manifest`
+/ `tests/unit/test_intervention_changes.py::test_a_stale_base_revision_is_a_conflict_and_marks_the_change_set`
+/ `tests/unit/test_intervention_changes.py::test_an_expected_target_revision_mismatch_is_a_conflict`
+/ `tests/unit/test_intervention_changes.py::test_proposals_against_a_stale_base_are_conflicts_and_do_not_create_change_sets`
+
+### INV-44 hold の受付後に新しい dispatch は始まらず、HELD は送信済み・成否不明を列挙する
+`request_hold` は受付の transaction で `episode_controls.control_state = hold_requested` にし、dispatch gate
+（`mark_dispatched` / `mark_upload_dispatched` の同じ transaction で制御行を `FOR SHARE` で読む）は `running` 以外の
+Episode の新しい有料 dispatch・投稿を `EpisodeHeldError` で拒否する。拒否された予約は `reserved` かつ未 dispatch の
+まま残り、resume 後に同じ予約（同じ冪等キー）で再利用される。適用で `held` にしたときの result は、送信済み
+（`in_flight`）・成否不明（`unknown_outcome`）・未送信（`undispatched`）の予約を列挙する（provider の job 参照は載せない）。
+停止は「以後の追加課金ゼロ」を意味しない（送信済みは完了・課金されうる）。
+**機械検査**: `tests/unit/test_intervention_gate.py::test_a_non_running_episode_refuses_dispatch_and_leaves_the_reservation_unsent`
+/ `tests/unit/test_intervention_gate.py::test_upload_dispatch_is_refused_while_held_but_an_in_flight_session_is_not_reopened`
+/ `tests/unit/test_intervention_gate.py::test_a_reservation_refused_by_the_gate_is_reused_after_resume`
+/ `tests/unit/test_intervention_commands.py::test_hold_is_requested_in_the_receiving_transaction_and_not_reported_as_done`
+/ `tests/unit/test_intervention_commands.py::test_hold_becomes_held_and_lists_in_flight_unknown_and_undispatched`
+（PostgreSQL の行 lock での hold と dispatch の競合の integration テストは未作成。単体は SQLite）
+
+### INV-45 manifest が変われば、それに結び付いた approval は stale になり流用されない
+approval（`annotations.kind=approval`）は承認した採用 manifest（`annotations.manifest_id`）に結び付く。
+採用 manifest が別の manifest に替わった時点で（台本・素材・完成品のどれかが新しい revision になれば
+新しい manifest になる）、旧 manifest の approval は現行の合格として扱わない。判定は
+`infrastructure.intervention.read_model.approval_is_current(annotation, control)` の1つだけで、
+`annotation.manifest_id == control.active_manifest_id` のときだけ真（approval 以外・manifest 未結び付け・
+採用 manifest 無しは偽）。読み取りモデルは旧 manifest の approval を `stale_approvals` に列挙し、
+`approval_current=false` で示す。approval の行は消さない（追記型 / INV-41 の趣旨）。
+**機械検査**: `tests/unit/test_intervention_read_model.py::test_approval_is_current_only_for_the_active_manifest`
+/ `tests/unit/test_intervention_read_model.py::test_an_approval_of_the_old_manifest_is_stale_after_the_manifest_changes`
+（checkpoint の解放・投稿の直前にこの述語を通すのは担当B の適用・gate 側。その検査はそちらのテストが持つ）
+
+### INV-46 新方式（mode != legacy）では、必須記録の無い有料生成・投稿を開始しない
+`episode_controls.mode` が `legacy` 以外の Episode では、有料 dispatch・投稿の開始許可
+（`mark_dispatched` / `mark_upload_dispatched` の同じ transaction の dispatch gate
+`infrastructure.intervention.gate.check_dispatch_allowed`）が、現行の script・storyboard の各 revision に
+生成した `agent_runs`（`output_revision_id`）か人の変更を表す `decision_records`（`result_revision_id`）が
+結び付いていることを検査し、欠けていれば `MissingDecisionRecordError` で拒否する（予約は未 dispatch のまま）。
+`episode_controls` 行の無い Episode・`legacy` の Episode は従来どおり（gate は何も書かない）。
+**機械検査**: `tests/unit/test_intervention_gate.py::test_new_mode_requires_a_record_for_the_current_script_and_storyboard`
+/ `tests/unit/test_intervention_gate.py::test_legacy_mode_with_a_row_does_not_require_records`
+/ `tests/unit/test_intervention_gate.py::test_an_episode_without_a_control_row_dispatches_and_nothing_is_written`
+
 ### INV-47 介入 API は予算上限・Schedule・公開設定を変更できず、AI の principal は人専用 scope を得られない
 介入 API（`/v1/intervention`、`apps/api/routers/intervention.py`）の書き込みは command の受付（`POST .../commands` と
 変更案ファイルの取り込み `POST .../change-proposals`）だけで、他の route は GET。command 型の語彙

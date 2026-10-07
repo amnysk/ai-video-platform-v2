@@ -559,7 +559,12 @@ class InterventionStore:
         )
         self._session.add(row)
         await self._session.flush()
-        return _to_event(row)
+        appended = _to_event(row)
+        # ログへの投影は commit が成功した後にだけ出る（rollback では出ない。ADR-0041 §7 / INV-38）
+        from infrastructure.intervention.projection import defer_event
+
+        defer_event(self._session, appended)
+        return appended
 
     async def list_events(
         self, episode_id: uuid.UUID | str, *, after_seq: int = 0
@@ -577,6 +582,40 @@ class InterventionStore:
             .where(EpisodeEventRow.projected_at.is_(None))
             .order_by(EpisodeEventRow.created_at, EpisodeEventRow.seq)
             .limit(limit)
+        )
+        return [_to_event(r) for r in rows]
+
+    async def list_events_page(
+        self,
+        *,
+        episode_id: uuid.UUID | str | None = None,
+        from_seq: int | None = None,
+        to_seq: int | None = None,
+        only_unprojected: bool = False,
+        after: tuple[str, int] | None = None,
+        limit: int = 500,
+    ) -> list[EpisodeEvent]:
+        """再投影の読み取り。``(episode_id, seq)`` 順の keyset で頁送りする。
+
+        ``after`` を渡すとその行の次から読む。
+        """
+        stmt = select(EpisodeEventRow)
+        if episode_id is not None:
+            stmt = stmt.where(EpisodeEventRow.episode_id == _uuid(episode_id))
+        if from_seq is not None:
+            stmt = stmt.where(EpisodeEventRow.seq >= from_seq)
+        if to_seq is not None:
+            stmt = stmt.where(EpisodeEventRow.seq <= to_seq)
+        if only_unprojected:
+            stmt = stmt.where(EpisodeEventRow.projected_at.is_(None))
+        if after is not None:
+            after_episode, after_seq = _uuid(after[0]), after[1]
+            same_episode_later = (EpisodeEventRow.episode_id == after_episode) & (
+                EpisodeEventRow.seq > after_seq
+            )
+            stmt = stmt.where((EpisodeEventRow.episode_id > after_episode) | same_episode_later)
+        rows = await self._session.scalars(
+            stmt.order_by(EpisodeEventRow.episode_id, EpisodeEventRow.seq).limit(limit)
         )
         return [_to_event(r) for r in rows]
 
@@ -882,14 +921,19 @@ class InterventionStore:
         correlation_id: str | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
+        agent_run_id: uuid.UUID | str | None = None,
     ) -> AgentRun:
-        """同じ ``idempotency_key`` の再記録は既存行を返す（Activity の再実行）。"""
+        """同じ ``idempotency_key`` の再記録は既存行を返す（Activity の再実行）。
+
+        ``agent_run_id`` を渡すとその id で作る（snapshot の保存キーに id を先に使うため）。
+        """
         existing = await self._session.scalar(
             select(AgentRunRow).where(AgentRunRow.idempotency_key == idempotency_key)
         )
         if existing is not None:
             return _to_agent_run(existing)
         row = AgentRunRow(
+            id=_uuid(agent_run_id) if agent_run_id is not None else uuid.uuid4(),
             idempotency_key=idempotency_key,
             episode_id=_opt_uuid(episode_id),
             topic_plan_id=_opt_uuid(topic_plan_id),

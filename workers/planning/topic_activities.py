@@ -23,6 +23,8 @@ Planner のコアは content profile の中身で分岐しない。形式の説�
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import hashlib
 import json
 import logging
 from collections.abc import Callable, Sequence
@@ -36,6 +38,7 @@ from temporalio import activity
 from temporalio.converter import DataConverter
 
 from contracts.artifacts import extract_json_object
+from contracts.intervention import AgentRole
 from contracts.topic_planning import (
     CONTENT_PROFILES,
     DEFAULT_PLANNER_POLICY,
@@ -60,6 +63,7 @@ from contracts.topic_planning import (
     TopicCandidateBatch,
     TopicPlannerInput,
 )
+from domain.artifact.hashing import canonical_json_bytes
 from domain.errors import TopicCandidateContractError
 from domain.script.ports import GenerationRequest, StoryGenerator
 from domain.topic_planning import (
@@ -78,6 +82,16 @@ from infrastructure.db.repositories import (
     TopicPlan,
     TopicPlanRepository,
 )
+from infrastructure.intervention.capture import (
+    STAGING_PREFIX,
+    AgentRunRecorder,
+    PromptSource,
+    RunCapture,
+    request_document,
+    response_document,
+)
+from infrastructure.intervention.records import CHOOSE_TOPIC, record_topic_decision
+from infrastructure.storage.artifact_store import ArtifactStore
 from prompts import TOPIC_PROMPT_VERSION, render_topic_prompt
 from prompts.topic_trend import TOPIC_TREND_PROMPT_VERSION, add_trend_section
 
@@ -101,6 +115,27 @@ class TrendBriefSource(Protocol):
     async def brief(self, request: TopicPlannerInput) -> str | None:
         """prompt に載せる要約（JSON 文字列）。使える Trend が無ければ ``None``。"""
         ...
+
+
+# ------------------------------------------------------------------ 実行記録の一時置き場
+
+
+def _candidates_digest(candidates: list[dict[str, Any]]) -> str:
+    return hashlib.sha256(canonical_json_bytes({"candidates": candidates})).hexdigest()[:16]
+
+
+def _staging_suffix(request: TopicPlannerInput, round_: int) -> str:
+    return (
+        f"{request.plan_date}/{request.strategy_profile_id}/{request.content_profile_id}/r{round_}"
+    )
+
+
+def _staging_key(request: TopicPlannerInput, round_: int, candidates: list[dict[str, Any]]) -> str:
+    """候補生成と選択・保存の2つの Activity が同じ値から同じキーを導く（workflow を変えない）。"""
+    return (
+        f"{STAGING_PREFIX}/topic/{_staging_suffix(request, round_)}/"
+        f"{_candidates_digest(candidates)}.json"
+    )
 
 
 # ------------------------------------------------------------------ snapshot の直列化
@@ -229,6 +264,7 @@ class TopicPlannerActivities:
         timeout_seconds: int,
         policy: PlannerPolicy = DEFAULT_PLANNER_POLICY,
         trend: TrendBriefSource | None = None,
+        capture_store: ArtifactStore | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._generator = generator
@@ -239,6 +275,8 @@ class TopicPlannerActivities:
         self._policy = policy
         #: None（既定）なら Trend を読まない（ADR-0039 §B6）
         self._trend = trend
+        #: None（既定）なら実行記録を残さない（``TOPIC_PLANNER_CAPTURE_ENABLED`` / ADR-0041）
+        self._recorder = None if capture_store is None else AgentRunRecorder(capture_store)
 
     def all_activities(self) -> Sequence[Callable[..., object]]:
         """Worker へ登録する Activity（``TOPIC_PLANNER_ACTIVITY_NAMES`` と一致する）。"""
@@ -351,19 +389,46 @@ class TopicPlannerActivities:
             with_trend = await self._with_trend(prompt, ctx.request)
             if with_trend is not None:
                 prompt, prompt_version = with_trend, TOPIC_TREND_PROMPT_VERSION
-        result = await self._generator.generate(
-            GenerationRequest(
-                episode_id=f"topic-plan-{ctx.request.plan_date}-r{request.round}",
-                prompt=prompt,
-                output_schema=schema,
-                timeout_seconds=self._timeout_seconds,
-            )
+        generation = GenerationRequest(
+            episode_id=f"topic-plan-{ctx.request.plan_date}-r{request.round}",
+            prompt=prompt,
+            output_schema=schema,
+            timeout_seconds=self._timeout_seconds,
         )
+        result = await self._generator.generate(generation)
         batch = self._validate(result.text)
-        return GenerateCandidatesResult(
-            candidates=[c.model_dump(mode="json") for c in batch.candidates],
-            prompt_version=prompt_version,
-        )
+        candidates = [c.model_dump(mode="json") for c in batch.candidates]
+        if self._recorder is not None:
+            # plan はまだ無いので一時置き場へ。plan を保存する transaction で正規の記録にする
+            await self._recorder.stage(
+                _staging_key(ctx.request, request.round, candidates),
+                RunCapture(
+                    idempotency_key=(
+                        f"agent_run:{CHOOSE_TOPIC}:{_staging_suffix(ctx.request, request.round)}"
+                        f":{_candidates_digest(candidates)}"
+                    ),
+                    role=AgentRole.PRODUCER,
+                    step=CHOOSE_TOPIC,
+                    # Codex adapter の model は設定値（CLI が実際に使ったモデルは未検証）
+                    model=result.model,
+                    prompt_version=prompt_version,
+                    prompt=prompt,
+                    prompt_source=PromptSource.CAPTURED,
+                    input_refs={
+                        "plan_date": ctx.request.plan_date,
+                        "strategy_profile_id": ctx.request.strategy_profile_id,
+                        "content_profile_id": ctx.request.content_profile_id,
+                        "round": request.round,
+                        "avoid_subjects": list(request.avoid_subjects),
+                        "analytics_mode": ctx.analytics.mode,
+                        "analytics_snapshot_id": ctx.analytics.snapshot_id,
+                        "memory_items": len(ctx.memory),
+                    },
+                    request=request_document(generation),
+                    response=response_document(result, raw_text=result.text, raw_output_key=None),
+                ),
+            )
+        return GenerateCandidatesResult(candidates=candidates, prompt_version=prompt_version)
 
     async def _with_trend(self, prompt: str, request: TopicPlannerInput) -> str | None:
         """Trend の節を足した prompt。
@@ -379,6 +444,30 @@ class TopicPlannerActivities:
         except Exception as exc:  # noqa: BLE001 - Trend は補助。Planner を止めない（INV-37）
             logger.warning("trend unavailable (%s); planning without trend", type(exc).__name__)
             return None
+
+    async def _record_choice(
+        self, session: AsyncSession, request: SelectAndSaveRequest, topic_plan_id: str
+    ) -> None:
+        """一時置き場の実行記録を plan の下へ写し、保存済み候補から ``choose_topic`` を書く。
+
+        一時置き場が無い（設定を途中で ON にした等）なら実行記録は作らず、判断記録の
+        ``input_snapshot_ref`` を空のまま残す（補完しない）。
+        """
+        assert self._recorder is not None
+        staged = await self._recorder.load_stage(
+            _staging_key(request.context.request, request.round, request.candidates)
+        )
+        run = None
+        if staged is not None:
+            run = await self._recorder.record(
+                session, dataclasses.replace(staged, topic_plan_id=topic_plan_id)
+            )
+        await record_topic_decision(
+            session,
+            topic_plan_id,
+            agent_run_id=None if run is None else run.agent_run_id,
+            input_snapshot_ref=None if run is None else run.snapshot_object_key,
+        )
 
     @staticmethod
     def _validate(raw_text: str) -> TopicCandidateBatch:
@@ -469,6 +558,9 @@ class TopicPlannerActivities:
                 ],
                 selected_ordinal=chosen.ordinal,
             )
+            if self._recorder is not None and not saved.reused:
+                # plan と同じ transaction で実行記録と choose_topic を残す（ADR-0041）
+                await self._record_choice(session, request, saved.plan.id)
             await session.commit()
         return SelectAndSaveResult(
             topic_plan_id=saved.plan.id,

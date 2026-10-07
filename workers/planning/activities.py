@@ -23,6 +23,7 @@ from contracts.artifacts import (
     extract_json_object,
     parse_script_artifact,
 )
+from contracts.intervention import AgentRole, InterventionMode
 from contracts.states import ArtifactType, EpisodeStatus, JobStatus, JobType, ProviderCall
 from contracts.topic_planning import ScriptLocale
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
@@ -39,7 +40,7 @@ from domain.errors import (
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
 from domain.script.brief import ScriptBrief, legacy_brief, plan_brief
 from domain.script.identity import idempotency_key, script_input_hash
-from domain.script.ports import GenerationRequest, StoryGenerator
+from domain.script.ports import GenerationRequest, GenerationResult, StoryGenerator
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -47,6 +48,22 @@ from infrastructure.db.repositories import (
     ProviderReservationRepository,
     TopicPlanRepository,
 )
+from infrastructure.intervention.capture import (
+    AgentRunRecorder,
+    PromptSource,
+    RunCapture,
+    StoredSnapshot,
+    request_document,
+    reservation_invocation,
+    response_document,
+    tool_refs,
+)
+from infrastructure.intervention.records import (
+    WRITE_SCRIPT,
+    generation_decision_payload,
+    record_generation_decision,
+)
+from infrastructure.intervention.store import InterventionStore
 from infrastructure.storage.artifact_store import ArtifactStore
 from prompts.script import (
     narration_budget_table,
@@ -125,6 +142,8 @@ class ScriptActivities:
         self._generator_id = generator_id
         self._model = model
         self._timeout_seconds = timeout_seconds
+        #: 新方式（mode != legacy）の Episode の実行記録（ADR-0041）。legacy では使わない
+        self._recorder = AgentRunRecorder(store)
 
     def all_activities(self) -> Sequence[Callable[..., object]]:
         """Workerへ登録するActivity。ここが登録漏れの唯一の防波堤。"""
@@ -284,6 +303,8 @@ class ScriptActivities:
         key = idempotency_key(
             provider=ProviderCall.CODEX_SCRIPT.value, input_hash=input_hash, round=request.round
         )
+        # 新方式の Episode だけ実行記録を残す（ADR-0041）。legacy は読むだけで何も書かない
+        capture = await self._capture_enabled(request.episode_id)
 
         # (2) evidence の無い予約が残っていれば、**新しい呼び出しを開始しない**（ADR-0013）
         async with self._session_factory() as session:
@@ -322,30 +343,9 @@ class ScriptActivities:
                 await ProviderReservationRepository(session).mark_dispatched(reservation.id)
                 await session.commit()
 
-            schema = ScriptArtifact.model_json_schema()
-            duration_min, duration_max = brief.content_profile.script_duration_seconds
-            prompt = render_localized_script_prompt(
-                locale=brief.locale.locale,
-                language=brief.locale.artifact_language,
-                subject_matter_json=json.dumps(brief.subject_matter, ensure_ascii=False, indent=2),
-                format_brief=brief.content_profile.format_brief,
-                duration_min_seconds=duration_min,
-                duration_max_seconds=duration_max,
-                max_speech_units_per_second=brief.locale.max_speech_units_per_second,
-                narration_budget_table=narration_budget_table(brief.locale),
-                # プロンプトに埋めるスキーマとパース側のモデルを同じ1つから導出する
-                # （生成側と取り込み側を分けない / AGENTS.md §8）。
-                schema_json=json.dumps(schema, ensure_ascii=False, sort_keys=True),
-            )
+            generation = self._generation_request(request.episode_id, brief)
             try:
-                result = await self._generator.generate(
-                    GenerationRequest(
-                        episode_id=request.episode_id,
-                        prompt=prompt,
-                        output_schema=schema,
-                        timeout_seconds=self._timeout_seconds,
-                    )
-                )
+                result = await self._generator.generate(generation)
             except Exception as exc:
                 # 呼び出しが**戻ってきた上で**失敗した。課金されたかは不明なので
                 # 保守的に spent として確定する（ADR-0013 §保守的照合）。
@@ -373,11 +373,19 @@ class ScriptActivities:
                 await session.commit()
             raw_text = result.text
             generated_by_model = result.model
+            raw_output_key: str = raw_key
+            prompt_source = PromptSource.CAPTURED
+            live_result: GenerationResult | None = result
         else:
             # 呼び出し後にcrashしていた場合。生出力が evidence なので再送しない
             raw_text = await self._store.get_text(reservation.raw_output_key)
             # 再開時は生出力しか無いので、設定側のモデル名で代替する。
             generated_by_model = self._model or DEFAULT_MODEL_LABEL
+            raw_output_key = reservation.raw_output_key
+            # 記録用に同じ入力・同じ版のテンプレートから組み直す（呼び直さない）
+            generation = self._generation_request(request.episode_id, brief) if capture else None
+            prompt_source = PromptSource.RE_RENDERED
+            live_result = None
 
         # (6) ここで初めて検証する。失敗は retryable（ADR-0014）
         artifact = self._validate(
@@ -395,6 +403,45 @@ class ScriptActivities:
         object_key = artifact_object_key(request.episode_id, ArtifactType.SCRIPT.value, digest)
         put = await self._store.put_json(object_key, artifact)
 
+        run_capture: RunCapture | None = None
+        stored: StoredSnapshot | None = None
+        if capture:
+            assert generation is not None
+            run_capture = RunCapture(
+                idempotency_key=f"agent_run:{WRITE_SCRIPT}:{reservation.id}",
+                role=AgentRole.WRITER_DIRECTOR,
+                step=WRITE_SCRIPT,
+                model=self._model or DEFAULT_MODEL_LABEL,
+                prompt_version=_prompt_version(brief),
+                prompt=generation.prompt,
+                prompt_source=prompt_source,
+                input_refs={
+                    "topic": topic,
+                    "topic_plan_id": brief.topic_plan_id,
+                    "locale": brief.locale.locale,
+                    "content_profile": (
+                        f"{brief.content_profile.content_profile_id}"
+                        f"@{brief.content_profile.version}"
+                    ),
+                    "input_hash": input_hash,
+                },
+                request=request_document(generation),
+                response=response_document(
+                    live_result, raw_text=raw_text, raw_output_key=raw_output_key
+                ),
+                tool_invocations=(
+                    reservation_invocation(
+                        reservation.id,
+                        provider=ProviderCall.CODEX_SCRIPT.value,
+                        round=request.round,
+                        idempotency_key=key,
+                    ),
+                ),
+                episode_id=request.episode_id,
+            )
+            # 行より先に snapshot を保存する。失敗は Activity の失敗（記録の無い成果物を作らない）
+            stored = await self._recorder.write(run_capture)
+
         async with self._session_factory() as session:
             meta = await ArtifactMetadataRepository(session).record(
                 episode_id=request.episode_id,
@@ -409,6 +456,24 @@ class ScriptActivities:
             )
             await ProviderReservationRepository(session).attach_artifact(reservation.id, meta.id)
             await JobRepository(session).succeed(request.job_id)
+            if run_capture is not None and stored is not None:
+                # 成果物と同じ transaction（「成果物はあるが記録が無い」を作らない）
+                run = await self._recorder.insert(
+                    session, run_capture, stored, output_revision_id=meta.id
+                )
+                await record_generation_decision(
+                    session,
+                    episode_id=request.episode_id,
+                    agent_run=run,
+                    payload=generation_decision_payload(
+                        decision_type=WRITE_SCRIPT,
+                        question=f"Write the script for the topic {topic!r}",
+                        candidate_summary=_script_summary(artifact),
+                        result_revision=meta.id,
+                        input_snapshot_ref=stored.snapshot_key,
+                        tool_invocation_refs=tool_refs(run_capture.tool_invocations),
+                    ),
+                )
             await session.commit()
 
         return ScriptResult(
@@ -418,6 +483,36 @@ class ScriptActivities:
             sha256=meta.sha256,
             schema_version=meta.schema_version,
             reused=False,
+        )
+
+    async def _capture_enabled(self, episode_id: str) -> bool:
+        """新方式（mode != legacy）の Episode か。行が無ければ legacy（書かない）。"""
+        async with self._session_factory() as session:
+            control = await InterventionStore(session).get_control(episode_id)
+        return control.mode is not InterventionMode.LEGACY
+
+    def _generation_request(self, episode_id: str, brief: ScriptBrief) -> GenerationRequest:
+        """生成器に渡す依頼。入力（brief）とテンプレートの版が同じなら同じ prompt になる。"""
+        schema = ScriptArtifact.model_json_schema()
+        duration_min, duration_max = brief.content_profile.script_duration_seconds
+        prompt = render_localized_script_prompt(
+            locale=brief.locale.locale,
+            language=brief.locale.artifact_language,
+            subject_matter_json=json.dumps(brief.subject_matter, ensure_ascii=False, indent=2),
+            format_brief=brief.content_profile.format_brief,
+            duration_min_seconds=duration_min,
+            duration_max_seconds=duration_max,
+            max_speech_units_per_second=brief.locale.max_speech_units_per_second,
+            narration_budget_table=narration_budget_table(brief.locale),
+            # プロンプトに埋めるスキーマとパース側のモデルを同じ1つから導出する
+            # （生成側と取り込み側を分けない / AGENTS.md §8）。
+            schema_json=json.dumps(schema, ensure_ascii=False, sort_keys=True),
+        )
+        return GenerationRequest(
+            episode_id=episode_id,
+            prompt=prompt,
+            output_schema=schema,
+            timeout_seconds=self._timeout_seconds,
         )
 
     def _validate(
@@ -505,6 +600,20 @@ class ScriptActivities:
                 error_summary=f"{type(exc).__name__}: {exc}",
             )
             await session.commit()
+
+
+def _prompt_version(brief: ScriptBrief) -> str:
+    template = script_prompt_template(brief.locale.locale)
+    return f"{template.template_id}@{template.version}"
+
+
+def _script_summary(artifact: dict[str, object]) -> str:
+    """判断記録の候補の要約（生成物そのものから。補完しない）。"""
+    script = parse_script_artifact(artifact)
+    return (
+        f"title: {script.title}; hook: {script.hook}; "
+        f"{len(script.scenes)} scenes; {script.total_duration_ms} ms"
+    )
 
 
 def _check_narration_budget(artifact: dict[str, object], locale: ScriptLocale) -> None:

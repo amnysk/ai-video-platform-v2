@@ -76,6 +76,8 @@ from domain.errors import (
     FinalVideoCorruptError,
     FinalVideoValidationError,
     MediaValidationError,
+    ProductionInputInvalidError,
+    ProductionInputMissingError,
     RenderEngineUnavailableError,
     RenderInputIntegrityError,
     RenderInputMissingError,
@@ -105,6 +107,7 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
 )
+from infrastructure.intervention.rebind import bound_script_ref, verify_rebound
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
 from infrastructure.render.binary import file_sha256
@@ -180,6 +183,8 @@ class _Inputs:
     storyboard: Pinned[StoryboardArtifact]
     videos: dict[str, Pinned[SceneVideoArtifact]]
     voices: dict[str, Pinned[SceneVoiceArtifact]]
+    #: storyboard が使う台本（結び直しを解決した参照。ADR-0041 §6）。None = storyboard.source_script
+    bound_script: ArtifactRef | None = None
     #: 取り出した素材ごとの sha256 照合結果（技術検査の source_readback に実値で渡す）
     source_checks: list[bool] = field(default_factory=list)
 
@@ -375,6 +380,7 @@ class RenderActivities:
             profile=profile,
             policy=self._policy,
             engine=engine,
+            bound_script=inputs.bound_script,
         )
         input_hash = render_input_hash(
             manifest_sha256=inputs.manifest_meta.sha256,
@@ -676,6 +682,7 @@ class RenderActivities:
         )
         script = _parse(parse_script_artifact, script_loaded, "script")
         storyboard = _parse(parse_storyboard_artifact, sb_loaded, "storyboard")
+        bound_script = await self._bound_script(sb_loaded.meta, storyboard, script)
 
         videos: dict[str, Pinned[SceneVideoArtifact]] = {}
         for scene in manifest.scenes:
@@ -718,7 +725,28 @@ class RenderActivities:
             storyboard=Pinned(artifact=storyboard, ref=_pin(sb_loaded.meta)),
             videos=videos,
             voices=voices,
+            bound_script=bound_script,
         )
+
+    async def _bound_script(
+        self,
+        storyboard_meta: ArtifactMetadata,
+        storyboard: StoryboardArtifact,
+        script: ScriptArtifact,
+    ) -> ArtifactRef:
+        """storyboard が使う台本（ADR-0041 §6 の唯一の解決 ``bound_script_ref``）。
+
+        結び直しが無ければ ``storyboard.source_script`` そのもの（従来と同じ検査になる）。
+        結び直しの構成検査の違反は ``RenderInputIntegrityError``（needs_input）。
+        """
+        try:
+            async with self._session_factory() as session:
+                ref = await bound_script_ref(session, storyboard_meta, storyboard)
+                if ref.rebound:
+                    await verify_rebound(session, self._store, storyboard, script)
+        except (ProductionInputInvalidError, ProductionInputMissingError) as exc:
+            raise RenderInputIntegrityError(str(exc)) from exc
+        return ArtifactRef(ref.artifact_id, ref.sha256)
 
     async def _download_media(
         self, inputs: _Inputs, work: JobWorkDir
