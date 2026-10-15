@@ -1,0 +1,376 @@
+{
+  "components": {
+    "schemas": {
+      "CommandStatus": {
+        "enum": [
+          "received",
+          "validated",
+          "applying",
+          "applied",
+          "conflict",
+          "rejected",
+          "failed"
+        ],
+        "title": "CommandStatus",
+        "type": "string"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ProposeStoryboardChangeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Command Id",
+            "type": "string"
+          },
+          "expected_control_revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Control Revision"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/StoryboardPatchProposal"
+          }
+        },
+        "required": [
+          "command_id",
+          "proposal"
+        ],
+        "title": "ProposeStoryboardChangeRequest",
+        "type": "object"
+      },
+      "ProposedSceneCommand": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "created": {
+            "title": "Created",
+            "type": "boolean"
+          },
+          "scene_id": {
+            "title": "Scene Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          }
+        },
+        "required": [
+          "scene_id",
+          "command_id",
+          "status",
+          "created"
+        ],
+        "title": "ProposedSceneCommand",
+        "type": "object"
+      },
+      "StoryboardPatchProposal": {
+        "additionalProperties": false,
+        "properties": {
+          "base_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Manifest Id"
+          },
+          "base_storyboard_revision_id": {
+            "minLength": 1,
+            "title": "Base Storyboard Revision Id",
+            "type": "string"
+          },
+          "edits": {
+            "items": {
+              "$ref": "#/components/schemas/StoryboardSceneEdit"
+            },
+            "maxItems": 12,
+            "minItems": 1,
+            "title": "Edits",
+            "type": "array"
+          },
+          "episode_id": {
+            "format": "uuid",
+            "title": "Episode Id",
+            "type": "string"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "schema_version": {
+            "const": "1.0",
+            "default": "1.0",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "episode_id",
+          "base_storyboard_revision_id",
+          "edits"
+        ],
+        "title": "StoryboardPatchProposal",
+        "type": "object"
+      },
+      "StoryboardProposalResult": {
+        "additionalProperties": false,
+        "properties": {
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/ProposedSceneCommand"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
+          "episode_id": {
+            "format": "uuid",
+            "title": "Episode Id",
+            "type": "string"
+          },
+          "request_command_id": {
+            "title": "Request Command Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_command_id",
+          "episode_id",
+          "commands"
+        ],
+        "title": "StoryboardProposalResult",
+        "type": "object"
+      },
+      "StoryboardSceneEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "camera_movement": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Camera Movement"
+          },
+          "framing": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Framing"
+          },
+          "reference_asset_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Asset Id"
+          },
+          "scene_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Scene Id",
+            "type": "string"
+          },
+          "visual_description": {
+            "anyOf": [
+              {
+                "maxLength": 600,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visual Description"
+          },
+          "visual_kind": {
+            "anyOf": [
+              {
+                "const": "generated",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visual Kind"
+          }
+        },
+        "required": [
+          "scene_id"
+        ],
+        "title": "StoryboardSceneEdit",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "ai-video-platform-v2 application API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/intervention/episodes/{episode_id}/storyboard/proposals": {
+      "post": {
+        "operationId": "propose_storyboard_change_v1_intervention_episodes__episode_id__storyboard_proposals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "episode_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Episode Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposeStoryboardChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "全て同じ内容の再送（新しい command なし）"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardProposalResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Propose Storyboard Change",
+        "tags": [
+          "application"
+        ]
+      }
+    }
+  }
+}

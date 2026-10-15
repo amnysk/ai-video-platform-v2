@@ -17,9 +17,10 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 ALLOWED: dict[str, set[str]] = {
     "contracts": set(),
     "domain": {"contracts"},
+    "application": {"contracts", "domain"},  # ADR-0043 §1
     "infrastructure": {"contracts", "domain"},  # ADR-0007
-    "workers": {"domain", "contracts", "infrastructure"},
-    "apps": {"domain", "contracts", "infrastructure"},
+    "workers": {"domain", "contracts", "infrastructure", "application"},
+    "apps": {"domain", "contracts", "infrastructure", "application"},
 }
 LAYERS = set(ALLOWED)
 
@@ -241,3 +242,11 @@ def test_domain_does_not_name_media_providers_or_tools() -> None:
                     f"{path.relative_to(REPO)}:{lineno}: {sorted(names)}: {line.strip()}"
                 )
     assert not violations, "\n".join(violations)
+
+
+def test_application_layer_is_shipped_and_isolated() -> None:
+    """ADR-0043 §1: application/ は image と package 探索に含まれ、infrastructure を知らない。"""
+    assert _python_files("application"), "application/ が見つからない"
+    assert "application" in ALLOWED and "infrastructure" not in ALLOWED["application"]
+    assert "COPY application ./application" in (REPO / "Dockerfile").read_text(encoding="utf-8")
+    assert '"application*"' in (REPO / "pyproject.toml").read_text(encoding="utf-8")

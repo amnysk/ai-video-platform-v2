@@ -12,6 +12,7 @@ WORKDIR /app
 COPY pyproject.toml README.md constraints.txt alembic.ini ./
 COPY contracts ./contracts
 COPY domain ./domain
+COPY application ./application
 COPY infrastructure ./infrastructure
 COPY workers ./workers
 COPY apps/__init__.py ./apps/__init__.py

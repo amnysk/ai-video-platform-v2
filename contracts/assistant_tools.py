@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from contracts.application import StoryboardPatchProposal
 from contracts.intervention import REQUIRED_SCOPE, AgentRole, CommandType, Scope
 
 #: tool 呼び出しから command_id を決める namespace（INV-49）。変えると再試行の冪等性が切れる
@@ -59,6 +60,8 @@ class ToolName(StrEnum):
     GET_COMMAND_STATUS = "get_command_status"
     APPLY_CHANGE = "apply_change"
     RESUME_EPISODE = "resume_episode"
+    #: ADR-0043 §1。入力 schema は ``StoryboardPatchProposal`` から導出する
+    PROPOSE_STORYBOARD_PATCH = "propose_storyboard_patch"
 
 
 TOOL_NAMES: frozenset[str] = frozenset(n.value for n in ToolName)
@@ -123,6 +126,10 @@ _EXPECTED: dict[str, Any] = {
     },
 }
 
+_CONTROL_REVISION: dict[str, Any] = {
+    "expected_control_revision": _EXPECTED["expected_control_revision"]
+}
+
 _RATIONALE: dict[str, Any] = {
     "type": "string",
     "maxLength": 4000,
@@ -159,6 +166,31 @@ _ANCHOR = _object(
     description="What the comment is about. Keeps pointing at that revision even if newer "
     "revisions exist; it is never moved automatically.",
 )
+
+
+def _inline_refs(node: Any, defs: dict[str, Any]) -> Any:
+    """``$ref`` を ``$defs`` の中身で置き換える（tool の入力 schema は自己完結にする）。"""
+    if isinstance(node, dict):
+        if "$ref" in node:
+            target = defs[node["$ref"].rsplit("/", 1)[-1]]
+            rest = {k: v for k, v in node.items() if k != "$ref"}
+            return _inline_refs({**target, **rest}, defs)
+        return {k: _inline_refs(v, defs) for k, v in node.items() if k != "$defs"}
+    if isinstance(node, list):
+        return [_inline_refs(v, defs) for v in node]
+    return node
+
+
+def storyboard_patch_input_schema() -> dict[str, Any]:
+    """tool の入力 schema。``StoryboardPatchProposal`` から導出する（手書きしない / INV-52）。
+
+    command_id は tool 呼び出しから決まる（INV-49）ので入力に含めない。
+    """
+    raw = StoryboardPatchProposal.model_json_schema()
+    schema = _inline_refs(raw, raw.get("$defs", {}))
+    schema["properties"] = {**schema["properties"], **_CONTROL_REVISION}
+    return schema
+
 
 TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
@@ -376,6 +408,18 @@ TOOLS: tuple[ToolSpec, ...] = (
         ),
         ToolEffect.CONTROL,
         CommandType.RESUME,
+    ),
+    ToolSpec(
+        ToolName.PROPOSE_STORYBOARD_PATCH,
+        "Propose new visual descriptions for one or more storyboard scenes (up to 12) as change "
+        "sets (kind scene.override_visual, one per scene). This only records proposals; "
+        "applying one regenerates the scene's image/video and usually costs money. Only "
+        "visual_description edits are supported today: framing, camera_movement, visual_kind and "
+        "reference_asset_id are refused with unsupported_change. Needs the propose scope and the "
+        "server-side application API to be enabled.",
+        storyboard_patch_input_schema(),
+        ToolEffect.PROPOSE,
+        CommandType.PROPOSE_CHANGE,
     ),
 )
 

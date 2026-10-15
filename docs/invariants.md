@@ -36,14 +36,16 @@ Workflow定義（Temporal）のみが持つ。Worker内に「成功したら次�
 **機械検査**: 未検査
 
 ### INV-6 レイヤ依存は一方向
-`apps/ → domain/, contracts/, infrastructure/`、
-`workers/ → domain/, contracts/, infrastructure/`、
-`infrastructure/ → domain/, contracts/`（ADR-0007 で追加）、
+`apps/ → application/, domain/, contracts/, infrastructure/`、
+`workers/ → application/, domain/, contracts/, infrastructure/`、
+`application/ → domain/, contracts/`（ADR-0043 で追加。`infrastructure/` は import しない）、
+`infrastructure/ → domain/, contracts/`（ADR-0007 で追加。`application/` は import しない）、
 `domain/ → contracts/` のみ。
 `domain/` は `apps/` `workers/` `infrastructure/` をimportせず、
 DB・HTTP・Temporal・ファイルI/O にも触れない。
 **機械検査**: `tests/architecture/test_layering.py::test_layer_dependencies_are_one_directional`
 / `::test_domain_has_no_io_dependencies`
+/ `::test_application_layer_is_shipped_and_isolated`
 
 ## B. 状態と永続化
 
@@ -572,6 +574,33 @@ INV-42 により API は保存済みの command を返す（二重の提案・�
 
 ## O. 自律改善型制作（ADR-0043）
 
+### INV-50 単一変更経路: StoryboardPatchProposal から propose_change を作るのは `ProposeStoryboardChange` だけ
+絵コンテの変更提案（`contracts.application.StoryboardPatchProposal`）を `propose_change` command に変えるのは
+`application/use_cases/propose_storyboard_change.py` の1か所だけ。HTTP（`POST /v1/intervention/episodes/{id}/storyboard/proposals`）・
+アシスタント tool（`propose_storyboard_patch`）・内部 Agent（`SessionCommandPort`）・CLI は提案を use case へ通すだけで、
+`SceneOverrideVisual` への変換や edit ごとの command_id（`storyboard_edit_command_id`）の導出を持たない。
+入口が違っても結果型（`StoryboardProposalResult`）と拒否 code（`OperationErrorCode`）は同じ。P0 が受け付けるのは
+`visual_description` だけで、他の項目は `unsupported_change`。同じ要求の再送は既存 command（INV-42）、
+同じ `request_command_id` で別内容は `command_id_reused`。use case は適用しない。新機能は `JPMAS2_APPLICATION_API`
+（既定 false）が false なら `404 feature_disabled`。
+**機械検査**: `tests/architecture/test_single_change_path.py::test_only_pass_through_modules_know_the_proposal_types`
+/ `::test_only_the_use_case_turns_a_proposal_into_scene_overrides`
+/ `::test_only_the_use_case_derives_edit_command_ids`
+/ `tests/unit/test_application_slice.py::test_http_and_internal_port_give_the_same_result_shape_and_change_sets`
+/ `::test_the_assistant_tool_gives_the_same_result_shape_and_change_sets`
+/ `::test_resending_the_same_request_returns_the_existing_commands`
+/ `::test_a_retried_tool_call_returns_the_existing_commands`
+/ `::test_the_same_request_id_with_other_content_is_command_id_reused`
+/ `::test_unsupported_fields_give_unsupported_change_from_every_entry`
+/ `::test_the_tool_reports_the_same_refusal_codes_as_the_other_entries`
+/ `::test_missing_propose_scope_is_missing_scope`
+/ `::test_the_internal_port_refuses_a_human_caller`
+/ `::test_the_flag_off_is_404_feature_disabled_before_anything_else`
+/ `::test_a_stale_base_revision_ends_as_a_conflict_without_a_change_set`
+/ `tests/unit/test_propose_storyboard_change.py::test_one_propose_command_per_edit_with_a_validated_payload`
+/ `::test_unsupported_edits_are_refused_before_the_port`
+/ `tests/contract/test_application_contracts.py::test_shared_error_codes_are_spelled_like_reject_reasons`
+
 ### INV-51 定義の固定: 未知の Agent role・版は拒否し、登録済み spec は hash で固定され、計画は spec の版と hash を持つ
 Agent は `contracts/agents.py::AGENT_SPECS`（`(role, spec_version)`）にだけ登録し、`resolve_agent_spec` は未知の
 role・版を `UnknownAgentSpecError` で拒否する（既存 3 役は Registry の対象外）。登録済み spec の内容は
@@ -587,6 +616,17 @@ role・版を `UnknownAgentSpecError` で拒否する（既存 3 役は Registry
 / `tests/unit/test_workflow_template_compiler.py::test_the_agentic_plan_pins_every_agent_spec_version_and_hash`
 / `tests/unit/test_workflow_template_compiler.py::test_compilation_is_deterministic_and_the_hash_covers_the_agent_specs`
 / `tests/unit/test_workflow_template_compiler.py::test_a_tampered_plan_is_rejected_by_its_own_hash`
+
+### INV-52 契約同期: OpenAPI・アシスタント tool schema・contracts の model が一致する
+`ProposeStoryboardChangeRequest` / `StoryboardProposalResult`（`contracts/application.py`）が唯一の定義で、OpenAPI の
+当該 route の request/response schema、`propose_storyboard_patch` の入力 schema（`StoryboardPatchProposal` から導出）、
+固定した OpenAPI 断片 `docs/api/openapi.application.json`（`scripts/export-openapi.py --application` の生成結果）は
+それと一致する。手書きで同じ形を再掲しない。
+**機械検査**: `tests/contract/test_application_contract_sync.py::test_the_route_request_schema_is_the_request_model`
+/ `::test_the_route_response_schema_is_the_result_model`
+/ `::test_the_tool_input_schema_is_derived_from_the_proposal_model`
+/ `::test_the_committed_openapi_fragment_equals_a_fresh_generation`
+/ `::test_the_fragment_has_only_the_application_paths_and_the_referenced_schemas`
 
 ### INV-53 Template の安全性: 未登録 handler/agent、循環、必須工程の欠落、QA 上限超過、未実装 Template を起動しない
 `domain/workflow_templates/compiler.py` は純粋関数で、`TemplateCompileError(code)` を返して拒否する:

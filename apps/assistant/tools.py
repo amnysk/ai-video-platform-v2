@@ -437,6 +437,40 @@ def _send(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
     return _command_result(call, response.body, replayed=response.status == 200)
 
 
+def _propose_storyboard_patch(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
+    """``contracts.application`` の提案を application API の route へ送る（検証はサーバ）。"""
+    episode_id = _uuid(args["episode_id"], "episode_id")
+    proposal = {k: v for k, v in args.items() if k != "expected_control_revision"}
+    proposal["episode_id"] = episode_id
+    body: dict[str, Any] = {"command_id": call.command_id, "proposal": proposal}
+    if args.get("expected_control_revision") is not None:
+        body["expected_control_revision"] = args["expected_control_revision"]
+    response = call.request("POST", f"/episodes/{episode_id}/storyboard/proposals", json=body)
+    detail = response.body.get("detail") if isinstance(response.body, dict) else None
+    code = detail.get("error") if isinstance(detail, dict) else None
+    if isinstance(detail, dict) and code in ("missing_scope", "command_id_reused"):
+        return {
+            "status": code,
+            "error": code,
+            "required_scope": detail.get("required_scope"),
+            "message": detail.get("message"),
+        }
+    if not response.ok:
+        out = _api_error(response)
+        if isinstance(detail, dict):
+            out.update(
+                _compact(detail, ("fields", "edit_index", "scene_id", "duplicate_scene_ids"))
+            )
+        return out
+    return {
+        "status": "submitted",
+        "replayed": response.status == 200,
+        "proposal": response.body,
+        "next": "Each command is only received. Poll get_command_status; once applied, "
+        "list_change_sets shows the proposals. Nothing is generated until a change is applied.",
+    }
+
+
 def _apply_change(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
     episode_id = _uuid(args["episode_id"], "episode_id")
     change_set_id = _uuid(args["change_set_id"], "change_set_id")
@@ -528,6 +562,7 @@ HANDLERS: dict[ToolName, Handler] = {
     ToolName.GET_COMMAND_STATUS: _get_command_status,
     ToolName.APPLY_CHANGE: _apply_change,
     ToolName.RESUME_EPISODE: _send,
+    ToolName.PROPOSE_STORYBOARD_PATCH: _propose_storyboard_patch,
 }
 
 

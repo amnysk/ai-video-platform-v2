@@ -12,8 +12,25 @@ import ast
 import pathlib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-SEARCHED_DIRS = ("apps", "workers", "domain", "infrastructure", "contracts", "prompts", "tests")
-PLATFORM_PACKAGES = {"apps", "workers", "domain", "infrastructure", "contracts", "prompts"}
+SEARCHED_DIRS = (
+    "apps",
+    "workers",
+    "domain",
+    "application",
+    "infrastructure",
+    "contracts",
+    "prompts",
+    "tests",
+)
+PLATFORM_PACKAGES = {
+    "apps",
+    "workers",
+    "domain",
+    "application",
+    "infrastructure",
+    "contracts",
+    "prompts",
+}
 
 PIPER_CLI = "infrastructure/providers/piper_cli/synthesize.py"
 PIPER_ADAPTER_MODULE = "infrastructure.providers.piper_voice"

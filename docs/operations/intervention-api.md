@@ -137,6 +137,17 @@ command_id は `cp-` + sha256(`episode_id`・案の正規化 JSON・同じ内容
 {"commands": [{"command_id": "cp-…", "status": "received", "status_text": "…", "created": true}]}
 ```
 
+### `POST /v1/intervention/episodes/{episode_id}/storyboard/proposals`（scope `propose`、ADR-0043）
+絵コンテの映像文の変更案を、edit（1〜12件）ごとの `propose_change`（`scene.override_visual`）にする。
+**`JPMAS2_APPLICATION_API=true` のときだけ有効**（既定は `404 feature_disabled`）。本文は
+`contracts.application.ProposeStoryboardChangeRequest`（`command_id` 8〜64 文字、`expected_control_revision?`、`proposal`）。
+`proposal.episode_id` は URL と一致すること。`visual_description` 以外（`framing` `camera_movement` `visual_kind`
+`reference_asset_id`）を含む edit は `422 unsupported_change`。scene_id の重複は `422 invalid_payload`。
+command_id は `uuid5(NS, "{command_id}:{index}")` なので同じ要求の再送は同じ command 群（`200`、`created: false`）、
+同じ `command_id` で別内容は `409 command_id_reused`。適用はしない（`apply` は別操作）。応答は
+`{"request_command_id", "episode_id", "commands": [{"scene_id", "command_id", "status", "created"}]}`。
+詳細は [application.md](../domain/application.md)。
+
 ## 5. 典型的な流れ（curl）
 
 ```bash
@@ -168,6 +179,7 @@ scripts/intervene.py comment EP --body "ここを短く" --segment-id s3   # コ
 scripts/intervene.py hold EP --reason "確認したい"                # 停止の要求
 scripts/intervene.py propose EP --file proposal.json           # 変更案（ProposeChangePayload の JSON）
 scripts/intervene.py import EP --file proposals.json           # 変更案ファイル（ChangeProposalFile）の取り込み
+scripts/intervene.py propose-storyboard --episode EP --file p.json   # 絵コンテ変更案（StoryboardPatchProposal。ADR-0043）
 scripts/intervene.py change-sets EP                            # 変更案の一覧
 scripts/intervene.py diff EP --change-set CS                   # 差分・影響範囲・見積り
 scripts/intervene.py diff EP --a REV1 --b REV2                 # 2つの revision の比較

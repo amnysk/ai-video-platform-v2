@@ -213,6 +213,10 @@ class Settings(BaseSettings):
     #: 読み込みと検査（AI に人専用 scope を与えない等）は ``apps/api/auth.py``。
     intervention_principals: SecretStr | None = None
 
+    # --- JP-MAS-002 P0（ADR-0043 §5）。既定は全て無効 ---
+    #: ``JPMAS2_APPLICATION_API``。無効なら storyboard 提案 route は ``404 feature_disabled``
+    jpmas2_application_api: bool = False
+
     # --- JP-MAS-001 判断記録の捕捉（ADR-0041、担当A） ---
     #: Topic Planner（producer）の実行記録（ContextSnapshot・agent_run）と choose_topic の
     #: 判断記録を残す。Planner は Episode より前に走るので mode で切り替えられず、この設定が唯一の

@@ -37,7 +37,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["apps*", "workers*", "domain*", "infrastructure*", "contracts*", "prompts*"]
+include = ["apps*", "workers*", "domain*", "application*", "infrastructure*", "contracts*", "prompts*"]
 
 [tool.ruff]
 line-length = 100
@@ -58,7 +58,7 @@ markers = [
 addopts = "-m 'not live'"
 
 [tool.pyright]
-include = ["apps", "workers", "domain", "infrastructure", "contracts", "tests"]
+include = ["apps", "workers", "domain", "application", "infrastructure", "contracts", "tests"]
 # CI・ローカルとも .venv を作って使う（.github/workflows/ci.yml の types ジョブと同じ）
 venvPath = "."
 venv = ".venv"

@@ -21,7 +21,7 @@ FORBIDDEN_TOKENS = {
     "api.anthropic.com": "Anthropic",
 }
 
-SEARCHED_DIRS = ["apps", "workers", "domain", "infrastructure", "contracts", "tests"]
+SEARCHED_DIRS = ["apps", "workers", "domain", "application", "infrastructure", "contracts", "tests"]
 SELF = pathlib.Path(__file__).resolve()
 
 #: fal の endpoint を書いてよいのは provider adapter だけ（ADR-0017）。

@@ -12,6 +12,7 @@
   scripts/intervene.py hold EP --reason "確認したい"
   scripts/intervene.py propose EP --file proposal.json      # ProposeChangePayload の JSON
   scripts/intervene.py import EP --file proposals.json      # ChangeProposalFile の JSON
+  scripts/intervene.py propose-storyboard --episode EP --file p.json   # StoryboardPatchProposal
   scripts/intervene.py diff EP --change-set CS              # 差分・影響範囲・見積り
   scripts/intervene.py apply EP --change-set CS --max-cost 0.50
   scripts/intervene.py resume EP
@@ -137,6 +138,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="command の状態を表示する")
     p.add_argument("command_id")
 
+    p = sub.add_parser(
+        "propose-storyboard",
+        help="絵コンテの映像文の変更案を出す（StoryboardPatchProposal の JSON。ADR-0043）",
+    )
+    p.add_argument("--episode", dest="episode_id", required=True)
+    p.add_argument("--file", required=True)
+    p.add_argument("--command-id", help="再送するときは前回と同じ値（省略時は uuid4）")
+    p.add_argument("--expected-control-revision", type=int)
+
     p = episode("import", "ReviewPacket の変更案ファイル（ChangeProposalFile）を取り込む")
     p.add_argument("--file", required=True)
 
@@ -220,6 +230,16 @@ def _request(args: argparse.Namespace) -> tuple[str, str, Any, str | None]:
         return "GET", f"{API}/commands/{urllib.parse.quote(args.command_id, safe='')}", None, None
     if cmd == "import":
         return "POST", f"{base}/change-proposals", _read_json(args.file), None
+    if cmd == "propose-storyboard":
+        command_id = args.command_id or str(uuid.uuid4())
+        body = _drop_none(
+            {
+                "command_id": command_id,
+                "expected_control_revision": args.expected_control_revision,
+                "proposal": _read_json(args.file),
+            }
+        )
+        return "POST", f"{base}/storyboard/proposals", body, command_id
     if cmd in COMMAND_NAMES:
         command_type, payload = _payload(args)
         command_id = args.command_id or str(uuid.uuid4())

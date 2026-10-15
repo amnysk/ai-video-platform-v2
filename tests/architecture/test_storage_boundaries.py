@@ -9,7 +9,16 @@ from __future__ import annotations
 import pathlib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-CODE_LAYERS = ("apps", "workers", "domain", "infrastructure", "contracts", "prompts", "scripts")
+CODE_LAYERS = (
+    "apps",
+    "workers",
+    "domain",
+    "application",
+    "infrastructure",
+    "contracts",
+    "prompts",
+    "scripts",
+)
 
 #: 禁止ディレクトリを**拒否するために**定義する唯一の場所。
 ALLOWED = {"infrastructure/workdir.py"}
