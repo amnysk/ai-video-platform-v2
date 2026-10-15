@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from apps.api.intervention_logging import InterventionRequestLoggingMiddleware
-from apps.api.routers import episodes, intervention, research
+from apps.api.routers import episodes, intervention, intervention_insights, research
 from contracts.log_contract import EventName, Outcome
 from infrastructure.logging.asgi import RequestLoggingMiddleware
 from infrastructure.logging.emit import emit, log_guard
@@ -58,6 +58,8 @@ def create_app() -> FastAPI:
     # JP-MAS-001 / ADR-0041 §8: 介入 API（/v1/intervention）。
     # INTERVENTION_PRINCIPALS 未設定なら全て 503
     app.include_router(intervention.router)
+    # ADR-0042 §5: 判断の説明と Episode 横断の判断検索（read のみの GET）
+    app.include_router(intervention_insights.router)
 
     @app.get("/healthz", tags=["ops"])
     async def healthz() -> dict[str, str]:
