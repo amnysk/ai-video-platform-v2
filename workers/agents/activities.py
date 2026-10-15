@@ -370,7 +370,7 @@ class AgentActivities:
         error: BaseException | None = None,
     ) -> str | None:
         """「呼んだ」事実を台帳に確定する（検証・保存より前）。再生のときは確定済みなので何もしない。"""
-        if replay:
+        if replay or reservation_id is None:
             return None
         failed_without_response = error is not None and not recording.calls and recording.attempted
         if failed_without_response:
