@@ -346,6 +346,8 @@ class EventName(StrEnum):
     API_REQUEST_COMPLETED = "api.request.completed"
     # 介入 API（/v1/intervention）の1要求。主体・相関 ID・assistant の tool 名を持つ（ADR-0042）
     INTERVENTION_API_REQUEST = "intervention.api.request"
+    # application 層の1操作（UI・MCP・CLI 共通。ADR-0044 §5）。HTTP の1要求ではなく操作の結果
+    APPLICATION_OPERATION_COMPLETED = "application.operation.completed"
     # Schedule / 日次枠
     SCHEDULE_SLOT_ACQUIRED = "schedule.slot.acquired"
     SCHEDULE_SLOT_SKIPPED = "schedule.slot.skipped"

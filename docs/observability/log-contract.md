@@ -255,6 +255,7 @@ Collector が行から作る `@timestamp`（Docker の時刻）・`message`（�
 | `service.started` / `service.stopped` / `service.start_failed` | worker_entry・API の lifespan |
 | `api.request.completed` | API の1リクエスト（health は DEBUG） |
 | `intervention.api.request` | `/v1/intervention` の1要求（ADR-0042）。`http_route`（template）・`actor_type`・`attributes.actor_id`・`http_status`・`duration_ms`・`correlation_id`（`X-Correlation-ID`）・`tool_name`・`episode_id`。token・Authorization・query・本文は出さない |
+| `application.operation.completed` | application 層の1操作（ADR-0044 §5）。`episode_id`・`correlation_id`・`command_id`・`actor_type`・`workflow_id`・`outcome`（`succeeded` / `rejected` / `failed`）・`duration_ms`・`error_code`・`attributes.operation`。token・入力全文は出さない |
 | `schedule.slot.acquired` / `schedule.slot.skipped` | 日次枠の取得（commit 後）・スキップと理由 |
 | `stage.started` / `stage.succeeded` / `stage.failed` / `stage.blocked` / `stage.skipped` | 各工程 workflow（replay 安全） |
 | `activity.started`(DEBUG) / `activity.succeeded` / `activity.failed` | interceptor。`duration_ms`・失敗分類。cancel は `outcome=cancelled` |
