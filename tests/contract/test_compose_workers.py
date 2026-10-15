@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import yaml
 
+from contracts.intervention import INTERVENTION_TASK_QUEUE
 from contracts.pipeline import PIPELINE_TASK_QUEUE
 from contracts.production_activities import SCENE_ALTERNATIVE_TASK_QUEUE
 from contracts.research import RESEARCH_TASK_QUEUE
@@ -77,6 +78,8 @@ WORKERS: dict[str, tuple[str, set[str], bool]] = {
     ),
     # ADR-0037 §8.5: Research の workflow と Activity（外部は Fake / none だけ）
     "research-worker": ("workers.research.run_worker", {RESEARCH_TASK_QUEUE}, True),
+    # ADR-0041 §3: 介入 command の workflow と Activity
+    "intervention-worker": ("workers.intervention.run_worker", {INTERVENTION_TASK_QUEUE}, True),
 }
 NEW_WORKERS = [s for s in WORKERS if s != "dummy-worker"]
 
@@ -393,3 +396,13 @@ def test_only_codex_workers_regain_setfcap(services, service) -> None:
     opts = svc.get("security_opt") or []
     assert "no-new-privileges:true" in opts
     assert ("seccomp=unconfined" in opts) == (service in CODEX_WORKERS)
+
+
+def test_intervention_worker_budget_env_follows_the_contract_defaults(services) -> None:
+    """予算の既定は contracts が唯一の宣言元。換算レートは既定なし（INV-47）。"""
+    from contracts.intervention import DEFAULT_EPISODE_BUDGET_JPY, DEFAULT_MONTHLY_BUDGET_JPY
+
+    env = _env(_svc(services, "intervention-worker"))
+    assert _resolved(env["EPISODE_BUDGET_JPY"]) == str(DEFAULT_EPISODE_BUDGET_JPY)
+    assert _resolved(env["MONTHLY_BUDGET_JPY"]) == str(DEFAULT_MONTHLY_BUDGET_JPY)
+    assert _resolved(env["BUDGET_USD_JPY_RATE"]) == ""

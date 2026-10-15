@@ -44,6 +44,11 @@ def build_worker(
 
 async def main() -> None:
     settings = Settings()
+    if settings.budget_usd_jpy_rate is None:
+        logger.warning(
+            "BUDGET_USD_JPY_RATE is not set: paid changes are rejected as budget_unverifiable "
+            "until it is configured"
+        )
     client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()

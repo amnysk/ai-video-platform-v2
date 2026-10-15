@@ -133,3 +133,12 @@ time-skipping 環境と SQLite、工程の子 workflow は同名の fake、Activ
   落ちる。0017 の語彙が契約と一致すること、0016→0017→0016 で CHECK が増減することを検査する。
   0016 の語彙テストは「0016 の凍結値 = 契約 − 後続 migration が足した型」に変えた（仕様変更が
   ADR-0041 addendum として先に承認済みのため）。
+
+## 配備（M1）
+- `tests/contract/test_compose_workers.py`（`intervention-worker` を表に追加）: 他の worker と同じ形（image・
+  command・healthcheck の queue・依存・capability）で compose に在ること。worker が compose に無いと
+  command は永久に配送されない。`test_intervention_worker_budget_env_follows_the_contract_defaults`:
+  compose の予算の既定が contracts と食い違わず、換算レートは既定なし（宣言元は1つ / INV-47）。
+- `test_updating_the_intervention_redelivery_schedule_keeps_its_pause`: 再登録で運用者の pause を外さない。
+- `tests/unit/test_intervention_run_worker.py`: レート未設定の起動時警告は1回、設定済みなら出ない。
+  黙って「有料の変更が全部通らない」状態にしない。

@@ -24,13 +24,17 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from temporalio.client import Client  # noqa: E402
 
+from contracts.intervention import INTERVENTION_REDELIVERY_SCHEDULE_ID  # noqa: E402
 from contracts.schedule_guard import WATCHDOG_SCHEDULE_ID, WatchdogRequest  # noqa: E402
 from infrastructure.config import Settings  # noqa: E402
 from infrastructure.temporal.schedules import (  # noqa: E402
+    INTERVENTION_REDELIVERY_INTERVAL_SECONDS,
+    build_intervention_redelivery_schedule,
     build_watchdog_schedule,
     daily_episode_input_from_settings,
     describe_daily_schedule_spec,
     ensure_daily_episode_schedule,
+    ensure_intervention_redelivery_schedule,
     ensure_watchdog_schedule,
 )
 
@@ -46,9 +50,16 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--watchdog", action="store_true", help="daily の代わりに watchdog の Schedule を扱う"
     )
+    parser.add_argument(
+        "--intervention",
+        action="store_true",
+        help="daily の代わりに介入 command の再配送 Schedule（ADR-0041 §3）を扱う",
+    )
     args = parser.parse_args(argv)
 
     settings = Settings()
+    if args.intervention:
+        return await _intervention(settings, apply=args.apply)
     if args.watchdog:
         return await _watchdog(settings, apply=args.apply)
     wf_input = daily_episode_input_from_settings(settings)
@@ -118,6 +129,21 @@ async def _watchdog(settings: Settings, *, apply: bool) -> int:
         request=request,
     )
     print(f"schedule {WATCHDOG_SCHEDULE_ID}: {outcome}")
+    return 0
+
+
+async def _intervention(settings: Settings, *, apply: bool) -> int:
+    schedule = build_intervention_redelivery_schedule()
+    print(
+        f"schedule {INTERVENTION_REDELIVERY_SCHEDULE_ID}: "
+        f"every={INTERVENTION_REDELIVERY_INTERVAL_SECONDS}s overlap={schedule.policy.overlap.name}"
+    )
+    if not apply:
+        print("dry-run: nothing registered (use --intervention --apply)")
+        return 0
+    client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
+    outcome = await ensure_intervention_redelivery_schedule(client)
+    print(f"schedule {INTERVENTION_REDELIVERY_SCHEDULE_ID}: {outcome}")
     return 0
 
 
