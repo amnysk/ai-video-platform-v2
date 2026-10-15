@@ -25,7 +25,7 @@ from contracts.topic_planning import (
 )
 from domain.errors import PromptContractError
 
-__all__ = ["PLAN_FIELDS", "ScriptBrief", "legacy_brief", "plan_brief"]
+__all__ = ["PLAN_FIELDS", "ScriptBrief", "creative_brief", "legacy_brief", "plan_brief"]
 
 #: plan から台本 prompt へ渡す列（この順で prompt に載る）
 PLAN_FIELDS: tuple[str, ...] = ("topic", "subject", "angle", "era", "hook")
@@ -54,9 +54,9 @@ def legacy_brief(topic: str) -> ScriptBrief:
     )
 
 
-def plan_brief(
+def _brief_from_profiles(
     *,
-    topic_plan_id: str,
+    topic_plan_id: str | None,
     strategy_profile_id: str,
     content_profile_id: str,
     topic: str,
@@ -80,4 +80,54 @@ def plan_brief(
         content_profile=content,
         topic_plan_id=topic_plan_id,
         subject_matter={k: values[k] for k in PLAN_FIELDS},
+    )
+
+
+def plan_brief(
+    *,
+    topic_plan_id: str,
+    strategy_profile_id: str,
+    content_profile_id: str,
+    topic: str,
+    subject: str,
+    angle: str,
+    era: str,
+    hook: str,
+) -> ScriptBrief:
+    return _brief_from_profiles(
+        topic_plan_id=topic_plan_id,
+        strategy_profile_id=strategy_profile_id,
+        content_profile_id=content_profile_id,
+        topic=topic,
+        subject=subject,
+        angle=angle,
+        era=era,
+        hook=hook,
+    )
+
+
+def creative_brief(
+    *,
+    strategy_profile_id: str,
+    content_profile_id: str,
+    topic: str,
+    subject: str,
+    angle: str,
+    era: str,
+    hook: str,
+) -> ScriptBrief:
+    """TopicPlan が無く、現行の CreativeBrief がある Episode（agentic、ADR-0043 §6）。
+
+    plan_brief と同じ検証・同じ題材の列。TopicPlan は無いので ``topic_plan_id`` は None
+    （TopicPlan を作らない / 日次と衝突しない）。
+    """
+    return _brief_from_profiles(
+        topic_plan_id=None,
+        strategy_profile_id=strategy_profile_id,
+        content_profile_id=content_profile_id,
+        topic=topic,
+        subject=subject,
+        angle=angle,
+        era=era,
+        hook=hook,
     )
