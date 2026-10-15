@@ -43,6 +43,21 @@
 - `test_reading_across_versions_needs_an_explicitly_registered_upcaster`: upcast の仕組みを test 専用 registry で証明する。
   登録が無ければ（同じ registry に v2 があっても）読み替えない。逆向きも不可。
 
+## 4. Template の契約とコンパイラ（tests/contract/test_workflow_templates.py、tests/unit/test_workflow_template_compiler.py）
+
+- `test_no_template_or_plan_field_can_express_visibility_budget_or_schedule`: Template から公開設定・予算を拡張できない。
+- `test_the_registered_templates_are_exactly_the_three_adr_templates` / `test_shorts_agentic_has_exactly_the_adr_stage_sequence` /
+  `test_shorts_reviewed_reviews_before_the_private_upload` / `test_template_handlers_come_from_the_two_registered_vocabularies` /
+  `test_template_hash_is_stable_and_sensitive`: ADR §3 の登録内容と hash。
+- `test_every_registered_template_is_structurally_valid_and_compiles_iff_runnable`: 全 Template が構造検査を通り、
+  runnable だけがコンパイルできる。
+- `test_daily_legacy_compiles_to_the_legacy_pipeline`: 日次は `legacy_pipeline` を返し agentic 実行の入口が拒否できる。
+- `test_the_agentic_plan_pins_every_agent_spec_version_and_hash` / `test_compilation_is_deterministic_and_the_hash_covers_the_agent_specs` /
+  `test_a_tampered_plan_is_rejected_by_its_own_hash`: 計画が spec の版・hash を固定し、改ざんは検出される（INV-51）。
+- `test_output_order_is_topological_with_declaration_order_for_ties` / `test_ties_keep_declaration_order`: 出力順が決定的。
+- 以降の `test_unknown_template` … `test_invalid_post_publish`: エラー code ごとに 1 つの変異（INV-53）。
+  `test_a_required_stage_appearing_twice_is_missing_required_stage` は「ちょうど 1 回」の裏側。
+
 ## 5. migration 0019（tests/contract/test_migration_0019_agentic_vocabulary.py）
 
 - `test_pre_0019_literals_are_the_values_at_9440302` / `test_frozen_literals_equal_the_current_enums_in_order`: downgrade 先の

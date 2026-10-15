@@ -14,6 +14,8 @@ Activity）と workflow は P1。設計は [JP-MAS-002 v1.1](../design/JP-MAS-00
 | 保存する成果物のモデル | `contracts/agentic.py` |
 | `(artifact_type, schema_version)` → model | `contracts/artifact_registry.py` |
 | `ArtifactType` に 6 型、`ProviderCall.AGENT_LLM` | `contracts/states.py` |
+| Template・`HARD_MAX_QA_REPAIR_CYCLES` | `contracts/workflow_templates.py` |
+| Template のコンパイル | `domain/workflow_templates/compiler.py` |
 
 ## Agent Registry（INV-51）
 
@@ -54,6 +56,20 @@ sha256。登録済み spec を変えるときは新しい `spec_version` を足�
 `rejected`・`retired` は終端（`LESSON_TRANSITIONS`）。`validated` だけが Strategy の「検証済みの参考」
 （`LessonUse.used_as = validated_reference`）になれる。測定窓（48h / 7d / 28d）の項目が全て欠けるときは
 `missing_reason` が必須で、欠測を 0 にしない。
+
+## Workflow Template（INV-53）
+
+| template | execution | runnable | stage | QA 修正 |
+|---|---|---|---|---|
+| `daily_legacy@1` | legacy_pipeline | はい（compile は `legacy_pipeline` を返す。agentic 実行は起動側が拒否。日次は Template を読まない） | script → storyboard → production → render → private_upload | 0 |
+| `shorts_agentic@1` | agentic | はい | strategy → producer → creative → script → storyboard → production → render → private_upload → quality。post_publish: lesson（`public_metrics_available`） | 0 |
+| `shorts_reviewed@1` | agentic | いいえ（`template_not_runnable`） | quality が private_upload の前。post_publish: lesson | 2 |
+
+コンパイラのエラー code（`TemplateCompileError.code`）: `unknown_template`・`template_not_runnable`・`unknown_handler`・
+`unknown_agent_spec`・`handler_mismatch`・`duplicate_stage`・`unknown_dependency`・`cycle`・`missing_required_stage`・
+`required_stage_order`・`strategy_without_producer`・`qa_cycle_limit`・`invalid_post_publish`。出力 stage は宣言順で安定な位相順。
+`plan_hash` = `plan_hash` を除いた計画の正規 JSON の sha256（`contracts.agentic.compute_plan_hash`。`WorkflowPlan` の
+検証が一致を確かめる）。
 
 ## migration 0019
 

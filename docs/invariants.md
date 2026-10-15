@@ -584,6 +584,35 @@ role・版を `UnknownAgentSpecError` で拒否する（既存 3 役は Registry
 / `tests/contract/test_agent_registry.py::test_unknown_role_or_version_is_rejected`
 / `tests/contract/test_agent_registry.py::test_every_new_role_has_a_v1_spec_and_a_role_spec`
 / `tests/contract/test_agent_registry.py::test_tools_handlers_and_policies_are_registered_vocabulary`
+/ `tests/unit/test_workflow_template_compiler.py::test_the_agentic_plan_pins_every_agent_spec_version_and_hash`
+/ `tests/unit/test_workflow_template_compiler.py::test_compilation_is_deterministic_and_the_hash_covers_the_agent_specs`
+/ `tests/unit/test_workflow_template_compiler.py::test_a_tampered_plan_is_rejected_by_its_own_hash`
+
+### INV-53 Template の安全性: 未登録 handler/agent、循環、必須工程の欠落、QA 上限超過、未実装 Template を起動しない
+`domain/workflow_templates/compiler.py` は純粋関数で、`TemplateCompileError(code)` を返して拒否する:
+`unknown_template`・`template_not_runnable`・`unknown_handler`・`unknown_agent_spec`・`handler_mismatch`・
+`duplicate_stage`・`unknown_dependency`・`cycle`・`missing_required_stage`・`required_stage_order`・
+`strategy_without_producer`・`qa_cycle_limit`（`HARD_MAX_QA_REPAIR_CYCLES = 2`）・`invalid_post_publish`。
+必須の既存工程（script → storyboard → production → render → private_upload）は各 1 回・この順に（推移的に）依存する。
+Template・Plan の契約に公開設定・予算上限・Schedule を表す項目は無い。Template は Python のデータで、YAML・DB・
+利用者入力から作らない。
+**機械検査**: `tests/unit/test_workflow_template_compiler.py::test_every_registered_template_is_structurally_valid_and_compiles_iff_runnable`
+/ `tests/unit/test_workflow_template_compiler.py::test_unknown_template`
+/ `tests/unit/test_workflow_template_compiler.py::test_unknown_handler`
+/ `tests/unit/test_workflow_template_compiler.py::test_unknown_agent_spec`
+/ `tests/unit/test_workflow_template_compiler.py::test_handler_mismatch`
+/ `tests/unit/test_workflow_template_compiler.py::test_duplicate_stage`
+/ `tests/unit/test_workflow_template_compiler.py::test_unknown_dependency`
+/ `tests/unit/test_workflow_template_compiler.py::test_cycle`
+/ `tests/unit/test_workflow_template_compiler.py::test_missing_required_stage`
+/ `tests/unit/test_workflow_template_compiler.py::test_a_required_stage_appearing_twice_is_missing_required_stage`
+/ `tests/unit/test_workflow_template_compiler.py::test_required_stage_order`
+/ `tests/unit/test_workflow_template_compiler.py::test_strategy_without_producer`
+/ `tests/unit/test_workflow_template_compiler.py::test_qa_cycle_limit`
+/ `tests/unit/test_workflow_template_compiler.py::test_invalid_post_publish`
+/ `tests/contract/test_workflow_templates.py::test_no_template_or_plan_field_can_express_visibility_budget_or_schedule`
+/ `tests/contract/test_workflow_templates.py::test_shorts_agentic_has_exactly_the_adr_stage_sequence`
+/ `tests/contract/test_agentic_contracts.py::test_user_brief_has_no_budget_visibility_or_schedule_field`
 
 ### INV-54 保存の互換: 未知の schema 版は読まず、旧 Storyboard v1.0 は読め、migration 0019 は制約の張り替えだけ
 `contracts/artifact_registry.py` の `(artifact_type, schema_version)` に無い版は `UnsupportedArtifactSchemaError`
