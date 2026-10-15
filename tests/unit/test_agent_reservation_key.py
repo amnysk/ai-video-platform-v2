@@ -46,8 +46,9 @@ async def test_a_reservation_for_a_real_sized_stage_key_is_found_again_by_the_ma
     episode = await EpisodeRepository(session).create(topic="t")
     await session.commit()
     key = _stage_key()
-    for _ in range(2):  # 再送は同じ予約
-        reservation = await reserve_and_dispatch_agent_call(
+
+    async def reserve():
+        return await reserve_and_dispatch_agent_call(
             session,
             episode_id=episode.id,
             idempotency_key=key,
@@ -56,6 +57,9 @@ async def test_a_reservation_for_a_real_sized_stage_key_is_found_again_by_the_ma
             budget_policy=BudgetPolicy(usd_jpy_rate=Decimal("150")),
             now=datetime(2026, 10, 15, tzinfo=UTC),
         )
+
+    reservation = await reserve()
+    assert (await reserve()).id == reservation.id  # 再送は同じ予約
     assert len(reservation.idempotency_key) <= COLUMN
     found = await ProviderReservationRepository(session).find_by_key(agent_reservation_key(key))
     assert found is not None and found.id == reservation.id

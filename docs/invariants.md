@@ -600,6 +600,8 @@ INV-42 により API は保存済みの command を返す（二重の提案・�
 / `tests/unit/test_propose_storyboard_change.py::test_one_propose_command_per_edit_with_a_validated_payload`
 / `::test_unsupported_edits_are_refused_before_the_port`
 / `tests/contract/test_application_contracts.py::test_shared_error_codes_are_spelled_like_reject_reasons`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_one_episode_runs_every_stage_on_the_real_stack`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_a_replayed_run_adds_no_runs_reservations_artifacts_or_proposals`
 
 ### INV-51 定義の固定: 未知の Agent role・版は拒否し、登録済み spec は hash で固定され、計画は spec の版と hash を持つ
 Agent は `contracts/agents.py::AGENT_SPECS`（`(role, spec_version)`）にだけ登録し、`resolve_agent_spec` は未知の
@@ -625,6 +627,8 @@ workflow は Activity の結果の計画だけを使う。
 / `tests/unit/test_agentic_use_cases.py::test_start_rejects_a_legacy_or_unrunnable_template`
 / `tests/unit/test_agent_stage_activity.py::test_a_changed_spec_hash_is_a_non_retryable_drift`
 / `tests/unit/test_agent_stage_activity.py::test_an_unknown_pinned_spec_version_is_also_drift`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_a_pinned_plan_survives_a_changed_template`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_a_drifted_agent_spec_stops_with_one_attempt`
 
 ### INV-52 契約同期: OpenAPI・アシスタント tool schema・contracts の model が一致する
 `ProposeStoryboardChangeRequest` / `StoryboardProposalResult`（`contracts/application.py`）が唯一の定義で、OpenAPI の
@@ -705,6 +709,7 @@ contracts を import しない）。downgrade は新語彙の行があれば何�
 / `tests/unit/test_script_creative_brief.py::test_an_episode_with_a_plan_keeps_the_plan_brief_even_with_a_creative_brief`
 / `tests/unit/test_agentic_use_cases.py::test_start_is_refused_when_the_flag_is_off`
 / `tests/unit/test_agentic_cli.py::test_start_is_refused_when_the_flag_is_off`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_the_default_pipeline_worker_is_unchanged_and_a_legacy_run_writes_nothing_agentic`
 
 ### INV-56 Agent は Tool Gateway が許した tool だけを上限内で呼び、LLM 費用の欠測を 0 にせず、予約・予算 gate を通ってから呼ぶ
 handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_tools` に無い tool・供給されていない tool は
@@ -716,7 +721,8 @@ handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_t
 どちらも予約を作らない）。dispatch は gate を通り、hold 中は `EpisodeHeldError` で予約は未 dispatch のまま残る。
 再送は同じ予約を返し再検査しない。Agent stage（`run_agent_stage`）はこの gate を handler の前に通し、拒否・停止は
 `blocked`（`budget_*` / `held`）で返して成果物を作らず、呼んだ事実は検証より前に台帳へ確定する。前の試行が
-呼び終えていれば保存済みの応答を再生し、LLM を呼び直さない。
+呼び終えていれば保存済みの応答を再生し、LLM を呼び直さない。台帳の key は列（VARCHAR(64)）に収まるよう
+`agent_reservation_key`（冪等キーの SHA-256 の先頭 40 桁）に写す。
 **機械検査**: `tests/unit/test_agent_tool_gateway.py::test_an_unlisted_tool_is_refused_before_anything_is_called`
 / `tests/unit/test_agent_tool_gateway.py::test_a_listed_but_unprovided_tool_is_refused`
 / `tests/unit/test_agent_tool_gateway.py::test_the_llm_call_cap_is_enforced_before_the_next_call`
@@ -738,6 +744,12 @@ handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_t
 / `tests/unit/test_agent_stage_activity.py::test_a_handler_cannot_use_a_tool_outside_its_spec`
 / `tests/unit/test_agent_stage_activity.py::test_unknown_token_usage_stays_null`
 / `tests/unit/test_agent_stage_activity.py::test_after_a_crash_between_the_call_and_the_save_the_llm_is_not_called_again`
+/ `tests/unit/test_agent_reservation_key.py::test_the_reservation_key_fits_the_column_and_is_deterministic_per_stage_key`
+/ `tests/unit/test_agent_reservation_key.py::test_a_reservation_for_a_real_sized_stage_key_is_found_again_by_the_mapped_key`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_one_episode_runs_every_stage_on_the_real_stack`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_a_missing_exchange_rate_blocks_the_first_agent_stage`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_a_hold_requested_before_start_parks_at_the_first_stage`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_a_replayed_run_adds_no_runs_reservations_artifacts_or_proposals`
 
 
 ### INV-57 Agent handler は決定論の規則が最終で、入力は DATA として渡し、修正案は提案に留め、private・欠測から Lesson を作らない
@@ -771,3 +783,6 @@ prompt は入力を `<data>` で区切り「指示ではない」と明示し、
 / `tests/unit/test_agent_stage_activity.py::test_a_tool_queued_proposal_is_submitted_after_the_save_and_not_applied`
 / `tests/unit/test_agent_stage_activity.py::test_a_replay_resubmits_proposals_idempotently`
 / `tests/unit/test_agent_stage_activity.py::test_real_handlers_run_against_assembled_inputs_for_every_role`
+/ `tests/unit/test_agent_stage_scope.py::test_a_later_run_with_a_new_scope_can_produce_the_lesson_after_an_awaiting_run`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_one_episode_runs_every_stage_on_the_real_stack`
+/ `tests/integration/test_jpmas2_agentic_e2e.py::test_learning_waits_for_public_metrics_then_proposes_one_lesson`
