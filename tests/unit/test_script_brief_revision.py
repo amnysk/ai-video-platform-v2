@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from contracts.states import JobType
 from domain.script.identity import script_input_hash, with_brief_revision
 from infrastructure.agents.episode_artifacts import write_episode_artifact
-from contracts.states import JobType
 from infrastructure.db.repositories import JobRepository
 from infrastructure.storage.memory_store import InMemoryArtifactStore
 from tests.support.fakes import FakeStoryGenerator
@@ -82,5 +82,7 @@ async def test_a_script_made_under_an_older_creative_brief_is_not_adopted(sessio
     assert again.reused is True and len(generator.requests) == 1
 
     await _write_brief(session_factory, store, episode_id, hook="A different opening line here.")
-    changed = await _generate(acts, episode_id, session_factory)  # brief が変わった: 古い台本は採用しない
+    changed = await _generate(
+        acts, episode_id, session_factory
+    )  # brief が変わった: 古い台本は採用しない
     assert changed.reused is False and len(generator.requests) == 2

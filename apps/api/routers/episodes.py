@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
-from apps.api.dependencies import get_session_factory, get_workflow_starter
+from apps.api.dependencies import (
+    get_artifact_store_factory,
+    get_session_factory,
+    get_workflow_starter,
+)
 from apps.api.schemas import (
     ArtifactView,
     CreateEpisodeRequest,
@@ -40,6 +45,7 @@ from contracts.states import (
     ProviderCall,
 )
 from domain.pipeline.resume_plan import ReservationSummary, ResumePlan, build_resume_plan
+from infrastructure.agents.pinned_plan import read_pinned_agentic_template
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -47,6 +53,7 @@ from infrastructure.db.repositories import (
     ProviderReservationRepository,
 )
 from infrastructure.logging.emit import emit, log_guard
+from infrastructure.storage.artifact_store import ArtifactStore
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +376,7 @@ async def resume_episode(
     episode_id: uuid.UUID,
     session_factory: SessionFactory,
     starter: Starter,
+    store_factory: Annotated[Callable[[], ArtifactStore], Depends(get_artifact_store_factory)],
 ) -> ResumeResponse:
     """統一再開の実行（INV-16 / ADR-0032 §Decision(2)/(3)）。
 
@@ -402,10 +410,19 @@ async def resume_episode(
             detail=plan.reason or f"episode {episode_id} is not resumable",
         )
 
+    # agentic か（pin 済みの計画があるか）の判定は I/O 側。介入 command の resume と同じ決定
+    pinned = await read_pinned_agentic_template(session_factory, store_factory, episode_id)
     try:
-        workflow_id = await starter.start_pipeline_workflow(
-            episode_id=str(episode_id), start_stage=plan.target_stage
-        )
+        if pinned is not None:
+            workflow_id = await starter.start_agentic_workflow(
+                episode_id=str(episode_id),
+                template_id=pinned.template_id,
+                template_version=pinned.template_version,
+            )
+        else:
+            workflow_id = await starter.start_pipeline_workflow(
+                episode_id=str(episode_id), start_stage=plan.target_stage
+            )
     except WorkflowAlreadyStartedError as exc:
         _resume_rejected(ep, status.HTTP_409_CONFLICT, "pipeline workflow already running")
         raise HTTPException(

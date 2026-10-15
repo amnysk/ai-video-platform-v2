@@ -80,6 +80,7 @@ ADR-0043 と設計の記述（読み手でも書き手でもない）のみ。�
 - `StartAgenticProduction`: `jpmas2_agentic_workflows` が無効なら `feature_disabled`（flag は構築時に渡す）。
   UserBrief の無い Episode は `episode_not_found`。template を draft と同じ検査にかけてから
   `AgenticEpisodeWorkflow`（id `agentic-episode-{episode_id}`、REJECT_DUPLICATE）を起動する。既にあれば `started=false`。
+  再開（介入 command の resume・`POST /episodes/{id}/resume`）は同じ id を `ALLOW_DUPLICATE` で再起動する（[intervention.md](./intervention.md) の「agentic Episode の resume」）。
 
 grep の記録（AGENTS.md §8、変更前）: `grep -rn "agentic-episode\|agentic_episode_workflow_id" apps/ workers/ domain/
 infrastructure/ contracts/ docs/` は `contracts/agentic_pipeline.py` の宣言1件のみ（読み手・書き手は本変更で追加）。

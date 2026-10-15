@@ -53,7 +53,7 @@ def script_input_hash(
 
 
 def with_brief_revision(input_hash: str, brief_revision: str | None) -> str:
-    """``script_input_hash`` に現行 CreativeBrief の内容 hash を畳み込む（agentic の Episode だけ）。
+    """``script_input_hash`` に現行 CreativeBrief の内容 hash を畳み込む（agentic のみ）。
 
     brief が変わったら古い brief で作った台本を採用しない。``None``（plan のある / brief の無い
     Episode）は ``input_hash`` をそのまま返すので従来と同じ値（INV-55）。``script_input_hash`` の

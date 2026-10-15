@@ -652,3 +652,29 @@ def test_the_legacy_workflow_module_does_not_mention_the_agentic_workflow() -> N
     source = (Path(__file__).resolve().parents[2] / "workers/pipeline/workflows.py").read_text()
     for needle in ("agentic", "Agentic", "workflow_plan"):
         assert needle not in source
+
+
+async def test_a_parked_run_can_be_started_again_with_the_same_id_and_the_same_plan(
+    env: Env, session, session_factory, artifact_store
+) -> None:
+    """hold で parked → resume で同じ id を再起動。同じ計画を歩き直し、冪等キーは変わらない。"""
+    episode_id = await _ready_episode(session, session_factory)
+    await submit(session_factory, artifact_store, episode_id, envelope(CommandType.REQUEST_HOLD))
+    parked = await env.run(episode_id)
+    assert parked.outcome == AgenticOutcome.PARKED.value and WORLD.events == []
+    await submit(session_factory, artifact_store, episode_id, envelope(CommandType.RESUME))
+
+    resumed = await env.run(episode_id)  # 閉じた id の再利用（既定の ALLOW_DUPLICATE）
+
+    assert resumed.outcome == AgenticOutcome.COMPLETED.value
+    assert resumed.plan_hash == parked.plan_hash
+    assert WORLD.events == FULL_ORDER
+    assert {r.idempotency_scope for r in WORLD.agent_requests} == {
+        None
+    }  # Learning の scope は無関係
+    assert {r.plan_hash for r in WORLD.agent_requests} == {parked.plan_hash}
+    async with session_factory() as s:
+        current = await ArtifactMetadataRepository(s).find_current_by_type(
+            episode_id, ArtifactType.WORKFLOW_PLAN
+        )
+        assert current is not None and current.version == 1  # 計画は再 pin されない
