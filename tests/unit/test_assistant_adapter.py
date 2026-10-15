@@ -211,6 +211,12 @@ def test_unknown_tool_and_non_object_arguments() -> None:
             {"decision_type": "script_structure", "limit": "5"},
         ),
         (
+            "search_decisions",
+            {"scene_id": "sb2"},
+            "/decisions",
+            {"scene_id": "sb2"},
+        ),
+        (
             "compare_revisions",
             {"episode_id": EP, "revision_a": REV, "revision_b": CS},
             f"/episodes/{EP}/revisions/compare",

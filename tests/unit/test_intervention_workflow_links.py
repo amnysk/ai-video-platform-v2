@@ -12,6 +12,7 @@ from temporalio.testing import ActivityEnvironment
 
 from contracts.intervention import (
     AgentRole,
+    AgentRunOutcome,
     CommandStatus,
     InterventionEvent,
 )
@@ -146,3 +147,62 @@ async def test_a_scene_override_decision_is_linked_to_its_scene_and_a_script_edi
     by_scene = sorted(r.scene_id or "" for r in rows)
     # segment 単位の台本編集は Scene を特定しない（NULL）。scene.override_visual は scene_id を持つ
     assert by_scene == ["", "sb2"]
+
+
+async def test_the_read_model_and_the_review_packet_list_the_links(
+    session_factory, artifact_store
+) -> None:
+    from contracts.intervention import ActorType
+    from infrastructure.intervention.read_model import EpisodeReadModel
+    from infrastructure.intervention.review_packet import _decision
+    from infrastructure.intervention.store import Actor
+    from tests.support.intervention import make_episode
+
+    async with session_factory() as session:
+        episode_id = await make_episode(session)
+        await session.commit()
+
+    async def insert(store: InterventionStore):
+        run = await store.insert_agent_run(
+            idempotency_key="rm-run",
+            role=AgentRole.WRITER_DIRECTOR,
+            step="write_script",
+            snapshot_object_key="agent-runs/x/c.json",
+            snapshot_sha256="a" * 64,
+            outcome=AgentRunOutcome.SUCCEEDED,
+            episode_id=episode_id,
+        )
+        await store.insert_decision(
+            idempotency_key="rm-decision",
+            decision_type="apply_change",
+            actor=Actor(ActorType.AGENT, "writer_director"),
+            payload={"decision_type": "apply_change"},
+            episode_id=episode_id,
+            agent_run_id=run.agent_run_id,
+            scene_id="sb2",
+        )
+
+    async with session_factory() as session:
+        await ActivityEnvironment().run(insert, InterventionStore(session))
+        await session.commit()
+
+    view = await EpisodeReadModel(session_factory, artifact_store).load(episode_id)
+    assert view is not None
+    (decision,) = [d for d in view.decisions if d.decision_type == "apply_change"]
+    assert (decision.scene_id, decision.workflow_id, decision.workflow_run_id) == (
+        "sb2",
+        "test",
+        "test-run",
+    )
+    (run_view,) = view.agent_runs
+    assert (run_view.workflow_id, run_view.workflow_run_id, run_view.activity_id) == (
+        "test",
+        "test-run",
+        "test",
+    )
+    packet = _decision(decision)
+    assert (packet.scene_id, packet.workflow_id, packet.workflow_run_id) == (
+        "sb2",
+        "test",
+        "test-run",
+    )
