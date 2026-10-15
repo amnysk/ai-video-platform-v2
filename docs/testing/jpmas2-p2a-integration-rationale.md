@@ -43,3 +43,11 @@
   送られた resume を worker の `check_start` が `invalid_state` で止める（flag に依存しない）。
 - `test_resume_of_an_unstarted_agentic_draft_creates_no_command`（`test_application_service.py`）:
   `resume_production` が command を作る前に断り、観測に `invalid_state` を残す。
+
+## Temporal client の使い回しの単位
+
+- `test_the_cached_starter_is_per_event_loop`（`tests/unit/test_application_http_starter_options.py`）:
+  レビュー指摘（要求ごとに Temporal へ接続する）を直す際、starter を process に1つにしたところ、
+  integration の E2E（テストごとに event loop が違う）で別 loop の client を握ったまま `start` が戻らず
+  hang した。Temporal の client は作った loop でしか使えないので、loop ごとに1つ（`WeakKeyDictionary`）に
+  する。同じ loop では同じ starter（要求ごとに接続しない）、別の loop では別の starter であることを固定する。

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+import weakref
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Protocol
 
@@ -145,14 +146,20 @@ class LazyAgenticStarter:
         return await (await self._starter()).probe_workers()
 
 
-#: process で1つ（要求ごとに Temporal へ新しい接続を作らない）
-_PROCESS_STARTER: list[LazyAgenticStarter] = []
+#: event loop ごとに1つ（要求ごとに Temporal へ新しい接続を作らない。Temporal の client は作った
+#: loop でしか使えないので loop を跨いで使い回さない。loop が消えれば行も消える）
+_LOOP_STARTERS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, LazyAgenticStarter] = (
+    weakref.WeakKeyDictionary()
+)
 
 
-def _process_starter(settings: Settings) -> LazyAgenticStarter:  # pragma: no cover - 実接続経路
-    if not _PROCESS_STARTER:
-        _PROCESS_STARTER.append(LazyAgenticStarter(settings))
-    return _PROCESS_STARTER[0]
+def loop_starter(settings: Settings) -> LazyAgenticStarter:
+    """実行中の event loop の starter（無ければ作る）。async の文脈から呼ぶ。"""
+    loop = asyncio.get_running_loop()
+    starter = _LOOP_STARTERS.get(loop)
+    if starter is None:
+        starter = _LOOP_STARTERS[loop] = LazyAgenticStarter(settings)
+    return starter
 
 
 async def _connect_temporal(settings: Settings) -> Client:  # pragma: no cover - 実接続経路
@@ -161,7 +168,7 @@ async def _connect_temporal(settings: Settings) -> Client:  # pragma: no cover -
     return await connect_with_retry(settings, max_attempts=3)
 
 
-def get_application_service(
+async def get_application_service(
     backend: Backend, settings: Annotated[Settings, Depends(get_settings)]
 ) -> ApplicationServicePort:  # pragma: no cover - 実接続経路
     """本物の組み立て。import は関数内（Temporal・MinIO の依存を route の import に入れない）。"""
@@ -177,7 +184,7 @@ def get_application_service(
         drafts=DbEpisodeDraftPort(
             session_factory=session_factory, store=store_factory(), bucket=settings.minio_bucket
         ),
-        starter=_process_starter(settings),
+        starter=loop_starter(settings),
         agentic_enabled=settings.jpmas2_agentic_workflows,
         observer=LoggingOperationObserver(),
     )

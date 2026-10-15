@@ -40,3 +40,26 @@ async def test_the_http_starter_uses_the_settings_pipeline_options() -> None:
     expected = pipeline_options_from_settings(settings)
     assert call["arg"].options == expected
     assert call["task_queue"] == expected.pipeline_task_queue
+
+
+def test_the_cached_starter_is_per_event_loop() -> None:
+    """要求ごとに接続しないが、別の event loop（の client）を跨いで使い回さない。
+
+    process に1つだけ持つと、loop の違う client を握ったまま start が戻らない（E2E の hang）。
+    """
+    import asyncio
+
+    from apps.api import application_service
+
+    settings = Settings()
+
+    async def get() -> LazyAgenticStarter:
+        return application_service.loop_starter(settings)
+
+    async def twice() -> tuple[LazyAgenticStarter, LazyAgenticStarter]:
+        return await get(), await get()
+
+    first_a, first_b = asyncio.run(twice())
+    second, _ = asyncio.run(twice())
+    assert first_a is first_b
+    assert second is not first_a
