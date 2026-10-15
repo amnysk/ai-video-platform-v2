@@ -62,8 +62,13 @@ def agentic_learning_workflow_id(episode_id: str) -> str:
     return f"agentic-learning-{episode_id}"
 
 
-def agent_stage_idempotency_key(episode_id: str, stage_id: str, plan_hash: str) -> str:
-    return f"agentic:{episode_id}:{stage_id}:{plan_hash}"
+def agent_stage_idempotency_key(
+    episode_id: str, stage_id: str, plan_hash: str, scope: str | None = None
+) -> str:
+    """stage 実行の冪等キー。``scope`` は Learning のように何度でも起動し直す stage が、起動ごとに
+    新しい実行にする印（同じ起動の中の Temporal 再試行は同じ scope = 同じ結果）。"""
+    key = f"agentic:{episode_id}:{stage_id}:{plan_hash}"
+    return key if not scope else f"{key}:{scope}"
 
 
 class AgentStageOutcome(StrEnum):
@@ -119,6 +124,8 @@ class RunAgentStageRequest:
     plan_hash: str
     template_id: str
     template_version: str
+    #: 冪等キーの追加の印。None = 従来どおり（Episode の本流の stage）。Learning は起動ごとの run id
+    idempotency_scope: str | None = None
 
 
 @dataclass

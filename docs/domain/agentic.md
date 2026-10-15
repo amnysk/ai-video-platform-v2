@@ -115,6 +115,11 @@ Activity `run_agent_stage`（`workers/agents/activities.py`、task queue `agents
 | 8 | 1 transaction で保存（`infrastructure/agents/persist.py`） | rejected は `agent_runs.outcome=rejected_output` だけ（成果物・判断・注記なし） |
 | 9 | 提案を `ProposeStoryboardChange` + `SessionCommandPort` で出す | 通らなくても stage は失敗にしない（`reason=proposal_rejected:<code>`） |
 
+台帳の key: Activity の冪等キー（`agentic:{episode}:{stage}:{plan_hash}`、100 文字超）は
+`provider_reservations.idempotency_key`（VARCHAR(64)）に入らないので、台帳には
+`agent_reservation_key(key)`（`agentic:` + SHA-256 の先頭 40 桁）を使う。`agent_runs` / `decision_records` は元の key のまま
+（255 文字列）。SQLite は長さを検査しないため、実 PostgreSQL の E2E（P1-D）で初めて見つかった。
+
 ### 保存（`persist_stage`、commit は呼び出し側）
 
 - 成果物: ArtifactStore に正準 JSON を先に置き、読み戻して sha256 を照合してから `artifact_metadata` の新しい現行 revision
@@ -204,6 +209,9 @@ prompt 本文は短いのでコード内に持つ（domain は file を読まな
    自動適用しない。
 7. `AgenticLearningWorkflow`（`scripts/agentic.py learn` が明示起動）: `load_workflow_plan` で pin 済みの計画を読み、
    post_publish の learning stage を `run_agent_stage` へ渡す。新しい計画は pin しない。`awaiting_public_metrics` は言い換えない。
+   冪等キーに起動の `run_id`（`RunAgentStageRequest.idempotency_scope`）を足す: 同じ起動の Temporal 再試行は同じ結果
+   （replay）、新しい起動は新しい実行。これが無いと `awaiting_public_metrics` の記録が replay され続け、公開後に
+   起動し直しても Lesson ができなかった（P1-D の実環境 E2E で露見）。Episode の本流の stage は scope なし。
 
 ### 台本の brief（`workers/planning/activities.py::ScriptActivities._brief`）
 

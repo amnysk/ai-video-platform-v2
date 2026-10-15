@@ -99,9 +99,12 @@ DB（`DATABASE_URL`）・MinIO・Temporal に**直接**つなぐ所有者用の�
   （隔離 E2E が `llm_factory` を差し替える）。
 - 提案の starter: `workers/agents/starter.py::TemporalCommandStarter`（`InterventionCommandWorkflow` を start。
   agent の scope は `read` / `comment` / `propose` で、apply はしない）。
-- 隔離試験スタック（`deploy/logging/test/compose.apptest.yaml`）には**まだ入れていない**。P1-D が agent worker を
-  必要とするときは、同じ service 定義に `JPMAS2_AGENT_LLM=fake`・`JPMAS2_AGENTIC_WORKFLOWS=true`・
-  `JPMAS2_ENABLED_AGENTS=...` を渡し、`PublicMetricsPort` の mock と canned の `llm_factory` を持つ入口を使う。
+- 隔離試験スタック（`deploy/logging/test/compose.apptest.yaml`）には service として**入れていない**。P1-D の実環境 E2E
+  （`tests/integration/test_jpmas2_agentic_e2e.py`）は test-runner の中で agent worker・pipeline worker・command worker を
+  同じ process に立て、LLM は canned の `FakeAgentLlm`、公開後の測定は `MockPublicMetrics`、既存工程の子 workflow は
+  fake にする（`tests/support/agentic_e2e.py`）。実行は `deploy/logging/test/run-e2e.sh run pytest
+  tests/integration/test_jpmas2_agentic_e2e.py`（`AVP_APPTEST_PROJECT=avp2-oslog-c<suffix>`。本番 `avp2` には触れない）。
+  task queue `agents` / `intervention` は固定名なので、同じ namespace で並列に走らせない。
 
 ### 参照の棚卸し（AGENTS.md §8、2026-10-15、P1-B 実装後）
 

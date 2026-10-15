@@ -88,7 +88,11 @@ def _cause_kind(err: BaseException) -> str:
 
 
 async def _run_agent_stage(
-    episode_id: str, stage: PlannedStage, plan: WorkflowPlan, retry_attempts: dict[str, int]
+    episode_id: str,
+    stage: PlannedStage,
+    plan: WorkflowPlan,
+    retry_attempts: dict[str, int],
+    idempotency_scope: str | None = None,
 ) -> RunAgentStageResult:
     assert stage.timeout_seconds is not None  # agent stage は固定済み（PlannedStage の検証）
     return await workflow.execute_activity(
@@ -99,6 +103,7 @@ async def _run_agent_stage(
             plan_hash=plan.plan_hash,
             template_id=plan.template_id,
             template_version=plan.template_version,
+            idempotency_scope=idempotency_scope,
         ),
         result_type=RunAgentStageResult,
         task_queue=AGENTS_TASK_QUEUE,
@@ -321,7 +326,10 @@ class AgenticLearningWorkflow:
         if stage is None:
             return self._blocked(ep, "the pinned plan has no post_publish agent stage")
         try:
-            ran = await _run_agent_stage(ep, stage, plan, loaded.retry_max_attempts)
+            # 起動ごとに新しい実行にする（測定が揃うまで何度でも起動できる）。再試行は同じ結果
+            ran = await _run_agent_stage(
+                ep, stage, plan, loaded.retry_max_attempts, workflow.info().run_id
+            )
         except ActivityError as err:
             return self._blocked(ep, f"agent stage failed: {_cause_kind(err)}")
         return AgenticLearningResult(

@@ -71,7 +71,11 @@ from domain.errors import (
     ProviderInvocationError,
     UnreconciledReservationError,
 )
-from infrastructure.agents.budget_gate import reserve_and_dispatch_agent_call, settle_agent_call
+from infrastructure.agents.budget_gate import (
+    agent_reservation_key,
+    reserve_and_dispatch_agent_call,
+    settle_agent_call,
+)
 from infrastructure.agents.inputs import (
     AssembledInputs,
     PublicMetricsPort,
@@ -208,7 +212,9 @@ class AgentActivities:
         stage, spec, policy = self._resolve(request)
         if not self._agentic_enabled or spec.role not in self._enabled_roles:
             return _blocked(REASON_AGENT_DISABLED)
-        key = agent_stage_idempotency_key(request.episode_id, stage.stage_id, request.plan_hash)
+        key = agent_stage_idempotency_key(
+            request.episode_id, stage.stage_id, request.plan_hash, request.idempotency_scope
+        )
 
         async with self._sf() as session:
             stored = await load_stage_record(session, self._store, key)
@@ -300,7 +306,9 @@ class AgentActivities:
     ) -> Any:
         """予約して dispatch する。拒否・停止は ``RunAgentStageResult``（blocked）で返す。"""
         async with self._sf() as session:
-            prior = await ProviderReservationRepository(session).find_by_key(key)
+            prior = await ProviderReservationRepository(session).find_by_key(
+                agent_reservation_key(key)
+            )
         if (
             prior is not None
             and prior.status is ReservationStatus.RESERVED
