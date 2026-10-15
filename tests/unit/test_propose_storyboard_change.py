@@ -127,3 +127,20 @@ async def test_duplicate_scenes_mismatched_episode_and_missing_scope() -> None:
     assert err.value.code is OperationErrorCode.MISSING_SCOPE
     assert err.value.detail["required_scope"] == "propose"
     assert port.received == []
+
+
+async def test_every_command_of_a_request_carries_the_whole_request_fingerprint() -> None:
+    """件数違いの再送を先頭 command の指紋で拒否できるよう、全 command が同じ指紋を持つ。"""
+    one = FakePort()
+    two = FakePort()
+    edits = [
+        {"scene_id": "s1", "visual_description": "castle"},
+        {"scene_id": "s2", "visual_description": "river"},
+    ]
+    await ProposeStoryboardChange(one).execute(caller(), EP, request(edits))
+    await ProposeStoryboardChange(two).execute(caller(), EP, request(edits[:1]))
+    shas = {ProposeChangePayload.model_validate(e.payload).request_sha256 for e in one.received[0]}
+    assert len(shas) == 1 and None not in shas
+    # 先頭の edit が同じでも、件数が違えば先頭 command の payload（= 指紋）が変わる
+    assert one.received[0][0].payload != two.received[0][0].payload
+    assert one.received[0][0].command_id == two.received[0][0].command_id

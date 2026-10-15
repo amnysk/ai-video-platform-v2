@@ -61,7 +61,7 @@ from contracts.application import (
 )
 from contracts.intervention import ActorType, AgentRole, Scope
 from contracts.states import ReservationStatus
-from domain.agents.handlers import HANDLERS
+from domain.agents.handlers import HANDLERS, needs_llm
 from domain.agents.ports import AgentLlm
 from domain.agents.runtime import AgentHandler, AgentInput, AgentOutput, AgentOutputRejected
 from domain.agents.tool_gateway import ToolFn, ToolGateway
@@ -241,13 +241,19 @@ class AgentActivities:
             return _blocked(f"{REASON_INPUT_MISSING}:{','.join(missing)}")
 
         started = self._clock()
-        reservation = await self._reserve(request.episode_id, key, spec, policy)
-        if isinstance(reservation, RunAgentStageResult):
-            return reservation
-
-        llm, replay = await self._llm_for(
-            request.episode_id, spec, policy, reservation.raw_output_key
-        )
+        reservation: Any = None
+        reservation_id: str | None = None
+        if needs_llm(spec.handler_ref, inputs.documents):
+            reservation = await self._reserve(request.episode_id, key, spec, policy)
+            if isinstance(reservation, RunAgentStageResult):
+                return reservation
+            reservation_id = reservation.id
+            llm, replay = await self._llm_for(
+                request.episode_id, spec, policy, reservation.raw_output_key
+            )
+        else:
+            # LLM を呼ばない経路: 予約しない。万一 handler が呼んでも予約なしには呼ばせない
+            llm, replay = ReplayLlm([]), True
         recording = RecordingLlm(llm)
         queued: list[dict[str, Any]] = []
         gateway = ToolGateway(
@@ -271,9 +277,9 @@ class AgentActivities:
         except AgentOutputRejected as exc:
             output, rejected = None, str(exc)[:500]
         except BaseException as exc:
-            await self._settle(reservation.id, recording, replay, key, request.episode_id, exc)
+            await self._settle(reservation_id, recording, replay, key, request.episode_id, exc)
             raise
-        raw_key = await self._settle(reservation.id, recording, replay, key, request.episode_id)
+        raw_key = await self._settle(reservation_id, recording, replay, key, request.episode_id)
 
         capture = StageCapture(
             episode_id=request.episode_id,
@@ -289,7 +295,7 @@ class AgentActivities:
             calls=tuple(recording.calls),
             input_revisions=inputs.input_revisions,
             extra_refs={**inputs.extra_refs},
-            reservation_id=reservation.id,
+            reservation_id=reservation_id,
             raw_output_key=raw_key,
             started_at=started,
             finished_at=self._clock(),
@@ -356,7 +362,7 @@ class AgentActivities:
 
     async def _settle(
         self,
-        reservation_id: str,
+        reservation_id: str | None,
         recording: RecordingLlm,
         replay: bool,
         key: str,
@@ -364,7 +370,7 @@ class AgentActivities:
         error: BaseException | None = None,
     ) -> str | None:
         """「呼んだ」事実を台帳に確定する（検証・保存より前）。再生のときは確定済みなので何もしない。"""
-        if replay:
+        if replay or reservation_id is None:
             return None
         failed_without_response = error is not None and not recording.calls and recording.attempted
         if failed_without_response:

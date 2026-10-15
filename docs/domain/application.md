@@ -25,6 +25,8 @@
 - `OperationError(code, message, detail)`: 例外型も contracts に置く（infrastructure の port が投げるため。`application.errors` は再 export）。
 - `StoryboardPatchProposal` v1.0（設計 §6.1）・`ProposeStoryboardChangeRequest`・`StoryboardProposalResult`・
   `storyboard_edit_command_id`（`uuid5(STORYBOARD_PROPOSAL_NAMESPACE, "{request_command_id}:{index}")`）。
+  `storyboard_request_sha256`（要求全体の指紋。全 command の `ProposeChangePayload.request_sha256` に載せ、件数違いの再送も
+  `command_id_reused` にする。任意 field の追加で後方互換・migration なし）。
   `visual_description` の長さは `SceneOverrideVisual` の制約から導出する。
 
 ## 3. ユースケース `ProposeStoryboardChange`

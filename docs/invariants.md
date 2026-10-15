@@ -581,7 +581,10 @@ INV-42 により API は保存済みの command を返す（二重の提案・�
 `SceneOverrideVisual` への変換や edit ごとの command_id（`storyboard_edit_command_id`）の導出を持たない。
 入口が違っても結果型（`StoryboardProposalResult`）と拒否 code（`OperationErrorCode`）は同じ。P0 が受け付けるのは
 `visual_description` だけで、他の項目は `unsupported_change`。同じ要求の再送は既存 command（INV-42）、
-同じ `request_command_id` で別内容は `command_id_reused`。use case は適用しない。新機能は `JPMAS2_APPLICATION_API`
+同じ `request_command_id` で別内容は `command_id_reused`。
+要求全体の指紋（`storyboard_request_sha256`: 全 edit・件数・順序・基準）を全 command の payload（`request_sha256`）に載せるので、
+**edit 数だけが違う再送**（部分集合・余分な edit）も先頭 command で `command_id_reused` になり、1 transaction で全て拒否される
+（部分適用なし）。use case は適用しない。新機能は `JPMAS2_APPLICATION_API`
 （既定 false）が false なら `404 feature_disabled`。
 **機械検査**: `tests/architecture/test_single_change_path.py::test_only_pass_through_modules_know_the_proposal_types`
 / `::test_only_the_use_case_turns_a_proposal_into_scene_overrides`

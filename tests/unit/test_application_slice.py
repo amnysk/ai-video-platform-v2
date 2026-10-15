@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import pytest
 import pytest_asyncio
 
 from application.errors import OperationError
@@ -216,6 +217,31 @@ async def test_the_same_request_id_with_other_content_is_command_id_reused(sl: S
     else:
         raise AssertionError("expected command_id_reused")
     assert len(await sl.commands()) == 2
+
+
+FIRST = {"scene_id": "sb1", "visual_description": "Aerial view of a castle"}
+SECOND = {"scene_id": "sb2", "visual_description": "Close-up of a hearth"}
+THIRD = {"scene_id": "sb3", "visual_description": "A river at dawn"}
+
+
+async def test_a_resend_with_fewer_or_more_edits_is_command_id_reused_and_writes_nothing(
+    sl: Slice,
+) -> None:
+    """同じ request id で edit 数が違う再送は、部分集合を返さず余分も足さず、全体を拒否する。"""
+    await sl.post(sl.body("req-count-00001", [FIRST, SECOND]))
+    assert len(await sl.commands()) == 2
+    for edits in ([FIRST], [FIRST, SECOND, THIRD]):
+        body = sl.body("req-count-00001", edits)
+        http = await sl.post(body)
+        assert http.status_code == 409 and http.json()["detail"]["error"] == "command_id_reused"
+        request = ProposeStoryboardChangeRequest.model_validate(body)
+        with pytest.raises(OperationError) as err:
+            await sl.internal().execute(AGENT, uuid.UUID(sl.episode_id), request)
+        assert err.value.code.value == "command_id_reused"
+        assert len(await sl.commands()) == 2  # 部分適用なし
+    again = await sl.post(sl.body("req-count-00001", [FIRST, SECOND]))
+    assert again.status_code == 200
+    assert [c["created"] for c in again.json()["commands"]] == [False, False]
 
 
 async def test_unsupported_fields_give_unsupported_change_from_every_entry(sl: Slice) -> None:

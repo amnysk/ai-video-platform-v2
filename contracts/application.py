@@ -6,6 +6,8 @@ OpenAPI・tool schema はここの model から導出し、手書きしない（
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from enum import StrEnum
 from typing import Any, Literal
@@ -75,6 +77,23 @@ STORYBOARD_PROPOSAL_NAMESPACE = uuid.UUID("0b8f6a3e-52c1-5d47-9a1e-3c7f2e6d4b90"
 def storyboard_edit_command_id(request_command_id: str, index: int) -> str:
     """同じ要求の同じ edit は同じ command_id（INV-42/50）。"""
     return str(uuid.uuid5(STORYBOARD_PROPOSAL_NAMESPACE, f"{request_command_id}:{index}"))
+
+
+def storyboard_request_sha256(
+    episode_id: uuid.UUID, proposal: BaseModel, expected_control_revision: int | None
+) -> str:
+    """要求全体（全 edit・件数・順序・基準）の指紋。再送が「同じ要求」かの判定に使う。
+
+    全 edit の command に同じ値を載せるので、edit 数や内容が違う再送は先頭の command で
+    ``command_id_reused`` になり、何も書かれない（部分適用なし。INV-42/50）。
+    """
+    material = {
+        "episode_id": str(episode_id),
+        "proposal": proposal.model_dump(mode="json"),
+        "expected_control_revision": expected_control_revision,
+    }
+    raw = json.dumps(material, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class StoryboardSceneEdit(_Frozen):

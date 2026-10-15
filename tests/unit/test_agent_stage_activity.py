@@ -644,3 +644,42 @@ async def test_real_handlers_run_against_assembled_inputs_for_every_role(
     result = await activities.run_agent_stage(learning)
     assert result.outcome == AgentStageOutcome.AWAITING_PUBLIC_METRICS.value, result
     assert await _current(world, ArtifactType.LESSON) is None
+
+
+# --- LLM を呼ばない経路は予約しない
+
+
+async def test_a_learning_stage_that_awaits_metrics_reserves_no_budget(
+    session_factory, artifact_store
+) -> None:
+    """LLM を呼ばない経路（awaiting）は予算枠を取らない。replay でも台帳は増えない。"""
+    from domain.agents.handlers import HANDLERS
+
+    world = await make_world(session_factory, artifact_store)
+    request, _ = stage_request(AgentRole.LEARNING, world.episode_id, stage_id="lesson")
+    activities = world.activities(HANDLERS)
+
+    result = await activities.run_agent_stage(request)
+    again = await activities.run_agent_stage(request)
+
+    assert result.outcome == AgentStageOutcome.AWAITING_PUBLIC_METRICS.value
+    assert again.replayed
+    assert await _count(session_factory, ProviderReservationRow) == 0
+    assert world.llm.calls == 0
+
+
+async def test_an_llm_path_reserves_exactly_once_before_the_call(
+    session_factory, artifact_store, monkeypatch
+) -> None:
+    """LLM を呼ぶ経路は従来どおり呼ぶ前に1回だけ予約する（事前判定が True のとき）。"""
+    import workers.agents.activities as module
+
+    monkeypatch.setattr(module, "needs_llm", lambda _ref, _docs: True)
+    world = await make_world(session_factory, artifact_store)
+    request, _ = stage_request(AgentRole.LEARNING, world.episode_id, stage_id="lesson")
+    activities = world.activities({LEARNING: awaiting_handler()})
+
+    await activities.run_agent_stage(request)
+    await activities.run_agent_stage(request)
+
+    assert await _count(session_factory, ProviderReservationRow) == 1

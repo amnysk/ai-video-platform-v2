@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from contracts.agentic import Lesson, LessonStatus, MeasurementWindow
@@ -83,16 +84,42 @@ def _awaiting(note: str) -> AgentOutput:
     )
 
 
+_NOT_PUBLIC = "The video is not public, so viewer metrics do not exist yet."
+_NO_METRICS = "No public metrics have been measured yet."
+
+
+def _awaiting_note(
+    measurements: dict[str, Any],
+) -> tuple[str | None, tuple[MeasurementWindow, ...]]:
+    """(待つ理由, windows)。理由が ``None`` のときだけ LLM が要る（決定論の事前判定）。"""
+    if measurements.get("public") is not True:
+        return _NOT_PUBLIC, ()
+    windows = _windows(measurements)
+    if not any(_has_metrics(w) for w in windows):
+        return _NO_METRICS, windows
+    return None, windows
+
+
+def learning_needs_llm(documents: Mapping[str, Mapping[str, Any]]) -> bool:
+    """LLM を呼ぶ経路か。``False`` なら予算を予約しない（呼ばないものに課金枠を取らない）。
+
+    判定できないとき（入力が壊れている）は ``True``（従来どおり予約して handler に任せる）。
+    """
+    try:
+        note, _ = _awaiting_note(dict(documents.get("measurements", {})))
+    except Exception:
+        return True
+    return note is None
+
+
 async def learning_agent_v1(agent_input: AgentInput, gateway: ToolGateway) -> AgentOutput:
     receipt = dict(document(agent_input, "upload_receipt"))
     measurements = dict(document(agent_input, "measurements"))
     baseline = dict(document(agent_input, "baseline"))
 
-    if measurements.get("public") is not True:
-        return _awaiting("The video is not public, so viewer metrics do not exist yet.")
-    windows = _windows(measurements)
-    if not any(_has_metrics(w) for w in windows):
-        return _awaiting("No public metrics have been measured yet.")
+    note, windows = _awaiting_note(measurements)
+    if note is not None:
+        return _awaiting(note)
 
     scope, basis = _comparison(baseline, measurements.get("format"))
     views = [w.views for w in windows if w.views is not None]
