@@ -111,3 +111,25 @@ time-skipping 環境と SQLite、工程の子 workflow は同名の fake、Activ
   render / upload の task queue も指す（指さないと pipeline が完了せずテストが止まった）。
 - `test_a_retried_control_gate_activity_emits_checkpoint_waiting_once`: Activity の retry・再実行で
   `checkpoint.waiting` が重複しない（INV-40 / INV-17）。
+
+## 注記の解決（`tests/unit/test_intervention_resolve.py`、`tests/contract/test_migration_0017_resolve_annotation.py`）
+
+守る契約: INV-41（元の注記を消さず追記）、INV-42（再送で1行1 event）、AI に追加権限を与えない。
+`review.resolved` は定義だけで発生源が無かった（ReviewPacket の「未解決コメント」が減らせなかった）ので、
+`resolve_annotation` を足した。
+
+- `test_the_contract_declares_the_command_scope_and_a_strict_payload`: scope は `comment`、payload は
+  余分な項目・未知の `resolution`・長すぎる `note` を拒否する（単一の宣言元は contracts）。
+- `test_resolving_appends_a_resolution_row_and_one_event_and_keeps_the_original`: 元の行が無変更、
+  `resolution` 注記が対象を指す、event は1つ、再適用・再送でも行と event が増えない。
+- `test_a_second_resolution_of_the_same_annotation_is_rejected_invalid_state`: 二重解決は `invalid_state`
+  （既存の語彙。新しい理由は足さない）で event を増やさない。
+- `test_only_comments_and_findings_of_this_episode_can_be_resolved`: 他 Episode・存在しない id は
+  `not_found`、制約など別種の注記は `invalid_payload`。他人の Episode の注記を操作できない。
+- `test_ai_may_resolve_with_comment_scope_only`: `comment` が無ければ forbidden、有れば適用され actor は AI のまま。
+- `test_a_resolved_comment_leaves_the_read_model_and_review_packet_open_lists`: 既存の読み口
+  （read model の `status=resolved`、reviewer の `open_comments`）まで通しで反映される。
+- 0017: DB の CHECK は 0016 の literal 語彙なので、契約に型を足しても migration が無いと実 DB で INSERT が
+  落ちる。0017 の語彙が契約と一致すること、0016→0017→0016 で CHECK が増減することを検査する。
+  0016 の語彙テストは「0016 の凍結値 = 契約 − 後続 migration が足した型」に変えた（仕様変更が
+  ADR-0041 addendum として先に承認済みのため）。

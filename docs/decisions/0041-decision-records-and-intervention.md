@@ -61,6 +61,8 @@ command は DB の行を outbox として決定的 id の短命 workflow で配�
 - INV-46 新方式（mode != legacy）では必須記録の無い有料生成・投稿を開始しない
 - INV-47 介入 API は予算・Schedule・公開設定を変更できない
 
+追記（review.resolved の発生源）: command 型 `resolve_annotation`（scope `comment`）を足す。`resolution` 注記を追記し、同じ transaction で `review.resolved` を記録する。予算・Schedule・公開設定を変えない（INV-47）。DB の CHECK は migration 0017 で広げる（0016 は編集しない）。
+
 ## Alternatives
 
 - **pipeline を長命にして Update で制御**: 子工程の待機中しか生きていない現行 pipeline を作り替えると、稼働中・

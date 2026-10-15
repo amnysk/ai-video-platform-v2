@@ -101,7 +101,7 @@ store・SQLite は本物、A / B は fake。backend の例外が 500 や不明�
 ## 統合後に親が確かめること（fake でしか動かしていない部分）
 `apps/api/intervention_backend.py::load_real_modules` は実 A / B との接続で、この branch では実物を import するテストが
 無い（`ModulesUnavailableError` の経路だけ検査）。`TemporalCommandStarter` は Temporal を fake の `Client.connect` に差し替えて
-検査し、実 Temporal への start（`InterventionCommandWorkflow` の入力の形）は統合後に確認する。仮定は
+検査し、`InterventionCommandWorkflow` の worker 実装は B2（`workers/intervention/`）にあり、同じ入力の形での start は `tests/unit/test_intervention_workflows.py` が time-skipping 環境で検査している。仮定は
 [intervention-api.md §7](../operations/intervention-api.md)。
 
 ## CLI（`tests/unit/test_intervene_cli.py`）

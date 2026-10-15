@@ -125,6 +125,15 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
 `InterventionCommandWorkflow`（id `intervention-{command_id}`）を子として start する（実行中なら束ねる）。
 command worker は専用の task queue（`intervention`）で動く。
 
+### 注記の解決（`resolve_annotation`）
+scope `comment`（AI も `comment` を持てば可。追加の権限は無い）。`comment` / `review_finding` 注記を解決または
+「直さない」と宣言する（`resolution` ∈ `resolved` / `wont_fix`、任意の `note`）。適用は `annotations` に
+`kind=resolution`（`refers_to_annotation_id` = 対象、`payload.resolution`）を**追記**し、同じ transaction で
+`review.resolved` を `episode_events` に記録する。元の注記は変えず消さない（INV-41）。同じ `command_id` は
+1行・1 event（INV-42。`annotations.command_id` の一意）。拒否（REJECTED）: 対象が無い・他 Episode =
+`not_found`、対象が comment / review_finding でない = `invalid_payload`、解決済み = `invalid_state`。
+read model の `status=resolved` と ReviewPacket の「未解決コメント」（`open_comments`）は、この行を読む。
+
 ### クラッシュ・重複の境界
 | 落ちる地点 | DB に残るもの | 復旧 |
 |---|---|---|

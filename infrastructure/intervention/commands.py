@@ -44,6 +44,7 @@ from contracts.intervention import (
     InterventionMode,
     RejectReason,
     ReleaseCheckpointPayload,
+    ResolvePayload,
     ResumePayload,
     Scope,
     SetModePayload,
@@ -89,7 +90,12 @@ __all__ = [
 
 #: 受付の transaction で適用まで済ませる型（副作用が無い・記録だけ）
 INLINE_TYPES: frozenset[CommandType] = frozenset(
-    {CommandType.COMMENT, CommandType.SET_USER_CONSTRAINT, CommandType.REQUEST_CANCEL}
+    {
+        CommandType.COMMENT,
+        CommandType.SET_USER_CONSTRAINT,
+        CommandType.RESOLVE_ANNOTATION,
+        CommandType.REQUEST_CANCEL,
+    }
 )
 #: 期待版（expected_control_revision）を受付で検査し、適用では検査しない型。
 #: 受付が制御状態を変える（制御版が進む）ので、適用時の比較は意味を持たない
@@ -544,6 +550,7 @@ def _handlers() -> dict[CommandType, Handler]:
     return {
         CommandType.COMMENT: _comment,
         CommandType.SET_USER_CONSTRAINT: _user_constraint,
+        CommandType.RESOLVE_ANNOTATION: _resolve_annotation,
         CommandType.REQUEST_HOLD: _hold,
         CommandType.REQUEST_CANCEL: _cancel,
         CommandType.RESUME: _resume,
@@ -591,6 +598,48 @@ async def _comment(ctx: ApplyContext) -> Decision:
         command_id=ctx.command.command_id,
     )
     return Decision.applied({"annotation_id": annotation.annotation_id})
+
+
+async def _resolve_annotation(ctx: ApplyContext) -> Decision:
+    """resolution 注記を追記し review.resolved を記録する（元の注記は変えない / INV-41）。"""
+    payload = ResolvePayload.model_validate(ctx.command.payload)
+    annotations = await ctx.store.list_annotations(ctx.episode_id)
+    target = next((a for a in annotations if a.annotation_id == payload.annotation_id), None)
+    if target is None:
+        return Decision.rejected(RejectReason.NOT_FOUND, detail="annotation not found")
+    if target.kind not in (AnnotationKind.COMMENT, AnnotationKind.REVIEW_FINDING):
+        return Decision.rejected(
+            RejectReason.INVALID_PAYLOAD, detail="only comments and review findings are resolved"
+        )
+    if any(
+        a.kind is AnnotationKind.RESOLUTION and a.refers_to_annotation_id == target.annotation_id
+        for a in annotations
+    ):
+        return Decision.rejected(RejectReason.INVALID_STATE, detail="already resolved")
+    resolution = await ctx.store.insert_annotation(
+        episode_id=ctx.episode_id,
+        kind=AnnotationKind.RESOLUTION,
+        anchor={},
+        body=payload.note or payload.resolution.value,
+        actor=ctx.actor,
+        payload={"resolution": payload.resolution.value},
+        refers_to_annotation_id=target.annotation_id,
+        command_id=ctx.command.command_id,
+    )
+    await ctx.store.append_event(
+        ctx.episode_id,
+        InterventionEvent.REVIEW_RESOLVED,
+        ctx.actor,
+        {
+            "annotation_id": target.annotation_id,
+            "resolution_id": resolution.annotation_id,
+            "resolution": payload.resolution.value,
+        },
+        command_id=ctx.command.command_id,
+    )
+    return Decision.applied(
+        {"annotation_id": target.annotation_id, "resolution_id": resolution.annotation_id}
+    )
 
 
 async def _user_constraint(ctx: ApplyContext) -> Decision:

@@ -67,7 +67,10 @@ def _load():
 )
 def test_frozen_vocabulary_matches_the_contracts(constant: str, enum_cls) -> None:
     frozen = getattr(_load(), constant)
-    assert tuple(frozen) == tuple(member.value for member in enum_cls)
+    # 0016 の凍結語彙。後続の migration が足した値（0017: resolve_annotation）は
+    # test_migration_0017_resolve_annotation.py が検査する
+    later = {CommandType.RESOLVE_ANNOTATION}
+    assert tuple(frozen) == tuple(m.value for m in enum_cls if m not in later)
 
 
 def test_the_migration_does_not_import_contracts() -> None:

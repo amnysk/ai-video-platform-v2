@@ -90,6 +90,7 @@ class CommandType(StrEnum):
     SET_USER_CONSTRAINT = "set_user_constraint"
     SET_MODE = "set_mode"
     REQUEST_CANCEL = "request_cancel"
+    RESOLVE_ANNOTATION = "resolve_annotation"
 
 
 class CommandStatus(StrEnum):
@@ -122,6 +123,7 @@ class Scope(StrEnum):
 REQUIRED_SCOPE: dict[CommandType, Scope] = {
     CommandType.COMMENT: Scope.COMMENT,
     CommandType.SET_USER_CONSTRAINT: Scope.COMMENT,
+    CommandType.RESOLVE_ANNOTATION: Scope.COMMENT,
     CommandType.REQUEST_HOLD: Scope.HOLD,
     CommandType.REQUEST_CANCEL: Scope.HOLD,
     CommandType.PROPOSE_CHANGE: Scope.PROPOSE,
@@ -296,6 +298,21 @@ class CommentPayload(_Frozen):
     kind: Literal[AnnotationKind.COMMENT, AnnotationKind.REVIEW_FINDING] = AnnotationKind.COMMENT
 
 
+class AnnotationResolution(StrEnum):
+    """注記の解決の宣言（``resolve_annotation``）。"""
+
+    RESOLVED = "resolved"
+    WONT_FIX = "wont_fix"
+
+
+class ResolvePayload(_Frozen):
+    """comment / review_finding 注記の解決。元の注記は変えず resolution 注記を追記する。"""
+
+    annotation_id: str = Field(min_length=1, max_length=64)
+    resolution: AnnotationResolution
+    note: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
 class UserConstraintPayload(_Frozen):
     """「この文章は保持」「このシーンは変更しない」。検証できる対象 ID を必ず持つ（設計 §9）。"""
 
@@ -382,6 +399,7 @@ class CommandEnvelope(_Frozen):
 PAYLOAD_MODELS: dict[CommandType, type[BaseModel]] = {
     CommandType.COMMENT: CommentPayload,
     CommandType.SET_USER_CONSTRAINT: UserConstraintPayload,
+    CommandType.RESOLVE_ANNOTATION: ResolvePayload,
     CommandType.REQUEST_HOLD: RequestHoldPayload,
     CommandType.REQUEST_CANCEL: RequestHoldPayload,
     CommandType.PROPOSE_CHANGE: ProposeChangePayload,
