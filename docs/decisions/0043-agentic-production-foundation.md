@@ -52,7 +52,7 @@ P2（Web UI）・P3（MCP Server）は**対象外**（境界だけを残す）�
 - 最初のユースケース `ProposeStoryboardChange`（縦断スライス）:
   - 入力 `ProposeStoryboardChangeRequest{command_id, expected_control_revision?, proposal: StoryboardPatchProposal}`、
     出力 `StoryboardProposalResult{request_command_id, commands: [{scene_id, command_id, status, created}]}`。
-  - `StoryboardPatchProposal` v1.0（`contracts/agentic.py`）は設計 §6.1 の形。**P0 が受け付けるのは
+  - `StoryboardPatchProposal` v1.0（操作の入力なので `contracts/application.py`。要求・結果の型も同じ module）は設計 §6.1 の形。**P0 が受け付けるのは
     `visual_description` だけを変える edit**（既存 `scene.override_visual` に写る）。`framing`・`camera_movement`・
     `visual_kind`・`reference_asset_id` を含む edit は `unsupported_change`（新 ChangeKind `storyboard.patch_scenes` は
     P2 以降）。edit は 1〜12 件、scene_id の重複は `invalid_payload`。
@@ -117,8 +117,8 @@ P2（Web UI）・P3（MCP Server）は**対象外**（境界だけを残す）�
 
 ### 4. Artifact Registry と永続化（P0）
 
-- `contracts/agentic.py`: `UserBrief`・`StrategyBrief`・`CreativeBrief`・`QualityReview`・`Lesson`・
-  `StoryboardPatchProposal`・`WorkflowPlan`（全て `schema_version: "1.0"`、`extra="forbid"`）。
+- `contracts/agentic.py`（保存する成果物）: `UserBrief`・`StrategyBrief`・`CreativeBrief`・`QualityReview`・`Lesson`・
+  `WorkflowPlan`（全て `schema_version: "1.0"`、`extra="forbid"`）。
 - `contracts/artifact_registry.py`: `(artifact_type, schema_version)` → model。`parse_artifact` は未知の版を
   `UnsupportedArtifactSchemaError` で拒否（黙って読み替えない）。upcast は明示登録した関数だけ。既存
   `storyboard@1.0` も登録する。
