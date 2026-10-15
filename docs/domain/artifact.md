@@ -104,6 +104,13 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
   Artifact が既にある → それを返し、Job を `skipped` にする
 - **呼ぶ条件**: `input_hash` が変わった / 前ラウンドが検証で落ちた /
   人間が明示的に再生成を要求した。**この3つ以外で有料呼び出しをしない**
+- **CreativeBrief の版（agentic の Episode だけ）**: TopicPlan が無く現行の `creative_brief` がある Episode の
+  台本の `input_hash` には、その CreativeBrief の内容 hash（`artifact_metadata.sha256`）を畳み込む
+  （`domain.script.identity.with_brief_revision`）。brief が変わったら古い brief で作った台本は採用されず、
+  台本だけが作り直される（他の工程の成果物は触らない）。plan のある Episode・brief の無い Episode は
+  畳み込まないので従来の値のまま（INV-55）。migration は無い。brief を持つ旧い台本の行は新しい hash と
+  一致せず、1度だけ作り直される（行から「どの brief で作ったか」を判別できないための安全側。flag 既定 OFF の
+  agentic のみに影響）。
 
 ## Artifactが持たないもの
 

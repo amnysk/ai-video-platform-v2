@@ -41,7 +41,7 @@ from domain.errors import (
 )
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
 from domain.script.brief import ScriptBrief, creative_brief, legacy_brief, plan_brief
-from domain.script.identity import idempotency_key, script_input_hash
+from domain.script.identity import idempotency_key, script_input_hash, with_brief_revision
 from domain.script.ports import GenerationRequest, GenerationResult, StoryGenerator
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
@@ -237,6 +237,7 @@ class ScriptActivities:
                 f"{brief.content_profile.content_profile_id}@{brief.content_profile.version}"
             ),
         )
+        input_hash = with_brief_revision(input_hash, brief.brief_revision)
 
         # (1) 同じ入力の現行Artifactが既にあれば、生成器を呼ばずに返す（ADR-0012 / INV-17）
         async with self._session_factory() as session:
@@ -288,9 +289,11 @@ class ScriptActivities:
         従来のまま。
         """
         if topic_plan_id is None:
-            creative = await self._current_creative_brief(session, episode_id)
-            if creative is not None:
+            current = await self._current_creative_brief(session, episode_id)
+            if current is not None:
+                creative, revision = current
                 return creative_brief(
+                    brief_revision=revision,
                     strategy_profile_id=creative.strategy_profile_id,
                     content_profile_id=creative.content_profile_id,
                     topic=creative.topic,
@@ -317,7 +320,8 @@ class ScriptActivities:
 
     async def _current_creative_brief(
         self, session: AsyncSession, episode_id: str
-    ) -> CreativeBrief | None:
+    ) -> tuple[CreativeBrief, str] | None:
+        """現行の CreativeBrief と、その内容 hash（台本の再利用キーに入れる版）。"""
         meta = await ArtifactMetadataRepository(session).find_current_by_type(
             episode_id, ArtifactType.CREATIVE_BRIEF
         )
@@ -332,7 +336,7 @@ class ScriptActivities:
             raise PromptContractError(str(exc)) from exc
         if not isinstance(brief, CreativeBrief):
             raise PromptContractError("current creative_brief is not a CreativeBrief")
-        return brief
+        return brief, meta.sha256
 
     async def _generate_round(
         self, *, request: GenerateScriptRequest, brief: ScriptBrief, input_hash: str
