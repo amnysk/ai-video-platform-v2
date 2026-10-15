@@ -80,9 +80,29 @@ fake を `InterventionModules` で渡す。`receive_command` の fake は store 
 既存の `tests/architecture/test_api_no_heavy_work.py` が `apps/api/` 全体（新しい router・backend を含む）で
 `execute_workflow`・`.result()`・`minio` の直接 import を禁じる（INV-16）。
 
+## 失敗の写し方（`tests/unit/test_intervention_backend.py`）
+store・SQLite は本物、A / B は fake。backend の例外が 500 や不明瞭なエラーにならず、機械可読な HTTP エラーになること。
+
+| テスト | 何の失敗を捕まえるか |
+|---|---|
+| `test_unavailable_modules_are_503_and_store_only_routes_keep_working` | A / B の import 失敗が 500 になる／API 全体が止まる（store だけの route まで落ちる）／例外文言（パス・設定値）がレスポンスやログに出る |
+| `test_unavailable_modules_are_retried_on_the_next_request` | 一度の失敗を永久に覚えて、A / B が揃っても 503 のまま |
+| `test_a_receive_rejection_maps_to_a_machine_readable_error`（10 通り） | 受付の拒否が 500 になる／競合（stale・invalid_state）と形の誤りが同じ status でクライアントが再取得すべきか判断できない／拒否した行が残る／例外文に入力値が載る |
+| `test_an_unknown_rejection_code_is_422_command_rejected` | B が理由を増やしたとき 500 になる／未知の文字列をそのまま返す |
+| `test_a_rejection_in_an_import_rolls_back_every_proposal` | 変更案の取り込みが途中までしか入らない（全部か無し）。SQLite の SAVEPOINT が最外で commit する癖があるため、SAVEPOINT を使わない書き込みで見る |
+| `test_a_read_model_without_the_episode_is_404` / `test_receive_not_found_from_b_is_404` | Episode が無いときの `None` を JSON `null` の 200 で返す／B の `not_found` が 422 になる |
+| `test_comparing_incompatible_revisions_is_422` | 違う型の比較が 500／read model の例外文が返る |
+| `test_resending_a_command_id_as_another_actor_is_409_without_naming_the_owner` | 他人の command_id を再送して、その command（他人の名義の行）を自分の受付として受け取る／409 の応答で保存済みの主体が分かる。本人の再送は 200 のまま |
+| `test_a_workflow_start_timeout_still_returns_202_received` | Temporal が詰まったとき、受付済み command の応答が返らない／5xx になる（クライアントが別 id で出し直して二重になる）。未配送のまま残ること（再配送の対象）も見る |
+| `test_the_temporal_client_is_reused_within_a_loop` | 要求ごとに接続して遅くなる |
+| `test_a_failed_start_drops_the_cached_client` | 壊れた接続を使い回して以降の start が全て失敗する |
+| `test_the_temporal_client_does_not_leak_across_event_loops` | 別の event loop で作った client を使って "attached to a different loop" で落ちる（テスト・再起動後） |
+
 ## 統合後に親が確かめること（fake でしか動かしていない部分）
-`apps/api/intervention_backend.py::load_real_modules` と `TemporalCommandStarter` は `# pragma: no cover` で、この branch
-ではテストしていない。仮定は [intervention-api.md §7](../operations/intervention-api.md)。
+`apps/api/intervention_backend.py::load_real_modules` は実 A / B との接続で、この branch では実物を import するテストが
+無い（`ModulesUnavailableError` の経路だけ検査）。`TemporalCommandStarter` は Temporal を fake の `Client.connect` に差し替えて
+検査し、実 Temporal への start（`InterventionCommandWorkflow` の入力の形）は統合後に確認する。仮定は
+[intervention-api.md §7](../operations/intervention-api.md)。
 
 ## CLI（`tests/unit/test_intervene_cli.py`）
 
