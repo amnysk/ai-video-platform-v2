@@ -95,3 +95,12 @@
 | `test_activity_names_are_unique_and_agents_have_their_own_queue` | Activity 名の衝突なし、agent は別 queue | pipeline worker が agent の LLM 呼び出しを拾う |
 | `test_ids_and_idempotency_keys_are_deterministic` | 再配送で同じ workflow id・冪等キー | 再実行で二重の Agent 実行・課金 |
 | `test_payloads_are_plain_dataclasses_for_the_temporal_converter` | 既定 converter で運べる | 実行時の decode 失敗 |
+
+## 追記: 同じ request id で edit 数が違う再送（ADR-0043 §Consequences の負債）
+
+- `test_application_slice.py::test_a_resend_with_fewer_or_more_edits_is_command_id_reused_and_writes_nothing`: command_id は
+  `(request id, index)` 由来のため、edit を減らした再送は保存済みの部分集合を返し、増やした再送は余分な edit だけ新規に
+  受け付けて部分二重適用になっていた。件数違いを HTTP・内部 port の両入口で `command_id_reused` にし、command が増えない
+  （部分適用なし）こと、元の要求の再送は従来どおり既存 command を返す（created=false）ことを確認する。
+- `test_propose_storyboard_change.py::test_every_command_of_a_request_carries_the_whole_request_fingerprint`: 拒否の仕組み
+  （全 command が同じ要求指紋を持つ → 先頭 command の payload 指紋が件数で変わる）の単体確認。fake port でも落ちる。

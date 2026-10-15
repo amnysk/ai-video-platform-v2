@@ -15,6 +15,7 @@ from contracts.application import (
     ProposeStoryboardChangeRequest,
     StoryboardProposalResult,
     storyboard_edit_command_id,
+    storyboard_request_sha256,
 )
 from contracts.intervention import (
     REQUIRED_SCOPE,
@@ -66,6 +67,9 @@ class ProposeStoryboardChange:
                     "storyboard.patch_scenes is not implemented",
                     {"edit_index": index, "scene_id": edit.scene_id, "fields": unsupported},
                 )
+        request_sha256 = storyboard_request_sha256(
+            episode_id, proposal, request.expected_control_revision
+        )
         envelopes: list[CommandEnvelope] = []
         for index, edit in enumerate(proposal.edits):
             assert edit.visual_description is not None
@@ -77,6 +81,7 @@ class ProposeStoryboardChange:
                 ),
                 rationale=proposal.rationale,
                 base_manifest_id=proposal.base_manifest_id,
+                request_sha256=request_sha256,
             )
             envelopes.append(
                 CommandEnvelope(

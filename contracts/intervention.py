@@ -386,6 +386,9 @@ class ProposeChangePayload(_Frozen):
     rationale: str | None = Field(default=None, max_length=4000)
     base_manifest_id: str | None = None
     variant_group: str | None = Field(default=None, max_length=64)
+    #: 1 つの要求（複数 edit）から作った command 群が全て持つ、要求全体の指紋（任意・後方互換）。
+    #: 同じ command_id の再送が edit 数や内容の違う要求なら、payload 指紋（INV-42）で拒否される
+    request_sha256: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class ApplyChangePayload(_Frozen):
