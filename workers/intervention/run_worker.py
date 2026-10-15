@@ -58,6 +58,7 @@ async def main() -> None:
         budget_policy=budget_policy_from_settings(settings),
         # pipeline の production 枠・render profile・queue は日次 Schedule・API と同じ関数から
         pipeline_options=pipeline_options_from_settings(settings),
+        agentic_enabled=settings.jpmas2_agentic_workflows,
     )
     worker = build_worker(client, activities)
     logger.info("intervention worker listening on %s", INTERVENTION_TASK_QUEUE)

@@ -120,6 +120,10 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
              を守る（旧い結果には `pipeline_kind` が無く legacy。コマンド列は不変 / INV-55）。閉じた実行（parked・完了・
              失敗）の id は再利用できる（既定の ALLOW_DUPLICATE）。実行中なら already_running。再起動は同じ pin 済みの
              計画を上から歩き直す（完了済みの agent stage は保存済みの結果を返し、LLM・予約を増やさない。upload gate は維持）
+             **worker の `JPMAS2_AGENTIC_WORKFLOWS` が OFF のとき**、固定計画を持つ Episode の再開は check Activity が
+             `proceed=false, reason=feature_disabled` を返し、`not_needed` / `feature_disabled` を記録して何も start しない
+             （AgenticEpisodeWorkflow も legacy の pipeline も。workflow のコードは変えない。ADR-0044 §3-3）。
+             子 workflow の task queue と入力は API の再開・CLI と同じ関数（`agentic_episode_start_spec`）が作る
            follow-up Activity が結果を必ず command result.pipeline に追記する:
              outcome ∈ started / already_running / start_failed / not_needed（contracts の PipelineStartOutcome）
 ```
@@ -159,6 +163,7 @@ read model の `status=resolved` と ReviewPacket の「未解決コメント」
 | APPLIED の後・start の前に workflow が落ちた | APPLIED + `pipeline_start`、`pipeline` 無し | 再配送が拾い、check を通れば pipeline を1回だけ start。記録後は拾われない |
 | start の失敗 | `pipeline.outcome=start_failed` | 再配送が再試行する（check は毎回通る） |
 | 適用の後に hold・待機・終端になった | APPLIED + 制御版が進んだ | check が `not_needed` を記録し、何も start しない |
+| 固定計画を持つ Episode で worker の agentic flag が OFF | APPLIED + `pipeline_start` | check が `not_needed`（reason `feature_disabled`）を記録し、何も start しない |
 
 `dispatched_at` / `dispatch_attempts` は、再配送が子 workflow の start に成功した（または既に走っている）ときだけ
 記録する。列挙しただけでは増やさない。
