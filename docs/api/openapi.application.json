@@ -72,6 +72,17 @@
             "title": "Cost Estimated",
             "type": "boolean"
           },
+          "decided_by_command_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By Command Id"
+          },
           "episode_id": {
             "format": "uuid",
             "title": "Episode Id",

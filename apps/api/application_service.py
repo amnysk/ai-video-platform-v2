@@ -7,9 +7,11 @@ route は ``ApplicationServicePort`` しか知らない。scope・人限定の�
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any, Protocol
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Protocol
 
 from fastapi import Depends
+from temporalio.client import Client
 
 from application.ports import AgenticWorkflowStarter, Caller
 from apps.api.application_adapters import BackendCommandPort, LoggingOperationObserver
@@ -100,21 +102,30 @@ class ApplicationServicePort(Protocol):
     ) -> WorkflowProgress: ...
 
 
-class LazyAgenticStarter:  # pragma: no cover - 実接続経路
-    """Temporal へは最初に必要になったときだけ繋ぐ（読み取りの要求で接続しない）。"""
+class LazyAgenticStarter:
+    """Temporal へは最初に必要になったときだけ繋ぐ（読み取りの要求で接続しない）。
 
-    def __init__(self, settings: Settings) -> None:
+    options は worker・CLI と同じ ``pipeline_options_from_settings``（ADR-0044 §3-2）。
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        connect: Callable[[Settings], Awaitable[Client]] | None = None,
+    ) -> None:
         self._settings = settings
-        # TemporalAgenticStarter は ``probe_workers`` を足した後（ADR-0044 §3）に port を満たす
-        self._inner: Any = None
+        self._connect = connect
+        self._inner: AgenticWorkflowStarter | None = None
 
     async def _starter(self) -> AgenticWorkflowStarter:
         if self._inner is None:
             from infrastructure.temporal.agentic_starter import TemporalAgenticStarter
-            from infrastructure.temporal.connect import connect_with_retry
+            from infrastructure.temporal.pipeline_options import pipeline_options_from_settings
 
-            client = await connect_with_retry(self._settings, max_attempts=3)
-            self._inner = TemporalAgenticStarter(client)
+            client = await (self._connect or _connect_temporal)(self._settings)
+            self._inner = TemporalAgenticStarter(
+                client, pipeline_options_from_settings(self._settings)
+            )
         return self._inner
 
     async def start(
@@ -128,16 +139,19 @@ class LazyAgenticStarter:  # pragma: no cover - 実接続経路
         return await (await self._starter()).probe_workers()
 
 
+async def _connect_temporal(settings: Settings) -> Client:  # pragma: no cover - 実接続経路
+    from infrastructure.temporal.connect import connect_with_retry
+
+    return await connect_with_retry(settings, max_attempts=3)
+
+
 def get_application_service(
     backend: Backend, settings: Annotated[Settings, Depends(get_settings)]
 ) -> ApplicationServicePort:  # pragma: no cover - 実接続経路
     """本物の組み立て。import は関数内（Temporal・MinIO の依存を route の import に入れない）。"""
-    from application.service import ApplicationService  # pyright: ignore[reportMissingImports]
-    from infrastructure.application.episode_reader import (  # pyright: ignore[reportMissingImports]
-        StoreBackedEpisodeReader,
-    )
-
+    from application.service import ApplicationService
     from infrastructure.agents.draft_port import DbEpisodeDraftPort
+    from infrastructure.application.episode_reader import StoreBackedEpisodeReader
 
     session_factory = get_session_factory()
     store_factory = get_artifact_store_factory()

@@ -130,6 +130,8 @@ class ChangeImpactPreview(_Frozen):
     control_revision: int
     #: 今この変更を適用できない理由（機械可読 code。空なら適用要求を出せる）
     blockers: tuple[str, ...]
+    #: 適用・却下を決めた command（未決なら None）。同じ command の再送を見分ける
+    decided_by_command_id: str | None = None
 
 
 class GetAgentDecisionsResult(_Frozen):

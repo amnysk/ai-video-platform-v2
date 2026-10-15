@@ -443,6 +443,22 @@ async def test_a_cost_equal_to_the_cap_is_allowed_and_none_is_never_zero() -> No
         await w2.service.apply_approved_change(human(), EP, "cs-1", apply_request(cap=0.0))
 
 
+async def test_a_resend_of_the_apply_that_decided_the_change_reaches_the_backend() -> None:
+    """適用済みにした同じ command の再送は ``invalid_state`` にせず backend の冪等判定に渡す。"""
+    w = World()
+    w.reads.preview = _preview(status="applied", decided_by_command_id="apply-000001")
+    await w.service.apply_approved_change(human(), EP, "cs-1", apply_request(cap=1.0))
+    [env] = w.commands.received
+    assert env.command_id == "apply-000001"
+    # 別の command で適用済みの変更をもう一度適用しようとするのは従来どおり拒否
+    w2 = World()
+    w2.reads.preview = _preview(status="applied", decided_by_command_id="apply-other")
+    with pytest.raises(OperationError) as err:
+        await w2.service.apply_approved_change(human(), EP, "cs-1", apply_request(cap=1.0))
+    assert err.value.code is OperationErrorCode.INVALID_STATE
+    assert w2.commands.received == []
+
+
 async def test_apply_needs_the_apply_scope_before_reading_the_change_set() -> None:
     w = World()
     with pytest.raises(OperationError) as err:

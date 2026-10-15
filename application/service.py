@@ -349,7 +349,9 @@ class ApplicationService:
         async def body(ctx: _Context) -> CommandAccepted:
             ctx.command_id = request.command_id
             preview = await self._reads.change_impact(episode_id, change_set_id)
-            _check_applicable(preview, request.approved_max_cost_usd)
+            # この変更を決めた command そのものの再送は backend の冪等判定（created=False）に任せる
+            if preview.decided_by_command_id != request.command_id:
+                _check_applicable(preview, request.approved_max_cost_usd)
             payload = ApplyChangePayload(
                 change_set_id=change_set_id,
                 max_estimated_cost_usd=request.approved_max_cost_usd,

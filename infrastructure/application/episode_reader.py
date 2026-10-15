@@ -246,6 +246,7 @@ class StoreBackedEpisodeReader:
             cost_estimated=estimated is not None,
             control_revision=control.control_revision,
             blockers=tuple(blockers),
+            decided_by_command_id=change_set.decided_by_command_id,
         )
 
     async def agent_decisions(self, episode_id: uuid.UUID) -> GetAgentDecisionsResult:
