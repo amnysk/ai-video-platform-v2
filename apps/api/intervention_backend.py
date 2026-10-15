@@ -17,6 +17,7 @@ workflow の完了は待たない（INV-16）。start の失敗はログに残�
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import inspect
 import logging
@@ -64,6 +65,22 @@ class CommandIdReusedError(Exception):
     def __init__(self, existing: Command) -> None:
         super().__init__(f"command_id {existing.command_id} was already used")
         self.existing = existing
+
+
+class RevisionTypeMismatchError(ValueError):
+    """違う型の revision 同士は比較できない（read model の ``ValueError``）。"""
+
+
+class CommandRejectedError(Exception):
+    """B の受付が拒否した（行を作らない）。``code`` は ``RejectReason`` の値。"""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class ModulesUnavailableError(RuntimeError):
+    """担当 A / B のモジュールを組めない（import の失敗等）。store だけの route は動く。"""
 
 
 class ProposalFileError(ValueError):
@@ -145,6 +162,8 @@ class InterventionModules:
     parse_proposal_file: Callable[[Mapping[str, Any]], ProposalFile]
     #: commit 後の ``InterventionCommandWorkflow`` の start
     command_starter: CommandStarter
+    #: B の受付拒否の例外（``code`` 属性を持つ）。``CommandRejectedError`` に写す
+    receive_error_types: tuple[type[Exception], ...] = ()
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -165,19 +184,48 @@ def _received(result: Any) -> Received:
 # --------------------------------------------------------------------------- 実装
 
 
+#: commit 後の workflow start の上限（秒）。超えたら諦めて再配送 Schedule に任せる
+START_TIMEOUT_SECONDS = 5.0
+
+
 class StoreBackedInterventionBackend:
     def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession], modules: InterventionModules
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        modules: InterventionModules | Callable[[], InterventionModules],
+        *,
+        start_timeout_seconds: float = START_TIMEOUT_SECONDS,
     ) -> None:
         self._session_factory = session_factory
-        self._m = modules
+        self._modules = modules if isinstance(modules, InterventionModules) else None
+        self._load_modules = None if isinstance(modules, InterventionModules) else modules
+        self._start_timeout = start_timeout_seconds
+
+    @property
+    def _m(self) -> InterventionModules:
+        """A / B のモジュール。組めなければ ``ModulesUnavailableError``（次の呼び出しで再試行）。
+
+        store だけで読める route（判断記録・command・ChangeSet）はここを通らないので動き続ける。
+        """
+        if self._modules is None:
+            assert self._load_modules is not None
+            try:
+                self._modules = self._load_modules()
+            except Exception as exc:
+                # 例外の文言は出さない（パス・設定値が載りうる）。型名だけ
+                logger.error("intervention modules unavailable (%s)", type(exc).__name__)
+                raise ModulesUnavailableError(type(exc).__name__) from exc
+        return self._modules
 
     async def episode_exists(self, episode_id: str) -> bool:
         async with self._session_factory() as session:
             return await EpisodeRepository(session).get(episode_id) is not None
 
     async def load_view(self, episode_id: str) -> Any:
-        return await _maybe_await(self._m.read_model().load(episode_id))
+        view = await _maybe_await(self._m.read_model().load(episode_id))
+        if view is None:  # read model は Episode が無ければ None
+            raise EpisodeNotFoundError(episode_id)
+        return view
 
     async def revisions_belong_to(self, episode_id: str, revision_ids: Sequence[str]) -> bool:
         """revision（``artifact_metadata`` の行）が全てこの Episode のものか。"""
@@ -192,7 +240,12 @@ class StoreBackedInterventionBackend:
     async def compare(self, episode_id: str, revision_a: str, revision_b: str) -> Any:
         if not await self.revisions_belong_to(episode_id, (revision_a, revision_b)):
             raise RevisionNotFoundError(f"{revision_a}/{revision_b}")
-        return await _maybe_await(self._m.read_model().compare_revisions(revision_a, revision_b))
+        try:
+            return await _maybe_await(
+                self._m.read_model().compare_revisions(revision_a, revision_b)
+            )
+        except ValueError as exc:  # read model: 違う型同士・revision が無い
+            raise RevisionTypeMismatchError(str(exc)) from None
 
     async def packet(self, episode_id: str) -> Any:
         return await _maybe_await(self._m.build_packet(await self.load_view(episode_id)))
@@ -207,28 +260,42 @@ class StoreBackedInterventionBackend:
     async def receive(
         self, episode_id: str, envelopes: Sequence[CommandEnvelope], principal: ApiPrincipal
     ) -> list[Received]:
-        """全 envelope を**1 transaction**で受け付けて commit する（取り込みは全部か無し）。"""
-        b_principal = self._m.make_principal(
-            Actor(principal.actor_type, principal.actor_id), principal.scopes
-        )
+        """全 envelope を**1 transaction**で受け付けて commit する（取り込みは全部か無し）。
+
+        同じ command_id・同じ内容でも、保存済みの主体が違えば ``CommandIdReusedError``
+        （別の主体の command を自分の再送として受け取らない）。
+        """
+        modules = self._m
+        actor = Actor(principal.actor_type, principal.actor_id)
+        b_principal = modules.make_principal(actor, principal.scopes)
         async with self._session_factory() as session:
             if await EpisodeRepository(session).get(episode_id) is None:
                 raise EpisodeNotFoundError(episode_id)
             results: list[Received] = []
             try:
                 for envelope in envelopes:
-                    raw = await self._m.receive_command(session, episode_id, envelope, b_principal)
-                    results.append(_received(raw))
+                    raw = await modules.receive_command(session, episode_id, envelope, b_principal)
+                    received = _received(raw)
+                    if not received.created and received.command.actor != actor:
+                        raise DuplicateCommandError(received.command)
+                    results.append(received)
             except DuplicateCommandError as exc:
                 await session.rollback()
                 raise CommandIdReusedError(exc.existing) from None
+            except modules.receive_error_types as exc:
+                await session.rollback()
+                code = str(getattr(exc, "code", "invalid"))
+                if code == "not_found":
+                    raise EpisodeNotFoundError(episode_id) from None
+                raise CommandRejectedError(code, str(exc)) from None
             await session.commit()
             return results
 
     async def start_command(self, command_id: str) -> bool:
         """best-effort。失敗しても例外にしない（再配送 Schedule が拾う）。"""
         try:
-            await self._m.command_starter.start(command_id)
+            starter = self._m.command_starter
+            await asyncio.wait_for(starter.start(command_id), timeout=self._start_timeout)
         except Exception as exc:  # noqa: BLE001 - 受付は commit 済み。start の失敗で 5xx にしない
             logger.warning(
                 "intervention command workflow start failed; redelivery will retry "
@@ -270,29 +337,53 @@ class TemporalCommandStarter:
 
     def __init__(
         self, settings: Settings, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:  # pragma: no cover - 実接続経路
+    ) -> None:
         self._settings = settings
         self._session_factory = session_factory
+        #: 接続は1つを使い回す。client は作った event loop に結びつくので、loop が変わったら捨てる
+        self._client: Any = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
 
-    async def start(self, command_id: str) -> None:  # pragma: no cover - 実接続経路
-        from temporalio.client import Client
+    def _lock_for(self, loop: asyncio.AbstractEventLoop) -> asyncio.Lock:
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock, self._lock_loop = asyncio.Lock(), loop
+        return self._lock
+
+    async def _connect(self) -> Any:
+        loop = asyncio.get_running_loop()
+        async with self._lock_for(loop):
+            if self._client is None or self._client_loop is not loop:
+                from temporalio.client import Client
+
+                from infrastructure.logging.setup import ensure_core_log_forwarding
+
+                ensure_core_log_forwarding()
+                self._client = None
+                self._client = await Client.connect(
+                    self._settings.temporal_address, namespace=self._settings.temporal_namespace
+                )
+                self._client_loop = loop
+            return self._client
+
+    async def start(self, command_id: str) -> None:
         from temporalio.exceptions import WorkflowAlreadyStartedError
 
-        from infrastructure.logging.setup import ensure_core_log_forwarding
-
-        ensure_core_log_forwarding()
-        client = await Client.connect(
-            self._settings.temporal_address, namespace=self._settings.temporal_namespace
-        )
+        client = await self._connect()
         workflow_name, task_queue = INTERVENTION_COMMAND_WORKFLOW
         # 入力の形は担当 B の InterventionCommandWorkflow と一致させる（統合時に親が確認）
-        with contextlib.suppress(WorkflowAlreadyStartedError):
-            await client.start_workflow(
-                workflow_name,
-                {"command_id": command_id},
-                id=intervention_command_workflow_id(command_id),
-                task_queue=task_queue,
-            )
+        try:
+            with contextlib.suppress(WorkflowAlreadyStartedError):
+                await client.start_workflow(
+                    workflow_name,
+                    {"command_id": command_id},
+                    id=intervention_command_workflow_id(command_id),
+                    task_queue=task_queue,
+                )
+        except Exception:
+            self._client = None  # つながりが壊れているかもしれない。次回つなぎ直す
+            raise
         async with self._session_factory() as session:
             await InterventionStore(session).mark_command_dispatched(command_id)
             await session.commit()
@@ -300,24 +391,24 @@ class TemporalCommandStarter:
 
 def load_real_modules(
     settings: Settings, session_factory: async_sessionmaker[AsyncSession]
-) -> InterventionModules:  # pragma: no cover - 担当 A / B の統合後に親が検査する
+) -> InterventionModules:
     """担当 A / B の実モジュールを**遅延 import**で束ねる（唯一の接続点）。
 
-    A / B のモジュールはこの branch に無いので ``importlib`` で引く
-    （静的解析の対象外。統合後に親が検査）。
+    ここで失敗しても API 全体は落ちない: backend が初回使用時に呼び、失敗は
+    ``ModulesUnavailableError``（503 ``intervention_unavailable``）になる。
     """
-    import importlib
-
     from contracts.intervention import ProposeChangePayload
+    from contracts.review_packet import ChangeProposalFile  # 担当 A
+    from infrastructure.intervention import commands  # 担当 B
+    from infrastructure.intervention.read_model import EpisodeReadModel  # 担当 A
+    from infrastructure.intervention.review_packet import (  # 担当 A
+        build_packet,
+        render_markdown,
+    )
     from infrastructure.storage.minio_store import MinioArtifactStore
 
-    commands = importlib.import_module("infrastructure.intervention.commands")  # 担当 B
-    read_model_mod = importlib.import_module("infrastructure.intervention.read_model")  # 担当 A
-    packet_mod = importlib.import_module("infrastructure.intervention.review_packet")  # 担当 A
-    change_proposal_file = importlib.import_module(
-        "contracts.review_packet"
-    ).ChangeProposalFile  # 担当 A
-    episode_read_model = read_model_mod.EpisodeReadModel
+    change_proposal_file = ChangeProposalFile
+    episode_read_model = EpisodeReadModel
 
     artifact_store = MinioArtifactStore.from_settings(settings)
 
@@ -343,8 +434,9 @@ def load_real_modules(
         receive_command=commands.receive_command,
         make_principal=lambda actor, scopes: commands.Principal(actor=actor, scopes=scopes),
         read_model=lambda: episode_read_model(session_factory, artifact_store),
-        build_packet=packet_mod.build_packet,
-        render_markdown=packet_mod.render_markdown,
+        build_packet=build_packet,
+        render_markdown=render_markdown,
         parse_proposal_file=parse,
         command_starter=TemporalCommandStarter(settings, session_factory),
+        receive_error_types=(commands.CommandReceiveError,),
     )
