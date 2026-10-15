@@ -1,0 +1,141 @@
+{
+ "catalog_version": "fixture",
+ "operations": [
+  {
+   "name": "create_episode_draft",
+   "method": "POST",
+   "path": "/v1/intervention/episodes/drafts",
+   "scope": "propose",
+   "human_only": false,
+   "request_fields": [
+    "command_id",
+    "brief"
+   ],
+   "incurs_cost": false
+  },
+  {
+   "name": "list_episodes",
+   "method": "GET",
+   "path": "/v1/intervention/episodes",
+   "scope": "read",
+   "human_only": false,
+   "request_fields": [],
+   "incurs_cost": false
+  },
+  {
+   "name": "get_episode_workspace",
+   "method": "GET",
+   "path": "/v1/intervention/episodes/{episode_id}/workspace",
+   "scope": "read",
+   "human_only": false,
+   "request_fields": [],
+   "incurs_cost": false
+  },
+  {
+   "name": "start_agentic_production",
+   "method": "POST",
+   "path": "/v1/intervention/episodes/{episode_id}/production",
+   "scope": "resume",
+   "human_only": true,
+   "request_fields": [],
+   "incurs_cost": true
+  },
+  {
+   "name": "request_hold",
+   "method": "POST",
+   "path": "/v1/intervention/episodes/{episode_id}/hold",
+   "scope": "hold",
+   "human_only": false,
+   "request_fields": [
+    "command_id",
+    "expected_control_revision",
+    "reason"
+   ],
+   "incurs_cost": false
+  },
+  {
+   "name": "resume_production",
+   "method": "POST",
+   "path": "/v1/intervention/episodes/{episode_id}/resume",
+   "scope": "resume",
+   "human_only": false,
+   "request_fields": [
+    "command_id",
+    "expected_control_revision",
+    "start_stage"
+   ],
+   "incurs_cost": false
+  },
+  {
+   "name": "get_storyboard",
+   "method": "GET",
+   "path": "/v1/intervention/episodes/{episode_id}/storyboard",
+   "scope": "read",
+   "human_only": false,
+   "request_fields": [],
+   "incurs_cost": false
+  },
+  {
+   "name": "propose_storyboard_change",
+   "method": "POST",
+   "path": "/v1/intervention/episodes/{episode_id}/storyboard/proposals",
+   "scope": "propose",
+   "human_only": false,
+   "request_fields": [
+    "command_id",
+    "expected_control_revision",
+    "proposal"
+   ],
+   "incurs_cost": false
+  },
+  {
+   "name": "preview_change_impact",
+   "method": "GET",
+   "path": "/v1/intervention/episodes/{episode_id}/change-sets/{change_set_id}/impact",
+   "scope": "read",
+   "human_only": false,
+   "request_fields": [],
+   "incurs_cost": false
+  },
+  {
+   "name": "apply_approved_change",
+   "method": "POST",
+   "path": "/v1/intervention/episodes/{episode_id}/change-sets/{change_set_id}/apply",
+   "scope": "apply",
+   "human_only": false,
+   "request_fields": [
+    "command_id",
+    "expected_control_revision",
+    "approved_max_cost_usd"
+   ],
+   "incurs_cost": true
+  },
+  {
+   "name": "get_agent_decisions",
+   "method": "GET",
+   "path": "/v1/intervention/episodes/{episode_id}/agent-decisions",
+   "scope": "read",
+   "human_only": false,
+   "request_fields": [],
+   "incurs_cost": false
+  },
+  {
+   "name": "get_quality_review",
+   "method": "GET",
+   "path": "/v1/intervention/episodes/{episode_id}/quality-review",
+   "scope": "read",
+   "human_only": false,
+   "request_fields": [],
+   "incurs_cost": false
+  },
+  {
+   "name": "get_workflow_progress",
+   "method": "GET",
+   "path": "/v1/intervention/episodes/{episode_id}/progress",
+   "scope": "read",
+   "human_only": false,
+   "request_fields": [],
+   "incurs_cost": false
+  }
+ ]
+}
