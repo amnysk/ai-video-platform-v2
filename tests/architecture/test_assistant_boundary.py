@@ -34,16 +34,35 @@ FORBIDDEN = (
 )
 
 
+def _dynamic_target(node: ast.Call) -> str | None:
+    """``importlib.import_module`` / ``__import__`` の呼び出しなら、その引数（不明なら ``?``）。"""
+    name = ast.unparse(node.func)
+    if name.split(".")[-1] not in {"import_module", "__import__"}:
+        return None
+    first = node.args[0] if node.args else None
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    return "?"  # リテラルでない: 何を読むか検査できないので違反として扱う
+
+
 def _imports(tree: ast.AST) -> list[str]:
+    """import される名前。``from a import b`` は ``a.b`` に展開する。"""
     out: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             out += [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                out.append("apps.assistant")  # 相対 import は同じ package 内
-            elif node.module:
-                out.append(node.module)
+            if node.level == 1:
+                out.append("apps.assistant")  # 同じ package 内
+            elif node.level > 1:
+                out.append("<relative import above the package>")
+            else:
+                base = node.module or ""
+                out += [f"{base}.{a.name}" if a.name != "*" else base for a in node.names]
+        elif isinstance(node, ast.Call):
+            target = _dynamic_target(node)
+            if target is not None:
+                out.append(target)
     return out
 
 
@@ -56,6 +75,13 @@ def _violations(source: str, rel: str) -> list[str]:
         if any(name == a or name.startswith(a + ".") for a in ALLOWED_FIRST_PARTY):
             continue
         bad.append(f"{rel}: imports {name}")
+    return bad
+
+
+def _scan(directory: Path) -> list[str]:
+    bad: list[str] = []
+    for path in sorted(directory.rglob("*.py")):
+        bad += _violations(path.read_text(encoding="utf-8"), path.name)
     return bad
 
 
@@ -96,7 +122,45 @@ def test_the_check_itself_rejects_internal_imports() -> None:
     )
     bad = _violations(source, "example.py")
     assert [b.split(" ", 2)[2] for b in bad] == [
-        "infrastructure.intervention.store",
+        "infrastructure.intervention.store.InterventionStore",
         "sqlalchemy",
-        "apps.api.routers",
+        "apps.api.routers.intervention",
     ]
+
+
+def test_from_apps_import_assistant_is_not_a_false_positive() -> None:
+    assert (
+        _violations("from apps import assistant\nfrom contracts import intervention\n", "x") == []
+    )
+    assert _violations("from apps import api\n", "x") != []
+    assert _violations("from infrastructure import db\n", "x") != []
+
+
+def test_each_detection_fires_on_a_fake_package(tmp_path: Path) -> None:
+    """検査が空振りしないこと。実ファイルでなく tmp の偽 package で、検出ごとに1つ作る。"""
+    cases = {
+        "plain.py": "import sqlalchemy\n",
+        "from_form.py": "from infrastructure.db import models\n",
+        "from_package.py": "from apps import api\n",
+        "lazy.py": "def f():\n    from workers import x\n",
+        "relative_up.py": "from .. import api\n",
+        "relative_up_named.py": "from ..api import routers\n",
+        "import_module.py": "import importlib\nimportlib.import_module('temporalio.client')\n",
+        "dunder.py": "__import__('psycopg')\n",
+        "dynamic.py": "import importlib\nname = 'x'\nimportlib.import_module(name)\n",
+        "alias_call.py": "from importlib import import_module\nimport_module('domain.x')\n",
+    }
+    for name, source in cases.items():
+        package = tmp_path / name.removesuffix(".py")
+        package.mkdir()
+        (package / name).write_text(source, encoding="utf-8")
+        assert _scan(package), f"{name} was not detected"
+    ok = tmp_path / "ok"
+    ok.mkdir()
+    (ok / "ok.py").write_text(
+        "import json\nimport httpx\nfrom . import client\nfrom .tools import x\n"
+        "from contracts.intervention import Scope\nimport importlib\n"
+        "importlib.import_module('json')\nfrom apps import assistant\n",
+        encoding="utf-8",
+    )
+    assert _scan(ok) == []

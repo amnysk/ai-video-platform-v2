@@ -24,7 +24,9 @@ from contracts.assistant_tools import (
 from contracts.intervention import (
     PAYLOAD_MODELS,
     REQUIRED_SCOPE,
+    AgentRole,
     Anchor,
+    CommandEnvelope,
     CommandType,
     ProposeChangePayload,
     SceneOverrideVisual,
@@ -134,7 +136,7 @@ def test_proposal_schemas_do_not_invent_payload_fields() -> None:
     allowed = (
         set(ScriptEditScenes.model_fields) - {"kind"}
         | set(ProposeChangePayload.model_fields) - {"change"}
-        | {"episode_id"}
+        | {"episode_id", "expected_control_revision", "expected_target_revision"}
     )
     assert set(script) <= allowed
     # 台本の映像文 visual の修正はサーバが拒否する（変更が映像に出ない）。tool では露出しない
@@ -144,7 +146,7 @@ def test_proposal_schemas_do_not_invent_payload_fields() -> None:
     assert set(visual) <= (
         set(SceneOverrideVisual.model_fields) - {"kind"}
         | set(ProposeChangePayload.model_fields) - {"change"}
-        | {"episode_id"}
+        | {"episode_id", "expected_control_revision", "expected_target_revision"}
     )
 
 
@@ -250,3 +252,33 @@ def test_every_tool_has_a_handler(name: str) -> None:
     from apps.assistant.tools import HANDLERS
 
     assert name in HANDLERS
+
+
+def test_expected_revision_fields_exist_on_the_envelope_and_only_on_state_changing_tools() -> None:
+    envelope_fields = set(CommandEnvelope.model_fields)
+    with_expected = set()
+    for tool in TOOLS:
+        names = set(tool.input_schema["properties"]) & {
+            "expected_control_revision",
+            "expected_target_revision",
+        }
+        if names:
+            assert names <= envelope_fields
+            with_expected.add(tool.name.value)
+    assert with_expected == {
+        "propose_script_edit",
+        "propose_scene_visual_override",
+        "request_hold",
+        "resume_episode",
+        "apply_change",
+    }
+
+
+def test_the_role_enum_is_derived_from_agent_role() -> None:
+    role = _tool("search_decisions").input_schema["properties"]["role"]["enum"]
+    assert role == [r.value for r in AgentRole]
+
+
+def test_resume_description_warns_about_paid_regeneration() -> None:
+    text = _tool("resume_episode").description.lower()
+    assert "paid regeneration" in text and "human" in text

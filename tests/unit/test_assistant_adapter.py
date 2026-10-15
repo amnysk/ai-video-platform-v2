@@ -436,7 +436,7 @@ def test_an_ai_paid_apply_rejected_by_the_server_becomes_needs_human_approval() 
     server = FakeServer(change_set=_cs(0.5), post_response=reject)
     result = _adapter(server)("apply_change", _apply_args(0.5))
     assert result["status"] == "needs_human_approval"
-    assert result["reason"] == "ai_may_apply_only_zero_cost_changes"
+    assert result["reason"] == "forbidden"  # サーバの理由をそのまま（relabel しない）
     assert result["estimated_cost_usd"] == 0.5
 
 
@@ -484,3 +484,130 @@ def test_every_tool_in_the_catalogue_can_be_dispatched() -> None:
     from apps.assistant.tools import HANDLERS
 
     assert {n.value for n in HANDLERS} == set(TOOLS_BY_NAME)
+
+
+# --------------------------------------------------------------------------- reviewer E2
+
+
+def _stored(cid: str, type_: str, payload: dict[str, Any], **over: Any) -> dict[str, Any]:
+    return _command_view(
+        {"command_id": cid, "type": type_, "payload": payload},
+        status="applied",
+        applied=True,
+        terminal=True,
+        **over,
+    )
+
+
+def test_a_tool_call_id_used_for_another_command_is_command_id_reused_not_applied() -> None:
+    """M2: 同じ tool_call_id が propose に使われていたら、apply の結果として返さない。"""
+    cid = tool_command_id("sess-1", "t1")
+    server = FakeServer(
+        change_set=_cs(0.5),
+        command_status={cid: _stored(cid, "propose_change", {"change": {}})},
+    )
+    result = _adapter(server)("apply_change", _apply_args(0.5), "t1")
+    assert result["status"] == "command_id_reused"
+    assert server.posts == []
+
+
+def test_a_stored_apply_for_another_change_set_or_episode_is_command_id_reused() -> None:
+    cid = tool_command_id("sess-1", "t2")
+    other = str(uuid.uuid4())
+    for stored in (
+        _stored(cid, "apply_change", {"change_set_id": other}),
+        _stored(cid, "apply_change", {"change_set_id": CS}, episode_id=other),
+    ):
+        server = FakeServer(change_set=_cs(0.5), command_status={cid: stored})
+        assert _adapter(server)("apply_change", _apply_args(0.5), "t2")["status"] == (
+            "command_id_reused"
+        )
+        assert server.posts == []
+
+
+def test_human_command_is_built_only_from_strict_uuids_and_quoted() -> None:
+    """M3: 保存された command の id をそのままシェル文字列に入れない。"""
+    evil = "x; touch /tmp/pwned #"
+    cid = "cmd-evil-00001"
+    view = _command_view(
+        {"command_id": cid, "type": "apply_change", "payload": {"change_set_id": evil}},
+        status="rejected",
+        terminal=True,
+        reject_reason="forbidden",
+    )
+    server = FakeServer(change_set=_cs(0.5), command_status={cid: view})
+    result = _adapter(server)("get_command_status", {"command_id": cid})
+    assert result["status"] == "needs_human_approval"
+    assert "human_command" not in result
+    assert "touch" not in json.dumps(result)
+    assert all("pwned" not in str(r.url) for r in server.requests)
+    # 正常な UUID なら shlex.quote を通した形（UUID は quote されても同じ）
+    ok = _adapter(FakeServer(change_set=_cs(0.5)))("apply_change", _apply_args(0.5))
+    assert ok["status"] == "submitted"
+
+
+def test_resume_forbidden_for_paid_generation_needs_a_human() -> None:
+    def reject(body: dict[str, Any]) -> httpx.Response:
+        view = _command_view(
+            body,
+            status="rejected",
+            terminal=True,
+            reject_reason="forbidden",
+            result={"reason": "forbidden", "detail": "ai_resume_requires_paid_generation"},
+        )
+        return httpx.Response(200, json=view)
+
+    server = FakeServer(post_response=reject)
+    result = _adapter(server)("resume_episode", {"episode_id": EP}, "r1")
+    assert result["status"] == "needs_human_approval"
+    assert result["server_detail"] == "ai_resume_requires_paid_generation"
+    assert result["reason"] == "ai_resume_requires_paid_generation"
+    assert result["human_command"] == f"python scripts/intervene.py resume {EP}"
+    assert len(server.posts) == 1
+
+
+def test_forbidden_reason_is_surfaced_verbatim_not_relabelled() -> None:
+    def reject(body: dict[str, Any]) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_command_view(
+                body,
+                status="rejected",
+                terminal=True,
+                reject_reason="forbidden",
+                result={"reason": "forbidden", "detail": "paid_apply_requires_human"},
+            ),
+        )
+
+    server = FakeServer(change_set=_cs(0.5), post_response=reject)
+    result = _adapter(server)("apply_change", _apply_args(0.5))
+    assert result["status"] == "needs_human_approval"
+    assert result["reason"] == "paid_apply_requires_human"
+    assert result["server_reason"] == "forbidden"
+
+
+def test_expected_revisions_are_passed_through_and_control_revision_is_echoed() -> None:
+    server = FakeServer(change_set=_cs(0.0))
+    run = _adapter(server)
+    run("request_hold", {"episode_id": EP, "expected_control_revision": 4}, "h1")
+    run(
+        "propose_script_edit",
+        {"episode_id": EP, "base_revision_id": REV, "expected_target_revision": REV},
+        "p1",
+    )
+    run("resume_episode", {"episode_id": EP, "expected_control_revision": 5}, "r1")
+    args = _apply_args(0.0) | {"expected_control_revision": 6}
+    run("apply_change", args, "a1")
+    bodies = [json.loads(r.content) for r in server.posts]
+    assert [b.get("expected_control_revision") for b in bodies] == [4, None, 5, 6]
+    assert bodies[1]["expected_target_revision"] == REV
+
+    def status_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"control": {"control_revision": 9}})
+
+    client = InterventionClient(
+        "http://api.test", TOKEN, session_id="s", transport=httpx.MockTransport(status_handler)
+    )
+    out = execute_tool(client, "get_episode_status", {"episode_id": EP}, tool_call_id="c")
+    assert out["control_revision"] == 9
+    assert "expected_control_revision" in out["hint"]

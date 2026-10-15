@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,11 +23,16 @@ from apps.assistant.client import (
     envelope_correlation_id,
 )
 from contracts.assistant_tools import TOOLS_BY_NAME, ToolName, tool_command_id
-from contracts.intervention import CommandType
+from contracts.intervention import CommandType, ForbiddenDetail
 
 _COMMAND_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _TERMINAL_REJECTED = "rejected"
+_STRICT_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 HUMAN_APPLY_COMMAND = "python scripts/intervene.py apply {episode_id} --change-set {change_set_id}"
+HUMAN_RESUME_COMMAND = "python scripts/intervene.py resume {episode_id}"
+#: AI の有料再開を拒否するときの detail（唯一の宣言元は contracts/intervention.py）
+AI_RESUME_PAID_DETAIL = ForbiddenDetail.AI_RESUME_REQUIRES_PAID_GENERATION.value
+_ENVELOPE_EXTRAS = ("expected_control_revision", "expected_target_revision")
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +150,16 @@ def _episode_path(args: dict[str, Any]) -> str:
 
 
 def _get_episode_status(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
-    return _result(call.request("GET", _episode_path(args)))
+    result = _result(call.request("GET", _episode_path(args)))
+    control = result.get("data", {}).get("control") if result["status"] == "ok" else None
+    if isinstance(control, dict) and "control_revision" in control:
+        # 読んだ版を command に付け直せるよう、目立つ場所に出す（楽観的な競合検出）
+        result["control_revision"] = control["control_revision"]
+        result["hint"] = (
+            "Send this value as expected_control_revision with request_hold / resume_episode / "
+            "apply_change so a command made against stale state is a conflict, not applied."
+        )
+    return result
 
 
 def _read_decisions(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
@@ -180,7 +195,14 @@ def _list_change_sets(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
     return _result(call.request("GET", _episode_path(args) + "/change-sets"))
 
 
+def _strict_uuid(value: Any) -> str | None:
+    """小文字の正規形 UUID だけを通す。それ以外は None（シェル・URL に入れない）。"""
+    return value if isinstance(value, str) and _STRICT_UUID.match(value) else None
+
+
 def _fetch_change_set(call: ToolCall, episode_id: str, change_set_id: str) -> ApiResponse:
+    if _strict_uuid(episode_id) is None or _strict_uuid(change_set_id) is None:
+        raise ToolInputError("episode_id and change_set_id must be UUIDs")
     return call.request("GET", f"/episodes/{episode_id}/change-sets/{change_set_id}")
 
 
@@ -275,9 +297,14 @@ def build_command_payload(tool: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _post_command(
-    call: ToolCall, episode_id: str, command_type: CommandType, payload: dict[str, Any]
+    call: ToolCall,
+    episode_id: str,
+    command_type: CommandType,
+    payload: dict[str, Any],
+    args: dict[str, Any],
 ) -> ApiResponse:
-    envelope = {
+    envelope: dict[str, Any] = {
+        **{k: args[k] for k in _ENVELOPE_EXTRAS if args.get(k) is not None},
         "command_id": call.command_id,
         "type": command_type.value,
         "payload": payload,
@@ -286,19 +313,31 @@ def _post_command(
     return call.request("POST", f"/episodes/{episode_id}/commands", json=envelope)
 
 
+def _server_detail(view: dict[str, Any]) -> str | None:
+    result = view.get("result")
+    detail = result.get("detail") if isinstance(result, dict) else None
+    return detail if isinstance(detail, str) else None
+
+
 def _command_result(call: ToolCall, view: dict[str, Any], *, replayed: bool) -> dict[str, Any]:
-    """command の表示。AI の有料適用がサーバに拒否されていれば ``needs_human_approval``。"""
-    if (
-        view.get("type") == CommandType.APPLY_CHANGE.value
-        and view.get("status") == _TERMINAL_REJECTED
-        and view.get("reject_reason") == "forbidden"
+    """command の表示。サーバが人の承認を要するとして拒否していれば ``needs_human_approval``。"""
+    refused = view.get("status") == _TERMINAL_REJECTED and view.get("reject_reason") == "forbidden"
+    command_type = view.get("type")
+    if refused and command_type in (
+        CommandType.APPLY_CHANGE.value,
+        CommandType.RESUME.value,
     ):
         payload = view.get("payload") or {}
+        detail = _server_detail(view)
         return _needs_human_approval(
             call,
-            str(view.get("episode_id")),
-            str(payload.get("change_set_id")),
-            reason="ai_may_apply_only_zero_cost_changes",
+            view.get("episode_id"),
+            payload.get("change_set_id") if command_type == "apply_change" else None,
+            kind=str(command_type),
+            # サーバの理由をそのまま出す（relabel しない）。detail が無ければ reject_reason
+            reason=detail or "forbidden",
+            server_reason=view.get("reject_reason"),
+            server_detail=detail,
         )
     return {
         "status": "submitted",
@@ -316,36 +355,60 @@ def _command_result(call: ToolCall, view: dict[str, Any], *, replayed: bool) -> 
 
 
 def _needs_human_approval(
-    call: ToolCall, episode_id: str, change_set_id: str, *, reason: str
+    call: ToolCall,
+    episode_id: Any,
+    change_set_id: Any,
+    *,
+    kind: str,
+    reason: str,
+    server_reason: Any = None,
+    server_detail: Any = None,
 ) -> dict[str, Any]:
-    """人が実行する手順を返す。この呼び出しは権限を持たないので、再試行や別の資格情報は使わない。"""
+    """人が実行する手順を返す。この呼び出しは権限を持たないので、再試行や別の資格情報は使わない。
+
+    保存済みの command 由来の値をシェル文字列に入れるため、UUID の正規形だけを通し ``shlex.quote``
+    する。通らなければ ``human_command`` を付けない。
+    """
+    episode = _strict_uuid(episode_id)
+    change_set = _strict_uuid(change_set_id)
+    is_apply = kind == CommandType.APPLY_CHANGE.value
     out: dict[str, Any] = {
         "status": "needs_human_approval",
         "reason": reason,
-        "episode_id": episode_id,
-        "change_set_id": change_set_id,
+        "server_reason": server_reason,
+        "server_detail": server_detail,
+        "action": kind,
+        "episode_id": episode,
+        "change_set_id": change_set if is_apply else None,
         "impact": None,
         "estimated_cost_usd": None,
         "cost_estimated": None,
-        "human_command": HUMAN_APPLY_COMMAND.format(
-            episode_id=episode_id, change_set_id=change_set_id
-        ),
-        "message": "This apply needs a person with the apply scope. Show the impact and cost to "
+        "message": "A person with the required scope must do this. Show the impact and cost to "
         "them; do not retry.",
     }
-    try:
-        view = _fetch_change_set(call, episode_id, change_set_id)
-    except (AssistantTransportError, ToolInputError):
+    if episode is None or (is_apply and change_set is None):
+        out["message"] = "A person must do this; the ids on the stored command are not valid UUIDs."
         return out
-    if view.ok and isinstance(view.body, dict):
-        cost = view.body.get("estimated_cost_usd")
-        out.update(
-            impact=view.body.get("impact"),
-            estimated_cost_usd=cost,
-            cost_estimated=view.body.get("cost_estimated"),
+    if is_apply:
+        assert change_set is not None
+        out["human_command"] = HUMAN_APPLY_COMMAND.format(
+            episode_id=shlex.quote(episode), change_set_id=shlex.quote(change_set)
         )
-        if cost is not None:
-            out["human_command"] += f" --max-cost {cost}"
+        try:
+            view = _fetch_change_set(call, episode, change_set)
+        except (AssistantTransportError, ToolInputError):
+            return out
+        if view.ok and isinstance(view.body, dict):
+            cost = view.body.get("estimated_cost_usd")
+            out.update(
+                impact=view.body.get("impact"),
+                estimated_cost_usd=cost,
+                cost_estimated=view.body.get("cost_estimated"),
+            )
+            if isinstance(cost, int | float) and not isinstance(cost, bool):
+                out["human_command"] += f" --max-cost {shlex.quote(str(cost))}"
+    else:
+        out["human_command"] = HUMAN_RESUME_COMMAND.format(episode_id=shlex.quote(episode))
     return out
 
 
@@ -354,7 +417,7 @@ def _send(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
     assert spec.command_type is not None
     episode_id = _uuid(args["episode_id"], "episode_id")
     response = _post_command(
-        call, episode_id, spec.command_type, build_command_payload(call.tool.value, args)
+        call, episode_id, spec.command_type, build_command_payload(call.tool.value, args), args
     )
     if response.status == 403 and response.error == "missing_scope":
         body = response.body["detail"]
@@ -380,12 +443,21 @@ def _apply_change(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
     acknowledged = args["acknowledged_estimated_cost_usd"]
     # 同じ tool 呼び出しの再試行は、保存済みの command を返す（INV-42/49）。費用の再検査より先
     existing = call.request("GET", f"/commands/{call.command_id}")
-    if (
-        existing.ok
-        and isinstance(existing.body, dict)
-        and existing.body.get("episode_id") == episode_id
-    ):
-        return _command_result(call, existing.body, replayed=True)
+    if existing.ok and isinstance(existing.body, dict):
+        stored = existing.body
+        payload = stored.get("payload") or {}
+        if (
+            stored.get("type") == CommandType.APPLY_CHANGE.value
+            and stored.get("episode_id") == episode_id
+            and payload.get("change_set_id") == change_set_id
+        ):
+            return _command_result(call, stored, replayed=True)
+        # この tool_call_id は別の command に使われている。適用の結果として返さない
+        return {
+            "status": "command_id_reused",
+            "message": "this tool_call_id was already used for a different command; "
+            "use a new tool_call_id",
+        }
     # 送信直前に変更案を読み直す。提示した費用と違う変更を適用しない
     fetched = _fetch_change_set(call, episode_id, change_set_id)
     if not fetched.ok:
@@ -413,9 +485,17 @@ def _apply_change(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
         episode_id,
         CommandType.APPLY_CHANGE,
         build_command_payload(ToolName.APPLY_CHANGE.value, args),
+        args,
     )
     if response.status == 403 and response.error == "missing_scope":
-        return _needs_human_approval(call, episode_id, change_set_id, reason="missing_scope")
+        return _needs_human_approval(
+            call,
+            episode_id,
+            change_set_id,
+            kind=CommandType.APPLY_CHANGE.value,
+            reason="missing_scope",
+            server_reason="missing_scope",
+        )
     if response.status == 409 and response.error == "command_id_reused":
         return {"status": "command_id_reused", "message": "use a new tool_call_id"}
     if not response.ok:

@@ -101,7 +101,7 @@ store・SQLite は本物、A / B は fake。backend の例外が 500 や不明�
 ## 統合後に親が確かめること（fake でしか動かしていない部分）
 `apps/api/intervention_backend.py::load_real_modules` は実 A / B との接続で、この branch では実物を import するテストが
 無い（`ModulesUnavailableError` の経路だけ検査）。`TemporalCommandStarter` は Temporal を fake の `Client.connect` に差し替えて
-検査し、実 Temporal への start（`InterventionCommandWorkflow` の入力の形）は統合後に確認する。仮定は
+検査し、`InterventionCommandWorkflow` の worker 実装は B2（`workers/intervention/`）にあり、同じ入力の形での start は `tests/unit/test_intervention_workflows.py` が time-skipping 環境で検査している。仮定は
 [intervention-api.md §7](../operations/intervention-api.md)。
 
 ## CLI（`tests/unit/test_intervene_cli.py`）
@@ -123,3 +123,8 @@ store・SQLite は本物、A / B は fake。backend の例外が 500 や不明�
 | `test_http_errors_exit_nonzero_and_print_the_detail` / `test_a_network_error_tells_how_to_retry_safely` | 409 等を成功扱いにする・応答なしで再送方法（同じ id）を示さない・例外文言から token が出る |
 | `test_hash_token_prints_the_sha256_of_the_env_token` | 設定の key と CLI の token の hash 方法がずれる |
 | `test_the_cli_round_trips_through_the_real_router` | CLI と router の形の食い違い（fake transport の検査だけでは見えない）。受付・状態・同一再送 200・違う内容 409 を通す |
+
+## compare の例外の範囲
+- `test_a_validation_error_in_the_read_model_is_not_reported_as_a_type_mismatch`: pydantic の
+  `ValidationError` は `ValueError` の子なので、広い `except ValueError` は read model の不具合を
+  `422 revision_type_mismatch`（クライアントの誤り）に化かす。ValidationError は 500 のままにする。

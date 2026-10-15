@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from contracts.intervention import REQUIRED_SCOPE, CommandType, Scope
+from contracts.intervention import REQUIRED_SCOPE, AgentRole, CommandType, Scope
 
 #: tool 呼び出しから command_id を決める namespace（INV-49）。変えると再試行の冪等性が切れる
 ASSISTANT_NAMESPACE = uuid.UUID("6f1d5c0e-3a52-5b0b-9d0e-0a5d7d9f8c11")
@@ -108,6 +108,21 @@ def _episode_only() -> dict[str, Any]:
     return _object({"episode_id": _EPISODE_ID}, ["episode_id"])
 
 
+#: 楽観的な競合検出（``CommandEnvelope`` の項目）。直近に読んだ版を送る
+_EXPECTED: dict[str, Any] = {
+    "expected_control_revision": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "The control_revision you last read (get_episode_status). The command "
+        "conflicts instead of applying if the episode changed since.",
+    },
+    "expected_target_revision": {
+        "type": "string",
+        "description": "The revision id you last read for the target. The command conflicts "
+        "instead of applying if it is no longer current.",
+    },
+}
+
 _RATIONALE: dict[str, Any] = {
     "type": "string",
     "maxLength": 4000,
@@ -179,7 +194,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         _object(
             {
                 "decision_type": {"type": "string", "maxLength": 64},
-                "role": {"enum": ["producer", "writer_director", "reviewer"]},
+                "role": {"enum": [r.value for r in AgentRole]},
                 "episode_id": _EPISODE_ID,
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                 "before": {"type": "string", "maxLength": 64},
@@ -248,6 +263,7 @@ TOOLS: tuple[ToolSpec, ...] = (
                 "rationale": _RATIONALE,
                 "base_manifest_id": _BASE_MANIFEST,
                 "variant_group": _VARIANT_GROUP,
+                **_EXPECTED,
             },
             ["episode_id", "base_revision_id"],
         ),
@@ -268,6 +284,7 @@ TOOLS: tuple[ToolSpec, ...] = (
                 "rationale": _RATIONALE,
                 "base_manifest_id": _BASE_MANIFEST,
                 "variant_group": _VARIANT_GROUP,
+                **_EXPECTED,
             },
             ["episode_id", "base_revision_id", "scene_id", "visual_description"],
         ),
@@ -296,7 +313,11 @@ TOOLS: tuple[ToolSpec, ...] = (
         "stop: already-dispatched provider jobs may still complete and be charged. Check "
         "get_episode_status for held.",
         _object(
-            {"episode_id": _EPISODE_ID, "reason": {"type": "string", "maxLength": 1000}},
+            {
+                "episode_id": _EPISODE_ID,
+                "reason": {"type": "string", "maxLength": 1000},
+                **_EXPECTED,
+            },
             ["episode_id"],
         ),
         ToolEffect.CONTROL,
@@ -331,6 +352,7 @@ TOOLS: tuple[ToolSpec, ...] = (
                     "description": "The estimated cost (USD) shown to the user; null only if "
                     "the change set's estimate is null.",
                 },
+                **_EXPECTED,
             },
             ["episode_id", "change_set_id", "acknowledged_estimated_cost_usd"],
         ),
@@ -340,9 +362,15 @@ TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         ToolName.RESUME_EPISODE,
         "Resume a held episode (or one waiting at a review point). Resuming restarts the pipeline "
-        "from the stage decided by what is stale; optionally name the start stage.",
+        "from the stage decided by what is stale and MAY START PAID REGENERATION. AI-initiated "
+        "paid regeneration needs a human: the result is then needs_human_approval with the "
+        "command a person must run. Optionally name the start stage.",
         _object(
-            {"episode_id": _EPISODE_ID, "start_stage": {"type": "string", "maxLength": 64}},
+            {
+                "episode_id": _EPISODE_ID,
+                "start_stage": {"type": "string", "maxLength": 64},
+                **_EXPECTED,
+            },
             ["episode_id"],
         ),
         ToolEffect.CONTROL,

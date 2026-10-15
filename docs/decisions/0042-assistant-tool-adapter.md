@@ -58,6 +58,13 @@ Proposed（2026-10-15）。設計 JP-MAS-001 v2.0 §8「対話するAIアシス�
    `intervention.api.request`（route の template・principal の actor_type／actor_id・status・duration_ms・
    correlation_id・tool_name・episode_id）を出し、既存の OpenSearch 投影経路に乗せる。token・本文は出さない（INV-39）。
    正本は従来どおり command 行・`episode_events`。
+   - **相関 ID の保存形**: `CommandEnvelope.correlation_id` は 64 文字までなので、`assistant:{session_id}:{tool_call_id}`
+     が長いときは command 行には `assistant:` + 32 桁の hex（完全な文字列の sha256 の先頭 32 桁）を保存する。ヘッダと
+     ログには完全な値を出す。`command_id` は決定的なので、ログの値からも command を引ける。
+   - **principal**: アシスタントの token は必ず AI の principal（`ai_assistant`）にする。人の token を渡さない。
+     AI の再開が有料の再生成を始めるときはサーバが拒否し、adapter は `needs_human_approval` を返す。
+   - サーバの拒否理由は adapter が言い換えず、`detail` コードをそのまま返す。command に直近に読んだ版
+     （`expected_control_revision` / `expected_target_revision`）を付けられる。
 7. **入口**: `scripts/assistant.py tools`（tool 定義を JSON で出す。tool use の定義としてそのまま渡せる形）と
    `scripts/assistant.py call <tool> --input <json> --session <id> --tool-call-id <id>`（実行）。MCP server は
    新しい依存（`mcp` パッケージ）と常駐プロセスを足すため今回は作らない。追加するときは別 ADR で、同じ
