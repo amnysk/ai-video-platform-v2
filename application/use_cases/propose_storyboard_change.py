@@ -89,6 +89,9 @@ class ProposeStoryboardChange:
                     type=CommandType.PROPOSE_CHANGE,
                     expected_control_revision=request.expected_control_revision,
                     payload=payload.model_dump(mode="json", exclude_none=True),
+                    correlation_id=None
+                    if caller.correlation_id is None
+                    else caller.correlation_id[:64],
                 )
             )
         received = await self._port.receive(str(episode_id), envelopes, caller)

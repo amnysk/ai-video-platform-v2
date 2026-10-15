@@ -20,6 +20,7 @@ from contracts.application import (
     CreateEpisodeDraftRequest,
     StartAgenticProductionRequest,
     StartedWorkflow,
+    WorkerCheck,
     episode_draft_id,
 )
 from contracts.intervention import InterventionMode
@@ -63,6 +64,9 @@ class RecordingStarter:
         return StartedWorkflow(
             workflow_id=agentic_episode_workflow_id(str(episode_id)), started=self._started
         )
+
+    async def probe_workers(self) -> WorkerCheck:
+        return WorkerCheck.UNKNOWN
 
 
 # ------------------------------------------------------------------------------ draft
