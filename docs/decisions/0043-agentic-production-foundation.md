@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed（2026-10-15）。設計 [JP-MAS-002 v1.1](../design/JP-MAS-002-v1.1.md) の P0（境界確定と安全な拡張基盤）と
+Accepted（2026-10-15。Proposed 同日。P1 の残り4件を解消し、unit/contract/architecture 4,201件・integration 163件の成功を確認して承認）。設計 [JP-MAS-002 v1.1](../design/JP-MAS-002-v1.1.md) の P0（境界確定と安全な拡張基盤）と
 P1（Agent ワークフロー）の実装判断。前提は [ADR-0041](./0041-decision-records-and-intervention.md)・
 [ADR-0042](./0042-assistant-tool-adapter.md)・[docs/domain/intervention.md](../domain/intervention.md)。
 P2（Web UI）・P3（MCP Server）は**対象外**（境界だけを残す）。本番反映はしない（別承認）。
@@ -209,11 +209,31 @@ P2（Web UI）・P3（MCP Server）は**対象外**（境界だけを残す）�
   - 解析（48h/7d/28d）の新しい収集は無い。Learning は既存 `analytics_snapshots` と、隔離試験の mock を読む。
   - OpenTelemetry・React Flow・Konva は導入しない。境界（application port・Artifact 契約・OpenAPI 断片）だけを残す。
   - MCP Server・OAuth・Web UI は未実装（P2/P3）。
-  - P1 の実装で判明した残り（P2 以降で扱う）:
-    - 介入の resume は既存 `EpisodePipelineWorkflow` を起動するので、停止・待機の後の agent stage（quality 等）は
-      走らない。`AgenticEpisodeWorkflow` の id は重複拒否で、再起動の経路は未設計。
-    - 予約は Agent stage の開始時に上限で取る。LLM を呼ばずに `awaiting_public_metrics` で終わる learning も
-      上限（0.03 USD）を計上する（安全側の過大計上。必要になった時点で予約する方式は未実装）。
-    - `ProposeStoryboardChange` の command_id は `(要求 id, edit の位置)` から導くので、同じ要求 id で edit の数だけを
-      変えた再送は `command_id_reused` にならない（減らした場合は保存済みの部分を返し、増やした場合は追加分を受け付ける）。
-    - 台本の再利用キーに CreativeBrief の版が入らない（P1 は creative stage を1度しか走らせない）。
+  - P1 の実装で判明した残り4件は Accepted の前に解消した（2026-10-15、merge 50c6c59 / 8297655）:
+    - **介入の resume が旧 workflow を起動した** → apply Activity（と API の `POST /episodes/{id}/resume`）が
+      固定済みの agentic plan の有無を読み、`pipeline_kind=agentic` なら `AgenticEpisodeWorkflow`
+      （id `agentic-episode-{id}`）を起動する。workflow は Activity の結果だけで分岐し、新しい分岐は
+      `workflow.patched("agentic-resume-starts-agentic-episode-workflow")` の内側（旧い履歴は旧経路で replay、
+      再変更前の履歴 fixture で検査）。resume の起動は `ALLOW_DUPLICATE`（閉じた実行だけ再起動でき、実行中は
+      `already_running`）。初回起動（`TemporalAgenticStarter.start`）は `REJECT_DUPLICATE` のまま。
+      再起動は同じ固定計画を歩き、完了済み agent stage は同じ冪等キーで保存済み結果を返す（LLM・予約を増やさない）。
+    - **Learning が LLM を呼ばない経路でも予約した** → handler 別の決定論 precheck（`LLM_PRECHECKS`）が LLM 不要と
+      言うときだけ予約を省く。precheck の無い handler・入力の解釈に失敗したときは予約する（fail-closed）。
+      予約しない経路の LLM は呼ぶと例外になる。
+    - **`ProposeStoryboardChange` の再送で edit 数の違いが通った** → 要求全体の指紋 `request_sha256` を各 command の
+      payload に入れ、既存の payload 一致検査（INV-42）と `command_id_reused` で拒否する。1 transaction で
+      全体を rollback するので部分適用は無い。migration 無し。
+    - **台本の再利用キーに CreativeBrief の版が無かった** → brief があり TopicPlan の無い Episode だけ、brief の
+      sha256 を台本の input_hash に畳み込む（日次・TopicPlan 経路の hash は不変）。
+  - 既存テストの変更: 無い（追加だけ。`test_jpmas2_agentic_e2e.py` の import 行の分割は書式）。今回追加した
+    hold -> resume の E2E は初版が「完了後の2度目の resume も起動する」を期待していたが、実スタックで
+    完了済み Episode は domain の resume plan が工程を返さず起動しない（旧経路と同じ、安全側）と確かめて期待を直した。
+    理由は [docs/testing/jpmas2-fixa-rationale.md](../testing/jpmas2-fixa-rationale.md)。
+  - 残る既知のリスク（P2 以降で扱う）:
+    - brief が変わった後、成功済みの台本 job への `generate_script` は `InvalidTransition` で止まる（古い台本を
+      黙って採らない代わりに、台本 job の作り直し経路が無い）。
+    - API の agentic resume は既定の `PipelineOptions` で起動し、介入経路は worker の設定を使う（queue を既定から
+      変えた環境では差が出る）。`target_stage` は agentic では情報のみ（常に先頭から歩く）。
+    - 固定 plan を持つ Episode を flag OFF の環境で resume すると、`AgenticEpisodeWorkflow` を拾う worker が無い。
+    - この変更より前に一部だけ保存された storyboard 提案を再送すると `command_id_reused` になる（新しい要求 id が要る）。
+    - 変更前に作られた agentic Episode の台本は、brief の版が hash に無いので一度だけ作り直される（flag 既定 OFF）。
