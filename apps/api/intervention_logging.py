@@ -79,13 +79,14 @@ class InterventionRequestLoggingMiddleware:
     def _log(
         scope: Scope, code: int | None, failed: bool, started: float, actor: dict[str, str]
     ) -> None:
+        fields = _safe_fields(scope, code, failed, started, actor)
         with log_guard():  # ログの故障で応答を変えない（INV-38）
             emit(
                 logger,
                 EventName.INTERVENTION_API_REQUEST,
                 logging.INFO,
                 "intervention api request",
-                **_fields(scope, code, failed, started, actor),
+                **fields,
             )
 
 
@@ -93,6 +94,15 @@ def _outcome(http_status: int | None) -> Outcome:
     if http_status is None or http_status >= 500:
         return Outcome.FAILED
     return Outcome.SUCCEEDED if http_status < 400 else Outcome.REJECTED
+
+
+def _safe_fields(
+    scope: Scope, code: int | None, failed: bool, started: float, actor: dict[str, str]
+) -> dict[str, Any]:
+    try:
+        return _fields(scope, code, failed, started, actor)
+    except Exception:  # 組み立ての故障もログだけの問題にする（INV-38）
+        return {}
 
 
 def _fields(
