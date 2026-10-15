@@ -535,6 +535,8 @@ AI による有料適用の拒否・command の記録（INV-47）を迂回する
 / `tests/contract/test_assistant_tools_contract.py::test_no_tool_changes_budget_schedule_or_visibility`
 / `tests/contract/test_assistant_tools_contract.py::test_proposal_schemas_do_not_invent_payload_fields`
 / `tests/contract/test_assistant_tools_contract.py::test_a_schema_valid_proposal_is_accepted_by_the_real_payload_model`
+/ `tests/architecture/test_assistant_boundary.py::test_each_detection_fires_on_a_fake_package`
+/ `tests/architecture/test_assistant_boundary.py::test_from_apps_import_assistant_is_not_a_false_positive`
 / `tests/unit/test_assistant_adapter.py::test_every_tool_in_the_catalogue_can_be_dispatched`
 
 ### INV-49 同じ tool 呼び出しの再試行は1つの論理変更にしかならず、費用は確認したものだけを適用する
@@ -546,13 +548,19 @@ INV-42 により API は保存済みの command を返す（二重の提案・�
 サーバが権限不足・AI の有料適用で拒否したら `needs_human_approval`（影響・見積り・人が実行する
 `scripts/intervene.py apply …`）を返し、再試行や別の資格情報での迂回をしない。全ての要求に
 `X-Correlation-ID: assistant:{session_id}:{tool_call_id}` と `X-Assistant-Tool` を付け、API は
-`intervention.api.request` を記録する（token・Authorization・本文は出さない。INV-39）。
+`intervention.api.request` を記録する（token・Authorization・本文は出さない。INV-39）。command 行に保存する
+相関 ID は 64 文字を超えるとき `assistant:` + 32 桁の hex（完全な文字列の sha256 の先頭）の短縮形で、ヘッダ・ログには
+完全な値が残る。同じ `tool_call_id` が別の command（種類・ChangeSet・Episode が違う）に使われていたら
+`command_id_reused` を返し、保存済みの別 command を結果として返さない。アシスタントの token は AI の principal に限る。
 **機械検査**: `tests/contract/test_assistant_tools_contract.py::test_command_id_is_deterministic_per_tool_call`
 / `tests/unit/test_assistant_e2e.py::test_a_retried_tool_call_is_one_logical_change`（本物の FastAPI アプリ・store）
 / `tests/unit/test_assistant_e2e.py::test_a_new_tool_call_is_a_new_command_and_a_reused_id_with_other_input_is_refused`
 / `tests/unit/test_assistant_e2e.py::test_apply_with_a_stale_cost_sends_no_command_to_the_real_api`
 / `tests/unit/test_assistant_adapter.py::test_the_same_tool_call_sends_the_same_command_id_and_a_different_one_differs`
 / `tests/unit/test_assistant_adapter.py::test_a_retried_apply_returns_the_stored_command_without_rechecking_cost`
+/ `tests/unit/test_assistant_adapter.py::test_a_tool_call_id_used_for_another_command_is_command_id_reused_not_applied`
+/ `tests/unit/test_assistant_adapter.py::test_a_stored_apply_for_another_change_set_or_episode_is_command_id_reused`
+/ `tests/unit/test_assistant_adapter.py::test_human_command_is_built_only_from_strict_uuids_and_quoted`
 / `tests/unit/test_assistant_adapter.py::test_a_changed_estimate_sends_nothing_and_returns_cost_changed`
 / `tests/unit/test_assistant_adapter.py::test_null_and_zero_are_never_confused`
 / `tests/unit/test_assistant_adapter.py::test_a_forbidden_scope_returns_needs_human_approval_and_does_not_retry`

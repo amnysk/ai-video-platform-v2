@@ -7,6 +7,10 @@ ChangeSet・コメント）。
 
 ## 1. 設定（所有者が行う）
 
+**アシスタントの token は必ず AI の principal（`actor_type` が `ai_assistant`）にする。人（`human`）の principal の
+token を渡してはならない**（AI の操作が人の直接編集として記録され、`set_mode` や有料の適用など人専用の権限が
+AI に渡る）。人の承認が要る操作は §4 のとおり人が別の token で行う。
+
 アシスタント用の principal を `INTERVENTION_PRINCIPALS`（[intervention-api.md](./intervention-api.md) §1）に足す。
 `actor_type` は `ai_assistant`。scope は必要な分だけ（`set_mode` は人専用で AI には付けられない）:
 
@@ -80,6 +84,11 @@ echo '{"episode_id": "<uuid>", "anchor": {"segment_id": "s3"}, "body": "ここ�
 - 全ての要求に `X-Correlation-ID: assistant:{session}:{tool_call_id}` と `X-Assistant-Tool: {tool}` が付く。
   OpenSearch では `event_name:intervention.api.request` を `correlation_id` / `tool_name` / `episode_id` で引く
   （token・Authorization・本文は記録しない）。正本は `intervention_commands` と `episode_events`。
+- **相関 ID の保存形**: ヘッダと `intervention.api.request` ログの `correlation_id` は常に完全な
+  `assistant:{session}:{tool_call_id}`。command 行の `correlation_id` は 64 文字以内ならそれと同じで、超えるときは
+  短縮形 `assistant:` + 32 桁の hex（完全な文字列の sha256 の先頭 32 桁）になる。辿り方: ログの `correlation_id`
+  から `command_id`（= `uuid5(ASSISTANT_NAMESPACE, "{session}:{tool_call_id}")`、`contracts.assistant_tools.tool_command_id`）
+  を計算して command を引く。または command 行の短縮形と、ログの完全な値の sha256 先頭 32 桁を突き合わせる。
 
 ## 4. 有料の変更を適用する流れ（承認）
 
