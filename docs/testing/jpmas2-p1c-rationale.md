@@ -95,3 +95,37 @@ time-skipping 環境で、子 workflow と `run_agent_stage` は fake、control 
   creative_brief があっても plan_brief のまま（日次が agentic に影響されない）。
 - `test_an_unsupported_creative_brief_version_is_refused_not_read`（INV-54）: 未知の schema 版を読み替えず
   `PromptContractError`（needs_input、再試行しない）で拒否する。
+
+## 6. use case・adapter（tests/unit/test_agentic_use_cases.py）
+
+- `test_a_draft_is_an_idle_planned_episode_with_a_brief_and_an_intervenable_control`: draft は `planned` の
+  Episode・UserBrief・`auto_intervenable` の制御行を作るだけで、workflow id も持たない（生成を始めない）。
+- `test_a_draft_uses_no_daily_slot_and_no_topic_plan`: 日次の枠・TopicPlan を使わない（日次 Planner と衝突しない）。
+- `test_resending_the_same_command_returns_the_same_episode`: 応答を失った再送が Episode を増やさない。
+- `test_the_same_command_id_with_another_brief_is_command_id_reused`: 同じ id で別内容を黙って受けない。
+- `test_different_commands_make_different_episodes`: id の決定が command ごとに分かれる。
+- `test_a_draft_for_an_unknown_unrunnable_or_legacy_template_creates_nothing`: 起動できない template の
+  draft を作らない（INV-53）。拒否 code は pin と同じ。
+- `test_a_format_profile_other_than_the_templates_is_refused`: UserBrief と Template の形式の食い違い。
+- `test_start_is_refused_when_the_flag_is_off`（INV-55）: flag が無効なら何も起動しない。
+- `test_start_runs_the_agentic_workflow_for_the_drafts_template`: draft の template で起動し、workflow id は
+  `agentic-episode-{episode_id}`。
+- `test_start_reports_an_already_started_workflow_without_starting_another`: 二重起動しない。
+- `test_start_for_an_episode_without_a_draft_is_episode_not_found`: 無い Episode を起動しない。
+- `test_start_rejects_a_legacy_or_unrunnable_template`: 後から legacy / 未実装になった template も start で拒否。
+- `test_the_temporal_starter_uses_one_workflow_id_per_episode_and_rejects_duplicates`: 実 Temporal で
+  REJECT_DUPLICATE（終わった id も再利用しない）、queue は pipeline、workflow type 名。
+
+## 7. CLI（tests/unit/test_agentic_cli.py）
+
+- `test_plan_previews_the_compile_without_touching_the_database` / `test_plan_reports_the_refusal_code`:
+  確認用の `plan --template` は DB・Temporal に触れず、拒否 code を返す。
+- `test_draft_prints_the_command_id_and_resending_it_returns_the_same_episode` /
+  `test_draft_with_the_same_command_id_and_another_theme_is_rejected` /
+  `test_draft_without_a_command_id_generates_one`: 再送の運用（stderr の command_id）が成り立つ。
+- `test_draft_with_an_invalid_input_is_a_usage_error`: UserBrief の検証違反は exit 2（DB に触れない）。
+- `test_there_is_no_way_to_pass_a_budget_visibility_or_schedule`: CLI に予算・公開設定・Schedule の引数が無い。
+- `test_start_is_refused_when_the_flag_is_off` / `test_learn_requires_the_flag_and_starts_the_learning_workflow`:
+  flag の無い環境では起動しない（INV-55）。
+- `test_a_malformed_episode_id_is_a_usage_error`: 不正な id を DB に渡さない。
+- `test_plan_reads_the_pinned_plan_of_an_episode`: pin 前は `no_pinned_plan`、pin 後は計画を表示する。

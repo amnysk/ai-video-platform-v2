@@ -619,6 +619,7 @@ role・版を `UnknownAgentSpecError` で拒否する（既存 3 役は Registry
 / `tests/unit/test_agentic_pipeline_activities.py::test_a_pinned_plan_is_returned_unchanged_after_the_template_changes`
 / `tests/unit/test_agentic_workflow.py::test_the_pinned_plan_is_used_after_the_template_changes`
 / `tests/unit/test_agentic_workflow.py::test_a_drifted_agent_spec_stops_without_retrying`
+/ `tests/unit/test_agentic_use_cases.py::test_start_rejects_a_legacy_or_unrunnable_template`
 
 ### INV-52 契約同期: OpenAPI・アシスタント tool schema・contracts の model が一致する
 `ProposeStoryboardChangeRequest` / `StoryboardProposalResult`（`contracts/application.py`）が唯一の定義で、OpenAPI の
@@ -697,6 +698,8 @@ contracts を import しない）。downgrade は新語彙の行があれば何�
 / `tests/unit/test_agentic_workflow.py::test_the_legacy_workflow_module_does_not_mention_the_agentic_workflow`
 / `tests/unit/test_script_creative_brief.py::test_an_episode_without_a_creative_brief_keeps_the_legacy_brief_and_hash`
 / `tests/unit/test_script_creative_brief.py::test_an_episode_with_a_plan_keeps_the_plan_brief_even_with_a_creative_brief`
+/ `tests/unit/test_agentic_use_cases.py::test_start_is_refused_when_the_flag_is_off`
+/ `tests/unit/test_agentic_cli.py::test_start_is_refused_when_the_flag_is_off`
 
 ### INV-56 Agent は Tool Gateway が許した tool だけを上限内で呼び、LLM 費用の欠測を 0 にせず、予約・予算 gate を通ってから呼ぶ
 handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_tools` に無い tool・供給されていない tool は

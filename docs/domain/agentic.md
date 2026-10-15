@@ -128,3 +128,12 @@ handler の契約（実装は P1）と、handler が外へ出るための唯一�
 TopicPlan がある Episode は plan、**TopicPlan が無く現行の `creative_brief` がある Episode は CreativeBrief**
 （`domain/script/brief.py::creative_brief`。検証は `plan_brief` と同じ、`topic_plan_id` は None）、どちらも無ければ legacy。
 INV-55 のため `workers/planning` が読む agentic の語彙は `CreativeBrief` と `contracts.artifact_registry` だけ。
+
+### draft / start / learn
+
+`scripts/agentic.py draft | start | learn | plan`（所有者向け、DB と Temporal に直接つなぐ）。使い方は
+[docs/operations/agentic.md](../operations/agentic.md)、use case は [application.md](./application.md) §8。
+`draft` は生成を始めない。`start` は flag 必須で、`agentic-episode-{episode_id}` を REJECT_DUPLICATE で起動する
+（同じ Episode の再起動は `started=false`。**駐機（hold・待機）後の再開は介入 command が従来の
+`EpisodePipelineWorkflow` を start する**ので、agentic の stage（quality 等）は再開の経路では走らない。P2 で設計する）。
+

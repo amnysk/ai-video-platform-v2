@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from contracts.agentic import UserBrief
 from contracts.intervention import CommandStatus, SceneOverrideVisual
 
 
@@ -116,3 +117,52 @@ class StoryboardProposalResult(_Frozen):
     request_command_id: str
     episode_id: uuid.UUID
     commands: tuple[ProposedSceneCommand, ...]
+
+
+# --------------------------------------------------------------------------- agentic（ADR-0043 §6）
+
+#: draft の ``episode_id`` を ``command_id`` から決める namespace。変えると再送の冪等性が切れる
+EPISODE_DRAFT_NAMESPACE = uuid.UUID("5c1e7d92-3a4b-5f60-8b2d-91e4c6a07f35")
+
+
+def episode_draft_id(command_id: str) -> uuid.UUID:
+    """同じ ``command_id`` は同じ Episode id（draft 作成の冪等性。INV-42 と同じ考え方）。"""
+    return uuid.uuid5(EPISODE_DRAFT_NAMESPACE, command_id)
+
+
+class DraftRecord(_Frozen):
+    """port の結果: draft の Episode。infrastructure も作るので contracts に置く（INV-6）。"""
+
+    episode_id: uuid.UUID
+    #: False = 同じ command_id・同じ内容の再送
+    created: bool
+
+
+class StartedWorkflow(_Frozen):
+    """port の結果: 起動した（または既にあった）workflow。"""
+
+    workflow_id: str
+    started: bool
+
+
+class CreateEpisodeDraftRequest(_Frozen):
+    command_id: str = Field(min_length=8, max_length=64)
+    brief: UserBrief
+
+
+class EpisodeDraftResult(_Frozen):
+    command_id: str
+    episode_id: uuid.UUID
+    #: False = 同じ command_id・同じ内容の再送（既存の Episode を返した）
+    created: bool
+
+
+class StartAgenticProductionRequest(_Frozen):
+    episode_id: uuid.UUID
+
+
+class StartAgenticProductionResult(_Frozen):
+    episode_id: uuid.UUID
+    workflow_id: str
+    #: False = 同じ id の workflow が既にある（REJECT_DUPLICATE。二重に始めない）
+    started: bool
