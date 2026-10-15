@@ -19,6 +19,7 @@ PASS_THROUGH = {
     DEFINITION,
     "contracts/assistant_tools.py",  # tool の入力 schema の導出
     "apps/api/routers/application.py",  # HTTP の本文の型
+    "domain/agents/runtime.py",  # AgentOutput.proposals の型（変換はしない）
 }
 PROPOSAL_NAMES = {"StoryboardPatchProposal", "StoryboardSceneEdit"}
 

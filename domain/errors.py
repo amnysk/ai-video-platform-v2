@@ -50,6 +50,30 @@ class ScriptNarrationOverBudgetError(ScriptSchemaViolationError):
     """
 
 
+class ToolNotAllowedError(PermanentError):
+    """Agent が ``allowed_tools`` に無い、または供給されていない tool を呼んだ（INV-56）。
+
+    同じ spec・同じ handler では必ず同じ結果になるので retry しない。
+    """
+
+
+class AgentBudgetExceededError(PermanentError):
+    """Agent の LLM 呼び出し回数が ``spec.max_llm_calls`` を超えた（INV-56）。"""
+
+
+class AgentBudgetRefusedError(NeedsInputError):
+    """予算 gate が Agent 呼び出しの予約を拒否した。
+
+    理由は ``budget_exceeded`` / ``budget_unverifiable``。
+
+    所有者が上限・換算率を変えるまで直らないので人へ回す。``reason`` は ``RejectReason`` の値。
+    """
+
+    def __init__(self, message: str, *, reason: str = "budget_unverifiable") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 class PromptContractError(NeedsInputError):
     """同じ入力で規定ラウンド連続して同種の違反。
 

@@ -77,3 +77,24 @@ sha256。登録済み spec を変えるときは新しい `spec_version` を足�
 `provider_auth_incidents.provider`・`provider_rejections.provider` の CHECK を張り替えるだけ。`provider_rejections` は
 ADR-0043 §4 の一覧に無いが、`models.py` が `ProviderCall` から CHECK を導くので同じ語彙に揃えた。scene_scope の
 シーン単位の集合は 0014 から変わらない（新 6 型は Episode 単位）。
+
+## Agent 実行基盤（INV-55 / INV-56、P0-C）
+
+handler の契約（実装は P1）と、handler が外へ出るための唯一の道。
+
+| 部品 | 場所 | 役割 |
+|---|---|---|
+| `AgentLlm` / `LlmResult` | `domain/agents/ports.py` | LLM の port。token が取れなければ `None` |
+| `llm_call_cost` / `sum_costs` | `domain/agents/cost.py` | 費用 = usage × 単価。不明は `None`（0 にしない） |
+| `ToolGateway` | `domain/agents/tool_gateway.py` | `allowed_tools` 外・未供給の tool と `max_llm_calls` 超過を呼ぶ前に拒否。呼び出しを記録（prompt 本文なし） |
+| `AgentInput` / `AgentOutput` / `AgentHandler` / `AGENT_INPUT_NAMES` | `domain/agents/runtime.py` | handler の入出力。入力 document 名の正本 |
+| `CodexAgentLlm` / `FakeAgentLlm` | `infrastructure/agents/` | 実装。Codex は `StoryGenerator` を注入で受ける（codex_cli を直接 import しない / INV-18） |
+| `reserve_and_dispatch_agent_call` / `settle_agent_call` | `infrastructure/agents/budget_gate.py` | `ProviderCall.AGENT_LLM` の予約（上限で計上）→ 予算検査 → dispatch gate |
+
+- 例外: `ToolNotAllowedError`・`AgentBudgetExceededError` は `PermanentError`（retry しない）、
+  `AgentBudgetRefusedError`（`reason` = `budget_exceeded` / `budget_unverifiable`）は `NeedsInputError`。
+- `RunCapture` は任意の `estimated_cost_usd`（不明は NULL のまま）と `agent_spec`（role・spec_version・
+  manifest_hash・model_policy_ref。snapshot に残る）を持つ。従来の経路は None のままで何も変わらない。
+- gateway の `token_usage()` / `actual_cost_usd()` は LLM を 1 回も呼ばなければ既知の 0、1 回でも usage・単価が
+  欠ければ `None`（失敗した呼び出しも「不明」として数える）。
+- Flag と運用は [docs/operations/agentic.md](../operations/agentic.md)。

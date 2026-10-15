@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from contracts.intervention import DEFAULT_EPISODE_BUDGET_JPY, DEFAULT_MONTHLY_BUDGET_JPY
+from contracts.intervention import (
+    DEFAULT_EPISODE_BUDGET_JPY,
+    DEFAULT_MONTHLY_BUDGET_JPY,
+    AgentRole,
+)
 from contracts.pipeline import (
     DAILY_SCHEDULE_ID,
     DEFAULT_DAILY_EPISODE_LIMIT,
@@ -216,6 +221,14 @@ class Settings(BaseSettings):
     # --- JP-MAS-002 P0（ADR-0043 §5）。既定は全て無効 ---
     #: ``JPMAS2_APPLICATION_API``。無効なら storyboard 提案 route は ``404 feature_disabled``
     jpmas2_application_api: bool = False
+    #: ``JPMAS2_AGENTIC_WORKFLOWS``。agentic workflow / agent activity の登録と
+    #: ``StartAgenticProduction``。既定 false（日次経路は参照しない / INV-55）
+    jpmas2_agentic_workflows: bool = False
+    #: ``JPMAS2_ENABLED_AGENTS``。有効な agent role（``AgentRole`` の値のカンマ区切り）。
+    #: 空 = 全て無効。未知の名前は起動時に失敗する。読み取りは ``enabled_agent_roles``
+    jpmas2_enabled_agents: str = ""
+    #: ``JPMAS2_AGENT_LLM``。agent が使う LLM。``fake`` は隔離試験スタック専用の決定的な偽物
+    jpmas2_agent_llm: Literal["codex", "fake"] = "codex"
 
     # --- JP-MAS-001 判断記録の捕捉（ADR-0041、担当A） ---
     #: Topic Planner（producer）の実行記録（ContextSnapshot・agent_run）と choose_topic の
@@ -233,6 +246,12 @@ class Settings(BaseSettings):
     monthly_budget_jpy: int = DEFAULT_MONTHLY_BUDGET_JPY
     #: 1 USD あたりの円。**既定なし**: 未設定なら有料の見積りを伴う変更は ``budget_unverifiable``
     budget_usd_jpy_rate: Decimal | None = None
+
+    @field_validator("jpmas2_enabled_agents")
+    @classmethod
+    def _known_enabled_agents(cls, v: str) -> str:
+        _parse_enabled_agents(v)
+        return v
 
     @field_validator("research_provider", mode="before")
     @classmethod
@@ -265,3 +284,23 @@ class Settings(BaseSettings):
 
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"
+
+
+def _parse_enabled_agents(raw: str) -> frozenset[AgentRole]:
+    roles: set[AgentRole] = set()
+    for name in (part.strip() for part in raw.split(",")):
+        if not name:
+            continue
+        try:
+            roles.add(AgentRole(name))
+        except ValueError:
+            known = ", ".join(sorted(r.value for r in AgentRole))
+            raise ValueError(
+                f"unknown agent role {name!r} in JPMAS2_ENABLED_AGENTS; known: {known}"
+            ) from None
+    return frozenset(roles)
+
+
+def enabled_agent_roles(settings: Settings) -> frozenset[AgentRole]:
+    """``JPMAS2_ENABLED_AGENTS`` で有効にした role。空なら何も有効でない。"""
+    return _parse_enabled_agents(settings.jpmas2_enabled_agents)
