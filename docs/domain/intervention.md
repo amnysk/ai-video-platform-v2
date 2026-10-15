@@ -102,13 +102,19 @@ API（1 transaction）:  intervention_commands INSERT(status=RECEIVED, dispatche
                        [+ episode_events INSERT]
            commit → 202 {command_id, status: RECEIVED}
 配送:      API が commit 後に best-effort で InterventionCommandWorkflow(id=intervention-{command_id}) を start
-           + 再配送 Schedule（avp-intervention-redelivery）が dispatched_at IS NULL / 停滞した RECEIVED を再 start
+           + 再配送 Schedule（avp-intervention-redelivery）が、dispatched_at IS NULL / 停滞した RECEIVED・VALIDATED・APPLYING と、
+           「APPLIED だが result.pipeline_start に対する pipeline が未記録、または outcome=start_failed」の command を再 start
+           （Schedule は所有者が `scripts/ensure-daily-schedule.py --intervention --apply` で登録する。worker は自動登録しない）
 Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episode 内を直列化）
              status が終端なら保存済み result を返す（再配送・復旧の冪等）
              RECEIVED → VALIDATED（権限・期待版・予算・制約）→ APPLYING → APPLIED | CONFLICT | REJECTED | FAILED
              状態変更・新 revision・manifest・判断記録・episode_events を同じ commit に入れる
-           resume / checkpoint 解放なら子 EpisodePipelineWorkflow を決定的 id で start（既存の二重起動防止 / INV-30）
-           follow-up Activity が start の結果（started / already_running）を command result に追記
+           resume / checkpoint 解放なら、start の前に check Activity が「適用の後に状況が変わっていないか」を見る
+             （適用時に記録した control_revision と現在が一致・control_state=RUNNING・Episode が投稿済み/終端でない）。
+             変わっていれば start せず outcome=not_needed（reason 付き）。再配送が終わった pipeline を再起動しない
+           子 EpisodePipelineWorkflow を決定的 id で start（既存の二重起動防止 / INV-30）
+           follow-up Activity が結果を必ず command result.pipeline に追記する:
+             outcome ∈ started / already_running / start_failed / not_needed（contracts の PipelineStartOutcome）
 ```
 
 - 同じ `command_id` で**同じ payload**（`payload_sha256` 一致）の再送は既存の行を返す（新しい行も適用も作らない）。
@@ -125,6 +131,15 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
 `InterventionCommandWorkflow`（id `intervention-{command_id}`）を子として start する（実行中なら束ねる）。
 command worker は専用の task queue（`intervention`）で動く。
 
+### 注記の解決（`resolve_annotation`）
+scope `comment`（AI も `comment` を持てば可。追加の権限は無い）。`comment` / `review_finding` 注記を解決または
+「直さない」と宣言する（`resolution` ∈ `resolved` / `wont_fix`、任意の `note`）。適用は `annotations` に
+`kind=resolution`（`refers_to_annotation_id` = 対象、`payload.resolution`）を**追記**し、同じ transaction で
+`review.resolved` を `episode_events` に記録する。元の注記は変えず消さない（INV-41）。同じ `command_id` は
+1行・1 event（INV-42。`annotations.command_id` の一意）。拒否（REJECTED）: 対象が無い・他 Episode =
+`not_found`、対象が comment / review_finding でない = `invalid_payload`、解決済み = `invalid_state`。
+read model の `status=resolved` と ReviewPacket の「未解決コメント」（`open_comments`）は、この行を読む。
+
 ### クラッシュ・重複の境界
 | 落ちる地点 | DB に残るもの | 復旧 |
 |---|---|---|
@@ -133,7 +148,13 @@ command worker は専用の task queue（`intervention`）で動く。
 | workflow start の重複 | — | 決定的 workflow id で Temporal が1つに束ねる |
 | apply の commit 前 | RECEIVED/VALIDATED（commit されない中間は残らない） | Activity retry が最初からやり直す |
 | apply の commit 後・Workflow が結果を受け取る前（Worker 障害） | APPLIED + result | Activity retry / 再配送が同じ command_id を見て**保存済み result を返す**（再適用しない） |
-| pipeline start の後・follow-up 前 | APPLIED、pipeline は走っている | 再実行の start は `WorkflowAlreadyStartedError` → already_running として記録 |
+| pipeline start の後・follow-up 前 | APPLIED、pipeline は走っている | 再配送が拾い、start は `WorkflowAlreadyStartedError` → already_running として記録 |
+| APPLIED の後・start の前に workflow が落ちた | APPLIED + `pipeline_start`、`pipeline` 無し | 再配送が拾い、check を通れば pipeline を1回だけ start。記録後は拾われない |
+| start の失敗 | `pipeline.outcome=start_failed` | 再配送が再試行する（check は毎回通る） |
+| 適用の後に hold・待機・終端になった | APPLIED + 制御版が進んだ | check が `not_needed` を記録し、何も start しない |
+
+`dispatched_at` / `dispatch_attempts` は、再配送が子 workflow の start に成功した（または既に走っている）ときだけ
+記録する。列挙しただけでは増やさない。
 
 ## 5. 停止中にできること・HELD の応答
 停止中も: 読み取り、コメント、ChangeSet の作成、送信済み provider job の状態照会と結果保存（既存の await 経路は gate を
@@ -197,6 +218,15 @@ API の command・read は `INTERVENTION_PRINCIPALS`（設定。token の sha256
 （`read` / `comment` / `propose` / `hold` / `apply` / `resume` / `set_mode`）を持ち、command 行に実際に使った scope を
 記録する。**予算上限・Schedule・公開設定を変える command 型は存在しない**（受け付けると 422 `unsupported_command`）。
 `set_mode` は `actor_type=human` の principal にだけ付与できる（設定読み込み時に検査）。
+
+**AI（`ai_assistant` / `agent`）は有料の生成を始められない。** `apply_change` は 0 円・制約に触れない変更だけ
+（有料は `forbidden` / `detail=ai_paid_apply`）。`resume` と `release_checkpoint` は降ろされた出力を作り直す
+ので、これから走る実行が有料の生成（現行の storyboard のシーンに画像か動画が無い、または storyboard から
+やり直す）を伴うなら AI には REJECTED `forbidden` / `detail=ai_resume_requires_paid_generation` とし、
+制御状態は変えず pipeline も始めない。判定は `resume` が開始工程を決めるのと同じ「現行に何が無いか」
+（`paid_generation_required`）。音声・manifest・render だけの再開は AI にも可。人は影響を受けない。
+`forbidden` の原因は `result.detail`（`contracts.intervention.ForbiddenDetail`: `scope_mismatch` /
+`human_only` / `ai_paid_apply` / `ai_resume_requires_paid_generation`）で区別する。
 
 ## 9. 予算
 上限は `EPISODE_BUDGET_JPY`（既定 1000）・`MONTHLY_BUDGET_JPY`（既定 30000）・換算 `BUDGET_USD_JPY_RATE`（既定なし）。

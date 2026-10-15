@@ -122,6 +122,8 @@ APP = {
     "scene-alternative-worker": "sa1",
     # ADR-0037 §8.5: Research の worker（deploy-workers.sh の APP_SERVICES と同じ集合）
     "research-worker": "rs1",
+    # ADR-0041 §3: 介入 command の worker（同上）
+    "intervention-worker": "iv1",
 }
 INFRA = {"postgres": "pg1", "temporal": "t1", "minio": "mn1"}
 

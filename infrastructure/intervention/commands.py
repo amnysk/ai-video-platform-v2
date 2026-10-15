@@ -40,10 +40,13 @@ from contracts.intervention import (
     CommandType,
     CommentPayload,
     ControlState,
+    ForbiddenDetail,
     InterventionEvent,
     InterventionMode,
+    PipelineStartOutcome,
     RejectReason,
     ReleaseCheckpointPayload,
+    ResolvePayload,
     ResumePayload,
     Scope,
     SetModePayload,
@@ -54,6 +57,7 @@ from contracts.pipeline import STAGE_REVIEW_POINT, PipelineStage
 from contracts.states import ArtifactType, EpisodeStatus, ProviderCall, ReservationStatus
 from domain.errors import TransientError
 from domain.pipeline.resume_plan import determine_target_stage
+from infrastructure.db.models import ArtifactMetadataRow
 from infrastructure.db.repositories import EpisodeRepository, ProviderReservationRepository
 from infrastructure.intervention.budget import BudgetPolicy
 from infrastructure.intervention.gate import REVIEWING_MODES
@@ -89,7 +93,12 @@ __all__ = [
 
 #: 受付の transaction で適用まで済ませる型（副作用が無い・記録だけ）
 INLINE_TYPES: frozenset[CommandType] = frozenset(
-    {CommandType.COMMENT, CommandType.SET_USER_CONSTRAINT, CommandType.REQUEST_CANCEL}
+    {
+        CommandType.COMMENT,
+        CommandType.SET_USER_CONSTRAINT,
+        CommandType.RESOLVE_ANNOTATION,
+        CommandType.REQUEST_CANCEL,
+    }
 )
 #: 期待版（expected_control_revision）を受付で検査し、適用では検査しない型。
 #: 受付が制御状態を変える（制御版が進む）ので、適用時の比較は意味を持たない
@@ -230,7 +239,13 @@ class CommandOutcome:
     @property
     def pipeline_start(self) -> dict[str, Any] | None:
         """子 pipeline の start がまだ記録されていなければ、その入力。"""
-        if self.status is not CommandStatus.APPLIED or "pipeline" in self.result:
+        if self.status is not CommandStatus.APPLIED:
+            return None
+        recorded = self.result.get("pipeline")
+        if (
+            isinstance(recorded, dict)
+            and recorded.get("outcome") != PipelineStartOutcome.START_FAILED
+        ):
             return None
         start = self.result.get("pipeline_start")
         return dict(start) if isinstance(start, dict) else None
@@ -448,12 +463,12 @@ async def _apply_in_session(
 async def _decide(ctx: ApplyContext) -> Decision:
     command = ctx.command
     if command.granted_scope is not REQUIRED_SCOPE[command.type]:
-        return Decision.rejected(RejectReason.FORBIDDEN, detail="granted scope does not match")
+        return Decision.rejected(RejectReason.FORBIDDEN, detail=ForbiddenDetail.SCOPE_MISMATCH)
     if (
         REQUIRED_SCOPE[command.type] in HUMAN_ONLY_SCOPES
         and command.actor.type is not ActorType.HUMAN
     ):
-        return Decision.rejected(RejectReason.FORBIDDEN, detail="human principals only")
+        return Decision.rejected(RejectReason.FORBIDDEN, detail=ForbiddenDetail.HUMAN_ONLY)
     expected = command.expected_control_revision
     if (
         command.type not in _CHECKED_AT_RECEIVE
@@ -505,6 +520,32 @@ async def _finish(ctx: ApplyContext, decision: Decision, *, executor: str) -> Co
     return finished
 
 
+async def check_pipeline_start(
+    session_factory: async_sessionmaker[AsyncSession], command_id: str
+) -> dict[str, Any]:
+    """子 pipeline を start してよいか（apply の後に状況が変わっていないか）。何も書かない。
+
+    適用時に記録した ``control_revision`` と現在の制御版が違う（その後に hold・待機・別の command が
+    あった）、``control_state`` が ``running`` でない、Episode が投稿済み・終端 — のどれかなら
+    ``proceed=False``。再配送が終わった pipeline を再起動することを防ぐ。
+    """
+    async with session_factory() as session:
+        store = InterventionStore(session)
+        command = await store.get_command(command_id)
+        if command is None:
+            raise CommandNotFoundError(command_id)
+        control = await store.get_control(command.episode_id)
+        recorded = (command.result or {}).get("control_revision")
+        if control.persisted and recorded != control.control_revision:
+            return {"proceed": False, "reason": "control_revision_changed"}
+        if control.control_state is not ControlState.RUNNING:
+            return {"proceed": False, "reason": f"control_state_{control.control_state.value}"}
+        episode = await EpisodeRepository(session).get(command.episode_id)
+        if episode is None or episode.status in CLOSED_EPISODE_STATUSES:
+            return {"proceed": False, "reason": "episode_closed"}
+        return {"proceed": True, "reason": None}
+
+
 async def record_followup(
     session_factory: async_sessionmaker[AsyncSession],
     command_id: str,
@@ -519,8 +560,8 @@ async def record_followup(
         await store.lock_control(command.episode_id)
         merged = await store.merge_command_result(command_id, {"pipeline": dict(pipeline)})
         if merged.type is CommandType.RESUME and pipeline.get("outcome") in {
-            "started",
-            "already_running",
+            PipelineStartOutcome.STARTED,
+            PipelineStartOutcome.ALREADY_RUNNING,
         }:
             await store.append_event(
                 merged.episode_id,
@@ -544,6 +585,7 @@ def _handlers() -> dict[CommandType, Handler]:
     return {
         CommandType.COMMENT: _comment,
         CommandType.SET_USER_CONSTRAINT: _user_constraint,
+        CommandType.RESOLVE_ANNOTATION: _resolve_annotation,
         CommandType.REQUEST_HOLD: _hold,
         CommandType.REQUEST_CANCEL: _cancel,
         CommandType.RESUME: _resume,
@@ -591,6 +633,48 @@ async def _comment(ctx: ApplyContext) -> Decision:
         command_id=ctx.command.command_id,
     )
     return Decision.applied({"annotation_id": annotation.annotation_id})
+
+
+async def _resolve_annotation(ctx: ApplyContext) -> Decision:
+    """resolution 注記を追記し review.resolved を記録する（元の注記は変えない / INV-41）。"""
+    payload = ResolvePayload.model_validate(ctx.command.payload)
+    annotations = await ctx.store.list_annotations(ctx.episode_id)
+    target = next((a for a in annotations if a.annotation_id == payload.annotation_id), None)
+    if target is None:
+        return Decision.rejected(RejectReason.NOT_FOUND, detail="annotation not found")
+    if target.kind not in (AnnotationKind.COMMENT, AnnotationKind.REVIEW_FINDING):
+        return Decision.rejected(
+            RejectReason.INVALID_PAYLOAD, detail="only comments and review findings are resolved"
+        )
+    if any(
+        a.kind is AnnotationKind.RESOLUTION and a.refers_to_annotation_id == target.annotation_id
+        for a in annotations
+    ):
+        return Decision.rejected(RejectReason.INVALID_STATE, detail="already resolved")
+    resolution = await ctx.store.insert_annotation(
+        episode_id=ctx.episode_id,
+        kind=AnnotationKind.RESOLUTION,
+        anchor={},
+        body=payload.note or payload.resolution.value,
+        actor=ctx.actor,
+        payload={"resolution": payload.resolution.value},
+        refers_to_annotation_id=target.annotation_id,
+        command_id=ctx.command.command_id,
+    )
+    await ctx.store.append_event(
+        ctx.episode_id,
+        InterventionEvent.REVIEW_RESOLVED,
+        ctx.actor,
+        {
+            "annotation_id": target.annotation_id,
+            "resolution_id": resolution.annotation_id,
+            "resolution": payload.resolution.value,
+        },
+        command_id=ctx.command.command_id,
+    )
+    return Decision.applied(
+        {"annotation_id": target.annotation_id, "resolution_id": resolution.annotation_id}
+    )
 
 
 async def _user_constraint(ctx: ApplyContext) -> Decision:
@@ -747,6 +831,43 @@ async def missing_output_stage(session: AsyncSession, episode_id: str) -> Pipeli
     return None
 
 
+async def paid_generation_required(ctx: ApplyContext, start: PipelineStage | None) -> bool:
+    """``start`` から走る実行が、有料の生成（シーンの画像・動画）を伴うか。
+
+    ``missing_output_stage`` と同じ「現行に何が無いか」で決める。storyboard から（または無い）なら
+    無い）なら全シーンの画像・動画を作る。production からなら、現行の storyboard の
+    シーンのうち画像か動画が現行に無いものがあるとき。render 以降は有料の生成を伴わない。
+    読めない（storyboard を確かめられない）ときは有料とみなす（安全側）。
+    """
+    if start is None or start in (PipelineStage.RENDER, PipelineStage.UPLOAD):
+        return False
+    if start is not PipelineStage.PRODUCTION:
+        return True
+    members = await current_members(ctx.session, ctx.episode_id)
+    storyboard_id = members.get(manifest_slot(ArtifactType.STORYBOARD))
+    if storyboard_id is None or ctx.artifact_store is None:
+        return True
+    row = await ctx.session.get(ArtifactMetadataRow, uuid.UUID(storyboard_id))
+    if row is None:
+        return True
+    try:
+        scenes = (await ctx.artifact_store.get_json(row.object_key))["scenes"]
+        scene_ids = [str(scene["scene_id"]) for scene in scenes]
+    except (KeyError, TypeError, ValueError):
+        return True
+    return any(
+        manifest_slot(artifact_type, scene_id) not in members
+        for scene_id in scene_ids
+        for artifact_type in (ArtifactType.SCENE_IMAGE, ArtifactType.SCENE_VIDEO)
+    )
+
+
+def _ai_paid_refusal(ctx: ApplyContext) -> Decision:
+    return Decision.rejected(
+        RejectReason.FORBIDDEN, detail=ForbiddenDetail.AI_RESUME_REQUIRES_PAID_GENERATION
+    )
+
+
 async def _resume(ctx: ApplyContext) -> Decision:
     """``held`` / ``hold_requested`` / ``running`` → ``running``。必要な工程から pipeline を start。
 
@@ -790,6 +911,9 @@ async def _resume(ctx: ApplyContext) -> Decision:
         if start is None:
             reason = refusal or "nothing to run"
 
+    if ctx.actor.type is not ActorType.HUMAN and await paid_generation_required(ctx, start):
+        # AI は apply_change でも有料の変更を適用できない。resume で同じ課金を始めさせない
+        return _ai_paid_refusal(ctx)
     await ctx.store.update_control(
         ctx.episode_id,
         ControlChange(
@@ -851,6 +975,10 @@ async def _release_checkpoint(ctx: ApplyContext) -> Decision:
             expected=payload.manifest_id,
             current=control.active_manifest_id,
         )
+    if ctx.actor.type is not ActorType.HUMAN and await paid_generation_required(
+        ctx, _stage_for_point(payload.point)
+    ):
+        return _ai_paid_refusal(ctx)
     approval = await ctx.store.insert_annotation(
         episode_id=ctx.episode_id,
         kind=AnnotationKind.APPROVAL,

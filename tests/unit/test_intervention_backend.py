@@ -261,6 +261,37 @@ async def test_comparing_incompatible_revisions_is_422(session_factory) -> None:
     assert SECRET not in r.text
 
 
+async def test_a_validation_error_in_the_read_model_is_not_reported_as_a_type_mismatch(
+    session_factory,
+) -> None:
+    """pydantic の ValidationError は ValueError だが、422 revision_type_mismatch にしない。"""
+    from pydantic import BaseModel, ValidationError
+
+    class _M(BaseModel):
+        x: int
+
+    class Broken:
+        def compare_revisions(self, a: str, b: str) -> None:
+            try:
+                _M.model_validate({"x": "not-an-int"})
+            except ValidationError:
+                raise
+
+    episode_id = await _seed_episode(session_factory)
+    a = await _seed_revision(session_factory, episode_id)
+    b = await _seed_revision(session_factory, episode_id)
+    params = {"a": a, "b": b}
+    async with _client(session_factory, _modules(read_model=lambda: Broken())) as client:
+        client._transport.raise_app_exceptions = False  # type: ignore[attr-defined]
+        r = await client.get(
+            f"{PREFIX}/episodes/{episode_id}/revisions/compare",
+            params=params,
+            headers=_auth(OWNER_TOKEN),
+        )
+    assert r.status_code == 500
+    assert "revision_type_mismatch" not in r.text
+
+
 async def test_resending_a_command_id_as_another_actor_is_409_without_naming_the_owner(
     session_factory,
 ) -> None:

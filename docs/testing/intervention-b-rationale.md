@@ -111,3 +111,54 @@ time-skipping 環境と SQLite、工程の子 workflow は同名の fake、Activ
   render / upload の task queue も指す（指さないと pipeline が完了せずテストが止まった）。
 - `test_a_retried_control_gate_activity_emits_checkpoint_waiting_once`: Activity の retry・再実行で
   `checkpoint.waiting` が重複しない（INV-40 / INV-17）。
+
+## 注記の解決（`tests/unit/test_intervention_resolve.py`、`tests/contract/test_migration_0017_resolve_annotation.py`）
+
+守る契約: INV-41（元の注記を消さず追記）、INV-42（再送で1行1 event）、AI に追加権限を与えない。
+`review.resolved` は定義だけで発生源が無かった（ReviewPacket の「未解決コメント」が減らせなかった）ので、
+`resolve_annotation` を足した。
+
+- `test_the_contract_declares_the_command_scope_and_a_strict_payload`: scope は `comment`、payload は
+  余分な項目・未知の `resolution`・長すぎる `note` を拒否する（単一の宣言元は contracts）。
+- `test_resolving_appends_a_resolution_row_and_one_event_and_keeps_the_original`: 元の行が無変更、
+  `resolution` 注記が対象を指す、event は1つ、再適用・再送でも行と event が増えない。
+- `test_a_second_resolution_of_the_same_annotation_is_rejected_invalid_state`: 二重解決は `invalid_state`
+  （既存の語彙。新しい理由は足さない）で event を増やさない。
+- `test_only_comments_and_findings_of_this_episode_can_be_resolved`: 他 Episode・存在しない id は
+  `not_found`、制約など別種の注記は `invalid_payload`。他人の Episode の注記を操作できない。
+- `test_ai_may_resolve_with_comment_scope_only`: `comment` が無ければ forbidden、有れば適用され actor は AI のまま。
+- `test_a_resolved_comment_leaves_the_read_model_and_review_packet_open_lists`: 既存の読み口
+  （read model の `status=resolved`、reviewer の `open_comments`）まで通しで反映される。
+- 0017: DB の CHECK は 0016 の literal 語彙なので、契約に型を足しても migration が無いと実 DB で INSERT が
+  落ちる。0017 の語彙が契約と一致すること、0016→0017→0016 で CHECK が増減することを検査する。
+  0016 の語彙テストは「0016 の凍結値 = 契約 − 後続 migration が足した型」に変えた（仕様変更が
+  ADR-0041 addendum として先に承認済みのため）。
+
+## 配備（M1）
+- `tests/contract/test_compose_workers.py`（`intervention-worker` を表に追加）: 他の worker と同じ形（image・
+  command・healthcheck の queue・依存・capability）で compose に在ること。worker が compose に無いと
+  command は永久に配送されない。`test_intervention_worker_budget_env_follows_the_contract_defaults`:
+  compose の予算の既定が contracts と食い違わず、換算レートは既定なし（宣言元は1つ / INV-47）。
+- `test_updating_the_intervention_redelivery_schedule_keeps_its_pause`: 再登録で運用者の pause を外さない。
+- `tests/unit/test_intervention_run_worker.py`: レート未設定の起動時警告は1回、設定済みなら出ない。
+  黙って「有料の変更が全部通らない」状態にしない。
+
+## 取り残しの回復（M2 / M3、`tests/unit/test_intervention_workflows.py`）
+- `test_a_command_killed_between_apply_and_follow_up_is_started_once_by_redelivery`: 適用の commit 後・
+  follow-up 前に落ちた resume は、再配送が pipeline を**1回だけ**始め、記録後は再び拾われない。
+  以前は follow-up が無いと永遠に始まらなかった（再開が失われる）。
+- `test_a_start_that_became_stale_after_apply_starts_nothing_and_says_why`: 適用の後に hold が入った
+  （制御版が進んだ）古い resume は始めない（`not_needed` / `control_revision_changed`）。
+- `test_a_finished_episode_is_not_restarted_by_a_redelivered_resume`: 制御版が同じでも投稿済み・終端の
+  Episode は始めない（`episode_closed`）。再配送が終わった pipeline を再起動する経路を塞ぐ。
+- 配送済みの記録は start 成功後の別 Activity にした（列挙しただけで dispatched にすると、start に失敗した
+  command が二度と拾われない）。既存の再配送テストが配送済みの記録を引き続き検査する。
+
+## AI の resume は有料の生成を始めない（`tests/unit/test_intervention_ai_resume.py`）
+`apply_change` は AI に有料の変更を禁じるが、変更は出力を降ろすだけで、作り直す（課金する）のは次の resume。
+scope `resume` を持つ AI が同じ課金を始められると、禁止が迂回される。
+- 音声・manifest だけが欠けた AI の resume は適用される（無料の再開を妨げない）。
+- 画像が欠けた AI の resume は `forbidden` + `detail` で拒否され、制御状態も pipeline も変わらない。
+- 同じ状況の人の resume は適用される（人は影響を受けない）。
+- storyboard が無い（storyboard からやり直す）AI の resume も拒否される（全シーンの画像を作るため）。
+- `test_intervention_changes.py` は AI の有料 apply が `ai_paid_apply` を返すことも検査する（原因の区別）。

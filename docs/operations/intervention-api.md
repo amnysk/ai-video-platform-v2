@@ -35,7 +35,7 @@ printf %s "$(cat ~/.avp-intervention-token)" | sha256sum | cut -d' ' -f1   # こ
 
 - `actor_type`: `human` / `ai_assistant` / `agent`（`system` は内部の主体なので不可）。
 - `scopes`: `read` / `comment` / `propose` / `hold` / `apply` / `resume` / `set_mode`。command 型ごとの必要 scope は
-  `contracts.intervention.REQUIRED_SCOPE`（`comment`・`set_user_constraint` → comment、`request_hold`・`request_cancel`
+  `contracts.intervention.REQUIRED_SCOPE`（`comment`・`set_user_constraint`・`resolve_annotation` → comment、`request_hold`・`request_cancel`
   → hold、`propose_change` → propose、`apply_change`・`reject_change`・`release_checkpoint` → apply、`resume` → resume、
   `set_mode` → set_mode）。読み取りは全て `read`。
 - **AI（`ai_assistant` / `agent`）に人専用 scope（`HUMAN_ONLY_SCOPES` = `set_mode`）を与えた設定は読み込まない**。
@@ -102,7 +102,7 @@ body は `contracts.intervention.CommandEnvelope`:
 
 ```json
 {"command_id": "8〜64文字。クライアントが生成（uuid4 推奨）",
- "type": "comment | set_user_constraint | request_hold | request_cancel | propose_change | apply_change | reject_change | resume | release_checkpoint | set_mode",
+ "type": "comment | resolve_annotation | set_user_constraint | request_hold | request_cancel | propose_change | apply_change | reject_change | resume | release_checkpoint | set_mode",
  "expected_control_revision": null, "expected_target_revision": null,
  "payload": {…型ごとの payload（PAYLOAD_MODELS。余分な項目は 422）…},
  "correlation_id": null}
@@ -114,6 +114,11 @@ body は `contracts.intervention.CommandEnvelope`:
 | `200` + 保存済みの `CommandView` | 同じ `command_id`・同じ内容の再送（新しい行も適用も作らない）。ネットワーク断の後は**同じ `command_id` で再送する**のが安全 |
 | `409 command_id_reused` | 同じ `command_id`・違う内容 |
 | `403 missing_scope` / `404 episode_not_found` / `422 unsupported_command` / `422 invalid_payload` | 上表 |
+
+`resolve_annotation`（scope `comment`）の payload は `{"annotation_id", "resolution": "resolved | wont_fix", "note"?}`。
+対象は同じ Episode の `comment` / `review_finding` 注記。適用は受付の transaction で済み、`resolution` 注記を**追記**して
+`review.resolved` を記録する（元の注記は変えない）。対象が無い・他 Episode は `not_found`、種類が違えば
+`invalid_payload`、解決済みなら `invalid_state`（いずれも REJECTED）。
 
 handler は検証 → 保存（1 transaction）→ start → 返すだけで、適用を待たない（INV-16）。適用の結果は
 `GET /v1/intervention/commands/{command_id}` で見る。`request_hold` は受付の transaction で `HOLD_REQUESTED`
@@ -193,7 +198,7 @@ API 全体は落ちない。
   `code == "not_found"` は `404 episode_not_found`、他は上表。同じ id・違う内容で `store.DuplicateCommandError`、
   同じ id・同じ内容でも**保存済みの主体が違えば** `409 command_id_reused`。
 - B の `InterventionCommandWorkflow` の入力は `{"command_id": ...}`、id は `intervention_command_workflow_id`、queue は
-  `INTERVENTION_TASK_QUEUE`。この worktree には worker 側の実装がまだ無い（契約定数のみ）ので、start は統合後に確認する。
+  `INTERVENTION_TASK_QUEUE`。worker 側の実装は `workers/intervention/`（B2）にある。
 - start は **best-effort**: commit 後に 5 秒（`START_TIMEOUT_SECONDS`）で打ち切り、失敗・タイムアウトでも `202 received`
   を返す（未配送のまま残り、再配送 Schedule が拾う。[intervention.md](../domain/intervention.md) §4）。
   start に成功したら API が `mark_command_dispatched` する。Temporal client は 1 つを使い回すが、event loop が変わる・

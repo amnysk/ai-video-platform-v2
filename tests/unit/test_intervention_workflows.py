@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -27,6 +28,7 @@ from contracts.intervention import (
     CommandType,
     ControlState,
     InterventionEvent,
+    PipelineStartOutcome,
     ReviewPoint,
     intervention_command_workflow_id,
 )
@@ -38,6 +40,7 @@ from contracts.pipeline import (
     pipeline_workflow_id,
 )
 from contracts.states import EpisodeStatus
+from infrastructure.db.models import EpisodeRow
 from infrastructure.intervention.budget import BudgetPolicy
 from infrastructure.intervention.store import InterventionStore
 from tests.support.intervention import (
@@ -72,6 +75,8 @@ class World:
 
 
 WORLD = World()
+#: 再配送の「停滞」判定に使う時計（テストが進める）
+CLOCK = [NOW]
 
 
 def _stage(name: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -191,6 +196,7 @@ async def held_pipeline(session_factory, artifact_store):
     """command workflow の検査用: pipeline は start の回数を数える fake。"""
     global WORLD
     WORLD = World()
+    CLOCK[0] = NOW
     async with await WorkflowEnvironment.start_time_skipping() as wf_env:
         queue = f"intervention-{uuid.uuid4()}"
         held_queue = f"held-{uuid.uuid4()}"
@@ -200,7 +206,7 @@ async def held_pipeline(session_factory, artifact_store):
             budget_policy=BudgetPolicy(),
             pipeline_options=_options("unused", held_queue),
             command_task_queue=queue,
-            clock=lambda: NOW,
+            clock=lambda: CLOCK[0],
         )
         main = Worker(
             wf_env.client,
@@ -489,3 +495,84 @@ async def test_a_retried_control_gate_activity_emits_checkpoint_waiting_once(
     assert first.waiting_point == retried.waiting_point == "before_storyboard"
     events = await _events(session_factory, episode_id)
     assert events.count(InterventionEvent.CHECKPOINT_WAITING) == 1
+
+
+# ------------------------------------------------------------------ 取り残しの回復（M2 / M3）
+
+
+async def _redeliver(env: Env) -> dict[str, Any]:
+    CLOCK[0] = datetime.now(UTC) + timedelta(hours=1)  # 適用から十分に時間が経った
+    return await env.client.execute_workflow(
+        "InterventionRedeliveryWorkflow",
+        {},
+        id=f"redelivery-{uuid.uuid4()}",
+        task_queue=env.queue,
+        result_type=dict,
+    )
+
+
+async def test_a_command_killed_between_apply_and_follow_up_is_started_once_by_redelivery(
+    held_pipeline: Env, session, session_factory, artifact_store
+) -> None:
+    """workflow が APPLIED の後・follow-up の前に落ちても、再配送が pipeline を1回だけ始める。"""
+    episode_id = await make_episode(session, EpisodeStatus.SCRIPT_READY)
+    await submit(session_factory, artifact_store, episode_id, envelope(CommandType.REQUEST_HOLD))
+    resume = envelope(CommandType.RESUME)
+    await receive(session_factory, episode_id, resume)
+    await apply(session_factory, artifact_store, resume.command_id)  # ここで workflow が「落ちた」
+    async with session_factory() as s:
+        before = await InterventionStore(s).get_command(resume.command_id)
+    assert before is not None and "pipeline" not in (before.result or {})
+
+    swept = await _redeliver(held_pipeline)
+    assert swept["started"] == [resume.command_id]
+    outcome = await held_pipeline.client.get_workflow_handle(
+        intervention_command_workflow_id(resume.command_id)
+    ).result()
+    assert outcome["pipeline"]["outcome"] == PipelineStartOutcome.STARTED.value
+    assert len(WORLD.pipeline_inputs) == 1
+
+    # 記録された後は拾われない（二重起動しない）
+    assert (await _redeliver(held_pipeline))["started"] == []
+    assert len(WORLD.pipeline_inputs) == 1
+    await held_pipeline.client.get_workflow_handle(pipeline_workflow_id(episode_id)).signal(
+        "release"
+    )
+
+
+async def test_a_start_that_became_stale_after_apply_starts_nothing_and_says_why(
+    held_pipeline: Env, session, session_factory, artifact_store
+) -> None:
+    """適用の後に hold された（制御版が進んだ）なら、古い resume は pipeline を始めない。"""
+    episode_id = await make_episode(session, EpisodeStatus.SCRIPT_READY)
+    await submit(session_factory, artifact_store, episode_id, envelope(CommandType.REQUEST_HOLD))
+    resume = envelope(CommandType.RESUME)
+    await receive(session_factory, episode_id, resume)
+    await apply(session_factory, artifact_store, resume.command_id)
+    await submit(session_factory, artifact_store, episode_id, envelope(CommandType.REQUEST_HOLD))
+
+    outcome = await _run_command(held_pipeline, resume.command_id)
+    assert outcome["pipeline"]["outcome"] == PipelineStartOutcome.NOT_NEEDED.value
+    assert outcome["pipeline"]["reason"] == "control_revision_changed"
+    assert WORLD.pipeline_inputs == []
+
+
+async def test_a_finished_episode_is_not_restarted_by_a_redelivered_resume(
+    held_pipeline: Env, session, session_factory, artifact_store
+) -> None:
+    """制御版が同じでも投稿済み・終端の Episode は始めない（終わった pipeline を再起動しない）。"""
+    episode_id = await make_episode(session, EpisodeStatus.SCRIPT_READY)
+    await submit(session_factory, artifact_store, episode_id, envelope(CommandType.REQUEST_HOLD))
+    resume = envelope(CommandType.RESUME)
+    await receive(session_factory, episode_id, resume)
+    await apply(session_factory, artifact_store, resume.command_id)
+    async with session_factory() as s:
+        row = await s.get(EpisodeRow, uuid.UUID(episode_id))
+        assert row is not None
+        row.status = EpisodeStatus.UPLOADED.value
+        await s.commit()
+
+    outcome = await _run_command(held_pipeline, resume.command_id)
+    assert outcome["pipeline"]["outcome"] == PipelineStartOutcome.NOT_NEEDED.value
+    assert outcome["pipeline"]["reason"] == "episode_closed"
+    assert WORLD.pipeline_inputs == []

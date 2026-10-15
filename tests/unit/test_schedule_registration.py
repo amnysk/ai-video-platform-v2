@@ -23,6 +23,7 @@ from contracts.schedule_guard import (
 from infrastructure.temporal.schedules import (
     build_watchdog_schedule,
     ensure_daily_episode_schedule,
+    ensure_intervention_redelivery_schedule,
     ensure_watchdog_schedule,
 )
 
@@ -126,3 +127,11 @@ def test_watchdog_catchup_is_short() -> None:
         cron="35 * * * *", timezone="Asia/Tokyo", request=WatchdogRequest()
     )
     assert schedule.policy.catchup_window <= timedelta(hours=1)
+
+
+async def test_updating_the_intervention_redelivery_schedule_keeps_its_pause() -> None:
+    """再配送 Schedule を再登録しても、運用者の pause を黙って外さない（ADR-0027）。"""
+    client = _Client(ScheduleState(note="operator stop", paused=True))
+    outcome = await ensure_intervention_redelivery_schedule(client)  # type: ignore[arg-type]
+    assert outcome == "updated"
+    assert _updated(client).state.paused is True

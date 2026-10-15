@@ -90,6 +90,7 @@ class CommandType(StrEnum):
     SET_USER_CONSTRAINT = "set_user_constraint"
     SET_MODE = "set_mode"
     REQUEST_CANCEL = "request_cancel"
+    RESOLVE_ANNOTATION = "resolve_annotation"
 
 
 class CommandStatus(StrEnum):
@@ -122,6 +123,7 @@ class Scope(StrEnum):
 REQUIRED_SCOPE: dict[CommandType, Scope] = {
     CommandType.COMMENT: Scope.COMMENT,
     CommandType.SET_USER_CONSTRAINT: Scope.COMMENT,
+    CommandType.RESOLVE_ANNOTATION: Scope.COMMENT,
     CommandType.REQUEST_HOLD: Scope.HOLD,
     CommandType.REQUEST_CANCEL: Scope.HOLD,
     CommandType.PROPOSE_CHANGE: Scope.PROPOSE,
@@ -151,6 +153,17 @@ class RejectReason(StrEnum):
     INVALID_PAYLOAD = "invalid_payload"
     NOT_FOUND = "not_found"
     INTERNAL_ERROR = "internal_error"
+
+
+class ForbiddenDetail(StrEnum):
+    """``reject_reason=forbidden`` の原因を区別する機械可読な ``result.detail``。"""
+
+    SCOPE_MISMATCH = "scope_mismatch"
+    HUMAN_ONLY = "human_only"
+    #: AI の apply_change は 0 円・制約に触れない変更だけ（有料の変更は人）
+    AI_PAID_APPLY = "ai_paid_apply"
+    #: AI の resume / release_checkpoint は、有料の生成（画像・動画）を伴わない実行だけ
+    AI_RESUME_REQUIRES_PAID_GENERATION = "ai_resume_requires_paid_generation"
 
 
 class AnnotationKind(StrEnum):
@@ -250,6 +263,18 @@ DEFAULT_MONTHLY_BUDGET_JPY = 30000
 
 # --------------------------------------------------------------------------- Temporal
 
+
+class PipelineStartOutcome(StrEnum):
+    """command の result の ``pipeline.outcome``。follow-up が必ず1つ記録する。"""
+
+    STARTED = "started"
+    ALREADY_RUNNING = "already_running"
+    #: start が失敗した（再配送が再試行する）
+    START_FAILED = "start_failed"
+    #: 適用の後に状況が変わり、起動してはならない（制御版・状態・Episode の終端）。起動しない
+    NOT_NEEDED = "not_needed"
+
+
 INTERVENTION_TASK_QUEUE = "intervention"
 INTERVENTION_COMMAND_WORKFLOW = ("InterventionCommandWorkflow", INTERVENTION_TASK_QUEUE)
 INTERVENTION_REDELIVERY_WORKFLOW = ("InterventionRedeliveryWorkflow", INTERVENTION_TASK_QUEUE)
@@ -257,6 +282,8 @@ INTERVENTION_REDELIVERY_SCHEDULE_ID = "avp-intervention-redelivery"
 APPLY_INTERVENTION_COMMAND_ACTIVITY = "apply_intervention_command"
 RECORD_COMMAND_FOLLOWUP_ACTIVITY = "record_intervention_command_followup"
 LIST_UNDELIVERED_COMMANDS_ACTIVITY = "list_undelivered_intervention_commands"
+MARK_COMMAND_DISPATCHED_ACTIVITY = "mark_intervention_command_dispatched"
+CHECK_PIPELINE_START_ACTIVITY = "check_intervention_pipeline_start"
 PIPELINE_CONTROL_GATE_ACTIVITY = "pipeline_control_gate"
 CONTROL_GATE_PATCH_ID = "jpmas-control-gate-v1"
 #: RECEIVED のまま、この秒数を超えて終端にならない command を再配送の対象にする
@@ -294,6 +321,21 @@ class CommentPayload(_Frozen):
     anchor: Anchor
     body: str = Field(min_length=1, max_length=4000)
     kind: Literal[AnnotationKind.COMMENT, AnnotationKind.REVIEW_FINDING] = AnnotationKind.COMMENT
+
+
+class AnnotationResolution(StrEnum):
+    """注記の解決の宣言（``resolve_annotation``）。"""
+
+    RESOLVED = "resolved"
+    WONT_FIX = "wont_fix"
+
+
+class ResolvePayload(_Frozen):
+    """comment / review_finding 注記の解決。元の注記は変えず resolution 注記を追記する。"""
+
+    annotation_id: str = Field(min_length=1, max_length=64)
+    resolution: AnnotationResolution
+    note: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class UserConstraintPayload(_Frozen):
@@ -382,6 +424,7 @@ class CommandEnvelope(_Frozen):
 PAYLOAD_MODELS: dict[CommandType, type[BaseModel]] = {
     CommandType.COMMENT: CommentPayload,
     CommandType.SET_USER_CONSTRAINT: UserConstraintPayload,
+    CommandType.RESOLVE_ANNOTATION: ResolvePayload,
     CommandType.REQUEST_HOLD: RequestHoldPayload,
     CommandType.REQUEST_CANCEL: RequestHoldPayload,
     CommandType.PROPOSE_CHANGE: ProposeChangePayload,

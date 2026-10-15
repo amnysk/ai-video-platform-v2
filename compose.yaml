@@ -463,6 +463,23 @@ services:
       <<: *worker-health
       test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "research"]
 
+  intervention-worker:
+    # ADR-0041 §3: 介入 command の workflow と Activity（InterventionCommandWorkflow / 再配送）。
+    # 予算の上限は設定だけで変わる（介入 API・AI からは変えない / INV-47）。BUDGET_USD_JPY_RATE は既定なし
+    # （未設定だと有料の見積りを伴う変更は budget_unverifiable）。YOUTUBE_* / CODEX_* / FAL_KEY は持たせない
+    <<: *worker
+    depends_on: *deps-minio
+    environment:
+      AVP_SERVICE_NAME: intervention-worker
+      <<: *app-env
+      EPISODE_BUDGET_JPY: ${EPISODE_BUDGET_JPY:-1000}
+      MONTHLY_BUDGET_JPY: ${MONTHLY_BUDGET_JPY:-30000}
+      BUDGET_USD_JPY_RATE: ${BUDGET_USD_JPY_RATE:-}
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.intervention.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "intervention"]
+
   prometheus:
     logging: *logging
     image: prom/prometheus:latest
