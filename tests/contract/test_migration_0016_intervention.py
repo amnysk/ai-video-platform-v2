@@ -69,7 +69,15 @@ def test_frozen_vocabulary_matches_the_contracts(constant: str, enum_cls) -> Non
     frozen = getattr(_load(), constant)
     # 0016 の凍結語彙。後続の migration が足した値（0017: resolve_annotation）は
     # test_migration_0017_resolve_annotation.py が検査する
-    later = {CommandType.RESOLVE_ANNOTATION}
+    # 0019 (ADR-0043): strategy / creative_director / quality_reviewer / learning は
+    # test_migration_0019_agentic_vocabulary.py が検査する
+    later = {
+        CommandType.RESOLVE_ANNOTATION,
+        AgentRole.STRATEGY,
+        AgentRole.CREATIVE_DIRECTOR,
+        AgentRole.QUALITY_REVIEWER,
+        AgentRole.LEARNING,
+    }
     assert tuple(frozen) == tuple(m.value for m in enum_cls if m not in later)
 
 

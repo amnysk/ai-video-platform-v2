@@ -301,13 +301,26 @@ def test_0014_downgrade_vocabulary_is_frozen_at_8a8c499() -> None:
     assert list(migration.PRE_0014_PROVIDER_CALLS) == E8A8C499_PROVIDER_CALLS
 
 
+_AGENTIC_0019_ARTIFACT_TYPES = {
+    "user_brief",
+    "strategy_brief",
+    "creative_brief",
+    "quality_review",
+    "lesson",
+    "workflow_plan",
+}
+
+
 def test_0014_upgrade_adds_exactly_the_adr_0035_values() -> None:
     from contracts.states import ArtifactType, JobType, ProviderCall, RejectedInput
 
     migration = _load_0014()
     assert {t.value for t in JobType} == set(migration.JOB_TYPES)
-    assert {t.value for t in ArtifactType} == set(migration.ARTIFACT_TYPES)
-    assert {p.value for p in ProviderCall} == set(migration.PROVIDER_CALLS)
+    # 0019（ADR-0043）が足した語彙は test_migration_0019_agentic_vocabulary.py が検査する
+    assert {t.value for t in ArtifactType} - _AGENTIC_0019_ARTIFACT_TYPES == set(
+        migration.ARTIFACT_TYPES
+    )
+    assert {p.value for p in ProviderCall} - {"agent_llm"} == set(migration.PROVIDER_CALLS)
     assert {r.value for r in RejectedInput} == set(migration.REJECTED_INPUTS)
     assert set(migration.JOB_TYPES) - set(migration.PRE_0014_JOB_TYPES) == {
         "plan_scene_alternative"

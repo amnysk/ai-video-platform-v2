@@ -569,3 +569,65 @@ INV-42 により API は保存済みの command を返す（二重の提案・�
 / `tests/unit/test_assistant_adapter.py::test_the_token_never_appears_in_results_errors_or_repr`
 / `tests/unit/test_assistant_request_log.py::test_neither_token_nor_authorization_nor_body_is_logged`
 / `tests/unit/test_assistant_e2e.py::test_the_server_logs_the_assistant_correlation_and_never_the_token`
+
+## O. 自律改善型制作（ADR-0043）
+
+### INV-51 定義の固定: 未知の Agent role・版は拒否し、登録済み spec は hash で固定され、計画は spec の版と hash を持つ
+Agent は `contracts/agents.py::AGENT_SPECS`（`(role, spec_version)`）にだけ登録し、`resolve_agent_spec` は未知の
+role・版を `UnknownAgentSpecError` で拒否する（既存 3 役は Registry の対象外）。登録済み spec の内容は
+`manifest_hash`（全項目の正規 JSON の sha256）を literal で固定するテストが守る — 変えるなら spec を書き換えず
+新しい `spec_version` を足す。コンパイル済みの `WorkflowPlan` は agent stage ごとに `agent_spec_version` /
+`agent_spec_hash` / `model_policy_ref` / `prompt_version` を持ち、`plan_hash` が全体を覆う（改ざんは model 検証で拒否）。
+実行時に計画を固定する Activity・hash 不一致の停止（`agent_spec_drift`）は P1 で実装する（ここは Registry と計画の契約まで）。
+**機械検査**: `tests/contract/test_agent_registry.py::test_registered_spec_hashes_are_pinned`
+/ `tests/contract/test_agent_registry.py::test_changing_any_field_changes_the_hash`
+/ `tests/contract/test_agent_registry.py::test_unknown_role_or_version_is_rejected`
+/ `tests/contract/test_agent_registry.py::test_every_new_role_has_a_v1_spec_and_a_role_spec`
+/ `tests/contract/test_agent_registry.py::test_tools_handlers_and_policies_are_registered_vocabulary`
+/ `tests/unit/test_workflow_template_compiler.py::test_the_agentic_plan_pins_every_agent_spec_version_and_hash`
+/ `tests/unit/test_workflow_template_compiler.py::test_compilation_is_deterministic_and_the_hash_covers_the_agent_specs`
+/ `tests/unit/test_workflow_template_compiler.py::test_a_tampered_plan_is_rejected_by_its_own_hash`
+
+### INV-53 Template の安全性: 未登録 handler/agent、循環、必須工程の欠落、QA 上限超過、未実装 Template を起動しない
+`domain/workflow_templates/compiler.py` は純粋関数で、`TemplateCompileError(code)` を返して拒否する:
+`unknown_template`・`template_not_runnable`・`unknown_handler`・`unknown_agent_spec`・`handler_mismatch`・
+`duplicate_stage`・`unknown_dependency`・`cycle`・`missing_required_stage`・`required_stage_order`・
+`strategy_without_producer`・`qa_cycle_limit`（`HARD_MAX_QA_REPAIR_CYCLES = 2`）・`invalid_post_publish`。
+必須の既存工程（script → storyboard → production → render → private_upload）は各 1 回・この順に（推移的に）依存する。
+Template・Plan の契約に公開設定・予算上限・Schedule を表す項目は無い。Template は Python のデータで、YAML・DB・
+利用者入力から作らない。
+**機械検査**: `tests/unit/test_workflow_template_compiler.py::test_every_registered_template_is_structurally_valid_and_compiles_iff_runnable`
+/ `tests/unit/test_workflow_template_compiler.py::test_unknown_template`
+/ `tests/unit/test_workflow_template_compiler.py::test_unknown_handler`
+/ `tests/unit/test_workflow_template_compiler.py::test_unknown_agent_spec`
+/ `tests/unit/test_workflow_template_compiler.py::test_handler_mismatch`
+/ `tests/unit/test_workflow_template_compiler.py::test_duplicate_stage`
+/ `tests/unit/test_workflow_template_compiler.py::test_unknown_dependency`
+/ `tests/unit/test_workflow_template_compiler.py::test_cycle`
+/ `tests/unit/test_workflow_template_compiler.py::test_missing_required_stage`
+/ `tests/unit/test_workflow_template_compiler.py::test_a_required_stage_appearing_twice_is_missing_required_stage`
+/ `tests/unit/test_workflow_template_compiler.py::test_required_stage_order`
+/ `tests/unit/test_workflow_template_compiler.py::test_strategy_without_producer`
+/ `tests/unit/test_workflow_template_compiler.py::test_qa_cycle_limit`
+/ `tests/unit/test_workflow_template_compiler.py::test_invalid_post_publish`
+/ `tests/contract/test_workflow_templates.py::test_no_template_or_plan_field_can_express_visibility_budget_or_schedule`
+/ `tests/contract/test_workflow_templates.py::test_shorts_agentic_has_exactly_the_adr_stage_sequence`
+/ `tests/contract/test_agentic_contracts.py::test_user_brief_has_no_budget_visibility_or_schedule_field`
+
+### INV-54 保存の互換: 未知の schema 版は読まず、旧 Storyboard v1.0 は読め、migration 0019 は制約の張り替えだけ
+`contracts/artifact_registry.py` の `(artifact_type, schema_version)` に無い版は `UnsupportedArtifactSchemaError`
+（黙って別の版として読まない）。版をまたぐ読み替えは明示登録した upcaster だけで、本番の `UPCASTERS` は空。
+保存済みの `storyboard@1.0` はこの registry を通して読める。migration 0019 は `ck_artifact_metadata_type`・
+`ck_artifact_metadata_scene_scope`・`ck_agent_runs_role`・`ck_provider_reservations_provider`・
+`ck_provider_auth_incidents_provider`・`ck_provider_rejections_provider` の張り替えだけ（表・列を作らない。語彙は literal で凍結し
+contracts を import しない）。downgrade は新語彙の行があれば何も変えずに拒否する。
+**機械検査**: `tests/contract/test_artifact_registry.py::test_an_unknown_schema_version_is_rejected_not_reinterpreted`
+/ `tests/contract/test_artifact_registry.py::test_a_stored_storyboard_v1_is_readable_through_the_registry`
+/ `tests/contract/test_artifact_registry.py::test_reading_across_versions_needs_an_explicitly_registered_upcaster`
+/ `tests/contract/test_artifact_registry.py::test_the_registry_holds_the_seven_adr_0043_entries`
+/ `tests/contract/test_migration_0019_agentic_vocabulary.py::test_frozen_literals_equal_the_current_enums_in_order`
+/ `tests/contract/test_migration_0019_agentic_vocabulary.py::test_pre_0019_literals_are_the_values_at_9440302`
+/ `tests/contract/test_migration_0019_agentic_vocabulary.py::test_the_migration_does_not_import_contracts`
+/ `tests/contract/test_migration_0019_agentic_vocabulary.py::test_the_migration_creates_no_table_or_column`
+/ `tests/contract/test_migration_0019_agentic_vocabulary.py::test_upgrade_and_downgrade_round_trip_on_sqlite`
+/ `tests/contract/test_migration_0019_agentic_vocabulary.py::test_downgrade_refuses_and_changes_nothing_when_a_new_value_is_in_use`

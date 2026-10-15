@@ -461,6 +461,8 @@ DEFAULT_PLANNER_POLICY = PlannerPolicy()
 # ------------------------------------------------------------- Candidate（LLM 出力）契約
 
 _SLUG = r"^[a-z0-9]+(?:_[a-z0-9]+)*$"
+#: ``contracts/agentic.py`` の CreativeBrief も同じ snake_case 規則で TopicPlan と揃える（ADR-0043）
+SLUG_PATTERN = _SLUG
 
 
 class TopicCandidate(BaseModel):

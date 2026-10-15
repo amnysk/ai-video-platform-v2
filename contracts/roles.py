@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from contracts.agents import TERMINATION, AgentTool
 from contracts.intervention import AgentRole
 
 
@@ -102,6 +103,74 @@ REVIEWER = RoleSpec(
     may_create_revisions=False,
 )
 
+# ADR-0043: 自律改善型制作の4役。実体の handler は P1 で ``workers.agents.handlers`` に実装する。
+# allowed_tools・終了条件は contracts/agents.py の AgentSpec v1.0 と同じ値を使う（再掲しない）。
+_LLM = AgentTool.LLM_GENERATE_JSON.value
+_READ = AgentTool.ARTIFACT_READ.value
+_ANALYTICS = AgentTool.ANALYTICS_READ.value
+_PROPOSE = AgentTool.INTERVENTION_PROPOSE.value
+
+STRATEGY = RoleSpec(
+    role=AgentRole.STRATEGY,
+    implemented_by=("workers.agents.handlers (strategy_agent_v1)",),
+    inputs=("user_brief", "analytics_snapshots", "lesson", "episodes (既存動画一覧)"),
+    outputs=("strategy_brief", "decision_records", "agent_runs"),
+    allowed_tools=(_LLM, _READ, _ANALYTICS),
+    max_llm_calls_per_run=2,
+    termination=TERMINATION[AgentRole.STRATEGY],
+    may_create_revisions=True,
+)
+
+CREATIVE_DIRECTOR = RoleSpec(
+    role=AgentRole.CREATIVE_DIRECTOR,
+    implemented_by=("workers.agents.handlers (creative_director_v1)",),
+    inputs=("strategy_brief", "decision_records(choose_topic)", "user_constraints"),
+    outputs=("creative_brief", "decision_records", "agent_runs"),
+    allowed_tools=(_LLM, _READ, _PROPOSE),
+    max_llm_calls_per_run=2,
+    termination=TERMINATION[AgentRole.CREATIVE_DIRECTOR],
+    may_create_revisions=True,
+)
+
+QUALITY_REVIEWER = RoleSpec(
+    role=AgentRole.QUALITY_REVIEWER,
+    implemented_by=("workers.agents.handlers (quality_reviewer_v1)",),
+    inputs=(
+        "adopted manifest",
+        "script",
+        "storyboard",
+        "final_video.technical_qa",
+        "reviewer 所見",
+    ),
+    outputs=("quality_review", "annotations(review_finding)", "decision_records", "agent_runs"),
+    allowed_tools=(_LLM, _READ, _PROPOSE),
+    max_llm_calls_per_run=2,
+    termination=TERMINATION[AgentRole.QUALITY_REVIEWER],
+    #: 自分の QualityReview は所見であり、制作成果物の revision ではない（修正は提案だけ）
+    may_create_revisions=False,
+)
+
+LEARNING = RoleSpec(
+    role=AgentRole.LEARNING,
+    implemented_by=("workers.agents.handlers (learning_agent_v1)",),
+    inputs=("upload_receipt", "analytics_snapshots", "adopted manifest", "strategy_brief"),
+    outputs=("lesson", "decision_records", "agent_runs"),
+    allowed_tools=(_LLM, _READ, _ANALYTICS),
+    max_llm_calls_per_run=1,
+    termination=TERMINATION[AgentRole.LEARNING],
+    #: Lesson は仮説であり、制作成果物の revision を作らない
+    may_create_revisions=False,
+)
+
 ROLE_SPECS: dict[AgentRole, RoleSpec] = {
-    spec.role: spec for spec in (PRODUCER, WRITER_DIRECTOR, REVIEWER)
+    spec.role: spec
+    for spec in (
+        PRODUCER,
+        WRITER_DIRECTOR,
+        REVIEWER,
+        STRATEGY,
+        CREATIVE_DIRECTOR,
+        QUALITY_REVIEWER,
+        LEARNING,
+    )
 }
