@@ -54,6 +54,13 @@ python scripts/assistant.py tools --tool-use    # name / description / input_sch
 予算上限・Schedule・公開設定を変える tool は無い（INV-47）。必要 scope は `contracts.intervention.REQUIRED_SCOPE` から導く。
 台本の映像文（`visual`）の修正は受け付けない（画像が変わらないため。映像は `propose_scene_visual_override`）。
 
+### 楽観的な競合検出（直近に読んだ版を送る）
+
+`get_episode_status` の結果は `control_revision` と `hint` を最上位に持つ。アシスタントは `request_hold` /
+`resume_episode` / `apply_change` に、**直近に読んだ** `control_revision` を `expected_control_revision` として付ける
+（`propose_*` は読んだ revision を `expected_target_revision` に）。Episode がその後に変わっていれば command は
+適用されず `conflict` になる。省略すると検査されない。
+
 ## 3. tool を呼ぶ
 
 ```bash
@@ -88,6 +95,14 @@ echo '{"episode_id": "<uuid>", "anchor": {"segment_id": "s3"}, "body": "ここ�
    ```bash
    python scripts/intervene.py apply <episode_id> --change-set <change_set_id> --max-cost <見積り>
    ```
+
+   サーバの拒否理由は**そのまま**返る（`reason` = サーバの `detail` コード、なければ `forbidden`。`server_reason` /
+   `server_detail` も付く）。`human_command` は、保存済みの command 由来の id が UUID の正規形のときだけ、
+   `shlex.quote` を通して作る（通らなければ付けず、人が手で確認する）。`resume_episode` も、サーバが AI による
+   有料の再生成を伴う再開を拒否したとき（`detail=ai_resume_requires_paid_generation`）は `needs_human_approval`
+   と `python scripts/intervene.py resume <episode_id>` を返す（再開は有料の再生成を始めうる）。
+   同じ `tool_call_id` が別の command（種類・ChangeSet・Episode が違う）に使われていたら、適用結果として返さず
+   `command_id_reused`。
 
    人が適用すると、ChangeSet の `actor_type=ai_assistant`、適用 command の `actor_type=human` として両方が残る。
 
