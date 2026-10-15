@@ -18,6 +18,14 @@ from pydantic import (
     model_validator,
 )
 
+from contracts.agentic import (
+    CreativeBrief,
+    Lesson,
+    QualityReview,
+    StrategyBrief,
+    UserBrief,
+    WorkflowPlan,
+)
 from contracts.artifact_refs import (
     SCRIPT_SCENE_ID_PATTERN,
     SHA256_HEX_PATTERN,
@@ -750,6 +758,13 @@ ARTIFACT_MODELS: dict[ArtifactType, type[BaseModel]] = {
     ArtifactType.FINAL_VIDEO: FinalVideoArtifact,
     ArtifactType.UPLOAD_RECEIPT: UploadReceiptArtifact,
     ArtifactType.SCENE_VISUAL_OVERRIDE: SceneVisualOverrideArtifact,
+    # ADR-0043: 自律改善型制作の成果物（契約は contracts/agentic.py）
+    ArtifactType.USER_BRIEF: UserBrief,
+    ArtifactType.STRATEGY_BRIEF: StrategyBrief,
+    ArtifactType.CREATIVE_BRIEF: CreativeBrief,
+    ArtifactType.QUALITY_REVIEW: QualityReview,
+    ArtifactType.LESSON: Lesson,
+    ArtifactType.WORKFLOW_PLAN: WorkflowPlan,
 }
 
 
@@ -841,6 +856,8 @@ AnyArtifact = (
     | UploadReceiptArtifact
     | SceneVisualOverrideArtifact
 )
+# ADR-0043 の 6 型は episode_id を持たないものがあり（UserBrief / WorkflowPlan）、この union の
+# 読み手（``.episode_id`` を前提にする）に混ぜない。読むときは ``contracts.artifact_registry``。
 
 
 def parse_artifact(payload: dict[str, Any]) -> AnyArtifact:

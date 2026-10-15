@@ -195,11 +195,20 @@ class RevisionLinkKind(StrEnum):
 
 
 class AgentRole(StrEnum):
-    """初期の3実行役（設計 §3）。``contracts/roles.py`` の RoleSpec と1対1。"""
+    """実行役の語彙の唯一の宣言元（設計 §3）。``contracts/roles.py`` の RoleSpec と1対1。
+
+    初期の3役（producer / writer_director / reviewer）に、ADR-0043 が自律改善型制作の4役
+    （strategy / creative_director / quality_reviewer / learning）を足した。版付きの定義は
+    ``contracts/agents.py``（Agent Registry）が持つ。
+    """
 
     PRODUCER = "producer"
     WRITER_DIRECTOR = "writer_director"
     REVIEWER = "reviewer"
+    STRATEGY = "strategy"
+    CREATIVE_DIRECTOR = "creative_director"
+    QUALITY_REVIEWER = "quality_reviewer"
+    LEARNING = "learning"
 
 
 class AgentRunOutcome(StrEnum):

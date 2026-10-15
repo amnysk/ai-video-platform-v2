@@ -62,6 +62,7 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 
 - すべてのArtifactはスキーマを持つ（INV-10）。Phase 1 の置き場は
   `contracts/artifacts.py`（`contracts/schemas/` への分割は Phase 2）
+- 版の解決は `contracts/artifact_registry.py`（`(artifact_type, schema_version)` → model、INV-54。詳細は [agentic.md](./agentic.md)）
 - 読み込み時に必ず検証する。想定外の `schema_version` は
   `permanent` 失敗（推測して読まない）
 - 後方互換を壊すスキーマ変更はADRを要する（AGENTS.md §6）
@@ -78,6 +79,12 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 | `production_manifest` | production（Phase 4、ADR-0017。旧予定名 `asset_manifest`） | 全シーンの画像・動画・音声の参照一覧 |
 | `scene_visual_override` | production（ADR-0035） | provider に拒否されたシーンの代替映像案（映像対象・映像指示・根拠・対処した拒否）。storyboard の世代は変えず、そのシーンの映像の項目だけを差し替える。シーン単位・current は supersede で1本 |
 | `final_video` | render（Phase 5、ADR-0019） | 完成動画（mp4 本体への記述子、入力の固定、profile・エンジン・描画計画 sha256、実測、時間軸・音声配置・字幕 cue（文字オフセットのみ）、技術検査の合格記録）。Episode 単位 |
+| `user_brief` | agentic（ADR-0043） | 人の制作依頼（theme・対象・尺・トーン・守ること）。予算・公開設定・Schedule は持たない。Episode 単位 |
+| `strategy_brief` | agentic（ADR-0043） | Strategy の企画候補（1〜5）・推奨・成功基準・引用・不確実性・使った Lesson。Episode 単位 |
+| `creative_brief` | agentic（ADR-0043） | 採用した企画の演出指針（題材・角度・時代・フック・トーン）。台本の ScriptBrief へ渡せる。Episode 単位 |
+| `quality_review` | agentic（ADR-0043） | 品質評価（所見・重大度・根拠・確信度）。常に自己評価で、視聴者データではない。Episode 単位 |
+| `lesson` | agentic（ADR-0043） | 投稿後の学習（観測・仮説・代替説明・実験。状態 proposed→testing→validated 等）。Episode 単位 |
+| `workflow_plan` | agentic（ADR-0043） | コンパイル済みの実行計画（template と agent spec の版・hash を固定）。Episode 単位 |
 | `review_report`（**未実装**） | render（Phase 5B 予定） | 創作面の品質判定の結果 |
 
 旧予定の `episode_plan` は作らない。企画は `topic_plans` / `topic_candidates` の行に残し、台本は `script` の `topic` から始まる（ADR-0025）。

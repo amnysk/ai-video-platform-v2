@@ -116,6 +116,14 @@ class ArtifactType(StrEnum):
     UPLOAD_RECEIPT = "upload_receipt"
     #: ADR-0035: 拒否されたシーンの代替映像案（シーン単位。current は supersede で1本）
     SCENE_VISUAL_OVERRIDE = "scene_visual_override"
+    # ADR-0043: 自律改善型制作の成果物（すべて Episode 単位。scene_id は NULL）。内容と版は
+    # ``contracts/agentic.py``、(type, schema_version) の解決は ``contracts/artifact_registry.py``
+    USER_BRIEF = "user_brief"
+    STRATEGY_BRIEF = "strategy_brief"
+    CREATIVE_BRIEF = "creative_brief"
+    QUALITY_REVIEW = "quality_review"
+    LESSON = "lesson"
+    WORKFLOW_PLAN = "workflow_plan"
 
 
 class Pipeline(StrEnum):
@@ -217,6 +225,8 @@ class ProviderCall(StrEnum):
     YOUTUBE_UPLOAD = "youtube_upload"
     #: ADR-0035: 拒否されたシーンの代替映像案を LLM に計画させる（シーン単位）
     CODEX_SCENE_ALTERNATIVE = "codex_scene_alternative"
+    #: ADR-0043: Agent 段の LLM 呼び出し（Episode 単位。scene_id は NULL）。見積りは spec の上限
+    AGENT_LLM = "agent_llm"
 
 
 class ReservationStatus(StrEnum):
