@@ -103,6 +103,10 @@ class PacketDecision(_Frozen):
     target_revisions: list[str]
     result_revision: str | None
     uncertainties: list[str]
+    #: 単一 Scene を対象にする判断だけ（推測しない）。Activity の外で作った行の workflow は null
+    scene_id: str | None
+    workflow_id: str | None
+    workflow_run_id: str | None
 
 
 class PacketScriptSegment(_Frozen):

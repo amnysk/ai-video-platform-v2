@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from temporalio.testing import ActivityEnvironment
 
 from apps.api.auth import parse_principals, token_sha256
 from contracts.intervention import (
@@ -370,6 +371,74 @@ async def test_search_filters_by_type_role_and_episode(seed: Seed, session_facto
     assert by_role["decisions"][0]["role"] == "writer_director"
     bad = await seed.client.get(url, params={"role": "ceo"}, headers=_auth())
     assert bad.status_code == 422
+
+
+async def test_search_filters_by_scene_and_summaries_show_the_links(
+    seed: Seed, session_factory
+) -> None:
+    async with session_factory() as session:
+        store = InterventionStore(session)
+        scoped = await store.insert_decision(
+            idempotency_key="d-scene",
+            decision_type="apply_change",
+            actor=AGENT,
+            payload=_payload(decision_type="apply_change"),
+            episode_id=seed.episode_id,
+            scene_id="sb2",
+        )
+        await session.commit()
+    url = f"{PREFIX}/decisions"
+    page = (await seed.client.get(url, params={"scene_id": "sb2"}, headers=_auth())).json()
+    assert [d["decision_id"] for d in page["decisions"]] == [scoped.decision_id]
+    assert page["decisions"][0]["scene_id"] == "sb2"
+    none = (await seed.client.get(url, params={"scene_id": "sb9"}, headers=_auth())).json()
+    assert none["decisions"] == []
+
+
+async def test_explanation_shows_scene_and_workflow_links_or_lists_them_as_not_recorded(
+    seed: Seed, session_factory
+) -> None:
+    # seed の判断は Activity の外で作った: 識別子は null で not_recorded に載る（補完しない）
+    bare = (await seed.client.get(_url(seed), headers=_auth())).json()
+    assert (bare["scene_id"], bare["workflow_id"], bare["workflow_run_id"]) == (None,) * 3
+    assert {"scene_id", "workflow_id", "workflow_run_id"} <= set(bare["not_recorded"])
+    assert bare["agent_run"]["workflow_id"] is None
+    assert "agent_run.workflow_id" in bare["not_recorded"]
+
+    async with session_factory() as session:
+        store = InterventionStore(session)
+        d = await ActivityEnvironment().run(_insert_linked, store, seed.episode_id)
+        await session.commit()
+    body = (await seed.client.get(_url(seed, d.decision_id), headers=_auth())).json()
+    assert (body["scene_id"], body["workflow_id"], body["workflow_run_id"]) == (
+        "sb2",
+        "test",
+        "test-run",
+    )
+    assert not {"scene_id", "workflow_id", "workflow_run_id"} & set(body["not_recorded"])
+    assert (body["agent_run"]["workflow_id"], body["agent_run"]["activity_id"]) == ("test", "test")
+    assert "agent_run.workflow_id" not in body["not_recorded"]
+
+
+async def _insert_linked(store: InterventionStore, episode_id: str):
+    run = await store.insert_agent_run(
+        idempotency_key="run-linked",
+        role=AgentRole.WRITER_DIRECTOR,
+        step="write_script",
+        snapshot_object_key="agent-runs/z/context.json",
+        snapshot_sha256="c" * 64,
+        outcome=AgentRunOutcome.SUCCEEDED,
+        episode_id=episode_id,
+    )
+    return await store.insert_decision(
+        idempotency_key="d-linked",
+        decision_type="apply_change",
+        actor=AGENT,
+        payload=_payload(decision_type="apply_change"),
+        episode_id=episode_id,
+        agent_run_id=run.agent_run_id,
+        scene_id="sb2",
+    )
 
 
 async def test_search_paginates_with_a_keyset_cursor_and_caps_the_limit(seed: Seed) -> None:

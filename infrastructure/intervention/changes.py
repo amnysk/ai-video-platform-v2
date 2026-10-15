@@ -809,6 +809,8 @@ async def _record_decision(
         result_revision_id=result_revision_id,
         command_id=ctx.command.command_id,
         correlation_id=ctx.command.correlation_id,
+        # Scene が明示されるのは scene.override_visual だけ（台本編集は segment 単位。推測しない）
+        scene_id=change.scene_id if isinstance(change, SceneOverrideVisual) else None,
     )
 
 

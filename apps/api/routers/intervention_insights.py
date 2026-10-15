@@ -65,6 +65,7 @@ async def search_decision_history(
     decision_type: Annotated[str | None, Query(max_length=64)] = None,
     role: Annotated[AgentRole | None, Query()] = None,
     episode_id: Annotated[uuid.UUID | None, Query()] = None,
+    scene_id: Annotated[str | None, Query(max_length=255)] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_SEARCH_LIMIT)] = DEFAULT_SEARCH_LIMIT,
     before: Annotated[
         str | None, Query(max_length=64, description="前ページの next_before")
@@ -77,6 +78,7 @@ async def search_decision_history(
                 decision_type=decision_type,
                 role=role,
                 episode_id=None if episode_id is None else str(episode_id),
+                scene_id=scene_id,
                 limit=limit,
                 before=before,
             )

@@ -436,6 +436,7 @@ async def run_reviewer(
                 "agent_run_id": run.agent_run_id,
                 "manifest_id": manifest_id,
                 "verdict": payload.selected_candidate,
+                **decision.temporal.event_refs(),
             },
         )
         await session.commit()

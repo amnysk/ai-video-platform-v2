@@ -92,6 +92,9 @@ def _decision(view: DecisionView) -> PacketDecision:
         target_revisions=list(p.get("target_revisions") or []),
         result_revision=p.get("result_revision"),
         uncertainties=list(p.get("uncertainties") or []),
+        scene_id=view.scene_id,
+        workflow_id=view.workflow_id,
+        workflow_run_id=view.workflow_run_id,
     )
 
 

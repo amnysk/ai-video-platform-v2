@@ -785,6 +785,17 @@
             ],
             "title": "Result Revision"
           },
+          "scene_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Id"
+          },
           "selected_candidate": {
             "anyOf": [
               {
@@ -816,6 +827,28 @@
             },
             "title": "Uncertainties",
             "type": "array"
+          },
+          "workflow_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Id"
+          },
+          "workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Run Id"
           }
         },
         "required": [
@@ -834,7 +867,10 @@
           "input_snapshot_ref",
           "target_revisions",
           "result_revision",
-          "uncertainties"
+          "uncertainties",
+          "scene_id",
+          "workflow_id",
+          "workflow_run_id"
         ],
         "title": "PacketDecision",
         "type": "object"

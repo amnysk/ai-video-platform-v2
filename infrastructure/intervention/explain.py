@@ -96,6 +96,10 @@ class AgentRunOut(_View):
     estimated_cost_usd: float | None
     started_at: datetime | None
     finished_at: datetime | None
+    #: この実行を作った Activity の Temporal 識別子。Activity の外で作った行は null
+    workflow_id: str | None
+    workflow_run_id: str | None
+    activity_id: str | None
 
 
 class DownstreamOut(_View):
@@ -147,6 +151,11 @@ class DecisionExplanation(_View):
     target_revisions: list[str]
     result_revision: str | None
     override_command_id: str | None
+    #: 判断が単一 Scene を対象にすると記録されたときだけ（推測しない）
+    scene_id: str | None
+    #: 判断を記録した Activity の Temporal 識別子（Activity の外で作った行は null）
+    workflow_id: str | None
+    workflow_run_id: str | None
     agent_run: AgentRunOut | None
     interventions: InterventionsOut
     downstream_revisions: list[DownstreamOut]
@@ -166,6 +175,8 @@ class DecisionSummary(_View):
     evidence_check: str | None
     result_revision_id: str | None
     created_at: datetime
+    scene_id: str | None
+    workflow_id: str | None
 
 
 class DecisionPage(_View):
@@ -219,6 +230,9 @@ def _agent_run_out(run: AgentRun) -> AgentRunOut:
         estimated_cost_usd=None if cost is None else float(cost),
         started_at=run.started_at,
         finished_at=run.finished_at,
+        workflow_id=run.workflow_id,
+        workflow_run_id=run.workflow_run_id,
+        activity_id=run.activity_id,
     )
 
 
@@ -258,6 +272,9 @@ async def explain_decision(
         missing.append("input_snapshot_ref")
     if result is None:
         missing.append("result_revision")
+    for name in ("scene_id", "workflow_id", "workflow_run_id"):
+        if getattr(decision, name) is None:
+            missing.append(name)
 
     run: AgentRun | None = None
     if decision.agent_run_id is not None:
@@ -269,6 +286,8 @@ async def explain_decision(
             missing.append("agent_run.model")
         if run.prompt_version is None:
             missing.append("agent_run.prompt_version")
+        if run.workflow_id is None:
+            missing.append("agent_run.workflow_id")
         if run.token_usage is None:
             missing.append("agent_run.token_usage")
         if run.estimated_cost_usd is None:
@@ -333,6 +352,9 @@ async def explain_decision(
         target_revisions=targets,
         result_revision=result,
         override_command_id=override,
+        scene_id=decision.scene_id,
+        workflow_id=decision.workflow_id,
+        workflow_run_id=decision.workflow_run_id,
         agent_run=None if run is None else _agent_run_out(run),
         interventions=InterventionsOut(annotations=annotations, commands=commands),
         downstream_revisions=downstream,
@@ -351,6 +373,7 @@ async def search_decisions(
     decision_type: str | None = None,
     role: AgentRole | None = None,
     episode_id: str | None = None,
+    scene_id: str | None = None,
     limit: int = DEFAULT_SEARCH_LIMIT,
     before: str | None = None,
 ) -> DecisionPage:
@@ -365,6 +388,8 @@ async def search_decisions(
         stmt = stmt.where(AgentRunRow.role == role.value)
     if episode_id is not None:
         stmt = stmt.where(DecisionRecordRow.episode_id == uuid.UUID(episode_id))
+    if scene_id is not None:
+        stmt = stmt.where(DecisionRecordRow.scene_id == scene_id)
     if before is not None:
         try:
             cursor = await session.get(DecisionRecordRow, uuid.UUID(before))
@@ -402,6 +427,8 @@ async def search_decisions(
                 evidence_check=_opt_str(d.payload.get("evidence_check")),
                 result_revision_id=d.result_revision_id,
                 created_at=d.created_at,
+                scene_id=d.scene_id,
+                workflow_id=d.workflow_id,
             )
         )
     next_before = summaries[-1].decision_id if len(rows) > limit and summaries else None

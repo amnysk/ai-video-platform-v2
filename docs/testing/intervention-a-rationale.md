@@ -96,3 +96,16 @@
 | `test_final_video_qa_and_its_production_manifest_are_checked` | 完成動画は採用中の production manifest から作られ QA 合格であること | 不一致→一致の2段 | 別の素材一式の完成動画を合格にする |
 | `test_open_comments_stale_approvals_and_failed_verification_are_reported` | 未解決コメント・旧 manifest の承認（INV-45）・照合不合格を助言として出す。自分の所見をコメントとして数えない | 実データ | 旧承認の流用、照合結果の無視、所見の自己増殖 |
 | `test_rerunning_on_the_same_inputs_does_not_add_records` | 同じ入力の再実行で記録が増えない | 2回実行して行数を比べる | 再実行のたびに所見・判定が重複する |
+
+## Episode・Scene・Workflow への結び付き（migration 0018）
+
+| テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
+|---|---|---|---|
+| `test_0018_adds_nullable_columns_and_indexes_and_downgrade_removes_them` | 0018 は `agent_runs` / `decision_records` に NULL 可の列と索引を足し、downgrade で戻る。既存行を強制しない | 実際に alembic を 0017→0018→0017 と動かして形状を見る（models 一致検査は別に走る） | NOT NULL で足して既存行が壊れる、索引の付け忘れ、downgrade で列が残る |
+| `test_outside_an_activity_there_are_no_temporal_ids_and_nothing_is_invented` | Activity の外（test・CLI・API）で作る行と `agent.run.recorded` / `decision.recorded` は Temporal 識別子を持たない。`scene_id` も補完しない | `ActivityEnvironment` を使わない実 DB（SQLite）の記録 | 外側で偽の workflow_id を入れる、イベントに None の項目を足す |
+| `test_inside_an_activity_the_run_the_decision_and_their_events_carry_the_ids` | Activity の内側では `activity.info()` から run・decision の行とイベント refs に workflow / run / activity を載せ、projection は**既存の**ログ項目（`workflow_id` / `run_id`）に出す | `temporalio.testing.ActivityEnvironment`（Temporal server 不要。Activity の入力の形は変えていないことも兼ねる） | 識別子の取り違え（run_id と workflow_run_id）、ログ契約に無い項目の発明 |
+| `test_a_scene_override_decision_is_linked_to_its_scene_and_a_script_edit_is_not` | `scene_id` は payload が単一 Scene を明示する `scene.override_visual` の適用だけ。segment 単位の台本編集は NULL（推測しない） | 実際の propose→apply を通す | 台本編集の判断に Scene を当てずっぽうで付ける、override の Scene の欠落 |
+| `test_search_filters_by_scene_and_summaries_show_the_links` | `search_decisions` / `GET /decisions` の `scene_id` 絞り込みと、要約に `scene_id` / `workflow_id` が出る | 実 API（ASGI）+ SQLite | 他 Scene の判断が混ざる、絞り込みの無視 |
+| `test_explanation_shows_scene_and_workflow_links_or_lists_them_as_not_recorded` | explain は `scene_id` / `workflow_id` / `workflow_run_id` と agent_run の識別子を出し、無ければ null + `not_recorded`（補完しない） | 実 API。Activity の外／内（`ActivityEnvironment`）の両方 | 欠測を黙って省く、識別子の取り違え |
+| `test_the_read_model_and_the_review_packet_list_the_links` | read_model の判断・実行記録と ReviewPacket の判断が同じ識別子を出す | 実データ（read model → packet 変換） | packet だけ識別子が落ちる |
+| `test_search_decisions_can_filter_by_scene` / adapter の `scene_id` 行 | tool schema に `scene_id` があり、adapter は query にそのまま渡す | 契約／アダプタの表 | schema と route の食い違い |

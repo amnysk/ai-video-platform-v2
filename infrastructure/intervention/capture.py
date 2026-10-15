@@ -376,6 +376,7 @@ class AgentRunRecorder:
                     "role": capture.role.value,
                     "step": capture.step,
                     "output_revision_id": output_revision_id,
+                    **run.temporal.event_refs(),
                 },
             )
         return run
