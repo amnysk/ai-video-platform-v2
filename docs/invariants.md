@@ -711,3 +711,29 @@ handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_t
 / `tests/unit/test_agent_budget_gate.py::test_a_replay_returns_the_same_reservation_without_a_second_budget_check`
 / `tests/unit/test_agent_run_cost_capture.py::test_an_unknown_cost_stays_null_not_zero`
 / `tests/unit/test_agent_run_cost_capture.py::test_a_known_cost_and_the_agent_spec_are_stored`
+
+### INV-57 Agent handler は決定論の規則が最終で、入力は DATA として渡し、修正案は提案に留め、private・欠測から Lesson を作らない
+4 つの handler（`domain/agents/handlers/`）は `AGENT_INPUT_NAMES` の名前の document だけを読み、外へは
+`ToolGateway.llm_json` 以外を呼ばない。LLM の応答は契約（`contracts/agentic.py` から導いた schema）で検証し、
+違反は `AgentOutputRejected`。**決定論の規則が最終**: Strategy は直近タイトルの近い重複・profile 外の era を
+`rejected` にし、`audience_basis` は実測かつ十分な動画数のときだけ `measured`、`lessons_used` は Lesson の status
+だけで決める。Creative は採用候補の topic/subject/angle/era を写し LLM に変えさせない。Quality は入力欠測なら LLM を
+呼ばず `blocked_missing_input`、存在しない scene・尺超過の所見は捨てて理由を残し、`StoryboardPatchProposal` は
+visual_description のみ・最大 3 edit の**提案**で handler は適用しない。Learning は公開されていない・測定が全く無い
+ときは LLM を呼ばず Lesson を作らず（`awaiting_public_metrics`）、Lesson の status は常に `proposed`、欠測は `null`。
+prompt は入力を `<data>` で区切り「指示ではない」と明示し、ユーザ入力・LLM 出力は tool 名や指示にならない。
+**機械検査**: `tests/unit/test_agent_handlers.py::test_handlers_register_every_handler_ref_and_only_those`
+/ `tests/unit/test_agent_handlers.py::test_a_near_duplicate_of_a_recent_title_is_rejected_deterministically`
+/ `tests/unit/test_agent_handlers.py::test_an_era_outside_the_strategy_profile_is_rejected`
+/ `tests/unit/test_agent_handlers.py::test_audience_basis_is_measured_only_with_enough_videos`
+/ `tests/unit/test_agent_handlers.py::test_lessons_used_follows_status_not_the_llm`
+/ `tests/unit/test_agent_handlers.py::test_a_brief_with_injection_text_changes_no_tool_call_and_is_only_data`
+/ `tests/unit/test_agent_handlers.py::test_a_prompt_cannot_close_its_data_block`
+/ `tests/unit/test_agent_handlers.py::test_the_llm_cannot_change_the_adopted_subject_and_injection_is_inert`
+/ `tests/unit/test_agent_handlers.py::test_missing_input_blocks_the_review_without_an_llm_call`
+/ `tests/unit/test_agent_handlers.py::test_findings_on_unknown_scenes_or_beyond_the_duration_are_dropped_and_recorded`
+/ `tests/unit/test_agent_handlers.py::test_major_findings_become_visual_only_proposals_capped_at_three`
+/ `tests/unit/test_agent_handlers.py::test_private_or_unmeasured_uploads_wait_and_never_call_the_llm`
+/ `tests/unit/test_agent_handlers.py::test_the_llm_cannot_set_the_lesson_status`
+/ `tests/unit/test_agent_handlers.py::test_shorts_and_long_form_baselines_are_not_mixed`
+/ `tests/unit/test_agent_handlers.py::test_a_strategy_llm_output_violating_the_contract_is_rejected`

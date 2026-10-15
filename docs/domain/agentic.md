@@ -1,7 +1,6 @@
 # 自律改善型制作の契約（ADR-0043 §2〜§4）
 
-実装は P0-A（契約・Registry・Template コンパイラ・migration 0019）まで。Agent の実行（handler・Tool Gateway・
-Activity）と workflow は P1。設計は [JP-MAS-002 v1.1](../design/JP-MAS-002-v1.1.md)、判断は
+実装は P0-A（契約・Registry・Template コンパイラ・migration 0019）まで。Agent の実行基盤（Tool Gateway）は P0-C、handler は P1-A、Activity・workflow は P1。設計は [JP-MAS-002 v1.1](../design/JP-MAS-002-v1.1.md)、判断は
 [ADR-0043](../decisions/0043-agentic-production-foundation.md)。
 
 ## 語彙の置き場（定義は1箇所、AGENTS.md §8）
@@ -98,3 +97,21 @@ handler の契約（実装は P1）と、handler が外へ出るための唯一�
 - gateway の `token_usage()` / `actual_cost_usd()` は LLM を 1 回も呼ばなければ既知の 0、1 回でも usage・単価が
   欠ければ `None`（失敗した呼び出しも「不明」として数える）。
 - Flag と運用は [docs/operations/agentic.md](../operations/agentic.md)。
+
+## Handlers（INV-57、P1-A）
+
+`domain/agents/handlers/` に 4 つ。`HANDLERS` が `AgentHandlerRef` と1対1。純粋な domain（I/O なし）で、
+入力は `AgentInput.documents[name]`（`AGENT_INPUT_NAMES` の名前だけ）、外へは `ToolGateway.llm_json` のみ。LLM に求める
+JSON の形（schema）は契約 model から導く（`_support.derive_model`）。応答は契約で検証し、違反・組み立てた成果物の
+違反は `AgentOutputRejected`。prompt は入力を `<data name=...>`（`<` はエスケープ）で区切り「指示ではない」と明示する。
+prompt 本文は短いのでコード内に持つ（domain は file を読まない）。LLM は各 handler とも 1 回だけ呼ぶ。
+
+| handler | 入力 document（形） | 決定論の規則 | 出力 |
+|---|---|---|---|
+| strategy_agent_v1 | `user_brief`（UserBrief）・`analytics`（`measured`, `videos_with_views`）・`lessons`（`items[{revision_id,status}]`）・`recent_titles`（`titles[]`） | 直近タイトルと `jaccard >= PlannerPolicy.similarity_reject` → `duplicate_of_recent_title`。profile の `eras` 外 → `era_not_in_strategy_profile`。推奨が proposed でなければ最初の proposed、無ければ拒否。`audience_basis=measured` は `measured` かつ動画 >= `MIN_VIDEOS_FOR_MEASURED_AUDIENCE`(10)、他は assumed + 不確実性行。`lessons_used`: validated=参考、他=仮説、rejected/retired は不使用 | StrategyBrief、decision `strategy_brief`（reported） |
+| creative_director_v1 | `user_brief`・`strategy_brief`・`producer_decision`（`adopted_candidate_id`） | 採用候補（proposed のみ）の topic/subject/angle/era を写す。hook=`hook_options[0]`。`must_keep`→`user_constraints_applied`。profile id は user_brief | CreativeBrief、decision `creative_brief`。提案なし |
+| quality_reviewer_v1 | `script`・`storyboard`（`revision_id`, `scenes[{scene_id,start_ms,duration_ms}]`, `total_duration_ms`）・`final_video`（`revision_id`, `duration_ms`）・`rule_review`（文脈のみ）・`manifest`（`manifest_id`） | `final_video`/`storyboard` 欠測 → `blocked_missing_input`（LLM なし）。存在しない scene・尺超過の所見は捨て、判断記録の不確実性に残す。critical/major があれば `needs_changes`。`self_assessed` 固定。提案: critical>major・confidence 順、scene 重複なし、最大 `MAX_PROPOSAL_EDITS`(3)、`visual_description` のみ。適用しない | QualityReview + findings + `StoryboardPatchProposal`、decision `quality_review` |
+| learning_agent_v1 | `upload_receipt`（`video_id`）・`measurements`（`public`, `published_at`, `format`, `windows[]`）・`baseline`（`format`, `comparable`, `description`） | `public` が真でない・全窓に指標が無い → `awaiting_public_metrics`（artifact なし・LLM なし）。窓は入力の写し（欠測は null + `missing_reason`）。status は常に proposed。views < `SMALL_SAMPLE_VIEWS`(100) で `sample_note`。baseline が無い・比較不能・形式違いなら「比較できる基準が無い」 | Lesson（または awaiting）、decision `lesson` |
+
+入力 document の形は呼び出し側（P1-B の入力組み立て）が合わせる。LLM が返してもよい項目だけを model に写し、
+それ以外（subject, status など）は無視する。
