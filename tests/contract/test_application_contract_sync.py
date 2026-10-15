@@ -17,6 +17,7 @@ from contracts.application import (
     StoryboardPatchProposal,
     StoryboardProposalResult,
 )
+from contracts.application_operations import OPERATIONS
 from contracts.assistant_tools import TOOLS_BY_NAME
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -96,7 +97,10 @@ def test_the_committed_openapi_fragment_equals_a_fresh_generation() -> None:
 
 def test_the_fragment_has_only_the_application_paths_and_the_referenced_schemas() -> None:
     document = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
-    assert list(document["paths"]) == [ROUTE]
+    # ADR-0044 §4: 断片は OPERATIONS の 13 操作の path 全部（P0-B の時点では提案の 1 本だった）
+    expected = {"/v1/intervention" + o.http_path for o in OPERATIONS}
+    assert set(document["paths"]) == expected
+    assert ROUTE in document["paths"]
     names = set(document["components"]["schemas"])
     assert {"ProposeStoryboardChangeRequest", "StoryboardProposalResult"} <= names
     assert "CommandView" not in names  # 介入 API の他の route の型は含めない

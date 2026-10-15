@@ -230,6 +230,11 @@ class Settings(BaseSettings):
     #: ``JPMAS2_AGENT_LLM``。agent が使う LLM。``fake`` は隔離試験スタック専用の決定的な偽物
     jpmas2_agent_llm: Literal["codex", "fake"] = "codex"
 
+    #: ``API_CORS_ORIGINS``。UI の origin のカンマ区切り（ADR-0044 §4）。
+    #: 空 = CORS middleware を付けない。
+    #: 読み取りは ``cors_origins``（``*`` は拒否する）
+    api_cors_origins: str = ""
+
     # --- JP-MAS-001 判断記録の捕捉（ADR-0041、担当A） ---
     #: Topic Planner（producer）の実行記録（ContextSnapshot・agent_run）と choose_topic の
     #: 判断記録を残す。Planner は Episode より前に走るので mode で切り替えられず、この設定が唯一の
@@ -299,6 +304,14 @@ def _parse_enabled_agents(raw: str) -> frozenset[AgentRole]:
                 f"unknown agent role {name!r} in JPMAS2_ENABLED_AGENTS; known: {known}"
             ) from None
     return frozenset(roles)
+
+
+def cors_origins(settings: Settings) -> tuple[str, ...]:
+    """``API_CORS_ORIGINS`` の origin（空白・空要素は捨てる）。``*`` は設定の誤りとして拒否する。"""
+    origins = tuple(o.strip() for o in settings.api_cors_origins.split(",") if o.strip())
+    if "*" in origins:
+        raise ValueError("API_CORS_ORIGINS must list exact origins; wildcard is not allowed")
+    return origins
 
 
 def enabled_agent_roles(settings: Settings) -> frozenset[AgentRole]:

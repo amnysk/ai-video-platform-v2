@@ -148,6 +148,33 @@ command_id は `uuid5(NS, "{command_id}:{index}")` なので同じ要求の再�
 `{"request_command_id", "episode_id", "commands": [{"scene_id", "command_id", "status", "created"}]}`。
 詳細は [application.md](../domain/application.md)。
 
+### application 層の操作（ADR-0044、`JPMAS2_APPLICATION_API=true` のときだけ。既定は `404 feature_disabled`）
+method・path・body・応答の型は `contracts/application_operations.py:OPERATIONS` が唯一の宣言元で、route はそこから
+登録される。OpenAPI 断片は `docs/api/openapi.application.json`（`python scripts/export-openapi.py --application`）。
+scope・人限定の検査は Application Service が行う。`X-Correlation-ID`（`[A-Za-z0-9._:-]{1,128}`）があれば相関 ID に使い、
+無ければ生成する。
+
+| 操作 | method path（`/v1/intervention` から） | 成功 |
+|---|---|---|
+| `create_episode_draft` | `POST /episodes/drafts` | `201`（再送 `200`） |
+| `list_episodes` | `GET /episodes?limit=&before=` | `200` |
+| `get_episode_workspace` | `GET /episodes/{id}/workspace` | `200` |
+| `start_agentic_production`（人のみ） | `POST /episodes/{id}/production` | `202`（既に開始済み `200`） |
+| `request_hold` | `POST /episodes/{id}/hold` | `202`（再送 `200`） |
+| `resume_production` | `POST /episodes/{id}/resume` | `202`（再送 `200`） |
+| `get_storyboard` | `GET /episodes/{id}/storyboard` | `200` |
+| `propose_storyboard_change` | `POST /episodes/{id}/storyboard/proposals` | `202`（再送 `200`） |
+| `preview_change_impact` | `GET /episodes/{id}/change-sets/{change_set_id}/impact` | `200` |
+| `apply_approved_change` | `POST /episodes/{id}/change-sets/{change_set_id}/apply` | `202`（再送 `200`） |
+| `get_agent_decisions` | `GET /episodes/{id}/agent-decisions` | `200` |
+| `get_quality_review` | `GET /episodes/{id}/quality-review` | `200` |
+| `get_workflow_progress` | `GET /episodes/{id}/progress` | `200` |
+
+失敗は `{"detail": {"error": <OperationErrorCode>, "message", ...}}`。status: `409`（`command_id_reused`・
+`stale_*`・`invalid_state`）、`403`（`missing_scope`・`forbidden`）、`404`（`episode_not_found`・
+`change_set_not_found`・`feature_disabled`）、他は `422`。UI の origin は `API_CORS_ORIGINS`（カンマ区切り、
+既定は空 = CORS 無し、`*` は起動時に拒否）。1 操作 = `application.operation.completed` のログ 1 行。
+
 ## 5. 典型的な流れ（curl）
 
 ```bash
