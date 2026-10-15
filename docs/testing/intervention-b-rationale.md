@@ -85,3 +85,29 @@ store・manifest・台帳は実物（SQLite）、成果物は InMemoryArtifactSt
 - `test_an_old_version_result_cannot_become_the_adopted_member_after_a_change`: 送信済み job のあるシーンの
   差し替えは拒否し、結果が旧版の入力指紋で保存された後なら適用でき、旧版は行として残るが新しい manifest に入らず、
   旧指紋での再利用も起きない。差し替えの拒否を外すとこのテストが落ちることを手で確認した。
+
+## Temporal 接続（`tests/unit/test_intervention_workflows.py`）
+
+守る契約: command の配送が重複・クラッシュしても適用は1回（INV-42）、pipeline の起動は1つ（INV-30）、
+旧い履歴・日次実行は新方式に触れない（`workflow.patched`）、待機は黙って進まない（INV-45）。
+time-skipping 環境と SQLite、工程の子 workflow は同名の fake、Activity は本物。
+
+- `test_resume_applies_once_starts_the_pipeline_once_and_reports_duplicates`: 同じ command の再送は保存済み
+  result を返し pipeline を増やさない／走っている間の別 resume は `already_running` と記録される。走り続ける
+  fake pipeline が待機中に timeout しないよう、この fixture は時間の自動スキップを止める
+  （スキップすると実行中の pipeline が timeout し、重複起動の検査が成り立たない。テスト側の不備だった）。
+- `test_a_crash_after_the_db_apply_recovers_to_the_same_single_change`: apply の commit 後に落ちた command を
+  再配送すると、再適用せず（制御版・event が増えない）pipeline だけ始まり、`replayed=true` が返る
+  （follow-up の追記が `replayed` を上書きしていたのは実装の不備）。
+- `test_redelivery_starts_undelivered_commands_and_marks_them_dispatched`: API の start 失敗で取り残された
+  command を Schedule 側の workflow が拾い、配送済みを記録する。
+- `test_a_control_gate_run_parks_at_a_review_point_and_resumes_after_release`: 共同制作では工程の前で
+  `parked`、`checkpoint.waiting` は1回、現行 manifest への解放で次の工程から再開する。履歴は replay できる。
+- `test_a_held_episode_parks_before_the_first_stage`: 停止中は最初の工程も起動しない。
+- `test_the_default_run_records_no_patch_marker_and_no_control_gate_activity` /
+  `test_the_control_gate_run_records_the_patch_marker`: 既定の実行は patch の marker も gate の Activity も
+  履歴に足さない／gate の実行だけが `jpmas-control-gate-v1` を記録する。marker は `core_patch` の
+  details にあるので id を読んで比べる（文字列検索では base64 に隠れて見つからない）。工程の fake は
+  render / upload の task queue も指す（指さないと pipeline が完了せずテストが止まった）。
+- `test_a_retried_control_gate_activity_emits_checkpoint_waiting_once`: Activity の retry・再実行で
+  `checkpoint.waiting` が重複しない（INV-40 / INV-17）。

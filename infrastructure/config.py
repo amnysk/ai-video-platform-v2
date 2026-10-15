@@ -8,6 +8,7 @@ from decimal import Decimal
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from contracts.intervention import DEFAULT_EPISODE_BUDGET_JPY, DEFAULT_MONTHLY_BUDGET_JPY
 from contracts.pipeline import (
     DAILY_SCHEDULE_ID,
     DEFAULT_DAILY_EPISODE_LIMIT,
@@ -220,6 +221,14 @@ class Settings(BaseSettings):
     #: Episode の工程（script / storyboard）は ``episode_controls.mode != legacy`` で決まり、
     #: この設定とは無関係
     topic_planner_capture_enabled: bool = False
+
+    # --- 介入の予算（JP-MAS-001 / ADR-0041 §9、INV-47。担当 B） ---
+    #: 1本・1か月の上限（円）。既定の宣言元は ``contracts.intervention``。
+    #: 介入 API・AI からは変えない
+    episode_budget_jpy: int = DEFAULT_EPISODE_BUDGET_JPY
+    monthly_budget_jpy: int = DEFAULT_MONTHLY_BUDGET_JPY
+    #: 1 USD あたりの円。**既定なし**: 未設定なら有料の見積りを伴う変更は ``budget_unverifiable``
+    budget_usd_jpy_rate: Decimal | None = None
 
     @field_validator("research_provider", mode="before")
     @classmethod
