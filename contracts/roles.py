@@ -103,7 +103,7 @@ REVIEWER = RoleSpec(
     may_create_revisions=False,
 )
 
-# ADR-0043: 自律改善型制作の4役。実体の handler は P1 で ``workers.agents.handlers`` に実装する。
+# ADR-0043: 自律改善型制作の4役。実体の handler は P1 で ``domain.agents.handlers`` に実装する。
 # allowed_tools・終了条件は contracts/agents.py の AgentSpec v1.0 と同じ値を使う（再掲しない）。
 _LLM = AgentTool.LLM_GENERATE_JSON.value
 _READ = AgentTool.ARTIFACT_READ.value

@@ -81,7 +81,7 @@ P2（Web UI）・P3（MCP Server）は**対象外**（境界だけを残す）�
 - `contracts/agents.py`:
   - `AgentTool`（StrEnum）: `llm:generate_json`・`artifact:read`・`analytics:read`・`intervention:propose`。
   - `AgentHandlerRef`（StrEnum）: `strategy_agent_v1`・`creative_director_v1`・`quality_reviewer_v1`・`learning_agent_v1`。
-    **handler はコード登録だけ**（`workers/agents/handlers.py::HANDLERS`。キー集合 = `AgentHandlerRef` をテストで検査）。
+    **handler はコード登録だけ**（`domain/agents/handlers/__init__.py::HANDLERS`。handler は Tool Gateway の後ろの純粋な domain ロジック。キー集合 = `AgentHandlerRef` をテストで検査）。
     import 文字列・plugin の取得はしない。
   - `ModelPolicy{policy_id, version, provider: fake|codex_cli, model, input_usd_per_1k_tokens?, output_usd_per_1k_tokens?}`。
     単価が無い policy は**費用を測れない**（実績 `None`、0 にしない）。
