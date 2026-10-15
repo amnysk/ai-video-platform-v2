@@ -47,7 +47,10 @@ from contracts.states import (
     ProviderCall,
 )
 from domain.pipeline.resume_plan import ReservationSummary, ResumePlan, build_resume_plan
-from infrastructure.agents.pinned_plan import read_pinned_agentic_template
+from infrastructure.agents.pinned_plan import (
+    has_unstarted_agentic_draft,
+    read_pinned_agentic_template,
+)
 from infrastructure.config import Settings
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
@@ -423,6 +426,18 @@ async def resume_episode(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": OperationErrorCode.FEATURE_DISABLED.value, "message": message},
+        )
+    if pinned is None and await has_unstarted_agentic_draft(session_factory, episode_id):
+        # 未開始の draft は legacy に見える。resume で legacy の pipeline を走らせない
+        message = "agentic episode is not started; use start_agentic_production"
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, OperationErrorCode.INVALID_STATE.value)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": OperationErrorCode.INVALID_STATE.value,
+                "reason": "agentic_draft_not_started",
+                "message": message,
+            },
         )
     try:
         if pinned is not None:

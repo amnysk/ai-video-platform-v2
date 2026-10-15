@@ -121,11 +121,15 @@ def _preview(**over: Any) -> ChangeImpactPreview:
 class FakeReads:
     def __init__(self) -> None:
         self.kind = PipelineKind.LEGACY
+        self.unstarted_draft = False
         self.preview = _preview()
         self.calls: list[str] = []
 
     async def pipeline_kind(self, episode_id: uuid.UUID) -> PipelineKind:
         return self.kind
+
+    async def is_unstarted_agentic_draft(self, episode_id: uuid.UUID) -> bool:
+        return self.unstarted_draft
 
     async def list_episodes(self, *, limit: int, before: datetime | None) -> EpisodeList:
         self.calls.append(f"list:{limit}")
@@ -384,6 +388,20 @@ async def test_resume_of_an_agentic_episode_with_the_flag_off_creates_no_command
     assert err.value.code is OperationErrorCode.FEATURE_DISABLED
     assert w.commands.received == [] and w.commands.started == []
     assert w.observer.records[0].error_code == "feature_disabled"
+
+
+async def test_resume_of_an_unstarted_agentic_draft_creates_no_command() -> None:
+    """draft（brief のみ・計画未 pin）は legacy に見える。resume で走らせず開始へ誘導する。"""
+    w = World()
+    w.reads.unstarted_draft = True
+    with pytest.raises(OperationError) as err:
+        await w.service.resume_production(
+            human(), EP, ResumeProductionRequest(command_id="resume-000001")
+        )
+    assert err.value.code is OperationErrorCode.INVALID_STATE
+    assert err.value.detail == {"reason": "agentic_draft_not_started"}
+    assert w.commands.received == [] and w.commands.started == []
+    assert w.observer.records[0].error_code == "invalid_state"
 
 
 async def test_an_ai_cannot_resume_an_agentic_episode_but_may_resume_a_legacy_one() -> None:

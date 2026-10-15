@@ -26,3 +26,20 @@
 - `tests/unit/test_agentic_use_cases.py` の `TemporalAgenticStarter(wf_env.client)` → `(..., PipelineOptions())`:
   `options` を必須にした（既定値で起動する経路を型で無くす / ADR-0044 §3-2）ことに伴う呼び出しの書き換え。
   assertion は変えていない。
+
+## 未開始の agentic draft の再開（`tests/unit/test_resume_unstarted_agentic_draft.py` ほか）
+
+`CreateEpisodeDraft` は brief を持つが計画（`workflow_plan`）を pin しない。`read_pinned_agentic_template` は
+これを legacy（`None`）と区別できず、resume が `EpisodePipelineWorkflow` を起動していた。正しい開始は
+`start_agentic_production` だけ（ADR-0044 §3-4）。入口は3つあるので、それぞれを固定する。
+
+- `test_helper_is_true_only_with_a_brief_and_no_plan`: 判定関数 `has_unstarted_agentic_draft` の真理値。
+  brief なし（legacy）・brief のみ（draft）・brief+計画（開始済み）の3状態で、draft だけが True。
+- `test_api_resume_of_an_unstarted_agentic_draft_is_409_and_starts_nothing`: `POST /episodes/{id}/resume` が
+  409 `invalid_state` / `agentic_draft_not_started` で断り、agentic も legacy も起動しない。
+- `test_api_resume_of_a_legacy_episode_still_starts_the_pipeline`: 判定が通常の legacy Episode の再開を
+  巻き込まない（過剰拒否の防止）。
+- `test_worker_resume_of_an_unstarted_agentic_draft_starts_nothing`: `/v1/intervention/.../commands` から直接
+  送られた resume を worker の `check_start` が `invalid_state` で止める（flag に依存しない）。
+- `test_resume_of_an_unstarted_agentic_draft_creates_no_command`（`test_application_service.py`）:
+  `resume_production` が command を作る前に断り、観測に `invalid_state` を残す。

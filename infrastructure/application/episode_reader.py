@@ -40,7 +40,10 @@ from contracts.pipeline import pipeline_workflow_id
 from contracts.states import ArtifactType, JobStatus
 from domain.episode.entities import Episode
 from domain.job.entities import Job
-from infrastructure.agents.pinned_plan import read_pinned_agentic_template
+from infrastructure.agents.pinned_plan import (
+    has_unstarted_agentic_draft,
+    read_pinned_agentic_template,
+)
 from infrastructure.db.models import ArtifactMetadataRow
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
@@ -128,6 +131,10 @@ class StoreBackedEpisodeReader:
             self._session_factory, self._store_factory, episode_id
         )
         return PipelineKind.LEGACY if pinned is None else PipelineKind.AGENTIC
+
+    async def is_unstarted_agentic_draft(self, episode_id: uuid.UUID) -> bool:
+        await self._episode(episode_id)
+        return await has_unstarted_agentic_draft(self._session_factory, episode_id)
 
     async def list_episodes(self, *, limit: int, before: datetime | None) -> EpisodeList:
         async with self._session_factory() as session:

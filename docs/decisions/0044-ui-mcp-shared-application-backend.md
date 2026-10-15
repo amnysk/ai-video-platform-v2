@@ -88,6 +88,13 @@ Service が既存の介入 command と読み取りモデルへ委譲し、HTTP r
    poller を Temporal に問い合わせ、`worker_check`（`pollers_present` / `no_pollers` / `unknown`）を返す。
    確認できなければ `unknown` で、成功（実行中）とは言わない。日次の経路は触らない。
 
+4. **未開始の agentic draft の再開**: `CreateEpisodeDraft` が作った Episode（現行の `user_brief` はあるが
+   `workflow_plan` が未 pin）は `read_pinned_agentic_template` では legacy に見える。resume が legacy の
+   `EpisodePipelineWorkflow` を起動しないよう、API（`/episodes/{id}/resume` は 409、`resume_production` は
+   command を作る前に `invalid_state` / `agentic_draft_not_started`）と介入 worker（`check_start` が
+   `proceed=False` / `invalid_state`。flag に依存しない）が拒否する。draft を始める手段は
+   `start_agentic_production` だけ。判定は `has_unstarted_agentic_draft`（metadata の行だけを見る）に1つ。
+
 ### 4. HTTP（`/v1/intervention`、`JPMAS2_APPLICATION_API` が OFF なら 404 `feature_disabled`）
 
 route の method・path・request/response model は `OPERATIONS` から取る。既存の `/v1/intervention` route は

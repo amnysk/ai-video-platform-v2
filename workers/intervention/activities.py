@@ -23,7 +23,10 @@ from contracts.intervention import (
     REDELIVERY_STALE_AFTER_SECONDS,
 )
 from contracts.pipeline import EpisodePipelineInput, PipelineOptions
-from infrastructure.agents.pinned_plan import read_pinned_agentic_template
+from infrastructure.agents.pinned_plan import (
+    has_unstarted_agentic_draft,
+    read_pinned_agentic_template,
+)
 from infrastructure.intervention.budget import BudgetPolicy
 from infrastructure.intervention.commands import (
     CommandNotFoundError,
@@ -149,7 +152,7 @@ class InterventionActivities:
         command_id = str(request["command_id"])
         try:
             verdict = await check_pipeline_start(self._session_factory, command_id)
-            if verdict.get("proceed") and not self._agentic_enabled:
+            if verdict.get("proceed"):
                 async with self._session_factory() as session:
                     command = await InterventionStore(session).get_command(command_id)
                 if command is None:
@@ -157,9 +160,14 @@ class InterventionActivities:
                 pinned = await read_pinned_agentic_template(
                     self._session_factory, lambda: self._store, command.episode_id
                 )
-                if pinned is not None:
+                if pinned is not None and not self._agentic_enabled:
                     # agentic の worker が居ない環境で起動しない。legacy にも落とさない
                     return {"proceed": False, "reason": OperationErrorCode.FEATURE_DISABLED.value}
+                if pinned is None and await has_unstarted_agentic_draft(
+                    self._session_factory, command.episode_id
+                ):
+                    # 未開始の draft は legacy に見える。resume で legacy の pipeline を走らせない
+                    return {"proceed": False, "reason": OperationErrorCode.INVALID_STATE.value}
             return verdict
         except CommandNotFoundError as exc:
             raise ApplicationError(

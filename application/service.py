@@ -290,6 +290,13 @@ class ApplicationService:
     ) -> ResumeAccepted:
         async def body(ctx: _Context) -> ResumeAccepted:
             ctx.command_id = request.command_id
+            if await self._reads.is_unstarted_agentic_draft(episode_id):
+                # draft を resume すると legacy が走る。開始は start_agentic_production だけ
+                raise OperationError(
+                    OperationErrorCode.INVALID_STATE,
+                    "agentic episode is not started; use start_agentic_production",
+                    {"reason": "agentic_draft_not_started"},
+                )
             kind = await self._reads.pipeline_kind(episode_id)
             agentic = kind is PipelineKind.AGENTIC
             if agentic and not self._agentic_enabled:
