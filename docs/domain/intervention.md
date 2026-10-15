@@ -173,6 +173,12 @@ command worker は専用の task queue（`intervention`）で動く。
 | シーンの並べ替え・尺の変更 | 初期は**適用不可**（REJECTED `unsupported_change`）。storyboard の再生成が全シーンの画像を作り直す（`storyboard_sha256` が全画像の入力指紋に入る）ため、見積りと共に人が別手順で判断する | — | — | — |
 
 適用の規則（担当 B の実装）:
+- `script.edit_scenes` の `edits[].visual`（映像の記述）は**適用不可**（REJECTED `unsupported_change`。
+  `scene.override_visual` を案内する）。画像・動画は storyboard から作られ、台本の `visual` を直しても
+  どの画像も変わらない（黙って「直ったように見える」command を作らない）。
+- 承認（approval）が有効かの判定は `gate.approval_matches`（manifest 一致・撤回されていない・指定があれば
+  待機地点一致）の1か所。read model の `approval_is_current` と変更の再レビュー対象の算出は、それに委ねる
+  （AGENTS.md §8）。
 - 「stale にする」は**現行から降ろす**こと（`ArtifactMetadataRepository.retire_current`。行は消さない）。採用 manifest は
   常に現行と一致し、resume は現行に出力の無い最初の工程から pipeline を走らせる。
 - 適用は工程が走っていない間だけ（Episode が `in_progress` なら `invalid_state`）。投稿済み・終端の Episode は不可。
