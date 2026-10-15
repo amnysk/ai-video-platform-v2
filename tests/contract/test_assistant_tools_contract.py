@@ -279,6 +279,11 @@ def test_the_role_enum_is_derived_from_agent_role() -> None:
     assert role == [r.value for r in AgentRole]
 
 
+def test_search_decisions_can_filter_by_scene() -> None:
+    props = _tool("search_decisions").input_schema["properties"]
+    assert props["scene_id"]["type"] == "string"
+
+
 def test_resume_description_warns_about_paid_regeneration() -> None:
     text = _tool("resume_episode").description.lower()
     assert "paid regeneration" in text and "human" in text

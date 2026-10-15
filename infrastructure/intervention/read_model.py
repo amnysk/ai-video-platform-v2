@@ -145,6 +145,10 @@ class DecisionView(_View):
     command_id: str | None
     payload: dict[str, Any]
     created_at: str | None
+    #: 単一 Scene を対象にする判断だけ。Activity の外で作った行の workflow は None（migration 0018）
+    scene_id: str | None
+    workflow_id: str | None
+    workflow_run_id: str | None
     #: True = 保存されておらず、読み取り時に保存済みデータから導いた（古い plan の choose_topic）
     derived: bool
 
@@ -164,6 +168,10 @@ class AgentRunView(_View):
     output_revision_id: str | None
     outcome: str
     created_at: str
+    #: その実行を作った Activity の Temporal 識別子。Activity の外の行は None（migration 0018）
+    workflow_id: str | None
+    workflow_run_id: str | None
+    activity_id: str | None
 
 
 class AnnotationView(_View):
@@ -441,6 +449,9 @@ class EpisodeReadModel:
                         output_revision_id=r.output_revision_id,
                         outcome=r.outcome.value,
                         created_at=r.created_at.isoformat(),
+                        workflow_id=r.workflow_id,
+                        workflow_run_id=r.workflow_run_id,
+                        activity_id=r.activity_id,
                     )
                     for r in await store.list_agent_runs(episode_id=episode_id)
                 ],
@@ -678,6 +689,9 @@ class EpisodeReadModel:
                 command_id=d.command_id,
                 payload=d.payload,
                 created_at=d.created_at.isoformat(),
+                scene_id=d.scene_id,
+                workflow_id=d.workflow_id,
+                workflow_run_id=d.workflow_run_id,
                 derived=False,
             )
             for d in records
@@ -700,6 +714,9 @@ class EpisodeReadModel:
                         command_id=None,
                         payload=payload.model_dump(mode="json"),
                         created_at=None,
+                        scene_id=None,
+                        workflow_id=None,
+                        workflow_run_id=None,
                         derived=True,
                     ),
                 )

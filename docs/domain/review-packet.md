@@ -18,7 +18,7 @@ API は `GET /intervention/episodes/{id}/review-packet?format=json|markdown|html
 | `manifest_id` / `manifest_persisted` | 採用 manifest。記録が無ければ null と false（現行の成果物から組んだ） |
 | `episode` | phase（`episodes.status`）と制御（mode・control_state・制御版・待機地点。行が無ければ既定値で `persisted=false`） |
 | `target_revisions` | manifest の member。採用していない上流から作られた member は `stale` と理由 |
-| `decisions` | 判断記録。理由は `rationale.kind`（reported / rule / none …）と本文で、tool 参照（`tool_invocation_refs`）・結果（`result_revision`）とは別欄。保存されていない choose_topic を保存済み候補から導いたものは `derived=true` |
+| `decisions` | 判断記録。理由は `rationale.kind`（reported / rule / none …）と本文で、tool 参照（`tool_invocation_refs`）・結果（`result_revision`）とは別欄。保存されていない choose_topic を保存済み候補から導いたものは `derived=true`。`scene_id`（単一 Scene を対象にする判断だけ）と `workflow_id` / `workflow_run_id`（Activity の内側で記録した行だけ）は無ければ `null`（migration 0018） |
 | `script` | 採用中の台本の本文（segment ごと） |
 | `evidence` | Episode を参照する research の成果物の参照と照合結果（verdict） |
 | `reviews` | コメント・所見・承認・制約。古い版へのコメントはアンカーを動かさず `old_version=true`、旧 manifest の承認は `approval_current=false`（INV-45） |

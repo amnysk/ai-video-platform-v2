@@ -55,6 +55,7 @@ from infrastructure.db.models import (
     InterventionCommandRow,
     RevisionLinkRow,
 )
+from infrastructure.intervention.temporal_context import ActivityIds, current_activity_ids
 
 
 def _uuid(value: uuid.UUID | str) -> uuid.UUID:
@@ -340,6 +341,14 @@ class DecisionRecord:
     command_id: str | None
     correlation_id: str | None
     created_at: datetime
+    #: 判断が単一 Scene を対象にすると payload が明示するときだけ（migration 0018）
+    scene_id: str | None = None
+    workflow_id: str | None = None
+    workflow_run_id: str | None = None
+
+    @property
+    def temporal(self) -> ActivityIds:
+        return ActivityIds(self.workflow_id, self.workflow_run_id, None)
 
 
 def _to_decision(row: DecisionRecordRow) -> DecisionRecord:
@@ -355,6 +364,9 @@ def _to_decision(row: DecisionRecordRow) -> DecisionRecord:
         command_id=row.command_id,
         correlation_id=row.correlation_id,
         created_at=row.created_at,
+        scene_id=row.scene_id,
+        workflow_id=row.workflow_id,
+        workflow_run_id=row.workflow_run_id,
     )
 
 
@@ -382,6 +394,14 @@ class AgentRun:
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
+    #: その実行を作った Activity の Temporal 識別子（migration 0018）。Activity の外は None
+    workflow_id: str | None = None
+    workflow_run_id: str | None = None
+    activity_id: str | None = None
+
+    @property
+    def temporal(self) -> ActivityIds:
+        return ActivityIds(self.workflow_id, self.workflow_run_id, self.activity_id)
 
 
 def _to_agent_run(row: AgentRunRow) -> AgentRun:
@@ -408,6 +428,9 @@ def _to_agent_run(row: AgentRunRow) -> AgentRun:
         started_at=row.started_at,
         finished_at=row.finished_at,
         created_at=row.created_at,
+        workflow_id=row.workflow_id,
+        workflow_run_id=row.workflow_run_id,
+        activity_id=row.activity_id,
     )
 
 
@@ -964,6 +987,8 @@ class InterventionStore:
         )
         if existing is not None:
             return _to_agent_run(existing)
+        # Activity の内側で作る行だけ Temporal 識別子を持つ（外側は NULL。入力の形は変えない）
+        ids = current_activity_ids()
         row = AgentRunRow(
             id=_uuid(agent_run_id) if agent_run_id is not None else uuid.uuid4(),
             idempotency_key=idempotency_key,
@@ -986,6 +1011,9 @@ class InterventionStore:
             outcome=outcome.value,
             error_summary=None if error_summary is None else error_summary[:1000],
             correlation_id=correlation_id,
+            workflow_id=None if ids is None else ids.workflow_id,
+            workflow_run_id=None if ids is None else ids.workflow_run_id,
+            activity_id=None if ids is None else ids.activity_id,
             schema_version=INTERVENTION_SCHEMA_VERSION,
             started_at=started_at,
             finished_at=finished_at,
@@ -1029,12 +1057,15 @@ class InterventionStore:
         result_revision_id: uuid.UUID | str | None = None,
         command_id: str | None = None,
         correlation_id: str | None = None,
+        scene_id: str | None = None,
     ) -> DecisionRecord:
+        """``scene_id`` は payload が単一 Scene を明示する判断だけが渡す（推測しない）。"""
         existing = await self._session.scalar(
             select(DecisionRecordRow).where(DecisionRecordRow.idempotency_key == idempotency_key)
         )
         if existing is not None:
             return _to_decision(existing)
+        ids = current_activity_ids()
         row = DecisionRecordRow(
             idempotency_key=idempotency_key,
             episode_id=_opt_uuid(episode_id),
@@ -1047,6 +1078,9 @@ class InterventionStore:
             result_revision_id=_opt_uuid(result_revision_id),
             command_id=command_id,
             correlation_id=correlation_id,
+            scene_id=scene_id,
+            workflow_id=None if ids is None else ids.workflow_id,
+            workflow_run_id=None if ids is None else ids.workflow_run_id,
             schema_version=INTERVENTION_SCHEMA_VERSION,
             created_at=_now(),
         )

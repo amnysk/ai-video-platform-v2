@@ -180,6 +180,13 @@ read model の `status=resolved` と ReviewPacket の「未解決コメント」
   保存する transaction で `agent-runs/{topic_plan_id}/…` の agent_run と `choose_topic`（保存済み候補から。
   補完しない）にする。全候補が却下された round の一時置き場は行にならず残る（plan が無いため）。
   compose の環境変数への受け渡しは未配線（`compose.yaml` は担当外）。
+- Episode・Scene・Workflow への結び付き（migration 0018、全て NULL 可）: `agent_runs.workflow_id` /
+  `workflow_run_id` / `activity_id`（その実行を作った Activity の Temporal 識別子。`temporalio.activity.info()` から
+  **Activity の内側でだけ**取る。test・CLI・Topic の staging など外側は NULL）、`decision_records.scene_id`
+  （payload が単一 Scene を明示するときだけ。現状は `scene.override_visual` の適用。`script.edit_scenes` は
+  segment 単位で Scene を特定しないので NULL。推測しない）と `workflow_id` / `workflow_run_id`（同じ取り方）。
+  既存行は書き換えない。Activity の入力の形は変えない（replay 互換）。読み出しは explain / read_model / ReviewPacket
+  と `search_decisions` の `scene_id` 絞り込み、ログは既存の `workflow_id` / `run_id` / `scene_id` 項目に載せる。
 - `decision_records`: 問い・実際の候補（無ければ1件）・選択・`rationale_kind`（`reported` / `post_hoc_summary` /
   `human` / `rule`）・根拠参照・留保・制約・対象 revision・結果 revision・評価の種別（`self_assessed` / `measured` / `rule`）。
   **候補・スコアを補完しない。** 入力 snapshot に無い資料を根拠に挙げたら `evidence_check=unverified_ref` を付ける。

@@ -196,6 +196,7 @@ TOOLS: tuple[ToolSpec, ...] = (
                 "decision_type": {"type": "string", "maxLength": 64},
                 "role": {"enum": [r.value for r in AgentRole]},
                 "episode_id": _EPISODE_ID,
+                "scene_id": {"type": "string", "maxLength": 255},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                 "before": {"type": "string", "maxLength": 64},
             }

@@ -12,7 +12,7 @@ JP-MAS-001 v2.0 / [ADR-0041](../decisions/0041-decision-records-and-intervention
 | キー | 既定 | 意味 |
 |---|---|---|
 | `INTERVENTION_PRINCIPALS` | 未設定（=介入 API 全体が `503 intervention_disabled`） | token の sha256 → principal（actor・scopes）。[intervention-api.md](./intervention-api.md) §1 |
-| `EPISODE_BUDGET_JPY` / `MONTHLY_BUDGET_JPY` / `BUDGET_USD_JPY_RATE` | 1000 / 30000 / なし | （2026-10-07 時点で Settings に未実装。担当 B が足す）新方式の ChangeSet 適用時の予算検査（[intervention.md](../domain/intervention.md) §9）。**介入 API・AI からは変更できない**（INV-47） |
+| `EPISODE_BUDGET_JPY` / `MONTHLY_BUDGET_JPY` / `BUDGET_USD_JPY_RATE` | 1000 / 30000 / なし | （`infrastructure/config.py` の `episode_budget_jpy` / `monthly_budget_jpy` / `budget_usd_jpy_rate`。`BUDGET_USD_JPY_RATE` が未設定だと有料の見積りを伴う変更は `budget_unverifiable`）新方式の ChangeSet 適用時の予算検査（[intervention.md](../domain/intervention.md) §9）。**介入 API・AI からは変更できない**（INV-47） |
 | `AVP_LOG_FORMAT` 等 | `json` | 判断・介入イベントの投影も既存のログ設定に従う（[log-contract.md](../observability/log-contract.md) §10） |
 
 新しい表（migration 0016）は**新しい表だけ**を足す。既存の表・列・遷移表は変えない。

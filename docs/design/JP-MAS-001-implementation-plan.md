@@ -12,6 +12,20 @@
   （project `avp2-oslog-c*`、internal network、ポート非公開）か、`TEST_DATABASE_URL`（`_test`）だけ。
 - LLM・fal・YouTube は fake。`tests/live/` は使わない。
 
+## 状態（2026-10-15）
+
+実装の存在を `infrastructure/` `apps/` `workers/` `scripts/` で確認した範囲（動作の保証ではない）:
+
+- 実装あり（unit / contract / architecture の試験あり）: A（`capture` / `records` / `manifests` / `read_model` /
+  `review_packet` / `reviewer`、migration 0016）、B（`commands` / `changes` / `impact` / `budget` / `gate`、
+  `workers/intervention`、`resolve_annotation` = migration 0017）、C（`apps/api/routers/intervention*.py`、
+  `scripts/intervene.py`）、D のうち投影・再投影・`rebind`・`consistency-check`・backup drill のスクリプト、
+  G（対話 AI アシスタントの adapter `apps/assistant`、ADR-0042）。
+- 追加: 判断記録・実行記録と Episode・Scene・Workflow の結び付き（migration 0018、`temporal_context`）。
+- **未完了**: `tests/integration/test_intervention_*`（隔離環境の一連試験・故障試験）はこの branch に無く、
+  `claude/jpmas-verify` で追加中。**完了とは扱わない**。隔離環境での backup/restore 検証と、compose への
+  `TOPIC_PLANNER_CAPTURE_ENABLED` 受け渡しも未実施。
+
 ## 1. 土台（親、統合 branch に直接）
 `contracts/intervention.py`（語彙・payload）、`contracts/roles.py`（RoleSpec）、migration 0016 と
 `infrastructure/db/models.py` の9表、`infrastructure/intervention/store.py`（全担当が使う唯一の永続化の入口）、
