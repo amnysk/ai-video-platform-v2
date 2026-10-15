@@ -26,7 +26,14 @@ from contracts.artifacts import (
     parse_script_artifact,
 )
 from contracts.intervention import AgentRole, InterventionMode
-from contracts.states import ArtifactType, EpisodeStatus, JobStatus, JobType, ProviderCall
+from contracts.states import (
+    JOB_TERMINAL_STATUSES,
+    ArtifactType,
+    EpisodeStatus,
+    JobStatus,
+    JobType,
+    ProviderCall,
+)
 from contracts.topic_planning import ScriptLocale
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key
@@ -39,6 +46,7 @@ from domain.errors import (
     UnreconciledReservationError,
     classify_failure,
 )
+from domain.job.entities import Job
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
 from domain.script.brief import ScriptBrief, creative_brief, legacy_brief, plan_brief
 from domain.script.identity import idempotency_key, script_input_hash, with_brief_revision
@@ -164,6 +172,16 @@ class ScriptActivities:
     #: **事象を再適用しない**のであって、表を緩めるのではない。
     _ALREADY_STARTED = frozenset({EpisodeStatus.IN_PROGRESS, EpisodeStatus.SCRIPT_READY})
 
+    #: 台本より後の駐機点。brief が変わって台本を作り直すときだけ、ここから ``STAGE_ADMITTED``
+    #: で入り直す（遷移表の既存の辺。ADR-0044 §3-1）。日次・TopicPlan・legacy は従来どおり拒否。
+    _PARKED_AFTER_SCRIPT = frozenset(
+        {
+            EpisodeStatus.STORYBOARD_READY,
+            EpisodeStatus.ASSETS_READY,
+            EpisodeStatus.RENDER_READY,
+        }
+    )
+
     @activity.defn(name="script_mark_episode_in_progress")
     async def mark_episode_in_progress(self, request: EpisodeRef) -> None:
         async with self._session_factory() as session:
@@ -171,7 +189,15 @@ class ScriptActivities:
             episode = await episodes.get(request.episode_id)
             if episode is not None and episode.status in self._ALREADY_STARTED:
                 return  # 再実行で二重遷移しない（INV-17）
-            await episodes.apply_event(request.episode_id, EpisodeEvent.WORKFLOW_STARTED)
+            event = EpisodeEvent.WORKFLOW_STARTED
+            if (
+                episode is not None
+                and episode.status in self._PARKED_AFTER_SCRIPT
+                and episode.topic_plan_id is None
+                and await self._current_creative_brief(session, request.episode_id) is not None
+            ):
+                event = EpisodeEvent.STAGE_ADMITTED
+            await episodes.apply_event(request.episode_id, event)
             await session.commit()
 
     @activity.defn(name="script_create_job")
@@ -184,7 +210,9 @@ class ScriptActivities:
                 if job.type is JobType.WRITE_SCRIPT
             ]
             if existing:
-                return existing[0].id  # Activityの再実行でJobを重複生成しない
+                chosen = await self._job_to_reuse(session, request.episode_id, existing)
+                if chosen is not None:
+                    return chosen.id  # Activityの再実行でJobを重複生成しない
             job = await jobs.create(
                 episode_id=request.episode_id,
                 type=JobType.WRITE_SCRIPT,
@@ -192,6 +220,54 @@ class ScriptActivities:
             )
             await session.commit()
             return job.id
+
+    async def _job_to_reuse(
+        self, session: AsyncSession, episode_id: str, existing: list[Job]
+    ) -> Job | None:
+        """既存の台本 job のうち再利用するもの。無ければ ``None``（新しく作る）。
+
+        日次・TopicPlan・legacy の Episode は従来どおり最初の job（``existing[0]``）。
+        brief を持つ Episode（ADR-0044 §3-1）だけ、最新の job を見る: 非終端なら
+        それ（Activity の再試行は同じ job を返す）、成功済み／skip 済みで現行 brief の
+        input_hash に一致する現行台本が無ければ新しい job、それ以外は最新の job。
+        """
+        episode = await EpisodeRepository(session).get(episode_id)
+        if episode is None or episode.topic_plan_id is not None:
+            return existing[0]
+        brief = await self._brief(session, episode_id, episode.topic, episode.topic_plan_id)
+        if brief.brief_revision is None:
+            return existing[0]
+        latest = existing[-1]
+        if latest.status not in JOB_TERMINAL_STATUSES:
+            return latest
+        if latest.status in {JobStatus.SUCCEEDED, JobStatus.SKIPPED}:
+            current = await ArtifactMetadataRepository(session).find_current(
+                episode_id=episode_id,
+                artifact_type=ArtifactType.SCRIPT,
+                input_hash=self._input_hash(episode_id, brief),
+            )
+            if current is None:
+                return None
+        return latest
+
+    def _input_hash(self, episode_id: str, brief: ScriptBrief) -> str:
+        """台本の再利用キー。``create_script_job`` と ``generate_script`` が共有する唯一の定義。"""
+        template = script_prompt_template(brief.locale.locale)
+        input_hash = script_input_hash(
+            episode_id=episode_id,
+            topic=brief.topic,
+            artifact_type=ArtifactType.SCRIPT.value,
+            target_schema_version=SCRIPT_ARTIFACT_SCHEMA_VERSION,
+            prompt_template_id=template.template_id,
+            prompt_template_version=template.version,
+            generator_id=f"{self._generator_id}:{self._model}",
+            locale=brief.locale.locale,
+            topic_plan_id=brief.topic_plan_id,
+            content_profile=(
+                f"{brief.content_profile.content_profile_id}@{brief.content_profile.version}"
+            ),
+        )
+        return with_brief_revision(input_hash, brief.brief_revision)
 
     @activity.defn(name="script_mark_ready")
     async def mark_script_ready(self, request: EpisodeRef) -> str:
@@ -220,24 +296,7 @@ class ScriptActivities:
             brief = await self._brief(
                 session, request.episode_id, episode.topic, episode.topic_plan_id
             )
-        topic = brief.topic
-        template = script_prompt_template(brief.locale.locale)
-
-        input_hash = script_input_hash(
-            episode_id=request.episode_id,
-            topic=topic,
-            artifact_type=ArtifactType.SCRIPT.value,
-            target_schema_version=SCRIPT_ARTIFACT_SCHEMA_VERSION,
-            prompt_template_id=template.template_id,
-            prompt_template_version=template.version,
-            generator_id=f"{self._generator_id}:{self._model}",
-            locale=brief.locale.locale,
-            topic_plan_id=brief.topic_plan_id,
-            content_profile=(
-                f"{brief.content_profile.content_profile_id}@{brief.content_profile.version}"
-            ),
-        )
-        input_hash = with_brief_revision(input_hash, brief.brief_revision)
+        input_hash = self._input_hash(request.episode_id, brief)
 
         # (1) 同じ入力の現行Artifactが既にあれば、生成器を呼ばずに返す（ADR-0012 / INV-17）
         async with self._session_factory() as session:

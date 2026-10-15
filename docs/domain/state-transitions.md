@@ -59,6 +59,11 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 - `assets_ready` → 次工程の開始（Phase 5 の `RenderWorkflow` が `STAGE_ADMITTED` を呼ぶ、ADR-0019）
 - `render_ready` → 次工程の開始（Phase 6 Upload の POST、ADR-0020。再描画の POST も出口、ADR-0019）
 
+追記（ADR-0044 §3-1）: brief を持ち TopicPlan の無い Episode が、台本より後の駐機点（`storyboard_ready` /
+`assets_ready` / `render_ready`）にいて brief が変わったとき、台本の作り直しは `STAGE_ADMITTED`（上の表の既存の辺）で
+`in_progress` に入り直し、台本が通れば `script_ready` に戻る。遷移表は変えない。日次・TopicPlan・legacy の
+Episode は従来どおり `workflow_started` を拒否する。
+
 `completed` は骨組みworkflow専用の終端であり、本番パイプラインの正常系は
 `ready_for_review` を通る（ADR-0006）。
 
