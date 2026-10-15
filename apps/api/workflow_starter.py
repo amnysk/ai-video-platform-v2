@@ -5,17 +5,12 @@ APIは workflow の**完了を待たない**（INV-16）。start して即座に
 
 from __future__ import annotations
 
-import dataclasses
 from typing import Protocol
 
 from temporalio.client import Client
 from temporalio.common import WorkflowIDReusePolicy
 
-from contracts.agentic_pipeline import (
-    AGENTIC_EPISODE_WORKFLOW,
-    AgenticEpisodeInput,
-    agentic_episode_workflow_id,
-)
+from contracts.agentic_pipeline import agentic_episode_workflow_id
 from contracts.pipeline import EPISODE_PIPELINE_WORKFLOW, pipeline_workflow_id
 from contracts.production_activities import (
     DEFAULT_AWAIT_REEXECUTIONS,
@@ -34,6 +29,10 @@ from contracts.states import (
 )
 from infrastructure.config import Settings
 from infrastructure.logging.setup import ensure_core_log_forwarding
+from infrastructure.temporal.pipeline_options import (
+    agentic_episode_start_spec,
+    pipeline_options_from_settings,
+)
 
 
 class WorkflowStarter(Protocol):
@@ -209,19 +208,18 @@ class TemporalWorkflowStarter:
         同じ id は Temporal が拒否する（``WorkflowAlreadyStartedError``）ので同時に2本は走らない。
         最初の起動（``TemporalAgenticStarter.start``）は REJECT_DUPLICATE のまま。
         """
-        workflow_name, task_queue = AGENTIC_EPISODE_WORKFLOW
+        spec = agentic_episode_start_spec(
+            episode_id=episode_id,
+            template_id=template_id,
+            template_version=template_version,
+            options=pipeline_options_from_settings(self._settings),
+        )
         workflow_id = agentic_episode_workflow_id(episode_id)
         await self._client.start_workflow(
-            workflow_name,
-            dataclasses.asdict(
-                AgenticEpisodeInput(
-                    episode_id=episode_id,
-                    template_id=template_id,
-                    template_version=template_version,
-                )
-            ),
+            spec.workflow_name,
+            spec.input_dict(),
             id=workflow_id,
-            task_queue=task_queue,
+            task_queue=spec.task_queue,
             id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
         )
         return workflow_id

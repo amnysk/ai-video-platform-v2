@@ -20,7 +20,7 @@ from infrastructure.intervention.budget import budget_policy_from_settings
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
-from infrastructure.temporal.schedules import daily_episode_input_from_settings
+from infrastructure.temporal.pipeline_options import pipeline_options_from_settings
 from workers.intervention.activities import InterventionActivities
 from workers.intervention.workflows import (
     InterventionCommandWorkflow,
@@ -56,8 +56,8 @@ async def main() -> None:
         session_factory=session_factory_from_settings(settings),
         store=store,
         budget_policy=budget_policy_from_settings(settings),
-        # pipeline の production 枠・render profile は日次 Schedule と同じ設定から
-        pipeline_options=daily_episode_input_from_settings(settings).options,
+        # pipeline の production 枠・render profile・queue は日次 Schedule・API と同じ関数から
+        pipeline_options=pipeline_options_from_settings(settings),
     )
     worker = build_worker(client, activities)
     logger.info("intervention worker listening on %s", INTERVENTION_TASK_QUEUE)

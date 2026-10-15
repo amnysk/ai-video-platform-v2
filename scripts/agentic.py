@@ -86,6 +86,7 @@ async def _default_deps() -> Deps:
     from infrastructure.storage.minio_store import MinioArtifactStore
     from infrastructure.temporal.agentic_starter import TemporalAgenticStarter
     from infrastructure.temporal.connect import connect_with_retry
+    from infrastructure.temporal.pipeline_options import pipeline_options_from_settings
 
     settings = Settings()
     session_factory = session_factory_from_settings(settings)
@@ -96,7 +97,7 @@ async def _default_deps() -> Deps:
         drafts=DbEpisodeDraftPort(
             session_factory=session_factory, store=store, bucket=settings.minio_bucket
         ),
-        starter=TemporalAgenticStarter(client),
+        starter=TemporalAgenticStarter(client, pipeline_options_from_settings(settings)),
         session_factory=session_factory,
         store=store,
         agentic_enabled=settings.jpmas2_agentic_workflows,

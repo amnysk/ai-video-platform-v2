@@ -28,3 +28,20 @@ ADR-0044 §3 の3問題（台本の作り直し / 再開設定の一本化 / fla
 
 テストの生成器は呼ぶたびに別の台本を返す。同じ内容は同じ Artifact 行に畳まれる（`record` の規則、ADR-0012）ため、
 そうしないと「新しい版」が別行にならず検査にならない。
+
+## 2. 再開設定の一本化（tests/unit/test_pipeline_options_single_source.py）
+
+`PipelineOptions` を設定から作る関数と agentic の起動仕様を作る関数をそれぞれ1つにした
+（`infrastructure/temporal/pipeline_options.py`）。API の再開・介入 worker・CLI が同じ関数を使う。
+
+- `test_daily_schedule_input_is_unchanged_by_the_extraction`: 日次 Schedule の入力 `options` が、抽出前に
+  `daily_episode_input_from_settings` が直接組んでいた値（テスト内に写しを置く）と、既定の設定でも
+  既定外の設定でも一致する（Schedule の入力が変わると既存 Schedule の更新が走る）。
+- `test_the_task_queue_is_the_options_queue`: agentic の task queue は `options.pipeline_task_queue`。
+  既定は従来の定数 `AGENTIC_EPISODE_WORKFLOW[1]` と同じ（既定の環境で何も変わらない）。
+- `test_api_cli_and_worker_paths_build_the_same_start`: 同じ Settings（並行数・round 数・render profile を
+  既定外にしたもの）で、API の `start_agentic_workflow`・CLI の `TemporalAgenticStarter.start`・介入 worker の
+  `_choose_pipeline` が `(workflow 名, 入力 dict, task queue)` を完全に一致させる。負債は「API は既定の
+  PipelineOptions、worker は設定」の食い違いだった。
+- `test_a_custom_queue_reaches_every_path`: queue を既定から変えた options が API と worker の両方で
+  同じ queue に届く（Settings には queue の項目が無いので、options の差し替えで検査する）。

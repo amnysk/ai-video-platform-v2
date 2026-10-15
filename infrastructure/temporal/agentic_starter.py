@@ -14,15 +14,14 @@ from temporalio.common import WorkflowIDReusePolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from contracts.agentic_pipeline import (
-    AGENTIC_EPISODE_WORKFLOW,
     AGENTIC_LEARNING_WORKFLOW,
-    AgenticEpisodeInput,
     AgenticLearningInput,
     agentic_episode_workflow_id,
     agentic_learning_workflow_id,
 )
 from contracts.application import StartedWorkflow
 from contracts.pipeline import PipelineOptions
+from infrastructure.temporal.pipeline_options import agentic_episode_start_spec
 
 
 class TemporalAgenticStarter:
@@ -33,19 +32,19 @@ class TemporalAgenticStarter:
     async def start(
         self, *, episode_id: uuid.UUID, template_id: str, template_version: str
     ) -> StartedWorkflow:
-        name, queue = AGENTIC_EPISODE_WORKFLOW
+        spec = agentic_episode_start_spec(
+            episode_id=str(episode_id),
+            template_id=template_id,
+            template_version=template_version,
+            options=self._options,
+        )
         workflow_id = agentic_episode_workflow_id(str(episode_id))
         try:
             await self._client.start_workflow(
-                name,
-                AgenticEpisodeInput(
-                    episode_id=str(episode_id),
-                    template_id=template_id,
-                    template_version=template_version,
-                    options=self._options,
-                ),
+                spec.workflow_name,
+                spec.input,
                 id=workflow_id,
-                task_queue=queue,
+                task_queue=spec.task_queue,
                 id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
             )
         except WorkflowAlreadyStartedError:

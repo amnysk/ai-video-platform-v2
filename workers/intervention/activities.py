@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from contracts.agentic_pipeline import PIPELINE_KIND_KEY, AgenticEpisodeInput, PipelineKind
+from contracts.agentic_pipeline import PIPELINE_KIND_KEY, PipelineKind
 from contracts.intervention import (
     APPLY_INTERVENTION_COMMAND_ACTIVITY,
     CHECK_PIPELINE_START_ACTIVITY,
@@ -33,6 +33,7 @@ from infrastructure.intervention.commands import (
 )
 from infrastructure.intervention.store import InterventionStore
 from infrastructure.storage.artifact_store import ArtifactStore
+from infrastructure.temporal.pipeline_options import agentic_episode_start_spec
 
 
 def _utcnow() -> datetime:
@@ -121,15 +122,15 @@ class InterventionActivities:
         )
         if pinned is None:
             return  # legacy: pipeline_kind を載せない（旧い履歴の結果と同じ形）
-        response[PIPELINE_KIND_KEY] = PipelineKind.AGENTIC.value
-        response["pipeline_input"] = dataclasses.asdict(
-            AgenticEpisodeInput(
-                episode_id=episode_id,
-                template_id=pinned.template_id,
-                template_version=pinned.template_version,
-                options=self._pipeline_options,
-            )
+        spec = agentic_episode_start_spec(
+            episode_id=episode_id,
+            template_id=pinned.template_id,
+            template_version=pinned.template_version,
+            options=self._pipeline_options,
         )
+        response[PIPELINE_KIND_KEY] = PipelineKind.AGENTIC.value
+        response["pipeline_input"] = spec.input_dict()
+        response["pipeline_task_queue"] = spec.task_queue
 
     @activity.defn(name=RECORD_COMMAND_FOLLOWUP_ACTIVITY)
     async def followup(self, request: dict[str, Any]) -> dict[str, Any]:
