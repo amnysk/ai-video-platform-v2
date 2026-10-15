@@ -250,3 +250,20 @@ def test_application_layer_is_shipped_and_isolated() -> None:
     assert "application" in ALLOWED and "infrastructure" not in ALLOWED["application"]
     assert "COPY application ./application" in (REPO / "Dockerfile").read_text(encoding="utf-8")
     assert '"application*"' in (REPO / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_application_layer_has_no_framework_or_io_imports() -> None:
+    """ADR-0044 §2: application/ は fastapi・temporalio・sqlalchemy・httpx に触れない。
+
+    ``apps`` / ``infrastructure`` の禁止は ``test_layer_dependencies_are_one_directional`` が持つ。
+    ここは第三者ライブラリ（HTTP・Temporal・DB）に依存すると、Application Service が
+    adapter の都合を知ってしまうので別に固定する。
+    """
+    banned = {"fastapi", "starlette", "temporalio", "sqlalchemy", "asyncpg", "httpx", "boto3"}
+    violations = [
+        f"{path.relative_to(REPO)}: application must not import {module}"
+        for path in _python_files("application")
+        for root, module in _imported_roots(path)
+        if root in banned
+    ]
+    assert not violations, "\n".join(violations)

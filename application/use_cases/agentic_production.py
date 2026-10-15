@@ -90,5 +90,8 @@ class StartAgenticProduction:
             template_version=brief.template_version,
         )
         return StartAgenticProductionResult(
-            episode_id=request.episode_id, workflow_id=started.workflow_id, started=started.started
+            episode_id=request.episode_id,
+            workflow_id=started.workflow_id,
+            started=started.started,
+            worker_check=started.worker_check,
         )
