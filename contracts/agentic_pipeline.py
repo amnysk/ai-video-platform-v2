@@ -1,0 +1,141 @@
+"""Agentic 実行（ADR-0043 §6）の workflow / Activity の名前・task queue・入出力。
+
+ここが**唯一の宣言元**（AGENTS.md §8）。workflow は実装を import せず、
+名前と task queue で呼ぶ（INV-3）。
+入出力は Temporal の既定 converter で運べる dataclass。計画（``contracts.agentic.WorkflowPlan``）は
+JSON の dict として運び、受け手が ``WorkflowPlan.model_validate`` で検証する
+（版を黙って読み替えない / INV-54）。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
+
+from contracts.pipeline import PIPELINE_TASK_QUEUE, PipelineOptions
+
+#: Agent stage の Activity を処理する worker の task queue（``workers/agents``）
+AGENTS_TASK_QUEUE = "agents"
+
+AGENTIC_EPISODE_WORKFLOW: tuple[str, str] = ("AgenticEpisodeWorkflow", PIPELINE_TASK_QUEUE)
+AGENTIC_LEARNING_WORKFLOW: tuple[str, str] = ("AgenticLearningWorkflow", PIPELINE_TASK_QUEUE)
+
+#: pipeline worker の Activity
+PIN_WORKFLOW_PLAN_ACTIVITY = "pin_workflow_plan"
+ADOPT_STRATEGY_CANDIDATE_ACTIVITY = "adopt_strategy_candidate"
+#: agent worker の Activity
+RUN_AGENT_STAGE_ACTIVITY = "run_agent_stage"
+#: pin された spec の hash と Registry の hash が違う（INV-51）。再試行しない
+AGENT_SPEC_DRIFT_ERROR = "agent_spec_drift"
+
+
+def agentic_episode_workflow_id(episode_id: str) -> str:
+    return f"agentic-episode-{episode_id}"
+
+
+def agentic_learning_workflow_id(episode_id: str) -> str:
+    return f"agentic-learning-{episode_id}"
+
+
+def agent_stage_idempotency_key(episode_id: str, stage_id: str, plan_hash: str) -> str:
+    return f"agentic:{episode_id}:{stage_id}:{plan_hash}"
+
+
+class AgentStageOutcome(StrEnum):
+    PRODUCED = "produced"
+    AWAITING_PUBLIC_METRICS = "awaiting_public_metrics"
+    REJECTED_OUTPUT = "rejected_output"
+    #: flag 無効（agent_disabled）・予算（budget_*）・停止中（held）。黙って飛ばさない
+    BLOCKED = "blocked"
+
+
+class AgenticOutcome(StrEnum):
+    COMPLETED = "completed"
+    PARKED = "parked"
+    STOPPED = "stopped"
+
+
+@dataclass
+class AgenticEpisodeInput:
+    episode_id: str
+    template_id: str
+    template_version: str
+    options: PipelineOptions = field(default_factory=PipelineOptions)
+
+
+@dataclass
+class PinWorkflowPlanRequest:
+    episode_id: str
+    template_id: str
+    template_version: str
+
+
+@dataclass
+class PinWorkflowPlanResult:
+    #: ``WorkflowPlan`` の JSON（``model_dump(mode="json")``）
+    plan: dict[str, Any]
+    #: 既に pin されていた計画を返した
+    existing: bool = False
+
+
+@dataclass
+class RunAgentStageRequest:
+    episode_id: str
+    #: ``PlannedStage`` の JSON（pin された stage。spec の版と hash を含む）
+    stage: dict[str, Any]
+    plan_hash: str
+    template_id: str
+    template_version: str
+
+
+@dataclass
+class RunAgentStageResult:
+    outcome: str  # AgentStageOutcome
+    reason: str | None = None
+    artifact_revision_id: str | None = None
+    agent_run_id: str | None = None
+    decision_id: str | None = None
+    proposal_command_ids: list[str] = field(default_factory=list)
+    #: replay で保存済みの結果を返した
+    replayed: bool = False
+
+
+@dataclass
+class AdoptStrategyCandidateRequest:
+    episode_id: str
+    stage_id: str
+    plan_hash: str
+
+
+@dataclass
+class AdoptStrategyCandidateResult:
+    adopted: bool
+    candidate_id: str | None = None
+    decision_id: str | None = None
+    reason: str | None = None
+
+
+@dataclass
+class AgenticEpisodeResult:
+    episode_id: str
+    outcome: str  # AgenticOutcome
+    plan_hash: str | None = None
+    completed_stages: list[str] = field(default_factory=list)
+    stopped_stage: str | None = None
+    reason: str | None = None
+    #: QA の修正サイクル（P1 は自動修正しない。提案の数だけ記録する）
+    qa_repair_cycles: int = 0
+
+
+@dataclass
+class AgenticLearningInput:
+    episode_id: str
+
+
+@dataclass
+class AgenticLearningResult:
+    episode_id: str
+    outcome: str  # AgentStageOutcome
+    lesson_revision_id: str | None = None
+    reason: str | None = None

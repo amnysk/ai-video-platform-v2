@@ -86,3 +86,12 @@
 - `test_only_the_use_case_turns_a_proposal_into_scene_overrides`: 提案の型と `SceneOverrideVisual` を同じ
   module で扱うのは use case だけ（変換の複製を防ぐ）。
 - `test_only_the_use_case_derives_edit_command_ids`: edit ごとの command_id の導出が1か所（再送の冪等性の根拠）。
+
+## Agentic 実行の契約（`tests/contract/test_agentic_pipeline_contracts.py`、親エージェントが P1 の前に固定）
+
+| テスト | 守る契約 | 捕まえる失敗 |
+|---|---|---|
+| `test_agentic_workflows_do_not_reuse_the_legacy_pipeline_names` | 日次の workflow を書き換えず別名にする（INV-55） | agentic 実行が `EpisodePipelineWorkflow` の名前・履歴を共有する |
+| `test_activity_names_are_unique_and_agents_have_their_own_queue` | Activity 名の衝突なし、agent は別 queue | pipeline worker が agent の LLM 呼び出しを拾う |
+| `test_ids_and_idempotency_keys_are_deterministic` | 再配送で同じ workflow id・冪等キー | 再実行で二重の Agent 実行・課金 |
+| `test_payloads_are_plain_dataclasses_for_the_temporal_converter` | 既定 converter で運べる | 実行時の decode 失敗 |
