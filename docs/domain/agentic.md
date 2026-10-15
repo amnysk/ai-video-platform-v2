@@ -98,3 +98,68 @@ handler の契約（実装は P1）と、handler が外へ出るための唯一�
 - gateway の `token_usage()` / `actual_cost_usd()` は LLM を 1 回も呼ばなければ既知の 0、1 回でも usage・単価が
   欠ければ `None`（失敗した呼び出しも「不明」として数える）。
 - Flag と運用は [docs/operations/agentic.md](../operations/agentic.md)。
+
+## Agent stage の実行（P1-B、INV-51 / INV-56 / INV-57）
+
+Activity `run_agent_stage`（`workers/agents/activities.py`、task queue `agents`）。入出力は
+`contracts/agentic_pipeline.py::RunAgentStageRequest` / `RunAgentStageResult`。
+
+| 順 | 処理 | 止まり方 |
+|---|---|---|
+| 1 | pin された `(role, spec_version, manifest_hash)` で spec を解決 | 不一致・未知の版は**非再試行** `agent_spec_drift`（INV-51） |
+| 2 | `jpmas2_agentic_workflows` と `role in enabled_agent_roles` | `blocked / agent_disabled`（黙って飛ばさない） |
+| 3 | 冪等キー `agentic:{episode_id}:{stage_id}:{plan_hash}` の結果が保存済みか | あれば**何も書かず**それを返す（`replayed=true`）。提案だけ冪等に再送 |
+| 4 | 入力 document の組み立て（`infrastructure/agents/inputs.py`） | 必須入力（user_brief 等）が無ければ `blocked / input_missing:<名前>` |
+| 5 | 予算 gate + 予約台帳（`budget_gate.py`） | `blocked / budget_exceeded` / `budget_unverifiable` / `held`。予約が dispatch 済みで証拠が無ければ `UnreconciledReservationError`（再送しない） |
+| 6 | Tool Gateway を作り handler を呼ぶ（LLM は Codex か Fake） | `AgentOutputRejected` → 8 へ。それ以外の例外は台帳を確定して送出 |
+| 7 | **検証より前に**台帳を確定（`settle_agent_call`）。応答は `agent-runs/{episode}/{run}/llm-calls.json` に保存し evidence にする | LLM を試みて失敗しただけ（応答なし）なら `conservative` |
+| 8 | 1 transaction で保存（`infrastructure/agents/persist.py`） | rejected は `agent_runs.outcome=rejected_output` だけ（成果物・判断・注記なし） |
+| 9 | 提案を `ProposeStoryboardChange` + `SessionCommandPort` で出す | 通らなくても stage は失敗にしない（`reason=proposal_rejected:<code>`） |
+
+### 保存（`persist_stage`、commit は呼び出し側）
+
+- 成果物: ArtifactStore に正準 JSON を先に置き、読み戻して sha256 を照合してから `artifact_metadata` の新しい現行 revision
+  にする（前の現行は降りる）。型・版は spec の `output_schema_ref` と一致し、登録済みの版でなければ `rejected_output`
+- `agent_runs`: role、step = stage_id、model（LlmResult の実測）、prompt_version、tool_invocations（予約への参照つき）、
+  `token_usage` / `estimated_cost_usd`（gateway の実測。不明は NULL）、snapshot の `agent_spec`（role・版・hash・policy）
+- `decision_records`: actor は `agent` 種別・id = role 名（`agent:<role>`）、`agent_run_id`、`result_revision_id`。
+  `target_revisions` は読んだ入力 revision、`input_snapshot_ref` は snapshot
+- `revision_links(derived_from)`: 読んだ入力 revision（artifact）から出力 revision へ
+- `annotations(kind=review_finding)`: 所見ごと。anchor は `scene_id` / `time_range`（と存在する manifest）。
+  `payload.assessment_kind = self_assessed`
+- イベント: `agent.run.recorded`（recorder）と `decision.recorded`
+
+`may_create_revisions=false` の role（quality・learning）も**自分の出力**（`quality_review` / `lesson` Artifact）は保存する。
+この旗が禁じるのは既存の制作 Artifact（storyboard 等）の revision を作ることで、変更は提案（次節）だけで出す。
+
+### 提案は出すだけ（INV-57）
+
+agent の `Caller` は `actor_type=agent`、scope は `read` / `comment` / `propose` だけ（`apply` なし）。
+提案の要求 command_id は冪等キーと提案の添字から決まる（`proposal_request_id`）ので、replay は同じ command 群になる。
+`intervention:propose` tool は提案を**積むだけ**で、保存の後にまとめて出す。ChangeSet は `proposed` のまま。
+
+### 入力 document の表現（`inputs.py`）
+
+| document | 中身 | 欠けたとき |
+|---|---|---|
+| `user_brief` `strategy_brief` `creative_brief` `storyboard` | 現行の Artifact を `parse_artifact` で読んだ JSON | `{"missing": true, "reason": ...}` |
+| `script` | 現行の script Artifact（そのまま） | 同上 |
+| `final_video` | `total_duration_ms` / `media` / `measured` / `technical_qa` / `render_profile` だけ（timeline・字幕 cue は渡さない） | 同上 |
+| `upload_receipt` | 現行の投稿受領（そのまま） | 同上 |
+| `producer_decision` | 最新の `decision_records(choose_topic)` → `{"adopted_candidate_id"}` | 同上 |
+| `analytics` | 最新の `analytics_snapshots` の要約 `{measured, videos_with_views, windows, audience, snapshot_date}` | `{"measured": false, "reason": "no_analytics_snapshot"}` |
+| `lessons` | 他 Episode の現行 Lesson `{"items": [{revision_id, episode_id, status, scope, observations, hypotheses}]}`（状態の解釈は handler） | `{"items": []}` |
+| `recent_titles` | 他 Episode の `topic` `{"titles": [...]}` | `{"titles": []}` |
+| `rule_review` | 既存の決定論 reviewer（`run_reviewer`）の `{verdict, manifest_id, findings}` | — |
+| `manifest` | `{"manifest_id"}`（採用 manifest） | 同上 |
+| `measurements` | `PublicMetricsPort`。本番は `{"public": false, "windows": [], "reason": "collector_not_implemented"}` | — |
+| `baseline` | analytics 由来 `{available, format: "unknown", format_note, videos_with_views, windows}`。snapshot は Shorts と長尺を分けないので format は `unknown` | `{"available": false, "reason": ...}` |
+
+欠測は**値にしない**（空 dict・0・空文字にしない）。`input_revisions` には artifact の revision だけが入り、
+decision / manifest / snapshot の id は `agent_runs` の `input_refs` に残る。入力は PostgreSQL と ArtifactStore だけから読む。
+
+### 再試行と二重課金
+
+予約は stage ごとに 1 件（上限で計上）。LLM を呼び終えたら応答を ArtifactStore に置いて台帳を確定する。保存の前で
+落ちて再試行されたら、台帳の `raw_output_key` から**保存済みの応答を再生**し LLM を呼び直さない（応答が足りなければ
+`ProviderInvocationError`）。dispatch 済みで証拠が無い予約は `UnreconciledReservationError`（呼んだか不明なので再送しない）。

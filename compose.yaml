@@ -480,6 +480,38 @@ services:
       <<: *worker-health
       test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "intervention"]
 
+  agent-worker:
+    # ADR-0043 §6: Agent stage の Activity（run_agent_stage。queue `agents`）。**`agentic` profile だけ**で、
+    # 既定の `make up`（core）では起動しない。JPMAS2_AGENTIC_WORKFLOWS が true でなければ起動直後に終了する。
+    # LLM は Codex（script-worker と同じ sandbox 設定）。隔離試験は JPMAS2_AGENT_LLM=fake。
+    # 予算は intervention-worker と同じ設定（BUDGET_USD_JPY_RATE は既定なし → budget_unverifiable で止まる）
+    <<: *worker
+    profiles: [agentic]
+    cap_add: [SETFCAP]
+    security_opt: ["no-new-privileges:true", "seccomp=unconfined"]
+    depends_on: *deps-minio
+    environment:
+      AVP_SERVICE_NAME: agent-worker
+      <<: *app-env
+      HOME: /home/avp
+      CODEX_BINARY: /usr/local/bin/codex
+      CODEX_MODEL: ${CODEX_MODEL:-}
+      CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
+      JPMAS2_AGENTIC_WORKFLOWS: ${JPMAS2_AGENTIC_WORKFLOWS:-false}
+      JPMAS2_ENABLED_AGENTS: ${JPMAS2_ENABLED_AGENTS:-}
+      JPMAS2_AGENT_LLM: ${JPMAS2_AGENT_LLM:-codex}
+      EPISODE_BUDGET_JPY: ${EPISODE_BUDGET_JPY:-1000}
+      MONTHLY_BUDGET_JPY: ${MONTHLY_BUDGET_JPY:-30000}
+      BUDGET_USD_JPY_RATE: ${BUDGET_USD_JPY_RATE:-}
+    volumes:
+      - type: bind
+        source: ${CODEX_HOME_HOST_DIR:-${HOME}/.codex}
+        target: /home/avp/.codex
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.agents.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "agents"]
+
   prometheus:
     logging: *logging
     image: prom/prometheus:latest

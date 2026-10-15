@@ -35,10 +35,31 @@ def _bash_array(name: str) -> list[str]:
     return match.group(1).split()
 
 
+#: `agentic` profile だけで起動する service は deploy-workers の対象外（ADR-0043 §6:
+#: 既定の運用・deploy に入れない。起動は所有者の明示的な操作だけ）
+AGENTIC_ONLY_PROFILE = ["agentic"]
+
+
+def _agentic_only_services() -> set[str]:
+    return {
+        name
+        for name, svc in _compose_services().items()
+        if svc.get("profiles") == AGENTIC_ONLY_PROFILE
+    }
+
+
 def test_app_services_cover_every_service_built_from_this_repo() -> None:
-    built = set(_built_services())
+    built = set(_built_services()) - _agentic_only_services()
     assert len(built) >= 11
     assert set(_bash_array("APP_SERVICES")) == built
+
+
+def test_agentic_only_services_are_never_deployed_by_deploy_workers() -> None:
+    """agent-worker は `agentic` profile だけ。deploy-workers の配列に入れない（ADR-0043 §6）。"""
+    agentic = _agentic_only_services()
+    assert "agent-worker" in agentic
+    assert not agentic & set(_bash_array("APP_SERVICES"))
+    assert not agentic & set(_bash_array("BUILD_SERVICES"))
 
 
 def test_services_sharing_an_image_tag_share_one_build_spec() -> None:
