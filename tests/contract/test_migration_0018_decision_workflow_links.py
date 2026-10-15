@@ -26,7 +26,10 @@ def _columns(engine: sa.Engine, table: str) -> dict[str, bool]:
 
 
 def _indexes(engine: sa.Engine, table: str) -> dict[str, list[str]]:
-    return {i["name"]: list(i["column_names"]) for i in sa.inspect(engine).get_indexes(table)}
+    return {
+        str(i["name"]): [str(c) for c in i["column_names"]]
+        for i in sa.inspect(engine).get_indexes(table)
+    }
 
 
 def test_0018_adds_nullable_columns_and_indexes_and_downgrade_removes_them(tmp_path: Path) -> None:
