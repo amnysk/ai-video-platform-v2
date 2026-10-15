@@ -209,3 +209,11 @@ P2（Web UI）・P3（MCP Server）は**対象外**（境界だけを残す）�
   - 解析（48h/7d/28d）の新しい収集は無い。Learning は既存 `analytics_snapshots` と、隔離試験の mock を読む。
   - OpenTelemetry・React Flow・Konva は導入しない。境界（application port・Artifact 契約・OpenAPI 断片）だけを残す。
   - MCP Server・OAuth・Web UI は未実装（P2/P3）。
+  - P1 の実装で判明した残り（P2 以降で扱う）:
+    - 介入の resume は既存 `EpisodePipelineWorkflow` を起動するので、停止・待機の後の agent stage（quality 等）は
+      走らない。`AgenticEpisodeWorkflow` の id は重複拒否で、再起動の経路は未設計。
+    - 予約は Agent stage の開始時に上限で取る。LLM を呼ばずに `awaiting_public_metrics` で終わる learning も
+      上限（0.03 USD）を計上する（安全側の過大計上。必要になった時点で予約する方式は未実装）。
+    - `ProposeStoryboardChange` の command_id は `(要求 id, edit の位置)` から導くので、同じ要求 id で edit の数だけを
+      変えた再送は `command_id_reused` にならない（減らした場合は保存済みの部分を返し、増やした場合は追加分を受け付ける）。
+    - 台本の再利用キーに CreativeBrief の版が入らない（P1 は creative stage を1度しか走らせない）。
