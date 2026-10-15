@@ -130,6 +130,10 @@
           "type": "keyword",
           "ignore_above": 512
         },
+        "tool_name": {
+          "type": "keyword",
+          "ignore_above": 512
+        },
         "provider": {
           "type": "keyword",
           "ignore_above": 512

@@ -92,6 +92,8 @@ LOG_FIELDS: tuple[LogField, ...] = (
     LogField("span_id", _T.KEYWORD),
     LogField("http_method", _T.KEYWORD),
     LogField("http_route", _T.KEYWORD),
+    # --- 対話 AI アシスタント（ADR-0042）。tool の名前（actor の ID は ``attributes.actor_id``）
+    LogField("tool_name", _T.KEYWORD),
     # --- 外部 provider と予約台帳
     LogField("provider", _T.KEYWORD),
     LogField("provider_operation", _T.KEYWORD),
@@ -342,6 +344,8 @@ class EventName(StrEnum):
     SERVICE_START_FAILED = "service.start_failed"
     # API
     API_REQUEST_COMPLETED = "api.request.completed"
+    # 介入 API（/v1/intervention）の1要求。主体・相関 ID・assistant の tool 名を持つ（ADR-0042）
+    INTERVENTION_API_REQUEST = "intervention.api.request"
     # Schedule / 日次枠
     SCHEDULE_SLOT_ACQUIRED = "schedule.slot.acquired"
     SCHEDULE_SLOT_SKIPPED = "schedule.slot.skipped"

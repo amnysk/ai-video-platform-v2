@@ -519,3 +519,45 @@ command には実際に使った scope（`granted_scope`）と主体を記録す
 / `tests/unit/test_intervention_auth.py::test_settings_default_is_unconfigured`
 （Settings の予算・Schedule の値を API から変える経路が無いことは route の表面と command 語彙で検査する。
 担当 B の `receive_command` が `granted_scope` を `REQUIRED_SCOPE` から記録することは B のテストと統合後の検査に依る）
+
+### INV-48 対話 AI アシスタントの adapter は介入 HTTP API と contracts だけを使う
+`apps/assistant/**`（対話 AI 向け tool の実行器。ADR-0042）が import してよいのは標準ライブラリ・`httpx`・
+`contracts.*`・自分自身だけ。`infrastructure`・`workers`・`domain`・`temporalio`・`sqlalchemy`・`psycopg`・
+`apps.api` 等には触れない。DB や Temporal を直接読み書きすると、介入 API が持つ認可（scope）・期待版・
+AI による有料適用の拒否・command の記録（INV-47）を迂回する経路になる。tool の名前・入力 schema・効果・必要 scope の
+唯一の宣言元は `contracts/assistant_tools.py`（command を送る tool の scope は `REQUIRED_SCOPE` から導く）。
+予算上限・Schedule・公開設定を変える tool は定義しない。
+**機械検査**: `tests/architecture/test_assistant_boundary.py::test_the_assistant_package_imports_only_http_and_contracts`
+/ `tests/architecture/test_assistant_boundary.py::test_no_forbidden_module_is_named_even_in_a_lazy_import`
+/ `tests/architecture/test_assistant_boundary.py::test_the_cli_entry_point_only_wraps_the_adapter`
+/ `tests/architecture/test_assistant_boundary.py::test_the_check_itself_rejects_internal_imports`
+/ `tests/contract/test_assistant_tools_contract.py::test_command_tools_derive_their_scope_from_the_single_source`
+/ `tests/contract/test_assistant_tools_contract.py::test_no_tool_changes_budget_schedule_or_visibility`
+/ `tests/contract/test_assistant_tools_contract.py::test_proposal_schemas_do_not_invent_payload_fields`
+/ `tests/contract/test_assistant_tools_contract.py::test_a_schema_valid_proposal_is_accepted_by_the_real_payload_model`
+/ `tests/unit/test_assistant_adapter.py::test_every_tool_in_the_catalogue_can_be_dispatched`
+
+### INV-49 同じ tool 呼び出しの再試行は1つの論理変更にしかならず、費用は確認したものだけを適用する
+command を送る tool の `command_id` は `uuid5(ASSISTANT_NAMESPACE, "{session_id}:{tool_call_id}")`
+（`contracts.assistant_tools.tool_command_id`）で決まる。同じ tool 呼び出しの再試行は同じ command_id になり、
+INV-42 により API は保存済みの command を返す（二重の提案・適用・課金にならない）。`apply_change` は
+`change_set_id` と提示した見積り `acknowledged_estimated_cost_usd`（未見積りは明示的な `null`）を必須にし、
+送信直前に変更案を読み直して一致しなければ `cost_changed` を返して何も送らない（`null` と `0` を同一視しない）。
+サーバが権限不足・AI の有料適用で拒否したら `needs_human_approval`（影響・見積り・人が実行する
+`scripts/intervene.py apply …`）を返し、再試行や別の資格情報での迂回をしない。全ての要求に
+`X-Correlation-ID: assistant:{session_id}:{tool_call_id}` と `X-Assistant-Tool` を付け、API は
+`intervention.api.request` を記録する（token・Authorization・本文は出さない。INV-39）。
+**機械検査**: `tests/contract/test_assistant_tools_contract.py::test_command_id_is_deterministic_per_tool_call`
+/ `tests/unit/test_assistant_e2e.py::test_a_retried_tool_call_is_one_logical_change`（本物の FastAPI アプリ・store）
+/ `tests/unit/test_assistant_e2e.py::test_a_new_tool_call_is_a_new_command_and_a_reused_id_with_other_input_is_refused`
+/ `tests/unit/test_assistant_e2e.py::test_apply_with_a_stale_cost_sends_no_command_to_the_real_api`
+/ `tests/unit/test_assistant_adapter.py::test_the_same_tool_call_sends_the_same_command_id_and_a_different_one_differs`
+/ `tests/unit/test_assistant_adapter.py::test_a_retried_apply_returns_the_stored_command_without_rechecking_cost`
+/ `tests/unit/test_assistant_adapter.py::test_a_changed_estimate_sends_nothing_and_returns_cost_changed`
+/ `tests/unit/test_assistant_adapter.py::test_null_and_zero_are_never_confused`
+/ `tests/unit/test_assistant_adapter.py::test_a_forbidden_scope_returns_needs_human_approval_and_does_not_retry`
+/ `tests/unit/test_assistant_adapter.py::test_an_ai_paid_apply_rejected_by_the_server_becomes_needs_human_approval`
+/ `tests/unit/test_assistant_adapter.py::test_every_request_carries_the_correlation_and_tool_headers`
+/ `tests/unit/test_assistant_adapter.py::test_the_token_never_appears_in_results_errors_or_repr`
+/ `tests/unit/test_assistant_request_log.py::test_neither_token_nor_authorization_nor_body_is_logged`
+/ `tests/unit/test_assistant_e2e.py::test_the_server_logs_the_assistant_correlation_and_never_the_token`

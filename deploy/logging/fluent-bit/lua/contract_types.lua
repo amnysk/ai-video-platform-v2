@@ -46,6 +46,7 @@ return {
     ["span_id"] = "keyword",
     ["http_method"] = "keyword",
     ["http_route"] = "keyword",
+    ["tool_name"] = "keyword",
     ["provider"] = "keyword",
     ["provider_operation"] = "keyword",
     ["provider_endpoint"] = "keyword",

@@ -20,6 +20,7 @@ import hmac
 import json
 import re
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,11 @@ class PrincipalConfigError(ValueError):
 
 def token_sha256(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+#: 認証できた主体の観測先。ログ用 middleware が要求ごとに空の dict を置き（ADR-0042 §6）、
+#: ``authenticate`` が成功したときに actor_type / actor_id だけを書く。token・hash は入れない。
+AUTH_OBSERVER: ContextVar[dict[str, str] | None] = ContextVar("avp_auth_observer", default=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +89,10 @@ class PrincipalRegistry:
             # 全件を定数時間で比べる（一致位置で時間が変わらない）
             if hmac.compare_digest(key, digest):
                 found = principal
+        observer = AUTH_OBSERVER.get()
+        if found is not None and observer is not None:
+            observer["actor_type"] = found.actor_type.value
+            observer["actor_id"] = found.actor_id
         return found
 
 

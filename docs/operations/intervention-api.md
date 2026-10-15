@@ -202,3 +202,13 @@ API 全体は落ちない。
   `compare_revisions(a, b)`（`ValueError` → `422 revision_type_mismatch`）、`build_packet(view)` / `render_markdown(packet)`
   （同期・非同期どちらでもよい）。
 - A `ChangeProposalFile` は `proposals`（`ProposeChangePayload` 互換）と任意の `episode_id` を持つ。
+
+## 8. 判断の説明と Episode 横断の検索（ADR-0042、scope `read`）
+
+対話 AI アシスタント向けの読み取り route。どちらも GET で、保存済みの行だけを読む（LLM を呼ばない・書き込まない）。
+実装は `apps/api/routers/intervention_insights.py` と `infrastructure/intervention/explain.py`。
+
+| route | 返すもの |
+|---|---|
+| `GET /v1/intervention/episodes/{episode_id}/decisions/{decision_id}/explanation` | 判断の問い・候補・選択・理由（`rationale.kind` は保存値のまま。`reported` は `provenance=self_reported_by_model`・`verified=false`）・根拠参照と `evidence_check`・役割／model／prompt_version（`agent_runs`）・入力 snapshot 参照・制約・留保・対象 revision に向けた注記と command・下流 revision（`revision_links`）。記録が無い項目は `null` で、名前を `not_recorded` に列挙する（token 使用量・費用が未計上なら `agent_run.token_usage` / `agent_run.estimated_cost_usd`）。その Episode に無い判断は `404 decision_not_found` |
+| `GET /v1/intervention/decisions?decision_type=&role=&episode_id=&limit=&before=` | Episode を跨いだ判断履歴（正本の PostgreSQL）。新しい順。`limit` は 1〜200（既定 50）、`before` は前ページの `next_before`（不正なら `422 invalid_cursor`）。`role` は `agent_runs` の役割 |
