@@ -609,7 +609,8 @@ role・版を `UnknownAgentSpecError` で拒否する（既存 3 役は Registry
 `agent_spec_hash` / `model_policy_ref` / `prompt_version` を持ち、`plan_hash` が全体を覆う（改ざんは model 検証で拒否）。
 hash 不一致の停止は `run_agent_stage`（`workers/agents/activities.py`）が実装する: pin された
 `(role, spec_version, manifest_hash)` で spec を解決し、不一致・未知の版は**非再試行**の `agent_spec_drift`
-（何も保存せず LLM も呼ばない）。計画を固定する Activity（`pin_workflow_plan`）は P1-C。
+（何も保存せず LLM も呼ばない）。`pin_workflow_plan` は Episode に計画を1度だけ固定し（既にあればそれを返す）、
+workflow は Activity の結果の計画だけを使う。
 **機械検査**: `tests/contract/test_agent_registry.py::test_registered_spec_hashes_are_pinned`
 / `tests/contract/test_agent_registry.py::test_changing_any_field_changes_the_hash`
 / `tests/contract/test_agent_registry.py::test_unknown_role_or_version_is_rejected`
@@ -764,3 +765,9 @@ prompt は入力を `<data>` で区切り「指示ではない」と明示し、
 / `tests/unit/test_agent_handlers.py::test_the_llm_cannot_set_the_lesson_status`
 / `tests/unit/test_agent_handlers.py::test_shorts_and_long_form_baselines_are_not_mixed`
 / `tests/unit/test_agent_handlers.py::test_a_strategy_llm_output_violating_the_contract_is_rejected`
+/ `tests/unit/test_agent_stage_activity.py::test_quality_proposals_arrive_as_proposed_agent_change_sets_and_are_not_applied`
+/ `tests/unit/test_agent_stage_activity.py::test_the_agent_caller_never_holds_the_apply_scope`
+/ `tests/unit/test_agent_stage_activity.py::test_an_awaiting_learning_stage_writes_no_lesson`
+/ `tests/unit/test_agent_stage_activity.py::test_a_tool_queued_proposal_is_submitted_after_the_save_and_not_applied`
+/ `tests/unit/test_agent_stage_activity.py::test_a_replay_resubmits_proposals_idempotently`
+/ `tests/unit/test_agent_stage_activity.py::test_real_handlers_run_against_assembled_inputs_for_every_role`
