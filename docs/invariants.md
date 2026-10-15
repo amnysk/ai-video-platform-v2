@@ -671,3 +671,43 @@ contracts を import しない）。downgrade は新語彙の行があれば何�
 / `tests/contract/test_migration_0019_agentic_vocabulary.py::test_the_migration_creates_no_table_or_column`
 / `tests/contract/test_migration_0019_agentic_vocabulary.py::test_upgrade_and_downgrade_round_trip_on_sqlite`
 / `tests/contract/test_migration_0019_agentic_vocabulary.py::test_downgrade_refuses_and_changes_nothing_when_a_new_value_is_in_use`
+
+### INV-55 既定オフ: 新機能の flag は既定で無効で、日次経路は agentic のモジュールを参照しない
+`Settings` の `jpmas2_application_api`・`jpmas2_agentic_workflows` は既定 false、`jpmas2_enabled_agents` は空
+（= 有効な role なし）、`jpmas2_agent_llm` は `codex`（`fake` は隔離試験専用）。未知の role 名は起動時に失敗する。
+`workers/pipeline/workflows.py`（`EpisodePipelineWorkflow`）・`infrastructure/temporal/schedules.py` は
+`contracts.agents`・`contracts.workflow_templates`・`contracts.agentic`・`domain.agents`・`domain.workflow_templates`・
+`application` を直接 import しない。`workers/planning/**`（Topic Planner・Script）は同じ禁止に加え、
+`contracts.agentic` からは `CreativeBrief` だけ（P1 の「TopicPlan が無く現行の creative_brief がある Episode」の分岐用）を
+許す。検査は直接の import（AST）で、動的 import・推移的な依存は見ない。
+**機械検査**: `tests/unit/test_agentic_flags.py::test_every_agentic_flag_defaults_to_off`
+/ `tests/unit/test_agentic_flags.py::test_enabled_agents_are_parsed_from_a_comma_separated_list`
+/ `tests/unit/test_agentic_flags.py::test_an_unknown_agent_name_fails_at_load_with_the_known_names`
+/ `tests/unit/test_agentic_flags.py::test_the_agent_llm_is_codex_or_fake_only`
+/ `tests/architecture/test_agentic_default_off.py::test_daily_path_modules_import_nothing_agentic`
+/ `tests/architecture/test_agentic_default_off.py::test_the_planning_worker_may_only_read_the_creative_brief`
+/ `tests/architecture/test_agentic_default_off.py::test_the_checker_catches_each_import_form_and_checks_allowed_names`
+
+### INV-56 Agent は Tool Gateway が許した tool だけを上限内で呼び、LLM 費用の欠測を 0 にせず、予約・予算 gate を通ってから呼ぶ
+handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_tools` に無い tool・供給されていない tool は
+何かを呼ぶ前に `ToolNotAllowedError`、LLM 呼び出しが `spec.max_llm_calls` を超えれば `AgentBudgetExceededError`。
+記録（`tool_invocations`）は prompt 本文を含まない。実績費用は token usage × policy 単価で、usage か単価が欠ければ
+`None`（`token_usage`・`actual_cost_usd`・`agent_runs.estimated_cost_usd` とも NULL。0 にしない）。LLM 呼び出しの前に
+`ProviderCall.AGENT_LLM` を `spec.max_estimated_cost_usd`（上限）で予約して commit し、最初の予約の前にだけ
+`budget_view` + `check_additional_cost` を検査する（換算率なし = `budget_unverifiable`、超過 = `budget_exceeded`。
+どちらも予約を作らない）。dispatch は gate を通り、hold 中は `EpisodeHeldError` で予約は未 dispatch のまま残る。
+再送は同じ予約を返し再検査しない。
+**機械検査**: `tests/unit/test_agent_tool_gateway.py::test_an_unlisted_tool_is_refused_before_anything_is_called`
+/ `tests/unit/test_agent_tool_gateway.py::test_a_listed_but_unprovided_tool_is_refused`
+/ `tests/unit/test_agent_tool_gateway.py::test_the_llm_call_cap_is_enforced_before_the_next_call`
+/ `tests/unit/test_agent_tool_gateway.py::test_unknown_usage_makes_tokens_and_cost_none_not_zero`
+/ `tests/unit/test_agent_tool_gateway.py::test_an_unpriced_policy_gives_none_cost_but_known_tokens`
+/ `tests/unit/test_agent_tool_gateway.py::test_invocations_are_json_safe_and_never_contain_the_prompt`
+/ `tests/unit/test_agent_tool_gateway.py::test_unknown_usage_gives_none_not_zero`
+/ `tests/unit/test_agent_budget_gate.py::test_the_first_call_reserves_the_ceiling_then_dispatches`
+/ `tests/unit/test_agent_budget_gate.py::test_without_a_usd_jpy_rate_the_call_is_refused_before_any_reservation`
+/ `tests/unit/test_agent_budget_gate.py::test_exceeding_the_episode_budget_is_refused_before_any_reservation`
+/ `tests/unit/test_agent_budget_gate.py::test_a_held_episode_refuses_dispatch_and_the_reservation_stays_undispatched`
+/ `tests/unit/test_agent_budget_gate.py::test_a_replay_returns_the_same_reservation_without_a_second_budget_check`
+/ `tests/unit/test_agent_run_cost_capture.py::test_an_unknown_cost_stays_null_not_zero`
+/ `tests/unit/test_agent_run_cost_capture.py::test_a_known_cost_and_the_agent_spec_are_stored`
