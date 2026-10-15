@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.api.dependencies import get_session_factory, get_settings
+from apps.api.episodes_auth import require_episodes_auth
 from contracts.research import ResearchKind, ResearchStatus, ResearchSubmit
 from domain.research.entities import ResearchRequest
 from domain.research.errors import ResearchIdempotencyConflictError
@@ -38,7 +39,9 @@ from infrastructure.temporal.research_starter import (
     TemporalResearchStarter,
 )
 
-router = APIRouter(prefix="/research", tags=["research"])
+router = APIRouter(
+    prefix="/research", tags=["research"], dependencies=[Depends(require_episodes_auth)]
+)
 
 
 @lru_cache(maxsize=1)

@@ -137,6 +137,14 @@ command_id は `cp-` + sha256(`episode_id`・案の正規化 JSON・同じ内容
 {"commands": [{"command_id": "cp-…", "status": "received", "status_text": "…", "created": true}]}
 ```
 
+### `/episodes/*` と `/research/*` の opt-in 認証（ADR-0045 §4）
+`EPISODES_API_AUTH_REQUIRED=true` のとき、この 2 つの prefix の全 route が Bearer principal（`INTERVENTION_PRINCIPALS`、
+介入 API と同じ）を要求する。GET は scope `read`、POST は `resume`。token 無し・不正は `401 unauthenticated`、
+scope 不足は `403 missing_scope`、principal 未設定は `503 intervention_disabled`（fail closed）。`/healthz` は対象外。
+既定 `false` は従来どおり認証なし（`scripts/smoke*.sh` はそのまま動く）。false のとき `INTERVENTION_PRINCIPALS` は
+この経路では読まない。実装は `apps/api/episodes_auth.py`。compose の `api` は現状 `INTERVENTION_PRINCIPALS` も
+この flag も渡さない（`.env` から api コンテナへ渡す設定は運用側で足す。本変更では compose を変えていない）。
+
 ### `POST /v1/intervention/episodes/{episode_id}/storyboard/proposals`（scope `propose`、ADR-0043）
 絵コンテの映像文の変更案を、edit（1〜12件）ごとの `propose_change`（`scene.override_visual`）にする。
 **`JPMAS2_APPLICATION_API=true` のときだけ有効**（既定は `404 feature_disabled`）。本文は
