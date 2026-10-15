@@ -23,15 +23,15 @@ from apps.assistant.client import (
     envelope_correlation_id,
 )
 from contracts.assistant_tools import TOOLS_BY_NAME, ToolName, tool_command_id
-from contracts.intervention import CommandType
+from contracts.intervention import CommandType, ForbiddenDetail
 
 _COMMAND_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _TERMINAL_REJECTED = "rejected"
 _STRICT_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 HUMAN_APPLY_COMMAND = "python scripts/intervene.py apply {episode_id} --change-set {change_set_id}"
 HUMAN_RESUME_COMMAND = "python scripts/intervene.py resume {episode_id}"
-#: サーバが AI の再開を有料の生成を伴うとして拒否するときの detail（contracts/intervention.py）
-AI_RESUME_PAID_DETAIL = "ai_resume_requires_paid_generation"
+#: AI の有料再開を拒否するときの detail（唯一の宣言元は contracts/intervention.py）
+AI_RESUME_PAID_DETAIL = ForbiddenDetail.AI_RESUME_REQUIRES_PAID_GENERATION.value
 _ENVELOPE_EXTRAS = ("expected_control_revision", "expected_target_revision")
 
 
