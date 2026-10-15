@@ -34,9 +34,10 @@ PROBE_TIMEOUT_SECONDS = 3.0
 
 
 class TemporalAgenticStarter:
-    def __init__(self, client: Client, options: PipelineOptions | None = None) -> None:
+    def __init__(self, client: Client, options: PipelineOptions) -> None:
+        # options は必須（pipeline_options_from_settings。既定値で起動しない / ADR-0044 §3-2）
         self._client = client
-        self._options = options if options is not None else PipelineOptions()
+        self._options = options
 
     async def start(
         self, *, episode_id: uuid.UUID, template_id: str, template_version: str
@@ -75,7 +76,7 @@ class TemporalAgenticStarter:
             (self._options.pipeline_task_queue, TaskQueueType.TASK_QUEUE_TYPE_WORKFLOW),
             (AGENTS_TASK_QUEUE, TaskQueueType.TASK_QUEUE_TYPE_ACTIVITY),
         )
-        counts = [await self._pollers(name, kind) for name, kind in checks]
+        counts = await asyncio.gather(*(self._pollers(name, kind) for name, kind in checks))
         if any(count == 0 for count in counts):
             return WorkerCheck.NO_POLLERS
         if any(count is None for count in counts):

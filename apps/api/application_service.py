@@ -6,6 +6,7 @@ route は ``ApplicationServicePort`` しか知らない。scope・人限定の�
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Protocol
@@ -116,8 +117,13 @@ class LazyAgenticStarter:
         self._settings = settings
         self._connect = connect
         self._inner: AgenticWorkflowStarter | None = None
+        self._lock = asyncio.Lock()
 
     async def _starter(self) -> AgenticWorkflowStarter:
+        async with self._lock:
+            return await self._connected()
+
+    async def _connected(self) -> AgenticWorkflowStarter:
         if self._inner is None:
             from infrastructure.temporal.agentic_starter import TemporalAgenticStarter
             from infrastructure.temporal.pipeline_options import pipeline_options_from_settings
@@ -137,6 +143,16 @@ class LazyAgenticStarter:
 
     async def probe_workers(self) -> WorkerCheck:
         return await (await self._starter()).probe_workers()
+
+
+#: process で1つ（要求ごとに Temporal へ新しい接続を作らない）
+_PROCESS_STARTER: list[LazyAgenticStarter] = []
+
+
+def _process_starter(settings: Settings) -> LazyAgenticStarter:  # pragma: no cover - 実接続経路
+    if not _PROCESS_STARTER:
+        _PROCESS_STARTER.append(LazyAgenticStarter(settings))
+    return _PROCESS_STARTER[0]
 
 
 async def _connect_temporal(settings: Settings) -> Client:  # pragma: no cover - 実接続経路
@@ -161,7 +177,7 @@ def get_application_service(
         drafts=DbEpisodeDraftPort(
             session_factory=session_factory, store=store_factory(), bucket=settings.minio_bucket
         ),
-        starter=LazyAgenticStarter(settings),
+        starter=_process_starter(settings),
         agentic_enabled=settings.jpmas2_agentic_workflows,
         observer=LoggingOperationObserver(),
     )

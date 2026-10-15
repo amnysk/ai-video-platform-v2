@@ -386,6 +386,25 @@ async def test_resume_of_an_agentic_episode_with_the_flag_off_creates_no_command
     assert w.observer.records[0].error_code == "feature_disabled"
 
 
+async def test_an_ai_cannot_resume_an_agentic_episode_but_may_resume_a_legacy_one() -> None:
+    """agentic の再開は固定計画を歩く有料の制作（開始と同じく人だけ / ADR-0044 §1）。"""
+    w = World()
+    w.reads.kind = PipelineKind.AGENTIC
+    with pytest.raises(OperationError) as err:
+        await w.service.resume_production(
+            agent(), EP, ResumeProductionRequest(command_id="resume-000001")
+        )
+    assert err.value.code is OperationErrorCode.FORBIDDEN
+    assert err.value.detail == {"reason": "human_only"}
+    assert w.commands.received == []
+    # legacy は従来どおり backend の判定（AI の有料再開は backend が拒否）に任せる
+    w2 = World()
+    await w2.service.resume_production(
+        agent(), EP, ResumeProductionRequest(command_id="resume-000001")
+    )
+    assert len(w2.commands.received) == 1
+
+
 async def test_resume_of_a_legacy_episode_works_with_the_flag_off() -> None:
     w = World(enabled=False)
     result = await w.service.resume_production(

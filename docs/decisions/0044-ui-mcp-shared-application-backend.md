@@ -38,7 +38,7 @@ Service が既存の介入 command と読み取りモデルへ委譲し、HTTP r
 | `get_episode_workspace` | read | `read` | – | 既存 `EpisodeReadModel` + pending change set |
 | `start_agentic_production` | control | `resume` | **人** | 既存 `StartAgenticProduction`（flag 必須） |
 | `request_hold` | control | `hold` | – | 介入 command `request_hold` |
-| `resume_production` | control | `resume` | – | 介入 command `resume`（AI の有料再開は既存の拒否） |
+| `resume_production` | control | `resume` | agentic は**人** | 介入 command `resume`（legacy の AI の有料再開は既存の拒否） |
 | `get_storyboard` | read | `read` | – | 現行 storyboard Artifact（`StoryboardScene` をそのまま返す） |
 | `propose_storyboard_change` | propose | `propose` | – | 既存 `ProposeStoryboardChange`（適用しない） |
 | `preview_change_impact` | read | `read` | – | 既存 change set の impact・見積り |
@@ -49,7 +49,9 @@ Service が既存の介入 command と読み取りモデルへ委譲し、HTTP r
 
 - 新しい scope は作らない（`granted_scope` の DB CHECK に触れない）。draft は生成も課金もしないので
   `propose`。有料の生成を始める `start_agentic_production` は `resume` に加えて `ActorType.HUMAN` を要求する
-  （`forbidden`、`detail.reason=human_only`）。
+  （`forbidden`、`detail.reason=human_only`）。agentic Episode の `resume_production` も同じく人だけ
+  （再開は固定計画を歩く有料の制作で、backend の「AI の有料再開」判定は開始工程が決まらない状態を覆わない）。
+  legacy の resume は従来どおり backend の判定に任せる。
 - 適用は**見積りの提示の後**: `apply_approved_change` は `approved_max_cost_usd` を必須とし、change set が
   未見積り（`cost_not_estimated`）・上限超過（`budget_exceeded`）・`proposed` 以外（`invalid_state`）なら
   command を作らない。最終判断は既存の apply（予算 gate・AI の有料適用禁止・期待版）が行う（二重の検査で
@@ -121,3 +123,14 @@ OpenTelemetry は導入しない（`OperationObserver` port が将来の差し�
   - MCP tool はまだカタログから導出していない（P3。既存 15 tool は変えない）。
   - `/episodes/*`（Phase 1 API）は未認証のまま（本 ADR は flag OFF の拒否だけ足す）。
   - 素材アップロード（`asset_id`）は未実装（P2-B 以降）。
+  - 独立レビュー（2026-10-15）で残した既知の制限:
+    - brief を持つ Episode で、作り直しの台本 job が `terminal_failed` になると、次の再開もその job を返し
+      `InvalidTransition` で止まる（legacy と同じ）。新しい job を自動で作らない: round 1 の予約キーが同じに
+      なり、`spent`（生出力なし）の予約の下で生成器を呼び直しうる（予約の無い課金）。人の復旧が要る。
+    - `list_episodes` の cursor は `created_at` だけ（同時刻の Episode をページ境界で取りこぼしうる）。
+      `(created_at, id)` の複合 cursor は UI の要件と合わせて P2-B で足す（追加の query 引数で後方互換）。
+    - `/v1/intervention/commands` から直接送った resume は、flag OFF の固定計画 Episode で hold を解いた後に
+      `check_start` が `feature_disabled` で起動を止める（結果に理由は残る。hold は解けたまま）。
+      `resume_production` と `/episodes/{id}/resume` は command を作る前に拒否する。
+    - workspace・判断・品質・進行状況はそれぞれ `EpisodeReadModel` を全部読む（頻繁な polling には重い）。
+    - flag の 404 は認証より先（flag の状態だけが分かる。既存の application route と同じ）。

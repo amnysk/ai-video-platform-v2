@@ -298,6 +298,13 @@ class ApplicationService:
                     OperationErrorCode.FEATURE_DISABLED,
                     "agentic workflows are disabled (JPMAS2_AGENTIC_WORKFLOWS=false)",
                 )
+            if agentic and caller.actor_type is not ActorType.HUMAN:
+                # agentic の再開は固定計画を歩く有料の制作。開始と同じく人だけ（ADR-0044 §1）
+                raise OperationError(
+                    OperationErrorCode.FORBIDDEN,
+                    "resuming an agentic episode can only be requested by a human",
+                    {"reason": "human_only"},
+                )
             payload = ResumePayload(start_stage=request.start_stage)
             received = await self._send(
                 episode_id,
