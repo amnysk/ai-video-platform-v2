@@ -65,3 +65,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0039](./0039-trend-research.md) | Trend Research を research の成果物として実装し、検証つきで読み出せるようにする | Accepted |
 | [0040](./0040-structured-logs-and-opensearch-search-replica.md) | 構造化 JSON ログと OpenSearch の検索用副本（ログは業務判断に使わない） | Accepted |
 | [0041](./0041-decision-records-and-intervention.md) | 判断記録と介入（JP-MAS-001 v2.0）を既存の表・台帳・pipeline に重ねる | Proposed |
+| [0042](./0042-assistant-tool-adapter.md) | 対話 AI アシスタントは介入 API の tool adapter として接続する | Proposed |

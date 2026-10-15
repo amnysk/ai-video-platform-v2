@@ -9,6 +9,14 @@
 - **持たない**: ドメインロジック、状態遷移の判断、Temporalクライアント、DB接続
 - **呼んでよい**: `apps/api` のHTTP APIのみ（INV-1）
 
+## apps/assistant （対話 AI アシスタントの tool adapter、ADR-0042）
+
+- **持つ**: tool 定義（`contracts/assistant_tools.py`）の実行、`/v1/intervention` への HTTP 要求、
+  適用前の見積り再確認、決定的な `command_id` の導出（INV-49）
+- **持たない**: DB 接続、Temporal クライアント、worker・infrastructure の import、LLM の呼び出し、
+  予算・Schedule・公開設定を変える操作（INV-47）
+- **呼んでよい**: `apps/api` の `/v1/intervention` HTTP API と `contracts` のみ（INV-48）
+
 ## apps/api （FastAPI）
 
 - **持つ**: HTTPルーティング、リクエスト検証、認可、
