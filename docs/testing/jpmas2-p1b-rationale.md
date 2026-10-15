@@ -39,6 +39,9 @@ handler / LLM）。handler の本体は P1-A の担当で、ここの偽 handler
 - `test_a_tool_queued_proposal_is_submitted_after_the_save_and_not_applied`: `intervention:propose` は積むだけで、保存の後に
   proposed として出る。
 
+- `test_real_handlers_run_against_assembled_inputs_for_every_role`: P1-A の本物の `HANDLERS` + FakeAgentLlm が、組み立てた入力で
+  4 role とも通る（入力 document の形の食い違いを worker 側で検出する）。
+
 ## 2. 入力の組み立て（tests/unit/test_agent_inputs.py）
 
 - `test_every_input_name_has_a_builder` / `test_required_inputs_are_inputs_of_the_handler`: 入力名の正本
@@ -52,11 +55,14 @@ handler / LLM）。handler の本体は P1-A の担当で、ここの偽 handler
   自分の Episode のものは混ぜない。
 - `test_recent_titles_are_other_episodes_topics`: 重複判定の材料。
 - `test_producer_decision_is_the_latest_choose_topic`: 採用した候補の取り方。
-- `test_missing_inputs_use_one_uniform_representation`: 欠測を `{"missing": true, "reason": ...}` に統一する。
+- `test_missing_inputs_use_one_uniform_representation`: 欠測を空 dict に統一し（P1-A の handler は `not document` で見分ける）、理由は `missing_reasons` に残す。
 - `test_quality_inputs_include_the_deterministic_review_and_the_manifest`: 既存の決定論 reviewer の所見と採用 manifest を
   モデルの所見とは別の入力として渡す。
 - `test_the_default_measurements_say_the_collector_is_not_implemented` / `test_an_injected_metrics_port_supplies_the_measurements` /
   `test_no_public_metrics_never_reports_public`: 本番は収集しないので公開と言わない。mock を注入できる。
+
+- `test_document_shapes_match_what_the_handlers_read`: storyboard の `revision_id`・`scenes`・`total_duration_ms`、baseline の
+  `format/comparable/description` が handler の読む形であること。
 
 ## 3. 起動と compose
 

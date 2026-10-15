@@ -21,7 +21,6 @@ from infrastructure.agents.inputs import (
     _Builder,
     assemble_agent_inputs,
     is_missing,
-    missing_document,
     required_inputs,
 )
 from infrastructure.db.repositories import AnalyticsSnapshotRepository, EpisodeRepository
@@ -175,7 +174,8 @@ async def test_missing_inputs_use_one_uniform_representation(
     world = await make_world(session_factory, artifact_store)
     assembled = await _assemble(world, AgentHandlerRef.QUALITY_REVIEWER_V1)
     for name in ("script", "storyboard", "final_video"):
-        assert assembled.documents[name] == missing_document(f"no_current_{name}")
+        assert assembled.documents[name] == {}
+        assert assembled.missing_reasons[name] == f"no_current_{name}"
     assert set(assembled.input_revisions) == set()
     assert set(assembled.missing()) >= {"final_video", "script", "storyboard"}
 
@@ -205,7 +205,7 @@ async def test_the_default_measurements_say_the_collector_is_not_implemented(
         "reason": COLLECTOR_NOT_IMPLEMENTED,
     }
     assert is_missing(assembled.documents["upload_receipt"])
-    assert assembled.documents["baseline"]["available"] is False
+    assert assembled.documents["baseline"]["comparable"] is False
 
 
 async def test_an_injected_metrics_port_supplies_the_measurements(
@@ -222,3 +222,18 @@ async def test_an_injected_metrics_port_supplies_the_measurements(
 
 async def test_no_public_metrics_never_reports_public(session_factory) -> None:
     assert (await NoPublicMetrics().measurements(episode_id="e", video_id="v"))["public"] is False
+
+
+async def test_document_shapes_match_what_the_handlers_read(
+    session_factory, artifact_store
+) -> None:
+    """P1-A の handler が読む形（revision_id・scenes・duration_ms・baseline の形）。"""
+    world = await make_world(session_factory, artifact_store, storyboard=True)
+    quality = await _assemble(world, AgentHandlerRef.QUALITY_REVIEWER_V1)
+    board = quality.documents["storyboard"]
+    assert board["revision_id"] == quality.input_revisions["storyboard"]
+    assert {"scene_id", "start_ms", "duration_ms"} <= set(board["scenes"][0])
+    assert isinstance(board["total_duration_ms"], int)
+    learning = await _assemble(world, AgentHandlerRef.LEARNING_AGENT_V1)
+    assert set(learning.documents["baseline"]) >= {"format", "comparable", "description"}
+    assert learning.documents["baseline"]["comparable"] is False

@@ -141,9 +141,9 @@ agent の `Caller` は `actor_type=agent`、scope は `read` / `comment` / `prop
 
 | document | 中身 | 欠けたとき |
 |---|---|---|
-| `user_brief` `strategy_brief` `creative_brief` `storyboard` | 現行の Artifact を `parse_artifact` で読んだ JSON | `{"missing": true, "reason": ...}` |
+| `user_brief` `strategy_brief` `creative_brief` `storyboard` | 現行の Artifact を `parse_artifact` で読んだ JSON（storyboard は `revision_id` を足す） | `{}`（空 dict。理由は `AssembledInputs.missing_reasons`） |
 | `script` | 現行の script Artifact（そのまま） | 同上 |
-| `final_video` | `total_duration_ms` / `media` / `measured` / `technical_qa` / `render_profile` だけ（timeline・字幕 cue は渡さない） | 同上 |
+| `final_video` | `revision_id` / `duration_ms` / `media` / `measured` / `technical_qa` / `render_profile` だけ（timeline・字幕 cue は渡さない） | 同上 |
 | `upload_receipt` | 現行の投稿受領（そのまま） | 同上 |
 | `producer_decision` | 最新の `decision_records(choose_topic)` → `{"adopted_candidate_id"}` | 同上 |
 | `analytics` | 最新の `analytics_snapshots` の要約 `{measured, videos_with_views, windows, audience, snapshot_date}` | `{"measured": false, "reason": "no_analytics_snapshot"}` |
@@ -152,9 +152,9 @@ agent の `Caller` は `actor_type=agent`、scope は `read` / `comment` / `prop
 | `rule_review` | 既存の決定論 reviewer（`run_reviewer`）の `{verdict, manifest_id, findings}` | — |
 | `manifest` | `{"manifest_id"}`（採用 manifest） | 同上 |
 | `measurements` | `PublicMetricsPort`。本番は `{"public": false, "windows": [], "reason": "collector_not_implemented"}` | — |
-| `baseline` | analytics 由来 `{available, format: "unknown", format_note, videos_with_views, windows}`。snapshot は Shorts と長尺を分けないので format は `unknown` | `{"available": false, "reason": ...}` |
+| `baseline` | `{format: "unknown", comparable: false, description, reason}`。snapshot は Shorts と長尺を分けないので比較可能な基準にしない（handler は「比較できる基準が無い」と書く） | — |
 
-欠測は**値にしない**（空 dict・0・空文字にしない）。`input_revisions` には artifact の revision だけが入り、
+欠測は**値にしない**（0・空文字で埋めない）。handler の読み方に合わせ、欠けた document は空 dict。`input_revisions` には artifact の revision だけが入り、
 decision / manifest / snapshot の id は `agent_runs` の `input_refs` に残る。入力は PostgreSQL と ArtifactStore だけから読む。
 
 ### 再試行と二重課金

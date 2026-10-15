@@ -516,7 +516,7 @@ async def test_artifact_and_analytics_tools_are_wired_and_read_only(
 
     assert result.outcome == AgentStageOutcome.PRODUCED.value
     assert seen["brief"]["theme"] == "Edo power"  # type: ignore[index]
-    assert seen["gone"]["missing"] is True  # type: ignore[index]
+    assert seen["gone"] == {}
     assert seen["analytics"]["measured"] is False  # type: ignore[index]
     after = await _snapshot(session_factory)
     assert after["artifact_metadata"] == before["artifact_metadata"] + 1  # tool は何も書かない
@@ -577,3 +577,70 @@ async def test_a_tool_queued_proposal_is_submitted_after_the_save_and_not_applie
     async with session_factory() as session:
         sets = await InterventionStore(session).list_change_sets(world.episode_id)
     assert all(s.status is ChangeSetStatus.PROPOSED for s in sets)
+
+
+# --------------------------------------------------------------------------- real handlers
+
+
+def _canned(prompt: str, schema: dict) -> dict:
+    title = schema.get("title")
+    if title == "StrategyResponse":
+        return {
+            "audience_hypothesis": "US 20s like power-structure stories.",
+            "candidates": [
+                {
+                    "id": "c1",
+                    "title": "Why the Shogun hid in plain sight",
+                    "subject": "tokugawa_ieyasu",
+                    "angle": "reason",
+                    "era": "edo",
+                    "hook": "He ruled Japan without ever being king.",
+                    "rationale": "Strong curiosity gap.",
+                }
+            ],
+            "recommended_candidate_id": "c1",
+        }
+    if title == "CreativeResponse":
+        return {
+            "hook_options": ["He ruled Japan without ever being king."],
+            "tone": "dry wit",
+        }
+    raise LookupError(title)
+
+
+async def test_real_handlers_run_against_assembled_inputs_for_every_role(
+    session_factory, artifact_store
+) -> None:
+    """P1-A の本物の ``HANDLERS`` + FakeAgentLlm が、組み立てた入力で通る（形の食い違いを検出）。"""
+    from domain.agents.handlers import HANDLERS
+    from infrastructure.agents.fake_llm import FakeAgentLlm
+
+    world = await make_world(session_factory, artifact_store, storyboard=True)
+    world.llm = FakeAgentLlm(_canned)  # type: ignore[assignment]
+    activities = world.activities(HANDLERS)
+
+    strategy, _ = stage_request(AgentRole.STRATEGY, world.episode_id)
+    result = await activities.run_agent_stage(strategy)
+    assert result.outcome == AgentStageOutcome.PRODUCED.value, result
+
+    await adopt_candidate(session_factory, world.episode_id, "c1")
+    async with session_factory() as session:
+        brief = await ArtifactMetadataRepository(session).find_current_by_type(
+            world.episode_id, ArtifactType.STRATEGY_BRIEF
+        )
+    assert brief is not None
+    creative, _ = stage_request(AgentRole.CREATIVE_DIRECTOR, world.episode_id, stage_id="creative")
+    result = await activities.run_agent_stage(creative)
+    assert result.outcome == AgentStageOutcome.PRODUCED.value, result
+
+    # 完成動画が無い: 本物の quality handler は LLM を呼ばず blocked_missing_input の所見を残す
+    quality, _ = stage_request(AgentRole.QUALITY_REVIEWER, world.episode_id, stage_id="quality")
+    result = await activities.run_agent_stage(quality)
+    assert result.outcome == AgentStageOutcome.PRODUCED.value, result
+    assert not result.proposal_command_ids
+
+    # 投稿受領・公開測定が無い: Lesson を作らない
+    learning, _ = stage_request(AgentRole.LEARNING, world.episode_id, stage_id="lesson")
+    result = await activities.run_agent_stage(learning)
+    assert result.outcome == AgentStageOutcome.AWAITING_PUBLIC_METRICS.value, result
+    assert await _current(world, ArtifactType.LESSON) is None

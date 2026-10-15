@@ -7,10 +7,10 @@ document 名の正本は ``domain.agents.runtime.AGENT_INPUT_NAMES``。handler �
 document だけを読む。この module も handler の名前に載っている document だけを組み立てる
 （rule_review は reviewer を走らせるので、quality 以外では組み立てない）。
 
-欠けている入力の表現（全 document で共通）:
+欠けている入力の表現（全 document で共通。handler の読み方に合わせる）:
 
-- 欠けている document は ``{"missing": True, "reason": <短い code>}``。空 dict にも、0 や空文字にも
-  しない（欠測を値にしない）。handler は ``document.get("missing")`` で欠測を見分ける
+- 欠けている document は**空の dict ``{}``**（handler は ``not documents[name]`` で見分ける）。
+  0 や空文字で埋めない（欠測を値にしない）。理由の code は ``AssembledInputs.missing_reasons``
 - ``user_brief`` と ``strategy_brief`` だけは欠けると stage が成立しないので、呼び出し側
   （Activity）が ``blocked / input_missing`` で止める（``required_inputs``）
 
@@ -55,11 +55,13 @@ COLLECTOR_NOT_IMPLEMENTED = "collector_not_implemented"
 
 
 def missing_document(reason: str) -> dict[str, Any]:
-    return {"missing": True, "reason": reason}
+    """欠測は空 dict。``reason`` は呼び出し側（builder）が ``missing_reasons`` に残す。"""
+    del reason
+    return {}
 
 
 def is_missing(document: Mapping[str, Any]) -> bool:
-    return document.get("missing") is True
+    return not document
 
 
 class PublicMetricsPort(Protocol):
@@ -82,6 +84,8 @@ class AssembledInputs:
     input_revisions: dict[str, str]
     #: 実行記録に残す補足の参照（decision id・manifest id・analytics snapshot id）
     extra_refs: dict[str, str] = field(default_factory=dict)
+    #: 欠けた document 名 -> 理由の code
+    missing_reasons: dict[str, str] = field(default_factory=dict)
 
     def missing(self) -> list[str]:
         return sorted(n for n, d in self.documents.items() if is_missing(d))
@@ -103,7 +107,7 @@ def required_inputs(handler_ref: AgentHandlerRef) -> tuple[str, ...]:
 def _condensed_final_video(document: Mapping[str, Any]) -> dict[str, Any]:
     """完成動画の document。timeline・字幕 cue は大きいので、reviewer に要る項目だけ渡す。"""
     return {
-        "total_duration_ms": document.get("total_duration_ms"),
+        "duration_ms": document.get("total_duration_ms"),
         "media": document.get("media"),
         "measured": document.get("measured"),
         "technical_qa": document.get("technical_qa"),
@@ -128,6 +132,7 @@ class _Builder:
         self._analytics_provider_id = analytics_provider_id
         self.input_revisions: dict[str, str] = {}
         self.extra_refs: dict[str, str] = {}
+        self.missing_reasons: dict[str, str] = {}
         self._receipt: dict[str, Any] | None = None
 
     # --- 共通 ---------------------------------------------------------------
@@ -144,14 +149,21 @@ class _Builder:
     async def _registered(self, name: str, artifact_type: ArtifactType) -> dict[str, Any]:
         found = await self._current(artifact_type)
         if found is None:
-            return missing_document(f"no_current_{artifact_type.value}")
+            return self._absent(name, f"no_current_{artifact_type.value}")
         meta, raw = found
         try:
             parsed = parse_artifact(artifact_type, raw)
         except (UnsupportedArtifactSchemaError, ValidationError):
-            return missing_document(f"unsupported_{artifact_type.value}_schema")
+            return self._absent(name, f"unsupported_{artifact_type.value}_schema")
         self.input_revisions[name] = meta.id
-        return parsed.model_dump(mode="json")
+        document = parsed.model_dump(mode="json")
+        if artifact_type is ArtifactType.STORYBOARD:
+            document["revision_id"] = meta.id
+        return document
+
+    def _absent(self, name: str, reason: str) -> dict[str, Any]:
+        self.missing_reasons[name] = reason
+        return {}
 
     async def _raw(
         self,
@@ -161,10 +173,13 @@ class _Builder:
     ) -> dict[str, Any]:
         found = await self._current(artifact_type)
         if found is None:
-            return missing_document(f"no_current_{artifact_type.value}")
+            return self._absent(name, f"no_current_{artifact_type.value}")
         meta, raw = found
         self.input_revisions[name] = meta.id
-        return shape(raw) if shape is not None else dict(raw)
+        document = shape(raw) if shape is not None else dict(raw)
+        if artifact_type is ArtifactType.FINAL_VIDEO:
+            document["revision_id"] = meta.id
+        return document
 
     # --- document ごと ------------------------------------------------------
 
@@ -196,11 +211,11 @@ class _Builder:
             decisions = await InterventionStore(session).list_decisions(episode_id=self._episode_id)
         chosen = [d for d in decisions if d.decision_type == CHOOSE_TOPIC]
         if not chosen:
-            return missing_document("no_choose_topic_decision")
+            return self._absent("producer_decision", "no_choose_topic_decision")
         latest = chosen[-1]
         selected = latest.payload.get("selected_candidate")
         if not isinstance(selected, str) or not selected:
-            return missing_document("choose_topic_has_no_selection")
+            return self._absent("producer_decision", "choose_topic_has_no_selection")
         self.extra_refs["producer_decision"] = latest.decision_id
         return {"adopted_candidate_id": selected}
 
@@ -219,17 +234,20 @@ class _Builder:
         }
 
     async def baseline(self) -> dict[str, Any]:
+        """比較の基準。snapshot は Shorts と長尺を分けないので ``comparable`` は常に false
+        （handler は「比較できる基準が無い」と書く。形式を混ぜた比較をしない）。"""
         summary = await self.analytics()
-        if not summary.get("measured"):
-            return {"available": False, "reason": summary.get("reason", "no_analytics_snapshot")}
+        description = None
+        if summary.get("measured"):
+            description = (
+                f"channel snapshot of {summary.get('videos_with_views')} videos with views "
+                "(shorts and long-form are not separated)"
+            )
         return {
-            "available": True,
-            # snapshot は Shorts と長尺を分けて持たない。分けられない比較は format を unknown にし、
-            # 呼び出し側（handler）が Shorts の基準として使わないようにする
             "format": "unknown",
-            "format_note": "analytics snapshots do not separate shorts from long-form videos",
-            "videos_with_views": summary.get("videos_with_views"),
-            "windows": summary.get("windows"),
+            "comparable": False,
+            "description": description or "",
+            "reason": summary.get("reason", "format_not_separated_in_snapshots"),
         }
 
     async def lessons(self) -> dict[str, Any]:
@@ -300,7 +318,7 @@ class _Builder:
                 control = await InterventionStore(session).get_control(self._episode_id)
             manifest_id = control.active_manifest_id
         if manifest_id is None:
-            return missing_document("no_active_manifest")
+            return self._absent("manifest", "no_active_manifest")
         self.extra_refs["manifest"] = manifest_id
         return {"manifest_id": manifest_id}
 
@@ -356,7 +374,12 @@ async def assemble_agent_inputs(
     for name in AGENT_INPUT_NAMES[handler_ref]:
         build: Callable[[], Awaitable[dict[str, Any]]] = getattr(builder, name)
         documents[name] = await build()
-    return AssembledInputs(documents, dict(builder.input_revisions), dict(builder.extra_refs))
+    return AssembledInputs(
+        documents,
+        dict(builder.input_revisions),
+        dict(builder.extra_refs),
+        dict(builder.missing_reasons),
+    )
 
 
 async def read_current_artifact(
