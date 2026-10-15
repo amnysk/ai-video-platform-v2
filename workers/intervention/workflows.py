@@ -27,10 +27,13 @@ from temporalio.workflow import ParentClosePolicy
 with workflow.unsafe.imports_passed_through():
     from contracts.intervention import (
         APPLY_INTERVENTION_COMMAND_ACTIVITY,
+        CHECK_PIPELINE_START_ACTIVITY,
         INTERVENTION_COMMAND_WORKFLOW,
         INTERVENTION_REDELIVERY_WORKFLOW,
         LIST_UNDELIVERED_COMMANDS_ACTIVITY,
+        MARK_COMMAND_DISPATCHED_ACTIVITY,
         RECORD_COMMAND_FOLLOWUP_ACTIVITY,
+        PipelineStartOutcome,
         intervention_command_workflow_id,
     )
     from contracts.pipeline import EPISODE_PIPELINE_WORKFLOW, pipeline_workflow_id
@@ -66,7 +69,9 @@ class InterventionCommandWorkflow:
         outcome = await _activity(APPLY_INTERVENTION_COMMAND_ACTIVITY, {"command_id": command_id})
         start = outcome.get("pipeline_input")
         if isinstance(start, dict):
-            pipeline = await self._start_pipeline(start, str(outcome.get("pipeline_task_queue")))
+            pipeline = await self._start_pipeline(
+                command_id, start, str(outcome.get("pipeline_task_queue"))
+            )
             followed = await _activity(
                 RECORD_COMMAND_FOLLOWUP_ACTIVITY,
                 {"command_id": command_id, "pipeline": pipeline},
@@ -77,8 +82,18 @@ class InterventionCommandWorkflow:
         return outcome
 
     @staticmethod
-    async def _start_pipeline(pipeline_input: dict[str, Any], task_queue: str) -> dict[str, Any]:
+    async def _start_pipeline(
+        command_id: str, pipeline_input: dict[str, Any], task_queue: str
+    ) -> dict[str, Any]:
+        """結果は必ず ``outcome`` を持つ（follow-up が必ず記録する。取り残しを再配送が拾う）。"""
         workflow_id = pipeline_workflow_id(str(pipeline_input["episode_id"]))
+        verdict = await _activity(CHECK_PIPELINE_START_ACTIVITY, {"command_id": command_id})
+        if not verdict.get("proceed"):
+            return {
+                "outcome": PipelineStartOutcome.NOT_NEEDED.value,
+                "workflow_id": workflow_id,
+                "reason": verdict.get("reason"),
+            }
         try:
             # 完了を待たない。止めても有料の工程・投稿を途中で殺さない（ABANDON）
             await workflow.start_child_workflow(
@@ -89,9 +104,18 @@ class InterventionCommandWorkflow:
                 parent_close_policy=ParentClosePolicy.ABANDON,
             )
         except WorkflowAlreadyStartedError:
-            return {"outcome": "already_running", "workflow_id": workflow_id}
+            return {
+                "outcome": PipelineStartOutcome.ALREADY_RUNNING.value,
+                "workflow_id": workflow_id,
+            }
+        except Exception as exc:  # noqa: BLE001 - 失敗は記録して再配送に任せる（型だけ残す）
+            return {
+                "outcome": PipelineStartOutcome.START_FAILED.value,
+                "workflow_id": workflow_id,
+                "error": type(exc).__name__,
+            }
         return {
-            "outcome": "started",
+            "outcome": PipelineStartOutcome.STARTED.value,
             "workflow_id": workflow_id,
             "start_stage": pipeline_input.get("start_stage"),
             "control_gate": pipeline_input.get("control_gate"),
@@ -117,4 +141,6 @@ class InterventionRedeliveryWorkflow:
                 started.append(command_id)
             except WorkflowAlreadyStartedError:
                 running.append(command_id)
+            # start に成功した、または既に走っている（それが適用・follow-up をする）ときだけ配送済み
+            await _activity(MARK_COMMAND_DISPATCHED_ACTIVITY, {"command_id": command_id})
         return {"started": started, "already_running": running}

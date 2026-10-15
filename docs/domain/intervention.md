@@ -102,13 +102,19 @@ API（1 transaction）:  intervention_commands INSERT(status=RECEIVED, dispatche
                        [+ episode_events INSERT]
            commit → 202 {command_id, status: RECEIVED}
 配送:      API が commit 後に best-effort で InterventionCommandWorkflow(id=intervention-{command_id}) を start
-           + 再配送 Schedule（avp-intervention-redelivery）が dispatched_at IS NULL / 停滞した RECEIVED を再 start
+           + 再配送 Schedule（avp-intervention-redelivery）が、dispatched_at IS NULL / 停滞した RECEIVED・VALIDATED・APPLYING と、
+           「APPLIED だが result.pipeline_start に対する pipeline が未記録、または outcome=start_failed」の command を再 start
+           （Schedule は所有者が `scripts/ensure-daily-schedule.py --intervention --apply` で登録する。worker は自動登録しない）
 Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episode 内を直列化）
              status が終端なら保存済み result を返す（再配送・復旧の冪等）
              RECEIVED → VALIDATED（権限・期待版・予算・制約）→ APPLYING → APPLIED | CONFLICT | REJECTED | FAILED
              状態変更・新 revision・manifest・判断記録・episode_events を同じ commit に入れる
-           resume / checkpoint 解放なら子 EpisodePipelineWorkflow を決定的 id で start（既存の二重起動防止 / INV-30）
-           follow-up Activity が start の結果（started / already_running）を command result に追記
+           resume / checkpoint 解放なら、start の前に check Activity が「適用の後に状況が変わっていないか」を見る
+             （適用時に記録した control_revision と現在が一致・control_state=RUNNING・Episode が投稿済み/終端でない）。
+             変わっていれば start せず outcome=not_needed（reason 付き）。再配送が終わった pipeline を再起動しない
+           子 EpisodePipelineWorkflow を決定的 id で start（既存の二重起動防止 / INV-30）
+           follow-up Activity が結果を必ず command result.pipeline に追記する:
+             outcome ∈ started / already_running / start_failed / not_needed（contracts の PipelineStartOutcome）
 ```
 
 - 同じ `command_id` で**同じ payload**（`payload_sha256` 一致）の再送は既存の行を返す（新しい行も適用も作らない）。
@@ -142,7 +148,13 @@ read model の `status=resolved` と ReviewPacket の「未解決コメント」
 | workflow start の重複 | — | 決定的 workflow id で Temporal が1つに束ねる |
 | apply の commit 前 | RECEIVED/VALIDATED（commit されない中間は残らない） | Activity retry が最初からやり直す |
 | apply の commit 後・Workflow が結果を受け取る前（Worker 障害） | APPLIED + result | Activity retry / 再配送が同じ command_id を見て**保存済み result を返す**（再適用しない） |
-| pipeline start の後・follow-up 前 | APPLIED、pipeline は走っている | 再実行の start は `WorkflowAlreadyStartedError` → already_running として記録 |
+| pipeline start の後・follow-up 前 | APPLIED、pipeline は走っている | 再配送が拾い、start は `WorkflowAlreadyStartedError` → already_running として記録 |
+| APPLIED の後・start の前に workflow が落ちた | APPLIED + `pipeline_start`、`pipeline` 無し | 再配送が拾い、check を通れば pipeline を1回だけ start。記録後は拾われない |
+| start の失敗 | `pipeline.outcome=start_failed` | 再配送が再試行する（check は毎回通る） |
+| 適用の後に hold・待機・終端になった | APPLIED + 制御版が進んだ | check が `not_needed` を記録し、何も start しない |
+
+`dispatched_at` / `dispatch_attempts` は、再配送が子 workflow の start に成功した（または既に走っている）ときだけ
+記録する。列挙しただけでは増やさない。
 
 ## 5. 停止中にできること・HELD の応答
 停止中も: 読み取り、コメント、ChangeSet の作成、送信済み provider job の状態照会と結果保存（既存の await 経路は gate を

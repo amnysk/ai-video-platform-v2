@@ -252,6 +252,18 @@ DEFAULT_MONTHLY_BUDGET_JPY = 30000
 
 # --------------------------------------------------------------------------- Temporal
 
+
+class PipelineStartOutcome(StrEnum):
+    """command の result の ``pipeline.outcome``。follow-up が必ず1つ記録する。"""
+
+    STARTED = "started"
+    ALREADY_RUNNING = "already_running"
+    #: start が失敗した（再配送が再試行する）
+    START_FAILED = "start_failed"
+    #: 適用の後に状況が変わり、起動してはならない（制御版・状態・Episode の終端）。起動しない
+    NOT_NEEDED = "not_needed"
+
+
 INTERVENTION_TASK_QUEUE = "intervention"
 INTERVENTION_COMMAND_WORKFLOW = ("InterventionCommandWorkflow", INTERVENTION_TASK_QUEUE)
 INTERVENTION_REDELIVERY_WORKFLOW = ("InterventionRedeliveryWorkflow", INTERVENTION_TASK_QUEUE)
@@ -259,6 +271,8 @@ INTERVENTION_REDELIVERY_SCHEDULE_ID = "avp-intervention-redelivery"
 APPLY_INTERVENTION_COMMAND_ACTIVITY = "apply_intervention_command"
 RECORD_COMMAND_FOLLOWUP_ACTIVITY = "record_intervention_command_followup"
 LIST_UNDELIVERED_COMMANDS_ACTIVITY = "list_undelivered_intervention_commands"
+MARK_COMMAND_DISPATCHED_ACTIVITY = "mark_intervention_command_dispatched"
+CHECK_PIPELINE_START_ACTIVITY = "check_intervention_pipeline_start"
 PIPELINE_CONTROL_GATE_ACTIVITY = "pipeline_control_gate"
 CONTROL_GATE_PATCH_ID = "jpmas-control-gate-v1"
 #: RECEIVED のまま、この秒数を超えて終端にならない command を再配送の対象にする

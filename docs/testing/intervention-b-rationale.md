@@ -142,3 +142,14 @@ time-skipping 環境と SQLite、工程の子 workflow は同名の fake、Activ
 - `test_updating_the_intervention_redelivery_schedule_keeps_its_pause`: 再登録で運用者の pause を外さない。
 - `tests/unit/test_intervention_run_worker.py`: レート未設定の起動時警告は1回、設定済みなら出ない。
   黙って「有料の変更が全部通らない」状態にしない。
+
+## 取り残しの回復（M2 / M3、`tests/unit/test_intervention_workflows.py`）
+- `test_a_command_killed_between_apply_and_follow_up_is_started_once_by_redelivery`: 適用の commit 後・
+  follow-up 前に落ちた resume は、再配送が pipeline を**1回だけ**始め、記録後は再び拾われない。
+  以前は follow-up が無いと永遠に始まらなかった（再開が失われる）。
+- `test_a_start_that_became_stale_after_apply_starts_nothing_and_says_why`: 適用の後に hold が入った
+  （制御版が進んだ）古い resume は始めない（`not_needed` / `control_revision_changed`）。
+- `test_a_finished_episode_is_not_restarted_by_a_redelivered_resume`: 制御版が同じでも投稿済み・終端の
+  Episode は始めない（`episode_closed`）。再配送が終わった pipeline を再起動する経路を塞ぐ。
+- 配送済みの記録は start 成功後の別 Activity にした（列挙しただけで dispatched にすると、start に失敗した
+  command が二度と拾われない）。既存の再配送テストが配送済みの記録を引き続き検査する。

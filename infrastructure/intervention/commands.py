@@ -42,6 +42,7 @@ from contracts.intervention import (
     ControlState,
     InterventionEvent,
     InterventionMode,
+    PipelineStartOutcome,
     RejectReason,
     ReleaseCheckpointPayload,
     ResolvePayload,
@@ -236,7 +237,13 @@ class CommandOutcome:
     @property
     def pipeline_start(self) -> dict[str, Any] | None:
         """子 pipeline の start がまだ記録されていなければ、その入力。"""
-        if self.status is not CommandStatus.APPLIED or "pipeline" in self.result:
+        if self.status is not CommandStatus.APPLIED:
+            return None
+        recorded = self.result.get("pipeline")
+        if (
+            isinstance(recorded, dict)
+            and recorded.get("outcome") != PipelineStartOutcome.START_FAILED
+        ):
             return None
         start = self.result.get("pipeline_start")
         return dict(start) if isinstance(start, dict) else None
@@ -511,6 +518,32 @@ async def _finish(ctx: ApplyContext, decision: Decision, *, executor: str) -> Co
     return finished
 
 
+async def check_pipeline_start(
+    session_factory: async_sessionmaker[AsyncSession], command_id: str
+) -> dict[str, Any]:
+    """子 pipeline を start してよいか（apply の後に状況が変わっていないか）。何も書かない。
+
+    適用時に記録した ``control_revision`` と現在の制御版が違う（その後に hold・待機・別の command が
+    あった）、``control_state`` が ``running`` でない、Episode が投稿済み・終端 — のどれかなら
+    ``proceed=False``。再配送が終わった pipeline を再起動することを防ぐ。
+    """
+    async with session_factory() as session:
+        store = InterventionStore(session)
+        command = await store.get_command(command_id)
+        if command is None:
+            raise CommandNotFoundError(command_id)
+        control = await store.get_control(command.episode_id)
+        recorded = (command.result or {}).get("control_revision")
+        if control.persisted and recorded != control.control_revision:
+            return {"proceed": False, "reason": "control_revision_changed"}
+        if control.control_state is not ControlState.RUNNING:
+            return {"proceed": False, "reason": f"control_state_{control.control_state.value}"}
+        episode = await EpisodeRepository(session).get(command.episode_id)
+        if episode is None or episode.status in CLOSED_EPISODE_STATUSES:
+            return {"proceed": False, "reason": "episode_closed"}
+        return {"proceed": True, "reason": None}
+
+
 async def record_followup(
     session_factory: async_sessionmaker[AsyncSession],
     command_id: str,
@@ -525,8 +558,8 @@ async def record_followup(
         await store.lock_control(command.episode_id)
         merged = await store.merge_command_result(command_id, {"pipeline": dict(pipeline)})
         if merged.type is CommandType.RESUME and pipeline.get("outcome") in {
-            "started",
-            "already_running",
+            PipelineStartOutcome.STARTED,
+            PipelineStartOutcome.ALREADY_RUNNING,
         }:
             await store.append_event(
                 merged.episode_id,

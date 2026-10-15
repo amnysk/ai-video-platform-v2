@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -38,6 +38,7 @@ from contracts.intervention import (
     ControlState,
     InterventionEvent,
     InterventionMode,
+    PipelineStartOutcome,
     RejectReason,
     ReviewPoint,
     RevisionLinkKind,
@@ -757,9 +758,16 @@ class InterventionStore:
         )
 
     async def list_undelivered_commands(
-        self, *, stale_before: datetime, limit: int = 100
+        self, *, stale_before: datetime, limit: int = 100, applied_window: timedelta | None = None
     ) -> list[Command]:
-        """未配送、または配送したが終端にならず ``stale_before`` より前に受けた command。"""
+        """再配送の対象。
+
+        - 未配送、または配送したが終端にならず ``stale_before`` より前に受けた command
+          （RECEIVED / VALIDATED / APPLYING）
+        - APPLIED なのに子 pipeline の start が未記録の command（``result.pipeline_start`` が
+          あり ``result.pipeline`` が無い、または ``outcome == start_failed``）。workflow が適用と
+          follow-up の間で落ちたときの取り残し。``stale_before`` より前に更新されたものだけ
+        """
         open_statuses = [
             CommandStatus.RECEIVED.value,
             CommandStatus.VALIDATED.value,
@@ -775,7 +783,31 @@ class InterventionStore:
             .order_by(InterventionCommandRow.received_at)
             .limit(limit)
         )
-        return [_to_command(r) for r in rows]
+        found = [_to_command(r) for r in rows]
+        if len(found) >= limit:
+            return found
+        horizon = stale_before - (applied_window or timedelta(days=7))
+        applied = await self._session.scalars(
+            select(InterventionCommandRow)
+            .where(
+                InterventionCommandRow.status == CommandStatus.APPLIED.value,
+                InterventionCommandRow.updated_at < stale_before,
+                InterventionCommandRow.updated_at > horizon,
+            )
+            .order_by(InterventionCommandRow.updated_at)
+            .limit(1000)
+        )
+        for row in applied:
+            result = row.result or {}
+            recorded = result.get("pipeline")
+            unrecorded = not isinstance(recorded, dict) or (
+                recorded.get("outcome") == PipelineStartOutcome.START_FAILED.value
+            )
+            if isinstance(result.get("pipeline_start"), dict) and unrecorded:
+                found.append(_to_command(row))
+                if len(found) >= limit:
+                    break
+        return found
 
     async def list_commands(self, episode_id: uuid.UUID | str) -> list[Command]:
         rows = await self._session.scalars(

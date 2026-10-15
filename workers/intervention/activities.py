@@ -13,8 +13,10 @@ from temporalio.exceptions import ApplicationError
 
 from contracts.intervention import (
     APPLY_INTERVENTION_COMMAND_ACTIVITY,
+    CHECK_PIPELINE_START_ACTIVITY,
     INTERVENTION_TASK_QUEUE,
     LIST_UNDELIVERED_COMMANDS_ACTIVITY,
+    MARK_COMMAND_DISPATCHED_ACTIVITY,
     RECORD_COMMAND_FOLLOWUP_ACTIVITY,
     REDELIVERY_STALE_AFTER_SECONDS,
 )
@@ -24,6 +26,7 @@ from infrastructure.intervention.commands import (
     CommandNotFoundError,
     CommandOutcome,
     apply_command,
+    check_pipeline_start,
     record_followup,
 )
 from infrastructure.intervention.store import InterventionStore
@@ -55,7 +58,13 @@ class InterventionActivities:
         self._redelivery_limit = redelivery_limit
 
     def activities(self) -> Sequence[Callable[..., object]]:
-        return [self.apply, self.followup, self.list_undelivered]
+        return [
+            self.apply,
+            self.check_start,
+            self.followup,
+            self.list_undelivered,
+            self.mark_dispatched,
+        ]
 
     def _response(self, outcome: CommandOutcome) -> dict[str, Any]:
         response: dict[str, Any] = {
@@ -102,19 +111,33 @@ class InterventionActivities:
         )
         return self._response(outcome)
 
+    @activity.defn(name=CHECK_PIPELINE_START_ACTIVITY)
+    async def check_start(self, request: dict[str, Any]) -> dict[str, Any]:
+        """子 pipeline を start してよいか。適用の後に状況が変わっていれば ``proceed=False``。"""
+        try:
+            return await check_pipeline_start(self._session_factory, str(request["command_id"]))
+        except CommandNotFoundError as exc:
+            raise ApplicationError(
+                f"command {exc} not found", type="CommandNotFoundError", non_retryable=True
+            ) from None
+
     @activity.defn(name=LIST_UNDELIVERED_COMMANDS_ACTIVITY)
     async def list_undelivered(self, request: dict[str, Any]) -> dict[str, Any]:
-        """未配送・停滞した command を列挙し、配送済み（試行回数）を記録する。"""
+        """未配送・停滞した command を列挙する。配送済みの記録は start 成功後の別 Activity。"""
         stale_before = self._clock() - timedelta(seconds=REDELIVERY_STALE_AFTER_SECONDS)
         async with self._session_factory() as session:
-            store = InterventionStore(session)
-            commands = await store.list_undelivered_commands(
+            commands = await InterventionStore(session).list_undelivered_commands(
                 stale_before=stale_before, limit=self._redelivery_limit
             )
-            for command in commands:
-                await store.mark_command_dispatched(command.command_id)
-            await session.commit()
         return {
             "command_ids": [c.command_id for c in commands],
             "task_queue": self._command_task_queue,
         }
+
+    @activity.defn(name=MARK_COMMAND_DISPATCHED_ACTIVITY)
+    async def mark_dispatched(self, request: dict[str, Any]) -> dict[str, Any]:
+        """workflow の start に成功した（または既に走っている）command の配送を記録する。"""
+        async with self._session_factory() as session:
+            await InterventionStore(session).mark_command_dispatched(str(request["command_id"]))
+            await session.commit()
+        return {"command_id": str(request["command_id"])}
