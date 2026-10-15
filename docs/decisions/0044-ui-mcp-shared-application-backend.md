@@ -2,9 +2,21 @@
 
 ## Status
 
-Proposed（2026-10-15）。設計 [JP-MAS-002 v1.1](../design/JP-MAS-002-v1.1.md) §2.2・§2.3・§2.5 と P2 の
+Accepted（2026-10-16）。設計 [JP-MAS-002 v1.1](../design/JP-MAS-002-v1.1.md) §2.2・§2.3・§2.5 と P2 の
 バックエンド部分。前提は [ADR-0043](./0043-agentic-production-foundation.md)（Accepted、本 ADR は書き換えない）。
 Web UI・MCP Server は**対象外**（境界だけ）。本番反映はしない（別承認）。flag はすべて既定 OFF のまま。
+
+**Accepted の判断（2026-10-16、リードアーキテクト）**: 独立レビュー（Sonnet、読み取り専用）が 13 操作の単一カタログ、
+service と HTTP の分離、権限（actor は認証済み principal から導出、本文に持てない）、冪等、flag OFF（認証前に 404、
+workflow 起動なし）、Temporal replay（`workflows.py` 差分ゼロ）、既知 P1 の回帰テストを、コードとテストで確認した。
+P0 なし。次の残リスクを承知の上で Accepted とする（いずれも後続で解消するか、上限を明記している）:
+
+1. `/episodes/*`（Phase 1 API）が未認証で有料の再開を起動できる。**P2-B で UI を載せる前に解消する**
+   （既存の smoke スクリプトを壊さないよう、設定で opt-in の認証を足す。別 ADR）。
+2. `terminal_failed` の台本 job は人の復旧が要る。3. cursor は `created_at` のみ（P2-B で複合化）。
+4. 実 `ApplicationService` の MCP 同等性は integration でのみ証明（unit の parity は fake 同士）。
+5. `feature_disabled` の HTTP status が route により 404/409。6. `start_agentic_production` は操作者の DB 監査行が無く
+   ログのみ。7. read-model は呼び出しごとに全量読み。8. 素材アップロード未実装。
 
 ## Context
 
