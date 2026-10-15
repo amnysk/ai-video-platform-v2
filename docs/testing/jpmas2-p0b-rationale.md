@@ -67,3 +67,22 @@
 - `test_it_posts_the_proposal_to_the_application_route`: CLI が HTTP route にだけ送り（DB に触れない）、
   request の command_id・期待版・提案を本文に載せ、再送用の command_id を stderr に出す。
 - `test_without_a_command_id_it_makes_one_and_omits_unset_options`: 省略時は uuid4、未指定の項目は送らない。
+
+## 7. 契約同期（tests/contract/test_application_contract_sync.py、INV-52）
+
+- `test_the_route_request_schema_is_the_request_model` / `test_the_route_response_schema_is_the_result_model`:
+  OpenAPI の route が `contracts/application.py` の model と同じ形（`$ref` 解決後）。route の本文を手書きで
+  ずらしても気づけるように。FastAPI は OpenAPI から `default: null` を落とすので、両側で落として比べる。
+- `test_the_tool_input_schema_is_derived_from_the_proposal_model`: tool の入力 schema が提案 model の各項目と
+  required に一致し、`command_id` を含まない（INV-49）。
+- `test_the_committed_openapi_fragment_equals_a_fresh_generation`: 固定した `docs/api/openapi.application.json` が
+  生成結果と同じ（UI の client 生成元が古いまま残らない）。
+- `test_the_fragment_has_only_the_application_paths_and_the_referenced_schemas`: 断片に他の route の型を混ぜない。
+
+## 8. 単一変更経路（tests/architecture/test_single_change_path.py、INV-50）
+
+- `test_only_pass_through_modules_know_the_proposal_types`: 提案の型を知る module は use case・定義・schema 導出・
+  HTTP の本文型だけ。他の入口が自前で解釈し始めたら落ちる。
+- `test_only_the_use_case_turns_a_proposal_into_scene_overrides`: 提案の型と `SceneOverrideVisual` を同じ
+  module で扱うのは use case だけ（変換の複製を防ぐ）。
+- `test_only_the_use_case_derives_edit_command_ids`: edit ごとの command_id の導出が1か所（再送の冪等性の根拠）。

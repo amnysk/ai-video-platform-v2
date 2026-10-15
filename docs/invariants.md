@@ -571,3 +571,43 @@ INV-42 により API は保存済みの command を返す（二重の提案・�
 / `tests/unit/test_assistant_adapter.py::test_the_token_never_appears_in_results_errors_or_repr`
 / `tests/unit/test_assistant_request_log.py::test_neither_token_nor_authorization_nor_body_is_logged`
 / `tests/unit/test_assistant_e2e.py::test_the_server_logs_the_assistant_correlation_and_never_the_token`
+
+## O. 自律改善型制作（ADR-0043）
+
+### INV-50 単一変更経路: StoryboardPatchProposal から propose_change を作るのは `ProposeStoryboardChange` だけ
+絵コンテの変更提案（`contracts.application.StoryboardPatchProposal`）を `propose_change` command に変えるのは
+`application/use_cases/propose_storyboard_change.py` の1か所だけ。HTTP（`POST /v1/intervention/episodes/{id}/storyboard/proposals`）・
+アシスタント tool（`propose_storyboard_patch`）・内部 Agent（`SessionCommandPort`）・CLI は提案を use case へ通すだけで、
+`SceneOverrideVisual` への変換や edit ごとの command_id（`storyboard_edit_command_id`）の導出を持たない。
+入口が違っても結果型（`StoryboardProposalResult`）と拒否 code（`OperationErrorCode`）は同じ。P0 が受け付けるのは
+`visual_description` だけで、他の項目は `unsupported_change`。同じ要求の再送は既存 command（INV-42）、
+同じ `request_command_id` で別内容は `command_id_reused`。use case は適用しない。新機能は `JPMAS2_APPLICATION_API`
+（既定 false）が false なら `404 feature_disabled`。
+**機械検査**: `tests/architecture/test_single_change_path.py::test_only_pass_through_modules_know_the_proposal_types`
+/ `::test_only_the_use_case_turns_a_proposal_into_scene_overrides`
+/ `::test_only_the_use_case_derives_edit_command_ids`
+/ `tests/unit/test_application_slice.py::test_http_and_internal_port_give_the_same_result_shape_and_change_sets`
+/ `::test_the_assistant_tool_gives_the_same_result_shape_and_change_sets`
+/ `::test_resending_the_same_request_returns_the_existing_commands`
+/ `::test_a_retried_tool_call_returns_the_existing_commands`
+/ `::test_the_same_request_id_with_other_content_is_command_id_reused`
+/ `::test_unsupported_fields_give_unsupported_change_from_every_entry`
+/ `::test_the_tool_reports_the_same_refusal_codes_as_the_other_entries`
+/ `::test_missing_propose_scope_is_missing_scope`
+/ `::test_the_internal_port_refuses_a_human_caller`
+/ `::test_the_flag_off_is_404_feature_disabled_before_anything_else`
+/ `::test_a_stale_base_revision_ends_as_a_conflict_without_a_change_set`
+/ `tests/unit/test_propose_storyboard_change.py::test_one_propose_command_per_edit_with_a_validated_payload`
+/ `::test_unsupported_edits_are_refused_before_the_port`
+/ `tests/contract/test_application_contracts.py::test_shared_error_codes_are_spelled_like_reject_reasons`
+
+### INV-52 契約同期: OpenAPI・アシスタント tool schema・contracts の model が一致する
+`ProposeStoryboardChangeRequest` / `StoryboardProposalResult`（`contracts/application.py`）が唯一の定義で、OpenAPI の
+当該 route の request/response schema、`propose_storyboard_patch` の入力 schema（`StoryboardPatchProposal` から導出）、
+固定した OpenAPI 断片 `docs/api/openapi.application.json`（`scripts/export-openapi.py --application` の生成結果）は
+それと一致する。手書きで同じ形を再掲しない。
+**機械検査**: `tests/contract/test_application_contract_sync.py::test_the_route_request_schema_is_the_request_model`
+/ `::test_the_route_response_schema_is_the_result_model`
+/ `::test_the_tool_input_schema_is_derived_from_the_proposal_model`
+/ `::test_the_committed_openapi_fragment_equals_a_fresh_generation`
+/ `::test_the_fragment_has_only_the_application_paths_and_the_referenced_schemas`

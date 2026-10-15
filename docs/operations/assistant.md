@@ -51,6 +51,7 @@ python scripts/assistant.py tools --tool-use    # name / description / input_sch
 | `add_comment` | annotate | comment | アンカー付きコメント（segment_id / scene_id / asset_id / time_range / manifest_id / revision_id） |
 | `propose_script_edit` | propose | propose | 台本の修正案（`script.edit_scenes`）。ChangeSet を作るだけ |
 | `propose_scene_visual_override` | propose | propose | シーンの映像の修正案（`scene.override_visual`）。ChangeSet を作るだけ |
+| `propose_storyboard_patch` | propose | propose | 絵コンテの映像文を複数シーン分まとめて提案（edit ごとに `scene.override_visual`。ADR-0043。`JPMAS2_APPLICATION_API=true` が必要。framing 等は `unsupported_change`） |
 | `request_hold` | control | hold | 停止の依頼（送信済みの provider job は完了・課金されうる） |
 | `resume_episode` | control | resume | 再開 |
 | `apply_change` | apply | apply | ChangeSet の適用（§4） |
@@ -121,6 +122,11 @@ echo '{"episode_id": "<uuid>", "anchor": {"segment_id": "s3"}, "body": "ここ�
 説明は保存済みの記録だけから組み立て、LLM を呼ばない。`rationale.kind=reported` はモデルの自己申告（`verified=false`）で、
 検証済みの事実として扱わない。token 使用量・費用は ADR-0041 の負債で未計上のため `agent_run.token_usage` /
 `agent_run.estimated_cost_usd` は `null`（`not_recorded` に列挙）。自然文への言い換えは利用者側の LLM が行う。
+
+`propose_storyboard_patch` の入力 schema は `contracts.application.StoryboardPatchProposal` から導出し（手書きしない。INV-52）、
+`expected_control_revision` を足す。request の command_id は tool 呼び出しから決まり（INV-49）、edit ごとの command_id は
+use case が導く（INV-50）。サーバが拒否したら `status` は `missing_scope` / `command_id_reused`、それ以外は `error`
+（`unsupported_change` `feature_disabled` `invalid_payload` など）で返す。tool は 16 個。
 
 ## 6. 未実装
 
