@@ -27,7 +27,7 @@ class AgentTool(StrEnum):
 
 
 class AgentHandlerRef(StrEnum):
-    """コード登録された handler（``domain/agents/handlers/__init__.py::HANDLERS`` のキーと一致させる）。"""
+    """コード登録された handler（``domain.agents.handlers.HANDLERS`` のキーと一致させる）。"""
 
     STRATEGY_AGENT_V1 = "strategy_agent_v1"
     CREATIVE_DIRECTOR_V1 = "creative_director_v1"
