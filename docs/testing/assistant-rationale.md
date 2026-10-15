@@ -82,3 +82,22 @@
 - `test_the_server_logs_the_assistant_correlation_and_never_the_token`: ログの相関と token の非出力。
 - 担当 B の `receive_command` は fake（統合後の検査は親が行う）。AI の有料適用拒否の実挙動は
   `tests/unit/test_intervention_changes.py` が、adapter 側の写像は test_assistant_adapter.py が持つ。
+
+## 7. レビュー E2 の指摘（tests/unit/test_assistant_adapter.py ほか）
+
+- M2 `test_a_tool_call_id_used_for_another_command_is_command_id_reused_not_applied` /
+  `test_a_stored_apply_for_another_change_set_or_episode_is_command_id_reused`: 再試行の近道は、保存済みの
+  command が同じ種類・同じ ChangeSet・同じ Episode のときだけ。別の command（propose 等）を apply の結果
+  （`applied`）として返すと、LLM が適用されたと誤認する。
+- M3 `test_human_command_is_built_only_from_strict_uuids_and_quoted`: 保存済みの command の値をシェル文字列に
+  入れると、人が貼り付けて実行する行にコマンド注入が入りうる。UUID の正規形だけを通し quote し、通らなければ
+  `human_command` を出さず、URL にも入れない。
+- M1 `test_resume_forbidden_for_paid_generation_needs_a_human`: 再開は有料の再生成を始めうる。
+- L1 `test_forbidden_reason_is_surfaced_verbatim_not_relabelled`: サーバの理由を adapter が言い換えない。
+- L2 `test_expected_revisions_are_passed_through_and_control_revision_is_echoed` と契約テスト
+  `test_expected_revision_fields_exist_on_the_envelope_and_only_on_state_changing_tools`: 古い状態への command を
+  競合にするため、envelope の項目だけを状態を変える tool に露出する。
+- L4 INV-48: 相対 import は同じ package（level 1）だけ、`importlib.import_module` / `__import__` を検出
+  （リテラルでない引数は検査できないので違反）、`from apps import assistant` の誤検出を除く。
+  `test_each_detection_fires_on_a_fake_package` が検出ごとに tmp の偽 package で空振りしないことを確かめる。
+- `test_the_role_enum_is_derived_from_agent_role`: 役割の列挙を literal で書き直さない（AGENTS.md §8）。
