@@ -903,6 +903,7 @@ class AgentRunRow(Base):
         ),
         UniqueConstraint("idempotency_key", name="uq_agent_runs_idempotency_key"),
         Index("ix_agent_runs_episode", "episode_id", "created_at"),
+        Index("ix_agent_runs_workflow", "workflow_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
@@ -931,6 +932,10 @@ class AgentRunRow(Base):
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
     error_summary: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: この実行を作った Activity の Temporal 識別子（0018）。Activity の外で作った行は NULL
+    workflow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    activity_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -954,6 +959,7 @@ class DecisionRecordRow(Base):
         ),
         UniqueConstraint("idempotency_key", name="uq_decision_records_idempotency_key"),
         Index("ix_decision_records_episode", "episode_id", "created_at"),
+        Index("ix_decision_records_episode_scene", "episode_id", "scene_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
@@ -974,6 +980,10 @@ class DecisionRecordRow(Base):
     result_revision_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(), nullable=True)
     command_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 判断が単一 Scene を対象にすると payload が明示するときだけ（0018。推測しない）
+    scene_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workflow_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     schema_version: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

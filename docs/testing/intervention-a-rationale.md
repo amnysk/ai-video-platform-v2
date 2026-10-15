@@ -96,3 +96,9 @@
 | `test_final_video_qa_and_its_production_manifest_are_checked` | 完成動画は採用中の production manifest から作られ QA 合格であること | 不一致→一致の2段 | 別の素材一式の完成動画を合格にする |
 | `test_open_comments_stale_approvals_and_failed_verification_are_reported` | 未解決コメント・旧 manifest の承認（INV-45）・照合不合格を助言として出す。自分の所見をコメントとして数えない | 実データ | 旧承認の流用、照合結果の無視、所見の自己増殖 |
 | `test_rerunning_on_the_same_inputs_does_not_add_records` | 同じ入力の再実行で記録が増えない | 2回実行して行数を比べる | 再実行のたびに所見・判定が重複する |
+
+## Episode・Scene・Workflow への結び付き（migration 0018）
+
+| テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
+|---|---|---|---|
+| `test_0018_adds_nullable_columns_and_indexes_and_downgrade_removes_them` | 0018 は `agent_runs` / `decision_records` に NULL 可の列と索引を足し、downgrade で戻る。既存行を強制しない | 実際に alembic を 0017→0018→0017 と動かして形状を見る（models 一致検査は別に走る） | NOT NULL で足して既存行が壊れる、索引の付け忘れ、downgrade で列が残る |
