@@ -125,7 +125,7 @@ P2（Web UI）・P3（MCP Server）は**対象外**（境界だけを残す）�
 - `ArtifactType` に `user_brief`・`strategy_brief`・`creative_brief`・`quality_review`・`lesson`・`workflow_plan`
   （Episode 単位、`scene_id` は NULL）。`ProviderCall` に `agent_llm`（Episode 単位）。
 - migration **0019**: `ck_artifact_metadata_type`・`ck_artifact_metadata_scene_scope`・`ck_agent_runs_role`・
-  `ck_provider_reservations_provider`・`ck_provider_auth_incidents_provider` の張り替えだけ（新しい表・列は作らない）。
+  `ck_provider_reservations_provider`・`ck_provider_auth_incidents_provider`・`ck_provider_rejections_provider`（`ProviderCall` から導く CHECK）の張り替えだけ（新しい表・列は作らない）。
   語彙は literal で凍結。downgrade は新語彙の行があれば何も変えずに拒否。既存 migration は編集しない。
 - 内容と版は既存 `artifact_metadata` + MinIO、依存は `revision_links(derived_from)`、判断は `decision_records`、
   実行は `agent_runs`。Agent 専用の表は作らない（設計 §8）。
