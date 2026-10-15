@@ -553,3 +553,19 @@ async def test_a_paid_change_without_a_ledger_estimate_is_unverifiable(
         session_factory, artifact_store, episode_id, proposed.result["change_set_id"], policy=RATE
     )
     assert outcome.reject_reason is RejectReason.BUDGET_UNVERIFIABLE
+
+
+async def test_a_visual_edit_in_the_script_is_refused_because_it_would_not_change_any_image(
+    session, session_factory, artifact_store
+) -> None:
+    """画像は storyboard から作られる。台本の visual を直しても映像は変わらないので受け付けない。"""
+    episode_id, script, _storyboard, _media = await _setup(session, artifact_store)
+    payload = _script_edit(script.id)
+    payload["change"]["edits"] = [{"segment_id": "s2", "visual": "炉の遺構"}]
+    outcome = await submit(
+        session_factory, artifact_store, episode_id, envelope(CommandType.PROPOSE_CHANGE, payload)
+    )
+    assert outcome.reject_reason is RejectReason.UNSUPPORTED_CHANGE
+    assert "scene.override_visual" in outcome.result["detail"]
+    async with session_factory() as s:
+        assert await InterventionStore(s).list_change_sets(episode_id) == []

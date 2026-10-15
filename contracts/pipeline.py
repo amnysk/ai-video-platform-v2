@@ -16,7 +16,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
-from contracts.intervention import ReviewPoint
+from contracts.intervention import PIPELINE_CONTROL_GATE_ACTIVITY, ReviewPoint
 from contracts.operations import ClaimOutcome
 from contracts.production_activities import (
     DEFAULT_AWAIT_REEXECUTIONS,
@@ -82,10 +82,14 @@ PIPELINE_UPLOAD_GATE = "pipeline_upload_gate"
 #: claim の結果の語彙は ``contracts.operations.ClaimOutcome``（ADR-0021）が唯一の宣言元（再輸出）
 RE_EXPORTED = (ClaimOutcome,)
 
+#: 待機地点・停止の状態 Activity（ADR-0041 §5）。名前の宣言元は ``contracts.intervention``（再輸出）
+PIPELINE_CONTROL_GATE = PIPELINE_CONTROL_GATE_ACTIVITY
+
 PIPELINE_ACTIVITY_NAMES: tuple[str, ...] = (
     PIPELINE_CHECK_PAUSED,
     PIPELINE_CLAIM_DAILY_SLOT,
     PIPELINE_UPLOAD_GATE,
+    PIPELINE_CONTROL_GATE,
 )
 
 
@@ -148,6 +152,10 @@ class PipelineOutcome(StrEnum):
     STOPPED = "stopped"
     #: render_ready まで来たが投稿ゲートが拒否した
     UPLOAD_SKIPPED = "upload_skipped"
+    #: control gate（``EpisodePipelineInput.control_gate``）が停止・待機を返した（ADR-0041 §5）。
+    #: 失敗ではない。再開は介入 command（resume / checkpoint 解放）が同じ id で pipeline を
+    #: start する
+    PARKED = "parked"
 
 
 # --------------------------------------------------------------------------- id 規約
@@ -254,6 +262,10 @@ class EpisodePipelineInput:
     #: 途中入場の開始工程（ADR-0032、統一再開エントリポイント）。既定は最初から（SCRIPT）。
     #: これより前の工程は子 workflow を起動せず、既に完了しているものとして扱う（再課金しない）。
     start_stage: str = PipelineStage.SCRIPT.value
+    #: 新方式（ADR-0041 §5）。True の実行だけ、各工程の子 workflow の前に control gate の状態
+    #: Activity を呼ぶ（``workflow.patched(CONTROL_GATE_PATCH_ID)`` の内側）。既定 False は
+    #: 日次実行と旧履歴の経路・履歴を変えない（旧入力はこの項目なしで decode できる）
+    control_gate: bool = False
 
 
 @dataclass
@@ -309,3 +321,20 @@ class UploadGateResult:
     reason: str | None = None
     #: 判定時点の Episode 状態。Episode が無ければ空文字
     status: str = ""
+
+
+@dataclass
+class ControlGateRequest:
+    episode_id: str
+    #: これから起動する工程（``PipelineStage.value``）
+    stage: str
+
+
+@dataclass
+class ControlGateResult:
+    #: True なら工程を起動してよい。False なら pipeline は ``parked`` で終わる
+    proceed: bool
+    reason: str | None = None
+    control_state: str = ""
+    waiting_point: str | None = None
+    manifest_id: str | None = None
