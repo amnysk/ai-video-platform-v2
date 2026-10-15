@@ -49,6 +49,20 @@
             "default": null,
             "title": "Rationale"
           },
+          "request_sha256": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Sha256"
+          },
           "variant_group": {
             "anyOf": [
               {
