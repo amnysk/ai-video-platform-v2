@@ -45,3 +45,32 @@ ADR-0044 §3 の3問題（台本の作り直し / 再開設定の一本化 / fla
   PipelineOptions、worker は設定」の食い違いだった。
 - `test_a_custom_queue_reaches_every_path`: queue を既定から変えた options が API と worker の両方で
   同じ queue に届く（Settings には queue の項目が無いので、options の差し替えで検査する）。
+
+## 3. flag OFF の再開と worker の確認
+
+tests/unit/test_resume_feature_disabled.py:
+
+- `test_api_resume_of_a_pinned_episode_with_the_flag_off_is_409_and_starts_nothing`: 固定計画を持つ Episode を
+  flag OFF の API で再開すると 409 `{"error": "feature_disabled", ...}`。agentic も legacy の pipeline も
+  start しない（拾う worker の無い workflow を作って「成功」と返さない）。
+- `test_api_resume_of_a_legacy_episode_is_unaffected_by_the_flag`（INV-55）: legacy は flag に関係なく従来どおり。
+- `test_worker_resume_of_a_pinned_episode_with_the_flag_off_starts_nothing`: 実 Temporal（time-skipping）と本物の
+  Activity で、flag OFF の介入 worker は何も start せず、`pipeline.outcome=not_needed` / `reason=feature_disabled`
+  を command の結果に残す。workflow のコードは変えていない（check Activity の応答だけで止める）ので replay 互換。
+- `test_worker_resume_of_a_legacy_episode_with_the_flag_off_still_starts_the_pipeline`: legacy は影響を受けない。
+
+tests/unit/test_resume_api_agentic.py（既存テストの変更）: fixture に `get_settings` の上書き
+（`jpmas2_agentic_workflows=True`）を足した。ADR-0044 で「flag OFF の再開は拒否」が契約になったため、
+これらの既存テスト（ON の環境での agentic 再開）は ON を明示する必要がある。アサーションは変えていない。
+
+tests/unit/test_agentic_starter_worker_check.py（`TemporalAgenticStarter.probe_workers`、fake client）:
+
+- `test_both_queues_with_pollers_is_pollers_present`: 設定の pipeline queue（workflow）と agents queue
+  （activity）の両方を問い合わせ、両方に poller があれば `pollers_present`。
+- `test_a_queue_with_no_pollers_is_no_pollers`: どちらかに poller が無いと確認できれば（他方が失敗していても）
+  `no_pollers`。
+- `test_any_error_without_a_definite_answer_is_unknown`: 確認できなければ `unknown`（「動いている」と言わない）。
+- `test_a_client_without_a_service_is_unknown_never_raises`: client が問い合わせられなくても例外を投げない。
+- `test_start_reports_the_worker_check_and_survives_a_failing_probe` /
+  `test_an_already_started_workflow_still_reports_the_check`: `start` の結果に `worker_check` が載り、probe の失敗は
+  起動の成否を変えない。既に走っている場合も確認結果を返す。
