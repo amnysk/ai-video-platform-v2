@@ -37,8 +37,6 @@ from contracts.pipeline import (
     DAILY_WORKFLOW_ID_PREFIX,
     DEFAULT_SCHEDULE_CATCHUP_WINDOW_SECONDS,
     DailyEpisodeInput,
-    PipelineOptions,
-    ProductionParameters,
 )
 from contracts.schedule_guard import (
     WATCHDOG_SCHEDULE_ID,
@@ -47,6 +45,7 @@ from contracts.schedule_guard import (
     WatchdogRequest,
 )
 from infrastructure.config import Settings
+from infrastructure.temporal.pipeline_options import pipeline_options_from_settings
 
 SCHEDULE_NOTE = "avp: daily episode pipeline (ADR-0023)"
 
@@ -58,20 +57,7 @@ def daily_episode_input_from_settings(settings: Settings) -> DailyEpisodeInput:
         timezone=settings.schedule_timezone,
         strategy_profile_id=settings.topic_strategy_profile_id,
         content_profile_id=settings.topic_content_profile_id,
-        options=PipelineOptions(
-            render_profile_id=settings.pipeline_render_profile_id,
-            production=ProductionParameters(
-                image_concurrency=settings.image_concurrency,
-                video_concurrency=settings.video_concurrency,
-                voice_concurrency=settings.voice_concurrency,
-                image_max_rounds=settings.production_image_max_rounds,
-                video_max_rounds=settings.production_video_max_rounds,
-                await_reexecutions=settings.production_await_reexecutions,
-                max_scene_alternatives_per_scene=(
-                    settings.production_max_scene_alternatives_per_scene
-                ),
-            ),
-        ),
+        options=pipeline_options_from_settings(settings),
     )
 
 

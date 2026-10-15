@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from contracts.agentic_pipeline import PIPELINE_KIND_KEY, AgenticEpisodeInput, PipelineKind
+from contracts.agentic_pipeline import PIPELINE_KIND_KEY, PipelineKind
+from contracts.application import OperationErrorCode
 from contracts.intervention import (
     APPLY_INTERVENTION_COMMAND_ACTIVITY,
     CHECK_PIPELINE_START_ACTIVITY,
@@ -33,6 +34,7 @@ from infrastructure.intervention.commands import (
 )
 from infrastructure.intervention.store import InterventionStore
 from infrastructure.storage.artifact_store import ArtifactStore
+from infrastructure.temporal.pipeline_options import agentic_episode_start_spec
 
 
 def _utcnow() -> datetime:
@@ -47,6 +49,7 @@ class InterventionActivities:
         store: ArtifactStore,
         budget_policy: BudgetPolicy,
         pipeline_options: PipelineOptions,
+        agentic_enabled: bool = True,
         command_task_queue: str = INTERVENTION_TASK_QUEUE,
         clock: Callable[[], datetime] = _utcnow,
         redelivery_limit: int = 100,
@@ -55,6 +58,8 @@ class InterventionActivities:
         self._store = store
         self._budget_policy = budget_policy
         self._pipeline_options = pipeline_options
+        #: ``Settings.jpmas2_agentic_workflows``。OFF なら固定計画を持つ Episode の再開は起動しない
+        self._agentic_enabled = agentic_enabled
         self._command_task_queue = command_task_queue
         self._clock = clock
         self._redelivery_limit = redelivery_limit
@@ -121,15 +126,15 @@ class InterventionActivities:
         )
         if pinned is None:
             return  # legacy: pipeline_kind を載せない（旧い履歴の結果と同じ形）
-        response[PIPELINE_KIND_KEY] = PipelineKind.AGENTIC.value
-        response["pipeline_input"] = dataclasses.asdict(
-            AgenticEpisodeInput(
-                episode_id=episode_id,
-                template_id=pinned.template_id,
-                template_version=pinned.template_version,
-                options=self._pipeline_options,
-            )
+        spec = agentic_episode_start_spec(
+            episode_id=episode_id,
+            template_id=pinned.template_id,
+            template_version=pinned.template_version,
+            options=self._pipeline_options,
         )
+        response[PIPELINE_KIND_KEY] = PipelineKind.AGENTIC.value
+        response["pipeline_input"] = spec.input_dict()
+        response["pipeline_task_queue"] = spec.task_queue
 
     @activity.defn(name=RECORD_COMMAND_FOLLOWUP_ACTIVITY)
     async def followup(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -141,8 +146,21 @@ class InterventionActivities:
     @activity.defn(name=CHECK_PIPELINE_START_ACTIVITY)
     async def check_start(self, request: dict[str, Any]) -> dict[str, Any]:
         """子 pipeline を start してよいか。適用の後に状況が変わっていれば ``proceed=False``。"""
+        command_id = str(request["command_id"])
         try:
-            return await check_pipeline_start(self._session_factory, str(request["command_id"]))
+            verdict = await check_pipeline_start(self._session_factory, command_id)
+            if verdict.get("proceed") and not self._agentic_enabled:
+                async with self._session_factory() as session:
+                    command = await InterventionStore(session).get_command(command_id)
+                if command is None:
+                    raise CommandNotFoundError(command_id)
+                pinned = await read_pinned_agentic_template(
+                    self._session_factory, lambda: self._store, command.episode_id
+                )
+                if pinned is not None:
+                    # agentic の worker が居ない環境で起動しない。legacy にも落とさない
+                    return {"proceed": False, "reason": OperationErrorCode.FEATURE_DISABLED.value}
+            return verdict
         except CommandNotFoundError as exc:
             raise ApplicationError(
                 f"command {exc} not found", type="CommandNotFoundError", non_retryable=True
