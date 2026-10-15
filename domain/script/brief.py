@@ -12,7 +12,7 @@ Temporal は retry しない）。黙って既定の locale / 形式へ落とさ
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from contracts.topic_planning import (
     CONTENT_PROFILES,
@@ -39,6 +39,8 @@ class ScriptBrief:
     topic_plan_id: str | None
     #: prompt に**データとして**渡す題材。legacy は ``{"topic": ...}`` だけ
     subject_matter: dict[str, str]
+    #: 現行 CreativeBrief の内容 hash（agentic のみ。台本の再利用キーに入る）。それ以外は None
+    brief_revision: str | None = None
 
     @property
     def topic(self) -> str:
@@ -115,13 +117,14 @@ def creative_brief(
     angle: str,
     era: str,
     hook: str,
+    brief_revision: str | None = None,
 ) -> ScriptBrief:
     """TopicPlan が無く、現行の CreativeBrief がある Episode（agentic、ADR-0043 §6）。
 
     plan_brief と同じ検証・同じ題材の列。TopicPlan は無いので ``topic_plan_id`` は None
     （TopicPlan を作らない / 日次と衝突しない）。
     """
-    return _brief_from_profiles(
+    base = _brief_from_profiles(
         topic_plan_id=None,
         strategy_profile_id=strategy_profile_id,
         content_profile_id=content_profile_id,
@@ -131,3 +134,4 @@ def creative_brief(
         era=era,
         hook=hook,
     )
+    return replace(base, brief_revision=brief_revision)

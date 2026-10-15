@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from contracts.agentic_pipeline import PIPELINE_KIND_KEY, AgenticEpisodeInput, PipelineKind
 from contracts.intervention import (
     APPLY_INTERVENTION_COMMAND_ACTIVITY,
     CHECK_PIPELINE_START_ACTIVITY,
@@ -21,6 +22,7 @@ from contracts.intervention import (
     REDELIVERY_STALE_AFTER_SECONDS,
 )
 from contracts.pipeline import EpisodePipelineInput, PipelineOptions
+from infrastructure.agents.pinned_plan import read_pinned_agentic_template
 from infrastructure.intervention.budget import BudgetPolicy
 from infrastructure.intervention.commands import (
     CommandNotFoundError,
@@ -102,7 +104,32 @@ class InterventionActivities:
             raise ApplicationError(
                 f"command {exc} not found", type="CommandNotFoundError", non_retryable=True
             ) from None
-        return self._response(outcome)
+        response = self._response(outcome)
+        start = outcome.pipeline_start
+        if start is not None:
+            await self._choose_pipeline(response, str(start["episode_id"]))
+        return response
+
+    async def _choose_pipeline(self, response: dict[str, Any], episode_id: str) -> None:
+        """pin 済みの agentic 計画がある Episode は ``AgenticEpisodeWorkflow`` を起動させる。
+
+        どちらを起動するかの判定はここ（I/O 側）。workflow は ``pipeline_kind`` で分岐するだけ。
+        agentic の入力は template の情報を計画から取り、``options`` は legacy と同じ worker の設定。
+        """
+        pinned = await read_pinned_agentic_template(
+            self._session_factory, lambda: self._store, episode_id
+        )
+        if pinned is None:
+            return  # legacy: pipeline_kind を載せない（旧い履歴の結果と同じ形）
+        response[PIPELINE_KIND_KEY] = PipelineKind.AGENTIC.value
+        response["pipeline_input"] = dataclasses.asdict(
+            AgenticEpisodeInput(
+                episode_id=episode_id,
+                template_id=pinned.template_id,
+                template_version=pinned.template_version,
+                options=self._pipeline_options,
+            )
+        )
 
     @activity.defn(name=RECORD_COMMAND_FOLLOWUP_ACTIVITY)
     async def followup(self, request: dict[str, Any]) -> dict[str, Any]:

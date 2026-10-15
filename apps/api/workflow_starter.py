@@ -5,10 +5,17 @@ APIは workflow の**完了を待たない**（INV-16）。start して即座に
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Protocol
 
 from temporalio.client import Client
+from temporalio.common import WorkflowIDReusePolicy
 
+from contracts.agentic_pipeline import (
+    AGENTIC_EPISODE_WORKFLOW,
+    AgenticEpisodeInput,
+    agentic_episode_workflow_id,
+)
 from contracts.pipeline import EPISODE_PIPELINE_WORKFLOW, pipeline_workflow_id
 from contracts.production_activities import (
     DEFAULT_AWAIT_REEXECUTIONS,
@@ -58,6 +65,12 @@ class WorkflowStarter(Protocol):
         id は Episode 作成時の pipeline と同じ規約（``pipeline_workflow_id``）。実行中の同じ id は
         Temporal が拒否する（``WorkflowAlreadyStartedError``。二重再開の防止はここに依存する）。
         """
+        ...
+
+    async def start_agentic_workflow(
+        self, *, episode_id: str, template_id: str, template_version: str
+    ) -> str:
+        """pin 済みの agentic 計画を持つ Episode の再開（``AgenticEpisodeWorkflow``）。"""
         ...
 
 
@@ -184,6 +197,32 @@ class TemporalWorkflowStarter:
             {"episode_id": episode_id, "start_stage": start_stage},
             id=workflow_id,
             task_queue=task_queue,
+        )
+        return workflow_id
+
+    async def start_agentic_workflow(
+        self, *, episode_id: str, template_id: str, template_version: str
+    ) -> str:
+        """pin 済みの計画を持つ Episode の再開（``AgenticEpisodeWorkflow``）。
+
+        閉じた実行（parked / completed / failed）の id は再利用できる（ALLOW_DUPLICATE）。実行中の
+        同じ id は Temporal が拒否する（``WorkflowAlreadyStartedError``）ので同時に2本は走らない。
+        最初の起動（``TemporalAgenticStarter.start``）は REJECT_DUPLICATE のまま。
+        """
+        workflow_name, task_queue = AGENTIC_EPISODE_WORKFLOW
+        workflow_id = agentic_episode_workflow_id(episode_id)
+        await self._client.start_workflow(
+            workflow_name,
+            dataclasses.asdict(
+                AgenticEpisodeInput(
+                    episode_id=episode_id,
+                    template_id=template_id,
+                    template_version=template_version,
+                )
+            ),
+            id=workflow_id,
+            task_queue=task_queue,
+            id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
         )
         return workflow_id
 

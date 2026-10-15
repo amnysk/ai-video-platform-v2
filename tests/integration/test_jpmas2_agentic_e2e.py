@@ -61,6 +61,7 @@ from contracts.intervention import (
     AnnotationKind,
     ChangeSetStatus,
     CommandType,
+    intervention_command_workflow_id,
 )
 from contracts.pipeline import EpisodePipelineInput, PipelineOptions
 from contracts.states import ArtifactType, EpisodeStatus, ProviderCall
@@ -93,7 +94,7 @@ from tests.support.agentic_e2e import (
     canned,
 )
 from tests.support.db import assert_destructive_allowed, require_test_database_url
-from tests.support.intervention import envelope, make_episode, submit
+from tests.support.intervention import envelope, make_episode, receive, submit
 from tests.support.temporal import connect_test_client, temporal_test_address
 from workers.agents.activities import AgentActivities
 from workers.agents.starter import TemporalCommandStarter
@@ -627,6 +628,53 @@ async def test_a_hold_requested_before_start_parks_at_the_first_stage(e2e: E2E) 
     assert await e2e.agent_llm_reservations(episode_id) == []
     assert await e2e.current(episode_id, ArtifactType.STRATEGY_BRIEF) == []
     assert e2e.stages.ran == []  # type: ignore[union-attr]
+
+
+async def test_a_hold_then_resume_restarts_the_agentic_workflow_without_double_work(
+    e2e: E2E,
+) -> None:
+    """介入 command の resume が `AgenticEpisodeWorkflow` を再起動する（ADR-0043 の負債の解消）。
+
+    停止中に最初の起動が parked で閉じ、resume が同じ id で再起動して全工程を通る。
+    もう一度 hold -> resume しても LLM・予約・成果物・投稿は増えない（upload gate が止める）。
+    理由: docs/testing/jpmas2-fixa-rationale.md
+    """
+    episode_id = await e2e.draft()
+    await submit(e2e.sf, e2e.store, episode_id, envelope(CommandType.REQUEST_HOLD))
+    parked = await e2e.run(episode_id)
+    assert parked.outcome == AgenticOutcome.PARKED.value and e2e.llm_calls == 0
+
+    async def resume() -> dict[str, Any]:
+        command = envelope(CommandType.RESUME)
+        await receive(e2e.sf, episode_id, command)
+        return await e2e.client.execute_workflow(
+            "InterventionCommandWorkflow",
+            {"command_id": command.command_id},
+            id=intervention_command_workflow_id(command.command_id),
+            task_queue=INTERVENTION_TASK_QUEUE,
+            result_type=dict,
+        )
+
+    first = await resume()
+    assert first["pipeline"]["outcome"] == "started"
+    assert first["pipeline"]["workflow_id"] == agentic_episode_workflow_id(episode_id)
+    handle = e2e.client.get_workflow_handle(agentic_episode_workflow_id(episode_id))
+    finished = await handle.result()  # AgenticEpisodeResult の dict
+    assert finished["outcome"] == AgenticOutcome.COMPLETED.value, finished
+    assert finished["plan_hash"] == parked.plan_hash
+    await e2e.wait_for_proposals(episode_id, 1)
+    before = await e2e.ledger(episode_id)
+    assert before["llm_calls"] == 3 and before["reservations"] == 3
+    uploads = [s for (_e, s) in e2e.stages.ran].count("UploadWorkflow")  # type: ignore[union-attr]
+
+    await submit(e2e.sf, e2e.store, episode_id, envelope(CommandType.REQUEST_HOLD))
+    second = await resume()
+    assert second["pipeline"]["outcome"] == "started"
+    again = await handle.result()  # 同じ id の新しい実行（run id なしの handle は最新を指す）
+    assert again["outcome"] in (AgenticOutcome.STOPPED.value, AgenticOutcome.COMPLETED.value)
+    assert await e2e.ledger(episode_id) == before
+    ran_uploads = [s for (_e, s) in e2e.stages.ran].count("UploadWorkflow")  # type: ignore[union-attr]
+    assert ran_uploads == uploads == 1  # 投稿は二重に走らない
 
 
 # --------------------------------------------------------------------------- 6. budget

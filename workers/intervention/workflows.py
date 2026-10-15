@@ -25,6 +25,13 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.workflow import ParentClosePolicy
 
 with workflow.unsafe.imports_passed_through():
+    from contracts.agentic_pipeline import (
+        AGENTIC_EPISODE_WORKFLOW,
+        AGENTIC_RESUME_PATCH_ID,
+        PIPELINE_KIND_KEY,
+        PipelineKind,
+        agentic_episode_workflow_id,
+    )
     from contracts.intervention import (
         APPLY_INTERVENTION_COMMAND_ACTIVITY,
         CHECK_PIPELINE_START_ACTIVITY,
@@ -70,7 +77,13 @@ class InterventionCommandWorkflow:
         start = outcome.get("pipeline_input")
         if isinstance(start, dict):
             pipeline = await self._start_pipeline(
-                command_id, start, str(outcome.get("pipeline_task_queue"))
+                command_id,
+                start,
+                str(outcome.get("pipeline_task_queue")),
+                # 判定は Activity（I/O 側）。旧い履歴の結果には無いので legacy になる。
+                # patched は、この分岐を持たない旧 code で記録された履歴の replay を守る
+                agentic=outcome.get(PIPELINE_KIND_KEY) == PipelineKind.AGENTIC.value
+                and workflow.patched(AGENTIC_RESUME_PATCH_ID),
             )
             followed = await _activity(
                 RECORD_COMMAND_FOLLOWUP_ACTIVITY,
@@ -83,10 +96,22 @@ class InterventionCommandWorkflow:
 
     @staticmethod
     async def _start_pipeline(
-        command_id: str, pipeline_input: dict[str, Any], task_queue: str
+        command_id: str,
+        pipeline_input: dict[str, Any],
+        task_queue: str,
+        agentic: bool = False,
     ) -> dict[str, Any]:
-        """結果は必ず ``outcome`` を持つ（follow-up が必ず記録する。取り残しを再配送が拾う）。"""
-        workflow_id = pipeline_workflow_id(str(pipeline_input["episode_id"]))
+        """結果は必ず ``outcome`` を持つ（follow-up が必ず記録する。取り残しを再配送が拾う）。
+
+        ``agentic`` なら ``AgenticEpisodeWorkflow``（id agentic-episode-{id}）。同じ id が
+        走っていれば Temporal が拒否する（already_running）。閉じた実行の id は再利用できる
+        （既定の ALLOW_DUPLICATE）。
+        """
+        episode_id = str(pipeline_input["episode_id"])
+        workflow_name = AGENTIC_EPISODE_WORKFLOW[0] if agentic else EPISODE_PIPELINE_WORKFLOW[0]
+        workflow_id = (
+            agentic_episode_workflow_id(episode_id) if agentic else pipeline_workflow_id(episode_id)
+        )
         verdict = await _activity(CHECK_PIPELINE_START_ACTIVITY, {"command_id": command_id})
         if not verdict.get("proceed"):
             return {
@@ -97,7 +122,7 @@ class InterventionCommandWorkflow:
         try:
             # 完了を待たない。止めても有料の工程・投稿を途中で殺さない（ABANDON）
             await workflow.start_child_workflow(
-                EPISODE_PIPELINE_WORKFLOW[0],
+                workflow_name,
                 pipeline_input,
                 id=workflow_id,
                 task_queue=task_queue,

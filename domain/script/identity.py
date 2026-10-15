@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 
-__all__ = ["idempotency_key", "script_input_hash"]
+__all__ = ["idempotency_key", "script_input_hash", "with_brief_revision"]
 
 
 def script_input_hash(
@@ -50,6 +50,19 @@ def script_input_hash(
         "content_profile": content_profile,
     }
     return sha256_hex(canonical_json_bytes(payload))
+
+
+def with_brief_revision(input_hash: str, brief_revision: str | None) -> str:
+    """``script_input_hash`` に現行 CreativeBrief の内容 hash を畳み込む（agentic のみ）。
+
+    brief が変わったら古い brief で作った台本を採用しない。``None``（plan のある / brief の無い
+    Episode）は ``input_hash`` をそのまま返すので従来と同じ値（INV-55）。``script_input_hash`` の
+    引数（構成要素の列）は変えない。brief を持つ旧い行は新しい hash と一致しないので、
+    1度だけ作り直される（安全側。古い brief で作った台本かどうかは行から判別できない）。
+    """
+    if brief_revision is None:
+        return input_hash
+    return sha256_hex(f"{input_hash}|creative_brief:{brief_revision}".encode())
 
 
 def idempotency_key(*, provider: str, input_hash: str, round: int) -> str:

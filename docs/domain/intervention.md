@@ -113,6 +113,13 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
              （適用時に記録した control_revision と現在が一致・control_state=RUNNING・Episode が投稿済み/終端でない）。
              変わっていれば start せず outcome=not_needed（reason 付き）。再配送が終わった pipeline を再起動しない
            子 EpisodePipelineWorkflow を決定的 id で start（既存の二重起動防止 / INV-30）
+             agentic Episode（`pin_workflow_plan` が pin した計画がある）は、子を `AgenticEpisodeWorkflow`
+             （id `agentic-episode-{id}`、ABANDON）にする。**判定は apply Activity（I/O 側）**が行い、結果に
+             `pipeline_kind=agentic` と `AgenticEpisodeInput` 形の `pipeline_input` を載せる。workflow はその値で
+             分岐するだけで、`workflow.patched("agentic-resume-starts-agentic-episode-workflow")` が旧履歴の replay
+             を守る（旧い結果には `pipeline_kind` が無く legacy。コマンド列は不変 / INV-55）。閉じた実行（parked・完了・
+             失敗）の id は再利用できる（既定の ALLOW_DUPLICATE）。実行中なら already_running。再起動は同じ pin 済みの
+             計画を上から歩き直す（完了済みの agent stage は保存済みの結果を返し、LLM・予約を増やさない。upload gate は維持）
            follow-up Activity が結果を必ず command result.pipeline に追記する:
              outcome ∈ started / already_running / start_failed / not_needed（contracts の PipelineStartOutcome）
 ```
@@ -243,3 +250,15 @@ LLM（Codex）の費用は記録が無いので `unmeasured` として別に示�
 有料の見積りは、そのシーンの画像・動画を前回送ったときに adapter が予約台帳へ書いた `estimated_cost_usd`
 （fal adapter を介入のコードから import しない / INV-18）。材料が無ければ見積り不明で `budget_unverifiable`。
 **既存の日次経路に予算の強制は無い**（調査で確認。今回は新方式の適用時の検査だけを足す。全経路の強制は未実装として報告）。
+
+## agentic Episode の resume（ADR-0043 §Consequences の解消）
+
+介入 command の resume と `POST /episodes/{id}/resume`（ADR-0032）は同じ決定をする。Episode に pin 済みの agentic 計画が
+あれば `AgenticEpisodeWorkflow` を（再）起動し、無ければ従来の `EpisodePipelineWorkflow`。
+API 側は `infrastructure.agents.pinned_plan.read_pinned_agentic_template`（metadata の行が無ければ ArtifactStore に
+触らない）で判定し、`WorkflowStarter.start_agentic_workflow`（`ALLOW_DUPLICATE`）で起動する。最初の起動
+（`TemporalAgenticStarter.start`）は REJECT_DUPLICATE のまま（完了済みの Episode を再実行しない）。
+`PipelineKind` / `pipeline_kind` の定義は `contracts/agentic_pipeline.py` の1か所。AGENTS.md §8 の grep
+（`grep -rn "pipeline_kind\|PipelineKind\|AGENTIC_RESUME_PATCH_ID" apps/ workers/ domain/ infrastructure/ contracts/ docs/`）:
+変更前 0 件、変更後は宣言 `contracts/agentic_pipeline.py`（書き手・宣言）、読み手 `workers/intervention/workflows.py`、
+書き手 `workers/intervention/activities.py`。無関係 0 件。

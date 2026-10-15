@@ -54,6 +54,23 @@ EXISTING_HANDLER_STAGE: dict[str, PipelineStage] = {
 NON_PIPELINE_GATE_STAGE = PipelineStage.SCRIPT
 
 
+class PipelineKind(StrEnum):
+    """介入 command の resume が起動する本流の種類（ADR-0043 §Consequences の解消）。
+
+    決めるのは Activity / application 層（Episode に pin された agentic 計画があるか）。
+    workflow はこの値で分岐するだけで、自分では判定しない。無い（旧い履歴の結果）は ``LEGACY``。
+    """
+
+    LEGACY = "legacy"
+    AGENTIC = "agentic"
+
+
+#: Activity の結果（dict）で ``PipelineKind`` を運ぶキー。無ければ LEGACY として扱う
+PIPELINE_KIND_KEY = "pipeline_kind"
+#: workflow の分岐を守る ``workflow.patched`` の id（replay 互換 / INV-55）
+AGENTIC_RESUME_PATCH_ID = "agentic-resume-starts-agentic-episode-workflow"
+
+
 def agentic_episode_workflow_id(episode_id: str) -> str:
     return f"agentic-episode-{episode_id}"
 
@@ -83,6 +100,14 @@ class AgenticOutcome(StrEnum):
     COMPLETED = "completed"
     PARKED = "parked"
     STOPPED = "stopped"
+
+
+@dataclass
+class PinnedAgenticTemplate:
+    """pin 済みの agentic 計画の template（resume が入力を作る材料）。"""
+
+    template_id: str
+    template_version: str
 
 
 @dataclass
