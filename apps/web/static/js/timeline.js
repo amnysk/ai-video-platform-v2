@@ -1,6 +1,6 @@
 // 監査表示: episode_events / intervention_commands / decision_records / change_sets を
 // 1本の時系列にまとめる。DOM 無し。command の payload 全文は出さない（型・対象・理由・revision だけ）。
-import { COMMAND_TYPE_STAGE, EVENT_STAGE_REF_KEYS, stageOfDecisionType } from './stages.js';
+import { CHANGE_KIND_STAGE, COMMAND_TYPE_STAGE, EVENT_STAGE_REF_KEYS, stageOfDecisionType } from './stages.js';
 import { MISSING } from './format.js';
 
 /** actor_type -> フィルタ区分 */
@@ -115,7 +115,7 @@ export function buildAuditEntries(rm) {
     push({
       kind: 'change_set',
       at: cs.created_at ?? null,
-      stage: cs.kind === 'storyboard_patch' || String(cs.kind).includes('storyboard') ? 'storyboard' : null,
+      stage: Object.hasOwn(CHANGE_KIND_STAGE, cs.kind) ? CHANGE_KIND_STAGE[cs.kind] : null,
       actorType: cs.actor_type ?? null,
       actorGroup: groupOf(cs.actor_type),
       actorId: cs.actor_id ?? null,

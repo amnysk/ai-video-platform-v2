@@ -59,6 +59,8 @@ export const JOB_TYPE_STAGE = {
 };
 /** command.type -> stage（storyboard の変更案だけが対象を持つ。他は stage 無し） */
 export const COMMAND_TYPE_STAGE = { propose_change: 'storyboard', apply_change: 'storyboard' };
+/** change_sets.kind（contracts/intervention.py ChangeKind） -> stage */
+export const CHANGE_KIND_STAGE = { 'scene.override_visual': 'storyboard', 'script.edit_scenes': 'script' };
 /** episode_events.refs に stage がある場合のキー */
 export const EVENT_STAGE_REF_KEYS = ['stage', 'stage_id'];
 
