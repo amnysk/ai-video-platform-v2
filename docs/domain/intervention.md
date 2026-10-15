@@ -56,6 +56,15 @@ phase は既存の `episodes.status`（遷移表 [state-transitions.md](./state-
 - **HOLD_REQUESTED は「追加課金がなくなった」ではない。** 受付の時点で dispatch gate は新しい送信を拒否するが、
   既に dispatch 済みの provider job は完了・課金されうる。`HELD` の応答は、その時点で送信済み・成否不明の
   予約を列挙して返す（§5）。
+- **待機地点の実装（pipeline の control gate）**: `EpisodePipelineInput.control_gate=True` の実行だけが、
+  各工程の起動前に Activity `pipeline_control_gate`（`PipelineActivities.control_gate` →
+  `gate.evaluate_stage_gate`）を呼ぶ。呼び出しは `workflow.patched("jpmas-control-gate-v1")` の内側にあり、
+  既定（`False`。日次 Schedule・旧履歴）は patch の marker も Activity も履歴に足さない。
+  gate は `running` 以外なら起動せず、この工程の前が有効な待機地点で現行 manifest への approval が無ければ
+  `WAITING_REVIEW` にして `checkpoint.waiting` を**同じ commit** で記録する。起動しないとき pipeline は
+  失敗ではなく `parked` で終わり、再開は resume / checkpoint 解放の command が子 pipeline を start する。
+  待機中の再評価（Activity の retry・再実行）は状態が既に `WAITING_REVIEW` なので `checkpoint.waiting` を
+  重ねて書かない。
 - 待機期限で自動承認しない。期限の扱いは `policy_version` に記録した明示方針（`keep_waiting` だけを初期実装）。
 - Temporal の Workflow Pause は使わない（設計 §11、ADR-0041）。`HELD` / `WAITING_REVIEW` はアプリの状態。
 
@@ -108,6 +117,13 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
   現在値と違えば `CONFLICT`。差分は再取得させ、上書きしない。
 - `RECEIVED` を「修正完了」と表示しない。外部生成を伴う場合、command の `APPLIED` と完成動画の生成完了は別
   （ReviewPacket は両方を別欄で出す）。
+
+`InterventionCommandWorkflow` の返す `replayed` は **apply Activity が保存済み result を返したか**
+（再配送・復旧では `true`）。follow-up の追記は再適用ではないので、その値で上書きしない。
+再配送 Schedule（`avp-intervention-redelivery`、60 秒間隔・overlap SKIP）は
+`InterventionRedeliveryWorkflow` を start し、未配送・停滞した command ごとに
+`InterventionCommandWorkflow`（id `intervention-{command_id}`）を子として start する（実行中なら束ねる）。
+command worker は専用の task queue（`intervention`）で動く。
 
 ### クラッシュ・重複の境界
 | 落ちる地点 | DB に残るもの | 復旧 |

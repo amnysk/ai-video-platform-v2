@@ -32,12 +32,14 @@ from temporalio.exceptions import ApplicationError, ChildWorkflowError, Workflow
 from temporalio.workflow import ParentClosePolicy
 
 with workflow.unsafe.imports_passed_through():
+    from contracts.intervention import CONTROL_GATE_PATCH_ID
     from contracts.log_contract import EventName, Outcome
     from contracts.pipeline import (
         DAILY_EPISODE_WORKFLOW,
         EPISODE_PIPELINE_WORKFLOW,
         PIPELINE_CHECK_PAUSED,
         PIPELINE_CLAIM_DAILY_SLOT,
+        PIPELINE_CONTROL_GATE,
         PIPELINE_UPLOAD_GATE,
         STAGE_PARKING_STATUS,
         TOPIC_PLANNER_BUSY_WAIT_SECONDS,
@@ -47,6 +49,8 @@ with workflow.unsafe.imports_passed_through():
         ClaimDailySlotRequest,
         ClaimDailySlotResult,
         ClaimOutcome,
+        ControlGateRequest,
+        ControlGateResult,
         DailyEpisodeInput,
         DailyEpisodeResult,
         DailyOutcome,
@@ -339,6 +343,16 @@ class EpisodePipelineWorkflow:
                     attributes={"reason": "resume", "start_stage": request.start_stage},
                 )
                 continue
+            # ADR-0041 §5: 新方式の実行だけ。既定（False）は patched を呼ばず、日次・旧履歴の
+            # 履歴は変わらない（marker も Activity も足さない）
+            if request.control_gate and workflow.patched(CONTROL_GATE_PATCH_ID):
+                control: ControlGateResult = await _state_activity(
+                    PIPELINE_CONTROL_GATE,
+                    ControlGateRequest(episode_id=ep, stage=stage.value),
+                    ControlGateResult,
+                )
+                if not control.proceed:
+                    return self._park(result, stage, control)
             if stage is PipelineStage.UPLOAD:
                 gate: UploadGateResult = await _state_activity(
                     PIPELINE_UPLOAD_GATE, UploadGateRequest(episode_id=ep), UploadGateResult
@@ -400,6 +414,33 @@ class EpisodePipelineWorkflow:
             outcome=Outcome.SUCCEEDED.value,
             attributes={"completed_stages": list(result.completed_stages)},
         )
+        return result
+
+    @staticmethod
+    def _park(
+        result: EpisodePipelineResult, stage: PipelineStage, control: ControlGateResult
+    ) -> EpisodePipelineResult:
+        """停止中・待機中で工程を起動しない。失敗ではない（再開は介入 command が start する）。"""
+        _event(
+            logging.INFO,
+            EventName.STAGE_SKIPPED,
+            "pipeline parked before %s: %s",
+            stage.value,
+            control.reason,
+            stage="pipeline",
+            episode_id=result.episode_id,
+            outcome=Outcome.SKIPPED.value,
+            attributes={
+                "reason": "control_gate",
+                "parked_stage": stage.value,
+                "control_state": control.control_state,
+                "waiting_point": control.waiting_point,
+                "manifest_id": control.manifest_id,
+            },
+        )
+        result.outcome = PipelineOutcome.PARKED
+        result.stopped_stage = stage.value
+        result.reason = control.reason
         return result
 
     @staticmethod
