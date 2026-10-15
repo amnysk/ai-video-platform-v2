@@ -112,7 +112,7 @@ _PROPOSE = AgentTool.INTERVENTION_PROPOSE.value
 
 STRATEGY = RoleSpec(
     role=AgentRole.STRATEGY,
-    implemented_by=("workers.agents.handlers (strategy_agent_v1)",),
+    implemented_by=("domain.agents.handlers (strategy_agent_v1)",),
     inputs=("user_brief", "analytics_snapshots", "lesson", "episodes (既存動画一覧)"),
     outputs=("strategy_brief", "decision_records", "agent_runs"),
     allowed_tools=(_LLM, _READ, _ANALYTICS),
@@ -123,7 +123,7 @@ STRATEGY = RoleSpec(
 
 CREATIVE_DIRECTOR = RoleSpec(
     role=AgentRole.CREATIVE_DIRECTOR,
-    implemented_by=("workers.agents.handlers (creative_director_v1)",),
+    implemented_by=("domain.agents.handlers (creative_director_v1)",),
     inputs=("strategy_brief", "decision_records(choose_topic)", "user_constraints"),
     outputs=("creative_brief", "decision_records", "agent_runs"),
     allowed_tools=(_LLM, _READ, _PROPOSE),
@@ -134,7 +134,7 @@ CREATIVE_DIRECTOR = RoleSpec(
 
 QUALITY_REVIEWER = RoleSpec(
     role=AgentRole.QUALITY_REVIEWER,
-    implemented_by=("workers.agents.handlers (quality_reviewer_v1)",),
+    implemented_by=("domain.agents.handlers (quality_reviewer_v1)",),
     inputs=(
         "adopted manifest",
         "script",
@@ -152,7 +152,7 @@ QUALITY_REVIEWER = RoleSpec(
 
 LEARNING = RoleSpec(
     role=AgentRole.LEARNING,
-    implemented_by=("workers.agents.handlers (learning_agent_v1)",),
+    implemented_by=("domain.agents.handlers (learning_agent_v1)",),
     inputs=("upload_receipt", "analytics_snapshots", "adopted manifest", "strategy_brief"),
     outputs=("lesson", "decision_records", "agent_runs"),
     allowed_tools=(_LLM, _READ, _ANALYTICS),
