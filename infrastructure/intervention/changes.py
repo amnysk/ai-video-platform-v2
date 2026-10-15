@@ -42,6 +42,7 @@ from contracts.intervention import (
     ControlState,
     DecisionCandidate,
     DecisionRecordPayload,
+    ForbiddenDetail,
     InterventionEvent,
     ProposeChangePayload,
     RationaleKind,
@@ -606,7 +607,7 @@ async def _check_policy(ctx: ApplyContext, impact: Impact, payload: ApplyChangeP
         )
     if not human and (cost is None or cost > 0):
         # AI は 0 円・制約に触れない変更だけを適用できる
-        raise _reject(RejectReason.FORBIDDEN, detail="paid changes need a human")
+        raise _reject(RejectReason.FORBIDDEN, detail=ForbiddenDetail.AI_PAID_APPLY)
     if (
         payload.max_estimated_cost_usd is not None
         and cost is not None

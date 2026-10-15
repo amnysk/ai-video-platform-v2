@@ -155,6 +155,17 @@ class RejectReason(StrEnum):
     INTERNAL_ERROR = "internal_error"
 
 
+class ForbiddenDetail(StrEnum):
+    """``reject_reason=forbidden`` の原因を区別する機械可読な ``result.detail``。"""
+
+    SCOPE_MISMATCH = "scope_mismatch"
+    HUMAN_ONLY = "human_only"
+    #: AI の apply_change は 0 円・制約に触れない変更だけ（有料の変更は人）
+    AI_PAID_APPLY = "ai_paid_apply"
+    #: AI の resume / release_checkpoint は、有料の生成（画像・動画）を伴わない実行だけ
+    AI_RESUME_REQUIRES_PAID_GENERATION = "ai_resume_requires_paid_generation"
+
+
 class AnnotationKind(StrEnum):
     COMMENT = "comment"
     REVIEW_FINDING = "review_finding"

@@ -40,6 +40,7 @@ from contracts.intervention import (
     CommandType,
     CommentPayload,
     ControlState,
+    ForbiddenDetail,
     InterventionEvent,
     InterventionMode,
     PipelineStartOutcome,
@@ -56,6 +57,7 @@ from contracts.pipeline import STAGE_REVIEW_POINT, PipelineStage
 from contracts.states import ArtifactType, EpisodeStatus, ProviderCall, ReservationStatus
 from domain.errors import TransientError
 from domain.pipeline.resume_plan import determine_target_stage
+from infrastructure.db.models import ArtifactMetadataRow
 from infrastructure.db.repositories import EpisodeRepository, ProviderReservationRepository
 from infrastructure.intervention.budget import BudgetPolicy
 from infrastructure.intervention.gate import REVIEWING_MODES
@@ -461,12 +463,12 @@ async def _apply_in_session(
 async def _decide(ctx: ApplyContext) -> Decision:
     command = ctx.command
     if command.granted_scope is not REQUIRED_SCOPE[command.type]:
-        return Decision.rejected(RejectReason.FORBIDDEN, detail="granted scope does not match")
+        return Decision.rejected(RejectReason.FORBIDDEN, detail=ForbiddenDetail.SCOPE_MISMATCH)
     if (
         REQUIRED_SCOPE[command.type] in HUMAN_ONLY_SCOPES
         and command.actor.type is not ActorType.HUMAN
     ):
-        return Decision.rejected(RejectReason.FORBIDDEN, detail="human principals only")
+        return Decision.rejected(RejectReason.FORBIDDEN, detail=ForbiddenDetail.HUMAN_ONLY)
     expected = command.expected_control_revision
     if (
         command.type not in _CHECKED_AT_RECEIVE
@@ -829,6 +831,43 @@ async def missing_output_stage(session: AsyncSession, episode_id: str) -> Pipeli
     return None
 
 
+async def paid_generation_required(ctx: ApplyContext, start: PipelineStage | None) -> bool:
+    """``start`` から走る実行が、有料の生成（シーンの画像・動画）を伴うか。
+
+    ``missing_output_stage`` と同じ「現行に何が無いか」で決める。storyboard から（または無い）なら
+    無い）なら全シーンの画像・動画を作る。production からなら、現行の storyboard の
+    シーンのうち画像か動画が現行に無いものがあるとき。render 以降は有料の生成を伴わない。
+    読めない（storyboard を確かめられない）ときは有料とみなす（安全側）。
+    """
+    if start is None or start in (PipelineStage.RENDER, PipelineStage.UPLOAD):
+        return False
+    if start is not PipelineStage.PRODUCTION:
+        return True
+    members = await current_members(ctx.session, ctx.episode_id)
+    storyboard_id = members.get(manifest_slot(ArtifactType.STORYBOARD))
+    if storyboard_id is None or ctx.artifact_store is None:
+        return True
+    row = await ctx.session.get(ArtifactMetadataRow, uuid.UUID(storyboard_id))
+    if row is None:
+        return True
+    try:
+        scenes = (await ctx.artifact_store.get_json(row.object_key))["scenes"]
+        scene_ids = [str(scene["scene_id"]) for scene in scenes]
+    except (KeyError, TypeError, ValueError):
+        return True
+    return any(
+        manifest_slot(artifact_type, scene_id) not in members
+        for scene_id in scene_ids
+        for artifact_type in (ArtifactType.SCENE_IMAGE, ArtifactType.SCENE_VIDEO)
+    )
+
+
+def _ai_paid_refusal(ctx: ApplyContext) -> Decision:
+    return Decision.rejected(
+        RejectReason.FORBIDDEN, detail=ForbiddenDetail.AI_RESUME_REQUIRES_PAID_GENERATION
+    )
+
+
 async def _resume(ctx: ApplyContext) -> Decision:
     """``held`` / ``hold_requested`` / ``running`` → ``running``。必要な工程から pipeline を start。
 
@@ -872,6 +911,9 @@ async def _resume(ctx: ApplyContext) -> Decision:
         if start is None:
             reason = refusal or "nothing to run"
 
+    if ctx.actor.type is not ActorType.HUMAN and await paid_generation_required(ctx, start):
+        # AI は apply_change でも有料の変更を適用できない。resume で同じ課金を始めさせない
+        return _ai_paid_refusal(ctx)
     await ctx.store.update_control(
         ctx.episode_id,
         ControlChange(
@@ -933,6 +975,10 @@ async def _release_checkpoint(ctx: ApplyContext) -> Decision:
             expected=payload.manifest_id,
             current=control.active_manifest_id,
         )
+    if ctx.actor.type is not ActorType.HUMAN and await paid_generation_required(
+        ctx, _stage_for_point(payload.point)
+    ):
+        return _ai_paid_refusal(ctx)
     approval = await ctx.store.insert_annotation(
         episode_id=ctx.episode_id,
         kind=AnnotationKind.APPROVAL,

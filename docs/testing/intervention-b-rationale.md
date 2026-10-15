@@ -153,3 +153,12 @@ time-skipping 環境と SQLite、工程の子 workflow は同名の fake、Activ
   Episode は始めない（`episode_closed`）。再配送が終わった pipeline を再起動する経路を塞ぐ。
 - 配送済みの記録は start 成功後の別 Activity にした（列挙しただけで dispatched にすると、start に失敗した
   command が二度と拾われない）。既存の再配送テストが配送済みの記録を引き続き検査する。
+
+## AI の resume は有料の生成を始めない（`tests/unit/test_intervention_ai_resume.py`）
+`apply_change` は AI に有料の変更を禁じるが、変更は出力を降ろすだけで、作り直す（課金する）のは次の resume。
+scope `resume` を持つ AI が同じ課金を始められると、禁止が迂回される。
+- 音声・manifest だけが欠けた AI の resume は適用される（無料の再開を妨げない）。
+- 画像が欠けた AI の resume は `forbidden` + `detail` で拒否され、制御状態も pipeline も変わらない。
+- 同じ状況の人の resume は適用される（人は影響を受けない）。
+- storyboard が無い（storyboard からやり直す）AI の resume も拒否される（全シーンの画像を作るため）。
+- `test_intervention_changes.py` は AI の有料 apply が `ai_paid_apply` を返すことも検査する（原因の区別）。

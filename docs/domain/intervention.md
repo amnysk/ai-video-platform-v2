@@ -219,6 +219,15 @@ API の command・read は `INTERVENTION_PRINCIPALS`（設定。token の sha256
 記録する。**予算上限・Schedule・公開設定を変える command 型は存在しない**（受け付けると 422 `unsupported_command`）。
 `set_mode` は `actor_type=human` の principal にだけ付与できる（設定読み込み時に検査）。
 
+**AI（`ai_assistant` / `agent`）は有料の生成を始められない。** `apply_change` は 0 円・制約に触れない変更だけ
+（有料は `forbidden` / `detail=ai_paid_apply`）。`resume` と `release_checkpoint` は降ろされた出力を作り直す
+ので、これから走る実行が有料の生成（現行の storyboard のシーンに画像か動画が無い、または storyboard から
+やり直す）を伴うなら AI には REJECTED `forbidden` / `detail=ai_resume_requires_paid_generation` とし、
+制御状態は変えず pipeline も始めない。判定は `resume` が開始工程を決めるのと同じ「現行に何が無いか」
+（`paid_generation_required`）。音声・manifest・render だけの再開は AI にも可。人は影響を受けない。
+`forbidden` の原因は `result.detail`（`contracts.intervention.ForbiddenDetail`: `scope_mismatch` /
+`human_only` / `ai_paid_apply` / `ai_resume_requires_paid_generation`）で区別する。
+
 ## 9. 予算
 上限は `EPISODE_BUDGET_JPY`（既定 1000）・`MONTHLY_BUDGET_JPY`（既定 30000）・換算 `BUDGET_USD_JPY_RATE`（既定なし）。
 支出は予約台帳（`provider_reservations.estimated_cost_usd`、reserved + spent）と `research_calls` から数え、

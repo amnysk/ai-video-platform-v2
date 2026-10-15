@@ -17,6 +17,7 @@ from contracts.intervention import (
     ChangeSetStatus,
     CommandStatus,
     CommandType,
+    ForbiddenDetail,
     InterventionEvent,
     RejectReason,
     RevisionLinkKind,
@@ -304,6 +305,7 @@ async def test_ai_may_apply_only_zero_cost_changes_that_respect_user_constraints
         session_factory, artifact_store, episode_id, paid.result["change_set_id"], AI, RATE
     )
     assert refused_paid.reject_reason is RejectReason.FORBIDDEN
+    assert refused_paid.result["detail"] == ForbiddenDetail.AI_PAID_APPLY.value
 
     clean = _script_edit(script.id)
     clean["change"]["edits"] = [{"segment_id": "s1", "narration": "縄文土器に焦げ跡がある。"}]
