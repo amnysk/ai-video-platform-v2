@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -21,7 +22,14 @@ from apps.api.auth import parse_principals
 from apps.api.dependencies import get_settings
 from apps.api.intervention_backend import InterventionModules, StoreBackedInterventionBackend
 from apps.api.routers import intervention
-from contracts.application import ProposeStoryboardChangeRequest, StoryboardProposalResult
+from apps.assistant.client import InterventionClient
+from apps.assistant.tools import execute_tool
+from contracts.application import (
+    ProposeStoryboardChangeRequest,
+    StoryboardProposalResult,
+    storyboard_edit_command_id,
+)
+from contracts.assistant_tools import tool_command_id
 from contracts.intervention import (
     ActorType,
     ChangeKind,
@@ -41,6 +49,7 @@ from tests.support.intervention import (
     seed_script_and_storyboard,
     store_artifact,
 )
+from tests.unit.test_assistant_e2e import BridgeTransport
 from tests.unit.test_intervention_api import (
     AI_TOKEN,
     READER_TOKEN,
@@ -298,3 +307,73 @@ async def test_a_stale_base_revision_ends_as_a_conflict_without_a_change_set(sl:
     rows = await sl.commands()
     assert {c.status for c in rows} == {CommandStatus.CONFLICT}
     assert await sl.change_sets() == []
+
+
+# --------------------------------------------------------------------------- アシスタント tool
+
+
+def tool_args(sl: Slice, **top: Any) -> dict[str, Any]:
+    proposal = sl.body()["proposal"]
+    return {**proposal, **top}
+
+
+async def run_tool(sl: Slice, args: dict[str, Any], call: str, token: str = AI_TOKEN) -> dict:
+    client = InterventionClient(
+        "http://test",
+        token,
+        session_id="sess-sb",
+        transport=BridgeTransport(sl.app, asyncio.get_running_loop()),
+    )
+    return await asyncio.to_thread(
+        execute_tool, client, "propose_storyboard_patch", args, tool_call_id=call
+    )
+
+
+async def test_the_assistant_tool_gives_the_same_result_shape_and_change_sets(sl: Slice) -> None:
+    result = await run_tool(sl, tool_args(sl), "call-1")
+    assert result["status"] == "submitted" and result["replayed"] is False
+    http = await sl.post(sl.body())
+    assert shape(result["proposal"]) == shape(http.json())
+    expected_request_id = tool_command_id("sess-sb", "call-1")
+    assert result["proposal"]["request_command_id"] == expected_request_id
+    assert result["proposal"]["commands"][0]["command_id"] == storyboard_edit_command_id(
+        expected_request_id, 0
+    )
+    await sl.apply_commands([c["command_id"] for c in result["proposal"]["commands"]])
+    sets = await sl.change_sets()
+    assert {s.kind for s in sets} == {ChangeKind.SCENE_OVERRIDE_VISUAL} and len(sets) == 2
+    assert {s.actor.type for s in sets} == {ActorType.AI_ASSISTANT}
+
+
+async def test_a_retried_tool_call_returns_the_existing_commands(sl: Slice) -> None:
+    first = await run_tool(sl, tool_args(sl), "call-7")
+    again = await run_tool(sl, tool_args(sl), "call-7")
+    assert (first["replayed"], again["replayed"]) == (False, True)
+    assert [c["created"] for c in again["proposal"]["commands"]] == [False, False]
+    assert len(await sl.commands()) == 2
+    clash = await run_tool(
+        sl,
+        tool_args(sl, edits=[{"scene_id": "sb1", "visual_description": "different"}]),
+        "call-7",
+    )
+    assert clash["status"] == "command_id_reused" and clash["error"] == "command_id_reused"
+    assert len(await sl.commands()) == 2
+
+
+async def test_the_tool_reports_the_same_refusal_codes_as_the_other_entries(sl: Slice) -> None:
+    edits = [{"scene_id": "sb1", "visual_description": "x", "camera_movement": "push in"}]
+    unsupported = await run_tool(sl, tool_args(sl, edits=edits), "c1")
+    assert unsupported["status"] == "error" and unsupported["error"] == "unsupported_change"
+    assert unsupported["fields"] == ["camera_movement"]
+    scope = await run_tool(sl, tool_args(sl), "c2", READER_TOKEN)
+    assert scope["status"] == "missing_scope" and scope["required_scope"] == "propose"
+    sl.settings["on"] = False
+    off = await run_tool(sl, tool_args(sl), "c3")
+    assert off["status"] == "error" and off["error"] == "feature_disabled"
+    assert await sl.commands() == []
+
+
+async def test_the_tool_passes_expected_control_revision_through(sl: Slice) -> None:
+    result = await run_tool(sl, tool_args(sl, expected_control_revision=0), "c9")
+    assert result["status"] == "submitted"
+    assert {c.expected_control_revision for c in await sl.commands()} == {0}

@@ -52,6 +52,7 @@ EXPECTED_TOOLS = {
     "get_command_status",
     "apply_change",
     "resume_episode",
+    "propose_storyboard_patch",  # ADR-0043 §1 で追加（16個目）
 }
 #: 対話 AI に許す command 型。予算・Schedule・公開設定・モード・取消・制約・checkpoint は含めない
 ALLOWED_COMMAND_TYPES = {
@@ -271,6 +272,7 @@ def test_expected_revision_fields_exist_on_the_envelope_and_only_on_state_changi
         "request_hold",
         "resume_episode",
         "apply_change",
+        "propose_storyboard_patch",
     }
 
 

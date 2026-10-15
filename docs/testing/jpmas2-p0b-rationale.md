@@ -48,3 +48,16 @@
 - `test_unknown_episode_and_episode_mismatch`: 存在しない Episode は 404、path と提案の Episode 不一致は 422。
 - `test_a_stale_base_revision_ends_as_a_conflict_without_a_change_set`: 古い storyboard revision への提案は
   既存どおり適用で CONFLICT になり ChangeSet を作らない（新しい競合規則を作らない）。
+
+## 5. アシスタント tool `propose_storyboard_patch`（同ファイル後半、tests/contract/test_assistant_tools_contract.py）
+
+- `test_the_assistant_tool_gives_the_same_result_shape_and_change_sets`: tool が HTTP と同じ結果型を返し、
+  request の command_id が `tool_command_id`（INV-49）、edit の command_id が `storyboard_edit_command_id`。
+- `test_a_retried_tool_call_returns_the_existing_commands`: 同じ tool 呼び出しの再試行は既存 command、同じ
+  tool_call_id で別内容は `command_id_reused`。
+- `test_the_tool_reports_the_same_refusal_codes_as_the_other_entries`: unsupported_change / missing_scope /
+  feature_disabled が他の入口と同じ code で、何も保存しない。
+- `test_the_tool_passes_expected_control_revision_through`: 楽観的な競合検出の版が command まで届く。
+- 既存 `test_the_catalogue_has_exactly_the_agreed_tools` / `test_expected_revision_fields_exist_on_the_envelope_...`
+  の期待集合に `propose_storyboard_patch` を追加した（件数 15 -> 16）。ADR-0043 §1 が承認した新 tool で、
+  「合意した tool の集合」を検査するテストなので集合の更新が仕様変更の反映になる（検査自体は緩めていない）。
