@@ -30,3 +30,21 @@
   `unsupported_change`（`storyboard.patch_scenes` 未実装）で、port に何も渡さない。
 - `test_duplicate_scenes_mismatched_episode_and_missing_scope`: scene 重複・Episode 不一致は invalid_payload、
   propose scope が無ければ missing_scope。いずれも port に届かない。
+
+## 4. 縦断スライス（tests/unit/test_application_slice.py、INV-50）
+
+本物の FastAPI・`receive_command`・`apply_command`・SQLite。fake は workflow の start だけ。
+
+- `test_http_and_internal_port_give_the_same_result_shape_and_change_sets`: HTTP と内部 port（+ use case）が同じ
+  結果型を返し、適用すると両方が `scene.override_visual` の ChangeSet になる（主体の種別だけが違う）。
+- `test_resending_the_same_request_returns_the_existing_commands`: 再送は既存 command（created=false）、
+  HTTP は 200、command も ChangeSet も増えない（INV-42）。
+- `test_the_same_request_id_with_other_content_is_command_id_reused`: 同じ request id で別内容は両入口で
+  `command_id_reused`（HTTP 409）。
+- `test_unsupported_fields_give_unsupported_change_from_every_entry`: framing 等は両入口で同じ code。何も保存しない。
+- `test_missing_propose_scope_is_missing_scope`: propose scope が無い主体は両入口で `missing_scope`。
+- `test_the_internal_port_refuses_a_human_caller`: 内部 port は人・system として command を作らない。
+- `test_the_flag_off_is_404_feature_disabled_before_anything_else`: 既定オフ。認証・本文検査より先に 404。
+- `test_unknown_episode_and_episode_mismatch`: 存在しない Episode は 404、path と提案の Episode 不一致は 422。
+- `test_a_stale_base_revision_ends_as_a_conflict_without_a_change_set`: 古い storyboard revision への提案は
+  既存どおり適用で CONFLICT になり ChangeSet を作らない（新しい競合規則を作らない）。
