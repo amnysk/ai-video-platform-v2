@@ -55,6 +55,7 @@ ADR-0040。語彙・型・上限・設定キーの**唯一の宣言元**は
 | `correlation_id` | keyword | 判断・介入の行が持つ `correlation_id`（API・command・agent run を跨いで結ぶ）。それ以外の処理では発行しない（resume は決定的な `workflow_id` で結合できる） |
 | `trace_id` / `span_id` | keyword | 将来の Traces 用（W3C 形式）。**実在する値がある時だけ**。v1 では発行しない |
 | `http_method` / `http_route` | keyword | API のメソッドと route template（`/episodes/{episode_id}/resume`。実 path・query ではない） |
+| `tool_name` | keyword | 対話 AI アシスタントが呼んだ tool の名前（`X-Assistant-Tool`。`[a-z0-9_]{1,64}` の時だけ。ADR-0042）。agent の tool 名は `provider` に写す（別物） |
 | `provider` | keyword | 予約台帳の呼び出しは `ProviderCall` の値（`fal_image` 等、台帳の `provider` 列と同じ）。台帳外の呼び出しは `ProviderLabel`（`fal_storage`、`youtube_analytics`、`youtube_oauth`、`piper`、`openmontage`、`research_search`、`research_fetch`）|
 | `provider_operation` | keyword | `ProviderOperation`（submit/status/result/download/input_upload/storage_token/…） |
 | `provider_endpoint` | keyword | provider のモデル・endpoint 名（`fal-ai/bytedance/seedream/...`）。URL ではない |
@@ -253,6 +254,7 @@ Collector が行から作る `@timestamp`（Docker の時刻）・`message`（�
 | `log.record` | event_name を持たない記録（既存・第三者 logger） |
 | `service.started` / `service.stopped` / `service.start_failed` | worker_entry・API の lifespan |
 | `api.request.completed` | API の1リクエスト（health は DEBUG） |
+| `intervention.api.request` | `/v1/intervention` の1要求（ADR-0042）。`http_route`（template）・`actor_type`・`attributes.actor_id`・`http_status`・`duration_ms`・`correlation_id`（`X-Correlation-ID`）・`tool_name`・`episode_id`。token・Authorization・query・本文は出さない |
 | `schedule.slot.acquired` / `schedule.slot.skipped` | 日次枠の取得（commit 後）・スキップと理由 |
 | `stage.started` / `stage.succeeded` / `stage.failed` / `stage.blocked` / `stage.skipped` | 各工程 workflow（replay 安全） |
 | `activity.started`(DEBUG) / `activity.succeeded` / `activity.failed` | interceptor。`duration_ms`・失敗分類。cancel は `outcome=cancelled` |
