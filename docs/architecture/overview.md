@@ -51,9 +51,10 @@ workerを直接叩かない（INV-2）。
 | レイヤ | ディレクトリ | 責務 | 依存してよい先 |
 |---|---|---|---|
 | Presentation | `apps/web` | 操作UI | HTTP API のみ |
-| Application | `apps/api` | command受付・検証・workflow起動 | domain, contracts, infrastructure |
+| Application | `apps/api` | command受付・検証・workflow起動 | application, domain, contracts, infrastructure |
+| Use case | `application/` | 入口（HTTP・CLI・アシスタント・内部Agent）が共通に通る操作（ADR-0043）。infrastructure は port（Protocol）越しにだけ使う | domain, contracts |
 | Orchestration | Temporal workflow定義（`workers/*/workflows.py`） | 工程順序・retry方針 | domain, contracts |
-| Execution | `workers/*/activities.py` | 1工程の実行 | domain, contracts, infrastructure |
+| Execution | `workers/*/activities.py` | 1工程の実行 | application, domain, contracts, infrastructure |
 | Domain | `domain/` | Episode/Job/Artifactのモデルと遷移規則 | contracts のみ |
 | Contracts | `contracts/` | Artifactスキーマ・payload定義 | なし |
 | Infrastructure | `infrastructure/` | DB / MinIO / Temporal client / provider adapter / 計装 | domain, contracts（ADR-0007） |

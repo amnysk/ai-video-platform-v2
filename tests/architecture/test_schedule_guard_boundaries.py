@@ -11,7 +11,7 @@ import ast
 import pathlib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-LAYERS = ("apps", "workers", "domain", "infrastructure", "contracts", "scripts")
+LAYERS = ("apps", "workers", "domain", "application", "infrastructure", "contracts", "scripts")
 ALLOWED = {
     pathlib.Path("infrastructure/temporal/schedules.py"),  # TemporalScheduleControl の実装
     pathlib.Path("infrastructure/temporal/schedule_guard.py"),  # 印を確認して解除する唯一の場所

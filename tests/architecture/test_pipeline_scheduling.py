@@ -12,7 +12,7 @@ import ast
 import pathlib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-LAYERS = ("apps", "workers", "domain", "infrastructure", "contracts", "scripts")
+LAYERS = ("apps", "workers", "domain", "application", "infrastructure", "contracts", "scripts")
 SCHEDULE_OWNER = pathlib.Path("infrastructure/temporal/schedules.py")
 SCHEDULE_NAMES = {"create_schedule", "ScheduleActionStartWorkflow", "get_schedule_handle"}
 CRON_LIBRARIES = {"apscheduler", "schedule", "crontab", "croniter", "aiocron", "rocketry"}

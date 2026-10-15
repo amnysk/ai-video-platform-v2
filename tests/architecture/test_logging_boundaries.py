@@ -12,7 +12,7 @@ import ast
 import pathlib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-APP_LAYERS = ("apps", "workers", "infrastructure", "domain", "contracts")
+APP_LAYERS = ("apps", "workers", "infrastructure", "domain", "application", "contracts")
 LOG_METHODS = {"debug", "info", "warning", "warn", "error", "exception", "critical", "log"}
 
 

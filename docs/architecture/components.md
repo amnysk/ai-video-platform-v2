@@ -23,7 +23,7 @@
   DBへのcommand永続化、Temporal workflow の start / signal / query
 - **持たない**: 動画生成・レンダリング・アップロード・外部AI呼び出しの同期実行（INV-16）、
   工程の順序判断
-- **呼んでよい**: `domain`, `contracts`, `infrastructure`
+- **呼んでよい**: `application`, `domain`, `contracts`, `infrastructure`
 - ハンドラの本体は「検証 → domainのcommandを作る → 永続化 → workflowへ渡す → 202を返す」
 - Research（`routers/research.py`、ADR-0037 §8.5）: `POST /research/requests`（Gateway で受け付け、`queued` の
   ときだけ `ResearchWorkflow` を起動）、`POST /research/requests/{id}/resume`、`GET /research/requests/{id}`

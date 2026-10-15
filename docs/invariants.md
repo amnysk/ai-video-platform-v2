@@ -36,14 +36,16 @@ Workflow定義（Temporal）のみが持つ。Worker内に「成功したら次�
 **機械検査**: 未検査
 
 ### INV-6 レイヤ依存は一方向
-`apps/ → domain/, contracts/, infrastructure/`、
-`workers/ → domain/, contracts/, infrastructure/`、
-`infrastructure/ → domain/, contracts/`（ADR-0007 で追加）、
+`apps/ → application/, domain/, contracts/, infrastructure/`、
+`workers/ → application/, domain/, contracts/, infrastructure/`、
+`application/ → domain/, contracts/`（ADR-0043 で追加。`infrastructure/` は import しない）、
+`infrastructure/ → domain/, contracts/`（ADR-0007 で追加。`application/` は import しない）、
 `domain/ → contracts/` のみ。
 `domain/` は `apps/` `workers/` `infrastructure/` をimportせず、
 DB・HTTP・Temporal・ファイルI/O にも触れない。
 **機械検査**: `tests/architecture/test_layering.py::test_layer_dependencies_are_one_directional`
 / `::test_domain_has_no_io_dependencies`
+/ `::test_application_layer_is_shipped_and_isolated`
 
 ## B. 状態と永続化
 
