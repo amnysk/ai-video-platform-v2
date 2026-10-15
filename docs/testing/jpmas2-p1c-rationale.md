@@ -82,3 +82,16 @@ time-skipping 環境で、子 workflow と `run_agent_stage` は fake、control 
 - `test_the_agentic_activities_are_exactly_the_contract_names`: Activity 名の宣言元（contracts）と実装の一致。
 - `test_main_builds_the_agentic_activities_only_behind_the_flag`: `main` が flag の内側でだけ agentic を
   構成する（既定の起動は MinIO にも触れない）。
+
+## 5. 台本の brief 決定（tests/unit/test_script_creative_brief.py）
+
+- `test_an_episode_with_a_creative_brief_and_no_plan_gets_its_subject_matter`: TopicPlan が無く現行の
+  creative_brief がある Episode は、その題材の列（plan と同じ並び）で台本を作る。TopicPlan id は None。
+- `test_the_creative_brief_reaches_the_generator_prompt`: 題材が実際に generator の prompt に載り、locale は
+  strategy profile から決まる（英語）。
+- `test_an_episode_without_a_creative_brief_keeps_the_legacy_brief_and_hash`（INV-55）: creative_brief の
+  無い Episode の brief が `legacy_brief` と同一で、prompt の入力 hash も同じ（日次・手動は変わらない）。
+- `test_an_episode_with_a_plan_keeps_the_plan_brief_even_with_a_creative_brief`: plan のある Episode は
+  creative_brief があっても plan_brief のまま（日次が agentic に影響されない）。
+- `test_an_unsupported_creative_brief_version_is_refused_not_read`（INV-54）: 未知の schema 版を読み替えず
+  `PromptContractError`（needs_input、再試行しない）で拒否する。

@@ -695,6 +695,8 @@ contracts を import しない）。downgrade は新語彙の行があれば何�
 / `tests/unit/test_agentic_workflow.py::test_legacy_histories_still_replay_with_the_agentic_workflows_registered`
 / `tests/unit/test_agentic_workflow.py::test_a_history_produced_by_the_legacy_workflow_replays`
 / `tests/unit/test_agentic_workflow.py::test_the_legacy_workflow_module_does_not_mention_the_agentic_workflow`
+/ `tests/unit/test_script_creative_brief.py::test_an_episode_without_a_creative_brief_keeps_the_legacy_brief_and_hash`
+/ `tests/unit/test_script_creative_brief.py::test_an_episode_with_a_plan_keeps_the_plan_brief_even_with_a_creative_brief`
 
 ### INV-56 Agent は Tool Gateway が許した tool だけを上限内で呼び、LLM 費用の欠測を 0 にせず、予約・予算 gate を通ってから呼ぶ
 handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_tools` に無い tool・供給されていない tool は
