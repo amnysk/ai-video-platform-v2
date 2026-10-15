@@ -30,17 +30,22 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ValidationError
+from starlette.requests import Request
 
 from apps.api.auth import ApiPrincipal, PrincipalConfigError, PrincipalRegistry, load_principals
 from apps.api.dependencies import get_session_factory, get_settings
 from apps.api.intervention_backend import (
     CommandIdReusedError,
+    CommandRejectedError,
     EpisodeNotFoundError,
     InterventionBackend,
+    ModulesUnavailableError,
     ProposalFileError,
     Received,
     RevisionNotFoundError,
+    RevisionTypeMismatchError,
     StoreBackedInterventionBackend,
     load_real_modules,
 )
@@ -52,6 +57,7 @@ from contracts.intervention import (
     CommandEnvelope,
     CommandStatus,
     CommandType,
+    RejectReason,
     Scope,
 )
 from infrastructure.config import Settings
@@ -60,7 +66,68 @@ from infrastructure.intervention.store import ChangeSet, Command
 logger = logging.getLogger("avp.api.intervention")
 
 PREFIX = "/v1/intervention"
-router = APIRouter(prefix=PREFIX, tags=["intervention"])
+
+
+#: B の受付拒否（``RejectReason``）→ HTTP status。**競合（期待版・状態）は 409**、権限は 403、
+#: それ以外（形・制約・予算）は 422。未知の code は 422 ``command_rejected``。
+_REJECT_STATUS: dict[str, int] = {
+    RejectReason.STALE_CONTROL_REVISION.value: status.HTTP_409_CONFLICT,
+    RejectReason.STALE_TARGET_REVISION.value: status.HTTP_409_CONFLICT,
+    RejectReason.INVALID_STATE.value: status.HTTP_409_CONFLICT,
+    RejectReason.FORBIDDEN.value: status.HTTP_403_FORBIDDEN,
+    RejectReason.UNSUPPORTED_COMMAND.value: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    RejectReason.UNSUPPORTED_CHANGE.value: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    RejectReason.INVALID_PAYLOAD.value: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    RejectReason.USER_CONSTRAINT_VIOLATION.value: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    RejectReason.BUDGET_EXCEEDED.value: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    RejectReason.BUDGET_UNVERIFIABLE.value: status.HTTP_422_UNPROCESSABLE_CONTENT,
+}
+
+
+def _backend_error(exc: Exception) -> HTTPException | None:
+    """backend の例外を HTTP のエラーに写す。例外の文言・入力値は返さない（ログにも出さない）。"""
+    if isinstance(exc, ModulesUnavailableError):
+        return _error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "intervention_unavailable",
+            "the intervention backend is temporarily unavailable; retry later",
+        )
+    if isinstance(exc, EpisodeNotFoundError):
+        return _error(status.HTTP_404_NOT_FOUND, "episode_not_found", "episode not found")
+    if isinstance(exc, RevisionTypeMismatchError):
+        return _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "revision_type_mismatch",
+            "the two revisions cannot be compared",
+        )
+    if isinstance(exc, CommandRejectedError):
+        if exc.code in _REJECT_STATUS:
+            return _error(_REJECT_STATUS[exc.code], exc.code, "the command was rejected")
+        return _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "command_rejected", "the command was rejected"
+        )
+    return None
+
+
+class _InterventionRoute(APIRoute):
+    """全 route 共通: backend の失敗を機械可読な HTTP エラーにする（未対応の例外は 500 のまま）。"""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        original = super().get_route_handler()
+
+        async def handler(request: Request) -> Response:
+            try:
+                return await original(request)
+            except Exception as exc:
+                mapped = _backend_error(exc)
+                if mapped is None:
+                    raise
+                raise mapped from None
+
+        return handler
+
+
+router = APIRouter(prefix=PREFIX, tags=["intervention"], route_class=_InterventionRoute)
 
 #: command の状態の表示。**APPLIED 以外は「未適用」と書く**（RECEIVED を完了と表示しない）
 STATUS_TEXT: dict[CommandStatus, str] = {

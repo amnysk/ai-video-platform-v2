@@ -56,6 +56,15 @@ phase は既存の `episodes.status`（遷移表 [state-transitions.md](./state-
 - **HOLD_REQUESTED は「追加課金がなくなった」ではない。** 受付の時点で dispatch gate は新しい送信を拒否するが、
   既に dispatch 済みの provider job は完了・課金されうる。`HELD` の応答は、その時点で送信済み・成否不明の
   予約を列挙して返す（§5）。
+- **待機地点の実装（pipeline の control gate）**: `EpisodePipelineInput.control_gate=True` の実行だけが、
+  各工程の起動前に Activity `pipeline_control_gate`（`PipelineActivities.control_gate` →
+  `gate.evaluate_stage_gate`）を呼ぶ。呼び出しは `workflow.patched("jpmas-control-gate-v1")` の内側にあり、
+  既定（`False`。日次 Schedule・旧履歴）は patch の marker も Activity も履歴に足さない。
+  gate は `running` 以外なら起動せず、この工程の前が有効な待機地点で現行 manifest への approval が無ければ
+  `WAITING_REVIEW` にして `checkpoint.waiting` を**同じ commit** で記録する。起動しないとき pipeline は
+  失敗ではなく `parked` で終わり、再開は resume / checkpoint 解放の command が子 pipeline を start する。
+  待機中の再評価（Activity の retry・再実行）は状態が既に `WAITING_REVIEW` なので `checkpoint.waiting` を
+  重ねて書かない。
 - 待機期限で自動承認しない。期限の扱いは `policy_version` に記録した明示方針（`keep_waiting` だけを初期実装）。
 - Temporal の Workflow Pause は使わない（設計 §11、ADR-0041）。`HELD` / `WAITING_REVIEW` はアプリの状態。
 
@@ -109,6 +118,13 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
 - `RECEIVED` を「修正完了」と表示しない。外部生成を伴う場合、command の `APPLIED` と完成動画の生成完了は別
   （ReviewPacket は両方を別欄で出す）。
 
+`InterventionCommandWorkflow` の返す `replayed` は **apply Activity が保存済み result を返したか**
+（再配送・復旧では `true`）。follow-up の追記は再適用ではないので、その値で上書きしない。
+再配送 Schedule（`avp-intervention-redelivery`、60 秒間隔・overlap SKIP）は
+`InterventionRedeliveryWorkflow` を start し、未配送・停滞した command ごとに
+`InterventionCommandWorkflow`（id `intervention-{command_id}`）を子として start する（実行中なら束ねる）。
+command worker は専用の task queue（`intervention`）で動く。
+
 ### クラッシュ・重複の境界
 | 落ちる地点 | DB に残るもの | 復旧 |
 |---|---|---|
@@ -157,6 +173,12 @@ Workflow:  apply Activity（1 transaction・episode_controls 行 lock で Episod
 | シーンの並べ替え・尺の変更 | 初期は**適用不可**（REJECTED `unsupported_change`）。storyboard の再生成が全シーンの画像を作り直す（`storyboard_sha256` が全画像の入力指紋に入る）ため、見積りと共に人が別手順で判断する | — | — | — |
 
 適用の規則（担当 B の実装）:
+- `script.edit_scenes` の `edits[].visual`（映像の記述）は**適用不可**（REJECTED `unsupported_change`。
+  `scene.override_visual` を案内する）。画像・動画は storyboard から作られ、台本の `visual` を直しても
+  どの画像も変わらない（黙って「直ったように見える」command を作らない）。
+- 承認（approval）が有効かの判定は `gate.approval_matches`（manifest 一致・撤回されていない・指定があれば
+  待機地点一致）の1か所。read model の `approval_is_current` と変更の再レビュー対象の算出は、それに委ねる
+  （AGENTS.md §8）。
 - 「stale にする」は**現行から降ろす**こと（`ArtifactMetadataRepository.retire_current`。行は消さない）。採用 manifest は
   常に現行と一致し、resume は現行に出力の無い最初の工程から pipeline を走らせる。
 - 適用は工程が走っていない間だけ（Episode が `in_progress` なら `invalid_state`）。投稿済み・終端の Episode は不可。

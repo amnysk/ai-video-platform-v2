@@ -20,11 +20,15 @@ from contracts.operations import OperationalSwitch
 from contracts.pipeline import (
     PIPELINE_CHECK_PAUSED,
     PIPELINE_CLAIM_DAILY_SLOT,
+    PIPELINE_CONTROL_GATE,
     PIPELINE_UPLOAD_GATE,
     CheckPausedRequest,
     CheckPausedResult,
     ClaimDailySlotRequest,
     ClaimDailySlotResult,
+    ControlGateRequest,
+    ControlGateResult,
+    PipelineStage,
     UploadGateRequest,
     UploadGateResult,
 )
@@ -37,6 +41,7 @@ from infrastructure.db.repositories import (
     OperationalSwitchRepository,
     ProviderReservationRepository,
 )
+from infrastructure.intervention.gate import evaluate_stage_gate
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
 from infrastructure.temporal.schedules import TemporalScheduleControl
@@ -71,6 +76,7 @@ class PipelineActivities:
             self.check_paused,
             self.claim_daily_slot,
             self.upload_gate,
+            self.control_gate,
         ]
         if self._temporal_client is not None:
             # watchdog は Temporal を読む（Schedule / visibility）ので client がある worker だけ持つ
@@ -155,6 +161,20 @@ class PipelineActivities:
             episode_id=claim.episode_id,
             topic_plan_id=episode.topic_plan_id if episode is not None else None,
         )
+
+    @activity.defn(name=PIPELINE_CONTROL_GATE)
+    async def control_gate(self, request: ControlGateRequest) -> ControlGateResult:
+        """新方式の待機地点・停止（ADR-0041 §5）。``control_gate=True`` の実行だけが呼ぶ。
+
+        待機に入るとき（``waiting_review`` と ``checkpoint.waiting``）は同じ commit。
+        拒否は例外にしない。
+        """
+        async with self._session_factory() as session:
+            result = await evaluate_stage_gate(
+                session, request.episode_id, PipelineStage(request.stage)
+            )
+            await session.commit()
+        return result
 
     @activity.defn(name=PIPELINE_UPLOAD_GATE)
     async def upload_gate(self, request: UploadGateRequest) -> UploadGateResult:

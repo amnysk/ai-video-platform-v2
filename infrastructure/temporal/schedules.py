@@ -18,6 +18,7 @@ from temporalio.client import (
     Schedule,
     ScheduleActionStartWorkflow,
     ScheduleAlreadyRunningError,
+    ScheduleIntervalSpec,
     ScheduleOverlapPolicy,
     SchedulePolicy,
     ScheduleSpec,
@@ -27,6 +28,10 @@ from temporalio.client import (
 )
 from temporalio.service import RPCError, RPCStatusCode
 
+from contracts.intervention import (
+    INTERVENTION_REDELIVERY_SCHEDULE_ID,
+    INTERVENTION_REDELIVERY_WORKFLOW,
+)
 from contracts.pipeline import (
     DAILY_EPISODE_WORKFLOW,
     DAILY_WORKFLOW_ID_PREFIX,
@@ -264,6 +269,63 @@ async def ensure_watchdog_schedule(
 ) -> str:
     """watchdog の Schedule を create-or-update する。``"created"`` / ``"updated"``。"""
     schedule = build_watchdog_schedule(cron=cron, timezone=timezone, request=request)
+    try:
+        await client.create_schedule(schedule_id, schedule)
+        return "created"
+    except ScheduleAlreadyRunningError:
+        pass
+
+    def _replace(current: ScheduleUpdateInput) -> ScheduleUpdate:
+        _keep_pause_state(schedule, current, requested_paused=False)
+        return ScheduleUpdate(schedule=schedule)
+
+    await client.get_schedule_handle(schedule_id).update(_replace)
+    return "updated"
+
+
+# ------------------------------------------------------- 介入 command の再配送（ADR-0041 §3）
+
+#: 再配送の間隔（秒）。未配送・停滞の判定（``REDELIVERY_STALE_AFTER_SECONDS``）より短くする
+INTERVENTION_REDELIVERY_INTERVAL_SECONDS = 60
+INTERVENTION_REDELIVERY_WORKFLOW_ID_PREFIX = "intervention-redelivery"
+
+
+def build_intervention_redelivery_schedule(*, task_queue: str | None = None) -> Schedule:
+    """未配送・停滞した介入 command の workflow を再 start する（outbox の dispatcher）。"""
+    workflow_name, default_queue = INTERVENTION_REDELIVERY_WORKFLOW
+    return Schedule(
+        action=ScheduleActionStartWorkflow(
+            workflow_name,
+            {},
+            id=INTERVENTION_REDELIVERY_WORKFLOW_ID_PREFIX,
+            task_queue=task_queue or default_queue,
+            execution_timeout=timedelta(minutes=10),
+        ),
+        spec=ScheduleSpec(
+            intervals=[
+                ScheduleIntervalSpec(
+                    every=timedelta(seconds=INTERVENTION_REDELIVERY_INTERVAL_SECONDS)
+                )
+            ]
+        ),
+        policy=SchedulePolicy(
+            overlap=ScheduleOverlapPolicy.SKIP, catchup_window=timedelta(minutes=5)
+        ),
+        state=ScheduleState(note="avp: intervention command redelivery (ADR-0041)", paused=False),
+    )
+
+
+async def ensure_intervention_redelivery_schedule(
+    client: Client,
+    *,
+    schedule_id: str = INTERVENTION_REDELIVERY_SCHEDULE_ID,
+    task_queue: str | None = None,
+) -> str:
+    """再配送の Schedule を create-or-update する。``"created"`` / ``"updated"``。
+
+    更新は既存の pause（note を含む）を外さない（ADR-0027）。
+    """
+    schedule = build_intervention_redelivery_schedule(task_queue=task_queue)
     try:
         await client.create_schedule(schedule_id, schedule)
         return "created"

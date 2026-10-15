@@ -31,6 +31,7 @@ from contracts.intervention import (
 from contracts.pipeline import DEFAULT_SCHEDULE_TIMEZONE
 from contracts.research import ResearchCallStatus
 from contracts.states import ReservationStatus
+from infrastructure.config import Settings
 from infrastructure.db.models import ProviderReservationRow, ResearchCallRow, ResearchRequestRow
 
 #: LLM の費用の表示（記録が無い。0 として扱わない）
@@ -93,6 +94,16 @@ class BudgetView:
             "monthly_remaining_jpy": _s(self.monthly_remaining_jpy),
             "llm_cost": self.llm_cost,
         }
+
+
+def budget_policy_from_settings(settings: Settings) -> BudgetPolicy:
+    """所有者の設定（EPISODE_BUDGET_JPY / MONTHLY_BUDGET_JPY / BUDGET_USD_JPY_RATE）。"""
+    return BudgetPolicy(
+        episode_budget_jpy=settings.episode_budget_jpy,
+        monthly_budget_jpy=settings.monthly_budget_jpy,
+        usd_jpy_rate=settings.budget_usd_jpy_rate,
+        timezone=settings.schedule_timezone,
+    )
 
 
 def _month_start(now: datetime, timezone: str) -> datetime:

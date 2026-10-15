@@ -51,13 +51,21 @@ printf %s "$(cat ~/.avp-intervention-token)" | sha256sum | cut -d' ' -f1   # こ
 | status | `detail.error` | 意味 |
 |---|---|---|
 | 503 | `intervention_disabled` / `intervention_misconfigured` | 未設定 / 設定を読み込めない |
+| 503 | `intervention_unavailable` | 担当 A / B のモジュールを組めない（import の失敗等。次の要求で再試行する）。store だけで読める route（`decisions`・`commands`・`change-sets`）は動き続ける |
 | 401 | `unauthenticated` | token が無い・違う（`WWW-Authenticate: Bearer`） |
 | 403 | `missing_scope`（`required_scope` 付き） | principal に必要な scope が無い |
 | 404 | `episode_not_found` / `command_not_found` / `change_set_not_found` / `revision_not_found` | 対象が無い・その Episode のものでない |
-| 409 | `command_id_reused` | 同じ `command_id` が**違う内容**で既に使われた |
+| 403 | `forbidden` | 受付が拒否した（principal がその command を出せない） |
+| 409 | `command_id_reused` | 同じ `command_id` が**違う内容**、または**違う主体**で既に使われた（誰のものかは返さない） |
+| 409 | `stale_control_revision` / `stale_target_revision` / `invalid_state` | 受付の拒否のうち競合（期待版が古い・今の状態では出せない）。読み直して出し直す。行は作られない |
 | 422 | `unsupported_command` | command 型が語彙に無い（予算・Schedule・公開設定を含む全ての未知の型） |
 | 422 | `invalid_payload`（`errors` 付き。入力値は返さない） | envelope・payload の形が違う／余分な項目 |
 | 422 | `episode_mismatch` | 変更案ファイルが別の Episode のもの |
+| 422 | `revision_type_mismatch` | 違う型の revision 同士は比較できない |
+| 422 | `unsupported_change` / `user_constraint_violation` / `budget_exceeded` / `budget_unverifiable` / `command_rejected` | 受付の拒否（`RejectReason`）。`command_rejected` は未知の理由。行は作られない |
+
+受付の拒否（B の `CommandReceiveError`）の `detail.error` は `RejectReason` の値そのもの。`message` は固定文で、入力値・
+例外文・token は返さない。変更案の取り込み（`change-proposals`）で1件でも拒否されれば全件を巻き戻す。
 
 ## 3. 読み取り（scope `read`）
 
@@ -174,18 +182,25 @@ scripts/intervene.py hash-token                                # $AVP_INTERVENTI
 - 終了コード: `0` 成功（2xx）、`1` API がエラーを返した（応答の `detail` を表示）、`2` 使い方・token 未設定、`3` 応答なし。
 - `set_mode` の CLI はない（人専用。必要なら所有者が curl で送る）。予算・Schedule・公開設定の CLI もない（INV-47）。
 
-## 7. 担当 A / B への依存（統合前の状態）
+## 7. 担当 A / B との接続の状態
 
-`apps/api/intervention_backend.py::load_real_modules` が唯一の接続点（遅延 import）。この branch の時点では
-A / B のモジュールが無いので、次は **fake でしか動かしていない**（統合後に親が確認する）:
+`apps/api/intervention_backend.py::load_real_modules` が唯一の接続点。A / B のモジュールは**直接の lazy import**
+（初回使用時）で、組めなければ `ModulesUnavailableError`（`503 intervention_unavailable`、型名だけをログに残す）。
+API 全体は落ちない。
 
-- B `infrastructure.intervention.commands.receive_command(session, episode_id, envelope, principal)` の戻り値は
-  `command`（`store.Command`）と `created` を持つ（または `(command, created)` の tuple）。
-  `Principal(actor=..., scopes=...)` のキーワード引数。同じ id・違う内容で `store.DuplicateCommandError` を送出。
-- B の `InterventionCommandWorkflow` の入力は `{"command_id": ...}`、id は `intervention_command_workflow_id`、
-  queue は `INTERVENTION_TASK_QUEUE`。start に成功したら API が `mark_command_dispatched` する。
-- A `EpisodeReadModel(session_factory, artifact_store)` の `load(episode_id)` と `compare_revisions(a, b)`、
-  `build_packet(view)` / `render_markdown(packet)`（同期・非同期どちらでもよい）。
+- B `infrastructure.intervention.commands`: `receive_command(session, episode_id, envelope, principal)`
+  （`ReceiveResult.command` / `.created`）、`Principal(actor=..., scopes=...)`、拒否は `CommandReceiveError`（`code`）。
+  `code == "not_found"` は `404 episode_not_found`、他は上表。同じ id・違う内容で `store.DuplicateCommandError`、
+  同じ id・同じ内容でも**保存済みの主体が違えば** `409 command_id_reused`。
+- B の `InterventionCommandWorkflow` の入力は `{"command_id": ...}`、id は `intervention_command_workflow_id`、queue は
+  `INTERVENTION_TASK_QUEUE`。この worktree には worker 側の実装がまだ無い（契約定数のみ）ので、start は統合後に確認する。
+- start は **best-effort**: commit 後に 5 秒（`START_TIMEOUT_SECONDS`）で打ち切り、失敗・タイムアウトでも `202 received`
+  を返す（未配送のまま残り、再配送 Schedule が拾う。[intervention.md](../domain/intervention.md) §4）。
+  start に成功したら API が `mark_command_dispatched` する。Temporal client は 1 つを使い回すが、event loop が変わる・
+  start が失敗したときは捨ててつなぎ直す。
+- A `EpisodeReadModel(session_factory, artifact_store)` の `load(episode_id)`（Episode が無ければ `None` → 404）と
+  `compare_revisions(a, b)`（`ValueError` → `422 revision_type_mismatch`）、`build_packet(view)` / `render_markdown(packet)`
+  （同期・非同期どちらでもよい）。
 - A `ChangeProposalFile` は `proposals`（`ProposeChangePayload` 互換）と任意の `episode_id` を持つ。
 
 ## 8. 判断の説明と Episode 横断の検索（ADR-0042、scope `read`）
