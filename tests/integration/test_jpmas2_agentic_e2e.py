@@ -636,7 +636,8 @@ async def test_a_hold_then_resume_restarts_the_agentic_workflow_without_double_w
     """介入 command の resume が `AgenticEpisodeWorkflow` を再起動する（ADR-0043 の負債の解消）。
 
     停止中に最初の起動が parked で閉じ、resume が同じ id で再起動して全工程を通る。
-    もう一度 hold -> resume しても LLM・予約・成果物・投稿は増えない（upload gate が止める）。
+    完了後にもう一度 hold -> resume しても再開する工程が無いので起動せず、
+    LLM・予約・投稿は増えない。
     理由: docs/testing/jpmas2-fixa-rationale.md
     """
     episode_id = await e2e.draft()
@@ -669,10 +670,12 @@ async def test_a_hold_then_resume_restarts_the_agentic_workflow_without_double_w
 
     await submit(e2e.sf, e2e.store, episode_id, envelope(CommandType.REQUEST_HOLD))
     second = await resume()
-    assert second["pipeline"]["outcome"] == "started"
-    again = await handle.result()  # 同じ id の新しい実行（run id なしの handle は最新を指す）
-    assert again["outcome"] in (AgenticOutcome.STOPPED.value, AgenticOutcome.COMPLETED.value)
-    assert await e2e.ledger(episode_id) == before
+    # 完了・投稿済みの Episode は再開する工程が無い（domain の resume plan が
+    # pipeline_start を返さない。旧経路と同じ）。workflow は起動されない
+    assert second["status"] == "applied" and second["pipeline"] is None, second
+    after = await e2e.ledger(episode_id)
+    assert after.pop("commands") == before.pop("commands") + 2  # 送った hold と resume の2件だけ
+    assert after == before  # LLM・予約・agent run・成果物は増えない
     ran_uploads = [s for (_e, s) in e2e.stages.ran].count("UploadWorkflow")  # type: ignore[union-attr]
     assert ran_uploads == uploads == 1  # 投稿は二重に走らない
 

@@ -46,5 +46,6 @@ tests/unit/test_agentic_restart_idempotency.py / test_agentic_workflow.py（再�
   同じ plan_hash で全工程を歩き、agent stage の要求に Learning の scope が付かない（冪等キーが不変）。
 
 tests/integration/test_jpmas2_agentic_e2e.py::test_a_hold_then_resume_restarts_the_agentic_workflow_without_double_work:
-実 PostgreSQL / Temporal / MinIO で、介入 command の resume が再起動し、再度の hold -> resume でも LLM・予約・
-成果物・投稿が増えない。
+実 PostgreSQL / Temporal / MinIO で、介入 command の resume が再起動し、完了・投稿後の再度の hold -> resume は
+再開する工程が無いので workflow を起動せず（`pipeline` が None。旧経路と同じ domain の resume plan）、LLM・予約・
+投稿が増えない。初版は2度目も `started` を期待していたが、実スタックで完了済み Episode は起動されないことを確認して直した。
