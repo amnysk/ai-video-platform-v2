@@ -41,3 +41,44 @@
 | `jpmas2_agentic_workflows` | 0 件（P1 が読む） | `infrastructure/config.py` 1 件 | 0 |
 | `jpmas2_enabled_agents` | `enabled_agent_roles` 1 件 | `infrastructure/config.py`（定義・検証）2 件 | 0 |
 | `jpmas2_agent_llm` | 0 件（P1 の worker が読む） | `infrastructure/config.py` 1 件 | `fake_llm.py` の説明 1 件 |
+
+## 4. 所有者の CLI `scripts/agentic.py`（P1-C）
+
+DB（`DATABASE_URL`）・MinIO・Temporal に**直接**つなぐ所有者用の道具。HTTP は P2。環境変数は他の運用 script と同じ
+（`infrastructure/config.py`）。公開設定・予算上限・Schedule を渡す引数は無い（投稿は private のみ、AGENTS.md §9）。
+
+| コマンド | 内容 |
+|---|---|
+| `plan --template shorts_agentic [--template-version 1]` | コンパイル結果の確認。DB・Temporal に触れない。拒否は `{"error": {"code": ...}}` で exit 1 |
+| `plan --episode EP` | Episode に pin 済みの計画（無ければ `no_pinned_plan`） |
+| `draft --theme T [--template ...] [--tone ...] [--audience ...] [--duration N] [--must-keep X ...] [--notes ...] [--command-id ID]` | Episode・UserBrief・`episode_controls(auto_intervenable)` を作る。**生成は始めない**。`--command-id` を省くと uuid4 を stderr に出す。同じ id・同じ内容の再送は同じ Episode |
+| `start EP` | `AgenticEpisodeWorkflow` を起動（`JPMAS2_AGENTIC_WORKFLOWS=true` 必須。無効なら `feature_disabled`） |
+| `learn EP` | `AgenticLearningWorkflow` を起動（同上。測定が揃うまで何度でも起動できる） |
+
+終了コード: 0 = ok、1 = 拒否（stdout の JSON に `code`）、2 = 使い方・入力。
+
+### 有効にする手順（隔離スタックで）
+
+1. 本番（compose project `avp2`）の worker には**設定しない**。`JPMAS2_AGENTIC_WORKFLOWS` と `JPMAS2_ENABLED_AGENTS` を
+   env に足した pipeline worker だけが `AgenticEpisodeWorkflow` / `AgenticLearningWorkflow` と pin・採用 Activity を登録する
+   （`workers/pipeline/run_worker.py::registrations`。既定の登録は変わらない）。agent worker（queue `agents`）は別に起動する。
+2. 隔離試験は `deploy/logging/test/run-e2e.sh`（`AVP_APPTEST_PROJECT=avp2-oslog-c<suffix>`）だけを使う。LLM は
+   `JPMAS2_AGENT_LLM=fake`（外部へ出ない）。有料 API・YouTube を呼ばない。
+3. `scripts/agentic.py draft ...` -> `plan --episode EP`（pin 前は `no_pinned_plan`）-> `start EP` -> workflow の結果で
+   `completed_stages` / `stopped_stage` / `reason` を見る。hold・待機は `parked`、agent の blocked・失敗は `stopped`
+   （理由つき）。
+4. 公開後の測定が揃ったら `learn EP`。private のままなら `awaiting_public_metrics`（Lesson を作らない）。
+
+### Workflow の結果
+
+`AgenticEpisodeResult{outcome: completed|parked|stopped, plan_hash, completed_stages, stopped_stage, reason, qa_repair_cycles}`。
+`qa_repair_cycles` は QA が出した提案 command の数（自動適用はしない）。止まる理由の例: `plan not pinned: ...`
+（`template_not_runnable` 等）、`agent stage blocked: budget_exceeded`、`agent stage failed: ApplicationError(agent_spec_drift)`、
+`no candidate adopted: no_strategy_brief`、`upload skipped: ...`。
+
+### 参照の棚卸し（AGENTS.md §8、2026-10-15）
+
+`grep -rniE "jpmas2_agentic_workflows" apps/ workers/ domain/ infrastructure/ contracts/ application/ scripts/`:
+読み手は `workers/pipeline/run_worker.py`（登録）と `scripts/agentic.py`（`Deps.agentic_enabled`、`start` / `learn`）の
+2 件、書き手（定義）は `infrastructure/config.py` の 1 件。
+

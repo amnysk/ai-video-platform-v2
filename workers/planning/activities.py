@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
 
+from contracts.agentic import CreativeBrief
+from contracts.artifact_registry import UnsupportedArtifactSchemaError, parse_artifact
 from contracts.artifacts import (
     SCRIPT_ARTIFACT_SCHEMA_VERSION,
     ScriptArtifact,
@@ -38,7 +40,7 @@ from domain.errors import (
     classify_failure,
 )
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
-from domain.script.brief import ScriptBrief, legacy_brief, plan_brief
+from domain.script.brief import ScriptBrief, creative_brief, legacy_brief, plan_brief
 from domain.script.identity import idempotency_key, script_input_hash
 from domain.script.ports import GenerationRequest, GenerationResult, StoryGenerator
 from infrastructure.db.repositories import (
@@ -215,7 +217,9 @@ class ScriptActivities:
             episode = await EpisodeRepository(session).get(request.episode_id)
             if episode is None:
                 raise UnreconciledReservationError(f"episode not found: {request.episode_id}")
-            brief = await self._brief(session, episode.topic, episode.topic_plan_id)
+            brief = await self._brief(
+                session, request.episode_id, episode.topic, episode.topic_plan_id
+            )
         topic = brief.topic
         template = script_prompt_template(brief.locale.locale)
 
@@ -274,12 +278,27 @@ class ScriptActivities:
 
         return payload
 
-    @staticmethod
     async def _brief(
-        session: AsyncSession, topic: str | None, topic_plan_id: str | None
+        self, session: AsyncSession, episode_id: str, topic: str | None, topic_plan_id: str | None
     ) -> ScriptBrief:
-        """plan があれば plan の profile と題材の列、無ければ legacy（ADR-0026）。"""
+        """plan があれば plan の profile と題材の列、無ければ legacy（ADR-0026）。
+
+        plan が無くても現行の ``creative_brief`` Artifact があれば（agentic の Episode、
+        ADR-0043 §6）その題材の列。plan のある Episode と、creative_brief の無い Episode は
+        従来のまま。
+        """
         if topic_plan_id is None:
+            creative = await self._current_creative_brief(session, episode_id)
+            if creative is not None:
+                return creative_brief(
+                    strategy_profile_id=creative.strategy_profile_id,
+                    content_profile_id=creative.content_profile_id,
+                    topic=creative.topic,
+                    subject=creative.subject,
+                    angle=creative.angle,
+                    era=creative.era,
+                    hook=creative.hook,
+                )
             return legacy_brief(topic or "（トピック未指定）")
         plan = await TopicPlanRepository(session).get(topic_plan_id)
         if plan is None:
@@ -295,6 +314,25 @@ class ScriptActivities:
             era=plan.era,
             hook=plan.hook,
         )
+
+    async def _current_creative_brief(
+        self, session: AsyncSession, episode_id: str
+    ) -> CreativeBrief | None:
+        meta = await ArtifactMetadataRepository(session).find_current_by_type(
+            episode_id, ArtifactType.CREATIVE_BRIEF
+        )
+        if meta is None:
+            return None
+        # 未知の schema 版は読み替えず拒否する（INV-54）。needs_input（再試行しない）
+        try:
+            brief = parse_artifact(
+                ArtifactType.CREATIVE_BRIEF, await self._store.get_json(meta.object_key)
+            )
+        except UnsupportedArtifactSchemaError as exc:
+            raise PromptContractError(str(exc)) from exc
+        if not isinstance(brief, CreativeBrief):
+            raise PromptContractError("current creative_brief is not a CreativeBrief")
+        return brief
 
     async def _generate_round(
         self, *, request: GenerateScriptRequest, brief: ScriptBrief, input_hash: str

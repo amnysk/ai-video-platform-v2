@@ -115,3 +115,42 @@ prompt 本文は短いのでコード内に持つ（domain は file を読まな
 
 入力 document の形は呼び出し側（P1-B の入力組み立て）が合わせる。LLM が返してもよい項目だけを model に写し、
 それ以外（subject, status など）は無視する。
+
+## AgenticEpisodeWorkflow と計画の固定（ADR-0043 §6、P1-C）
+
+`workers/pipeline/agentic_workflow.py`。名前・queue・Activity 名・入出力は `contracts/agentic_pipeline.py`。
+`EpisodePipelineWorkflow` は書き換えない（replay 互換）。flag `JPMAS2_AGENTIC_WORKFLOWS` が有効な pipeline worker
+だけが登録する（`workers/pipeline/run_worker.py::registrations`）。
+
+1. `pin_workflow_plan`（pipeline worker）: Episode に現行の `workflow_plan` があればそのまま返す（Template・Registry が
+   変わっていても。INV-51）。無ければ `compile_agentic_template` でコンパイルし、Artifact と判断記録
+   （`decision_type=pin_workflow_plan`、`decision.recorded`）を同じ commit に書く。`daily_legacy`・`runnable=False`・未知は
+   非再試行の `ApplicationError`（`type` = `OperationErrorCode` の値）。結果に stage ごとの `retry_max_attempts`
+   （pin した spec から引いた値）を載せ、workflow は Registry を読まない。
+2. 計画の stage を順に: control gate（`PIPELINE_CONTROL_GATE`。agent stage・producer は待機地点を持たない先頭工程
+   `NON_PIPELINE_GATE_STAGE` で問うので停止中かどうかだけが効く）→ 停止中・待機中なら `parked`。
+3. agent stage は `run_agent_stage`（queue `agents`、timeout は計画、retry 回数は pin した spec、`agent_spec_drift` は非再試行）。
+   `blocked` / `rejected_output` / Activity の失敗は理由を残して `stopped`。黙って飛ばさない。
+4. `existing_producer_adopt` は `adopt_strategy_candidate`（規則 `RationaleKind.RULE`）。現行 StrategyBrief の推奨候補を
+   採用し、`decision_records(choose_topic, actor=agent:producer)` と Episode の topic を書く。TopicPlan は作らない。
+5. `existing_script/storyboard/production/render/private_upload` は既存と同じ子 workflow・id・queue・入力
+   （`_stage_request`）・`STAGE_PARKING_STATUS`。private_upload の前に upload gate。
+6. `quality` は計画に1度しか無く1度だけ走る（後ろ向きの辺が無い）。QA の提案数は `qa_repair_cycles` に数えるだけで
+   自動適用しない。
+7. `AgenticLearningWorkflow`（`scripts/agentic.py learn` が明示起動）: `load_workflow_plan` で pin 済みの計画を読み、
+   post_publish の learning stage を `run_agent_stage` へ渡す。新しい計画は pin しない。`awaiting_public_metrics` は言い換えない。
+
+### 台本の brief（`workers/planning/activities.py::ScriptActivities._brief`）
+
+TopicPlan がある Episode は plan、**TopicPlan が無く現行の `creative_brief` がある Episode は CreativeBrief**
+（`domain/script/brief.py::creative_brief`。検証は `plan_brief` と同じ、`topic_plan_id` は None）、どちらも無ければ legacy。
+INV-55 のため `workers/planning` が読む agentic の語彙は `CreativeBrief` と `contracts.artifact_registry` だけ。
+
+### draft / start / learn
+
+`scripts/agentic.py draft | start | learn | plan`（所有者向け、DB と Temporal に直接つなぐ）。使い方は
+[docs/operations/agentic.md](../operations/agentic.md)、use case は [application.md](./application.md) §8。
+`draft` は生成を始めない。`start` は flag 必須で、`agentic-episode-{episode_id}` を REJECT_DUPLICATE で起動する
+（同じ Episode の再起動は `started=false`。**駐機（hold・待機）後の再開は介入 command が従来の
+`EpisodePipelineWorkflow` を start する**ので、agentic の stage（quality 等）は再開の経路では走らない。P2 で設計する）。
+

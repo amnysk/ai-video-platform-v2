@@ -61,3 +61,26 @@ ADR-0043 と設計の記述（読み手でも書き手でもない）のみ。�
 
 `docs/api/openapi.application.json` は application 層の path とそれが参照する schema だけ。
 `python scripts/export-openapi.py --application` で再生成する（UI の TypeScript client の生成元。生成は P2）。
+
+## 8. ユースケース `CreateEpisodeDraft` / `StartAgenticProduction`（ADR-0043 §6、P1-C）
+
+所有者の CLI（`scripts/agentic.py`）が呼ぶ。HTTP 化は P2。`application/use_cases/agentic_production.py`。
+
+- 型は `contracts/application.py`: `CreateEpisodeDraftRequest{command_id, brief: UserBrief}`・`EpisodeDraftResult`・
+  `StartAgenticProductionRequest{episode_id}`・`StartAgenticProductionResult{episode_id, workflow_id, started}`・
+  port の結果型 `DraftRecord`・`StartedWorkflow`。`episode_draft_id(command_id)` = `uuid5(EPISODE_DRAFT_NAMESPACE, command_id)`。
+- port（`application/ports.py`）: `EpisodeDraftPort`（`create_draft`・`get_brief`）、`AgenticWorkflowStarter`（`start`）。
+  実装は `infrastructure/agents/draft_port.py::DbEpisodeDraftPort` と
+  `infrastructure/temporal/agentic_starter.py::TemporalAgenticStarter`。
+- `CreateEpisodeDraft`: template を `compile_agentic_template` で確かめる（未知 `unknown_template`、`runnable=False` と
+  `daily_legacy` は `template_not_runnable`、`format_profile` 不一致は `invalid_payload`）。Episode（topic = theme、
+  `planned`、TopicPlan なし、日次の枠なし）・UserBrief Artifact・`episode_controls(mode=auto_intervenable)` を**1 commit**で作る。
+  Episode id が `command_id` から決まるので、同じ id・同じ内容は同じ Episode（`created=false`）、別内容は
+  `command_id_reused`。生成は始めない（workflow を起動する依存を持たない）。
+- `StartAgenticProduction`: `jpmas2_agentic_workflows` が無効なら `feature_disabled`（flag は構築時に渡す）。
+  UserBrief の無い Episode は `episode_not_found`。template を draft と同じ検査にかけてから
+  `AgenticEpisodeWorkflow`（id `agentic-episode-{episode_id}`、REJECT_DUPLICATE）を起動する。既にあれば `started=false`。
+
+grep の記録（AGENTS.md §8、変更前）: `grep -rn "agentic-episode\|agentic_episode_workflow_id" apps/ workers/ domain/
+infrastructure/ contracts/ docs/` は `contracts/agentic_pipeline.py` の宣言1件のみ（読み手・書き手は本変更で追加）。
+

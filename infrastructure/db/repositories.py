@@ -133,10 +133,15 @@ class EpisodeRepository:
         self._session = session
 
     async def create(
-        self, *, topic: str | None = None, topic_plan_id: uuid.UUID | str | None = None
+        self,
+        *,
+        topic: str | None = None,
+        topic_plan_id: uuid.UUID | str | None = None,
+        episode_id: uuid.UUID | str | None = None,
     ) -> Episode:
+        """``episode_id`` は呼び出し側が決定的に決めたいとき（冪等な draft 作成）だけ渡す。"""
         row = EpisodeRow(
-            id=uuid.uuid4(),
+            id=_as_uuid(episode_id) if episode_id is not None else uuid.uuid4(),
             status=EpisodeStatus.PLANNED.value,
             topic=topic,
             topic_plan_id=_as_uuid(topic_plan_id) if topic_plan_id is not None else None,
@@ -196,6 +201,17 @@ class EpisodeRepository:
                 f"(expected {current.value}, found {actual}) + {event.value}"
             )
         return _to_episode(fresh)
+
+    async def set_topic(self, episode_id: uuid.UUID | str, topic: str) -> bool:
+        """題材だけを書き換える（状態は変えない）。行が無ければ False。同じ値なら何もしない。"""
+        row = await self._row(episode_id)
+        if row is None:
+            return False
+        if row.topic != topic:
+            row.topic = topic
+            row.updated_at = _now()
+            await self._session.flush()
+        return True
 
     async def get_workflow_id(self, episode_id: uuid.UUID | str) -> str | None:
         """相関用に記録した workflow id（無ければ ``None``）。"""

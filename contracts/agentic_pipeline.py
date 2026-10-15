@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from contracts.pipeline import PIPELINE_TASK_QUEUE, PipelineOptions
+from contracts.pipeline import PIPELINE_TASK_QUEUE, PipelineOptions, PipelineStage
+from contracts.workflow_templates import ExistingStageHandler
 
 #: Agent stage の Activity を処理する worker の task queue（``workers/agents``）
 AGENTS_TASK_QUEUE = "agents"
@@ -24,10 +25,33 @@ AGENTIC_LEARNING_WORKFLOW: tuple[str, str] = ("AgenticLearningWorkflow", PIPELIN
 #: pipeline worker の Activity
 PIN_WORKFLOW_PLAN_ACTIVITY = "pin_workflow_plan"
 ADOPT_STRATEGY_CANDIDATE_ACTIVITY = "adopt_strategy_candidate"
+#: Episode に pin 済みの計画を読むだけ（pin しない）。Learning が使う
+LOAD_WORKFLOW_PLAN_ACTIVITY = "load_workflow_plan"
+#: pipeline worker の agentic Activity（flag 有効時だけ登録。既定の worker は持たない）
+AGENTIC_PIPELINE_ACTIVITY_NAMES: tuple[str, ...] = (
+    PIN_WORKFLOW_PLAN_ACTIVITY,
+    ADOPT_STRATEGY_CANDIDATE_ACTIVITY,
+    LOAD_WORKFLOW_PLAN_ACTIVITY,
+)
 #: agent worker の Activity
 RUN_AGENT_STAGE_ACTIVITY = "run_agent_stage"
 #: pin された spec の hash と Registry の hash が違う（INV-51）。再試行しない
 AGENT_SPEC_DRIFT_ERROR = "agent_spec_drift"
+
+
+#: 既存工程の handler -> 既存 pipeline の工程。子 workflow の名前・id・入力は ``_stage_request`` が
+#: この工程から作る（``EpisodePipelineWorkflow`` と同じ）。``existing_producer_adopt`` は含めない
+EXISTING_HANDLER_STAGE: dict[str, PipelineStage] = {
+    ExistingStageHandler.SCRIPT.value: PipelineStage.SCRIPT,
+    ExistingStageHandler.STORYBOARD.value: PipelineStage.STORYBOARD,
+    ExistingStageHandler.PRODUCTION.value: PipelineStage.PRODUCTION,
+    ExistingStageHandler.RENDER.value: PipelineStage.RENDER,
+    ExistingStageHandler.PRIVATE_UPLOAD.value: PipelineStage.UPLOAD,
+}
+
+#: agent stage・producer 採用の前後で control gate（停止・待機）を問うときの工程。待機地点
+#: （``STAGE_REVIEW_POINT``）を持たない先頭の工程なので、停止中かどうかだけが効く
+NON_PIPELINE_GATE_STAGE = PipelineStage.SCRIPT
 
 
 def agentic_episode_workflow_id(episode_id: str) -> str:
@@ -77,6 +101,14 @@ class PinWorkflowPlanResult:
     plan: dict[str, Any]
     #: 既に pin されていた計画を返した
     existing: bool = False
+    #: agent stage の ``stage_id`` -> pin した spec の ``retry_max_attempts``。計画には持たない値を
+    #: Activity が Registry から引いて履歴に残す（workflow は Registry を読まない / INV-51）
+    retry_max_attempts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class LoadWorkflowPlanRequest:
+    episode_id: str
 
 
 @dataclass

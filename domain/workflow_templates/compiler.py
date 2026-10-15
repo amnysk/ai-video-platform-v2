@@ -13,6 +13,7 @@ from contracts.agents import (
     parse_agent_ref,
     resolve_agent_spec,
 )
+from contracts.application import OperationErrorCode
 from contracts.intervention import AgentRole
 from contracts.workflow_templates import (
     HARD_MAX_QA_REPAIR_CYCLES,
@@ -223,3 +224,37 @@ def compile_template(
         "max_qa_repair_cycles": template.max_qa_repair_cycles,
     }
     return WorkflowPlan.model_validate({**fields, "plan_hash": compute_plan_hash(fields)})
+
+
+#: コンパイルの失敗 code -> 操作の失敗 code。ここに無い code は定義の誤り（``invalid_payload``）
+_OPERATION_CODES: dict[str, OperationErrorCode] = {
+    "unknown_template": OperationErrorCode.UNKNOWN_TEMPLATE,
+    "template_not_runnable": OperationErrorCode.TEMPLATE_NOT_RUNNABLE,
+    "unknown_agent_spec": OperationErrorCode.UNKNOWN_AGENT_SPEC,
+}
+
+
+def operation_code_for(error: TemplateCompileError) -> OperationErrorCode:
+    return _OPERATION_CODES.get(error.code, OperationErrorCode.INVALID_PAYLOAD)
+
+
+def compile_agentic_template(
+    template_id: str,
+    version: str,
+    *,
+    templates: Mapping[tuple[str, str], WorkflowTemplate] = TEMPLATES,
+    agent_specs: Mapping[tuple[AgentRole, str], AgentSpec] | None = None,
+) -> WorkflowPlan:
+    """agentic 実行のための入口。``execution=legacy_pipeline``（``daily_legacy``）は拒否する。
+
+    日次の legacy pipeline は ``EpisodePipelineWorkflow`` が走らせる。これで agentic workflow を
+    起動しない（``template_not_runnable``）。
+    """
+    plan = compile_template(template_id, version, templates=templates, agent_specs=agent_specs)
+    if plan.execution != "agentic":
+        raise TemplateCompileError(
+            "template_not_runnable",
+            f"{template_id}@{version} is a legacy pipeline template; it is not run by the "
+            "agentic workflow",
+        )
+    return plan
