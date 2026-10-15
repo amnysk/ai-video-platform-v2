@@ -34,6 +34,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -155,6 +156,12 @@ class RunCapture:
     finished_at: datetime | None = None
     #: 追加の補足（例: 再開で prompt を組み直した理由）
     notes: tuple[str, ...] = ()
+    #: 実績費用（USD）。測れたときだけ。None は不明で、``agent_runs.estimated_cost_usd`` は NULL
+    #: のまま（0 で埋めない / ADR-0043 §2）
+    estimated_cost_usd: Decimal | None = None
+    #: 版付き Agent の識別（role, spec_version, manifest_hash, model_policy_ref）。snapshot に残す。
+    #: None（従来の経路）なら snapshot に項目を足さない
+    agent_spec: Mapping[str, Any] | None = None
 
     @property
     def agent_run_id(self) -> str:
@@ -220,6 +227,8 @@ def snapshot_document(capture: RunCapture) -> tuple[dict[str, Any], bool]:
         "tool_invocations": [dict(t) for t in capture.tool_invocations],
         "notes": list(capture.notes),
     }
+    if capture.agent_spec is not None:
+        document["agent_spec"] = dict(capture.agent_spec)
     document["redaction_applied"] = redaction.applied
     return document, redaction.applied
 
@@ -360,6 +369,7 @@ class AgentRunRecorder:
             response_sha256=stored.response_sha256,
             tool_invocations=list(capture.tool_invocations),
             token_usage=None if capture.token_usage is None else dict(capture.token_usage),
+            estimated_cost_usd=capture.estimated_cost_usd,
             output_revision_id=output_revision_id,
             error_summary=capture.error_summary,
             correlation_id=correlation_id,
