@@ -46,6 +46,7 @@ ADR-0041 §6 / 設計 §17-7。`script.edit_scenes`（文だけの修正）で s
 | `test_the_latest_rebound_link_wins` | 複数回の修正では最後の結び直しが現行 | 同上 | 古い修正版の台本で音声を作る |
 | `test_a_link_to_another_episodes_script_is_rejected` / `test_a_link_to_a_non_script_is_rejected` | link を書いた側を信用せず毎回検査する | 同上 | 誤った link で他 Episode の台本・別型の成果物を読む |
 | `test_structure_check_accepts_text_only_edits_and_rejects_layout_changes` | 結び直してよいのはシーンの id・並び・尺が同じ台本だけ（構成変更は storyboard の作り直しが要る） | 純粋関数 | 尺の変わった台本に古い storyboard の映像を当て、音声と映像がずれる |
+| `test_structure_check_rejects_a_visual_edit` / `test_production_plan_refuses_a_rebound_script_with_another_visual` | 結び直しで許すのは文（ナレーション・題・hook）だけ。`visual` の変更は拒否（クロスレビュー HIGH） | 純粋関数 + 計画 Activity | 映像の指示を変えた台本を結び直し、storyboard・画像が旧い映像のまま「反映済み」に見える |
 | `test_production_plan_follows_the_rebound_script` | 計画は結び直し後の台本を使い、画像・動画の作業（storyboard）は変わらない。link 無しは従来どおり | Activity を直接（Temporal 不要） | 計画が旧台本のまま／storyboard が別物になる |
 | `test_production_plan_refuses_a_rebound_script_with_another_layout` | 構成の違う結び直しは needs_input（`ProductionInputInvalidError`） | 同上 | 検査が解決関数の外に漏れて計画が通る |
 | `test_narration_edit_regenerates_voice_but_reuses_paid_images` | 有料の画像は再利用（予約行・submit が増えない）、音声だけ新台本から作り直す | 画像・音声 Activity と PaidJobRunner の実経路 | 台本修正で有料素材を作り直す（二重課金）／旧台本の音声を流用する |

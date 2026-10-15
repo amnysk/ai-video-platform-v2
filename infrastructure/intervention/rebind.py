@@ -13,7 +13,7 @@ production / voice / render / scene_recovery の「storyboard は現行台本か
 結び直しの検査（毎回やり直す。link を書いた側を信用しない）:
 
 - 結び直し先は同じ Episode の ``script`` revision であること
-- 構成が同じこと: 台本シーンの id・並び・``duration_ms`` が storyboard の元の台本と一致
+- 構成が同じこと: 台本シーンの id・並び・``duration_ms``・``visual`` が storyboard の元の台本と一致
   （``check_rebound_script``）。storyboard の網羅（``check_storyboard_covers_script``）も満たすこと
 
 違反は ``ProductionInputInvalidError``（needs_input。人が直す）。
@@ -91,11 +91,24 @@ def _layout(script: ScriptArtifact) -> list[tuple[str, int]]:
 
 
 def check_rebound_script(original: ScriptArtifact, bound: ScriptArtifact) -> None:
-    """結び直してよい台本か: シーンの id・並び・尺が元の台本と同じ（文だけの修正）。"""
+    """結び直してよい台本か: シーンの id・並び・尺・映像の指示（``visual``）が元の台本と同じ。
+
+    変えてよいのはナレーション・題・hook だけ。``visual`` は storyboard の映像記述の元なので、
+    変えたなら ``scene.override_visual`` か storyboard の作り直しが要る
+    （結び直しでは反映されない）。
+    """
     if _layout(original) != _layout(bound):
         raise ProductionInputInvalidError(
             "rebound script changes the scene structure (ids/order/durations): "
             f"{_layout(original)} -> {_layout(bound)}; the storyboard must be regenerated"
+        )
+    changed = [
+        a.id for a, b in zip(original.scenes, bound.scenes, strict=True) if a.visual != b.visual
+    ]
+    if changed:
+        raise ProductionInputInvalidError(
+            f"rebound script changes the scene visual of {changed}; use scene.override_visual "
+            "or regenerate the storyboard"
         )
     if original.episode_id != bound.episode_id:
         raise ProductionInputInvalidError("rebound script belongs to another episode")
