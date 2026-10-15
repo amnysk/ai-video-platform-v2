@@ -25,6 +25,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.api.auth import ApiPrincipal
@@ -244,6 +245,10 @@ class StoreBackedInterventionBackend:
             return await _maybe_await(
                 self._m.read_model().compare_revisions(revision_a, revision_b)
             )
+        except ValidationError:
+            # pydantic の ValidationError も ValueError だが、型の不一致ではなく read model 側の
+            # 不具合。422 に化かさず 500 にする
+            raise
         except ValueError as exc:  # read model: 違う型同士・revision が無い
             raise RevisionTypeMismatchError(str(exc)) from None
 
