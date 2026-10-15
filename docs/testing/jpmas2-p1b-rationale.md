@@ -77,3 +77,14 @@ handler / LLM）。handler の本体は P1-A の担当で、ここの偽 handler
   `test_deploy_workers.py::test_app_services_cover_every_service_built_from_this_repo` は `agentic` 専用 service を
   「deploy 対象外」として数えず、`test_agentic_only_services_are_never_deployed_by_deploy_workers` で deploy 配列に
   入らないことを別に強制する。契約は緩めていない（core の worker は従来どおり全て deploy 配列と一致する）。
+
+## 追記: LLM を呼ばない経路は予約しない（ADR-0043 §Consequences の負債）
+
+- `test_agent_stage_activity.py::test_a_learning_stage_that_awaits_metrics_reserves_no_budget`: 本物の `HANDLERS` で
+  Learning が `awaiting_public_metrics` になる実行（replay 含む）が `provider_reservations` を 1 件も作らず LLM も
+  呼ばないこと。以前は上限（0.03 USD）を無駄に計上していた。
+- `test_an_llm_path_reserves_exactly_once_before_the_call`: 事前判定が True の経路は従来どおり予約し、replay でも
+  二重に予約しない（冪等キー）。予約を省く変更が LLM 経路の課金安全（予約→呼ぶ）を壊していないことの確認。
+- `test_agent_handlers.py::test_learning_needs_llm_only_when_public_metrics_exist`: 事前判定が handler の awaiting 分岐と
+  同じ関数（`_awaiting_note`）であること、非公開・測定なしは False、公開測定ありは True、未登録 handler は True
+  （fail-closed: 省くのは明示した経路だけ）。

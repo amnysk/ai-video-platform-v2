@@ -699,3 +699,19 @@ async def test_the_llm_cannot_set_the_lesson_status() -> None:
     llm.data["status"] = "validated"
     out, _ = await _call(AgentRole.LEARNING, _learning_docs(), llm)
     assert isinstance(out.artifact, Lesson) and out.artifact.status is LessonStatus.PROPOSED
+
+
+def test_learning_needs_llm_only_when_public_metrics_exist() -> None:
+    """awaiting 経路（非公開・測定なし）は LLM を呼ばない。判定は handler の分岐と同じ関数。"""
+    from domain.agents.handlers import needs_llm
+    from domain.agents.handlers.learning import learning_needs_llm
+
+    ref = AgentHandlerRef.LEARNING_AGENT_V1
+    empty = {"measurements": {"public": True, "windows": [{"window": "48h"}]}}
+    private = {"measurements": {"public": False, "windows": [{"window": "48h", "views": 500}]}}
+    public = {"measurements": {"public": True, "windows": [{"window": "48h", "views": 500}]}}
+    assert not learning_needs_llm({}) and not learning_needs_llm(private)
+    assert not needs_llm(ref, empty)
+    assert learning_needs_llm(public) and needs_llm(ref, public)
+    # 未登録の handler は常に LLM を呼ぶものとして扱う（予約を省くのは明示した経路だけ）
+    assert needs_llm(AgentHandlerRef.STRATEGY_AGENT_V1, {})

@@ -109,7 +109,7 @@ Activity `run_agent_stage`（`workers/agents/activities.py`、task queue `agents
 | 2 | `jpmas2_agentic_workflows` と `role in enabled_agent_roles` | `blocked / agent_disabled`（黙って飛ばさない） |
 | 3 | 冪等キー `agentic:{episode_id}:{stage_id}:{plan_hash}` の結果が保存済みか | あれば**何も書かず**それを返す（`replayed=true`）。提案だけ冪等に再送 |
 | 4 | 入力 document の組み立て（`infrastructure/agents/inputs.py`） | 必須入力（user_brief 等）が無ければ `blocked / input_missing:<名前>` |
-| 5 | 予算 gate + 予約台帳（`budget_gate.py`） | `blocked / budget_exceeded` / `budget_unverifiable` / `held`。予約が dispatch 済みで証拠が無ければ `UnreconciledReservationError`（再送しない） |
+| 5 | 予算 gate + 予約台帳（`budget_gate.py`）。**LLM を呼ぶ経路だけ**予約する（`domain.agents.handlers.needs_llm`。Learning の awaiting_public_metrics は予約しない。未登録 handler は常に予約）。予約は LLM 呼び出しの前 | `blocked / budget_exceeded` / `budget_unverifiable` / `held`。予約が dispatch 済みで証拠が無ければ `UnreconciledReservationError`（再送しない） |
 | 6 | Tool Gateway を作り handler を呼ぶ（LLM は Codex か Fake） | `AgentOutputRejected` → 8 へ。それ以外の例外は台帳を確定して送出 |
 | 7 | **検証より前に**台帳を確定（`settle_agent_call`）。応答は `agent-runs/{episode}/{run}/llm-calls.json` に保存し evidence にする | LLM を試みて失敗しただけ（応答なし）なら `conservative` |
 | 8 | 1 transaction で保存（`infrastructure/agents/persist.py`） | rejected は `agent_runs.outcome=rejected_output` だけ（成果物・判断・注記なし） |
