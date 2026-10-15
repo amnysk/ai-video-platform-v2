@@ -7,10 +7,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from apps.api.dependencies import get_settings
 from apps.api.intervention_logging import InterventionRequestLoggingMiddleware
 from apps.api.routers import application, episodes, intervention, intervention_insights, research
+from contracts.assistant_tools import CORRELATION_HEADER
 from contracts.log_contract import EventName, Outcome
+from infrastructure.config import cors_origins
 from infrastructure.logging.asgi import RequestLoggingMiddleware
 from infrastructure.logging.emit import emit, log_guard
 
@@ -62,6 +66,16 @@ def create_app() -> FastAPI:
     app.include_router(intervention_insights.router)
     # ADR-0043 §1: application 層のユースケース route。JPMAS2_APPLICATION_API=false なら 404
     app.include_router(application.router)
+    # ADR-0044 §4: UI の origin を設定したときだけ CORS を許す（既定は何も付けない）
+    origins = cors_origins(get_settings())
+    if origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(origins),
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type", CORRELATION_HEADER],
+            allow_credentials=False,
+        )
 
     @app.get("/healthz", tags=["ops"])
     async def healthz() -> dict[str, str]:
