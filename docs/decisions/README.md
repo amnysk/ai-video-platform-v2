@@ -68,3 +68,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0042](./0042-assistant-tool-adapter.md) | 対話 AI アシスタントは介入 API の tool adapter として接続する | Proposed |
 | [0043](./0043-agentic-production-foundation.md) | 自律改善型制作の土台（Application 層・Agent Registry・Workflow Template / JP-MAS-002 P0・P1） | Accepted |
 | [0044](./0044-ui-mcp-shared-application-backend.md) | UI・MCP 共通のバックエンド（操作カタログ・Application Service・/v1 API / JP-MAS-002 P2-A） | Accepted |
+| [0045](./0045-operator-ui-and-episodes-api-auth.md) | 運用者 UI（P2-B）と `/episodes/*` の opt-in 認証 | Accepted |
