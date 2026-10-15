@@ -25,6 +25,7 @@ from contracts.application_operations import (
     WorkflowProgress,
 )
 from contracts.intervention import ActorType, CommandEnvelope, CommandStatus, Scope
+from contracts.states import EpisodeStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +94,15 @@ class EpisodeReadPort(Protocol):
         """brief あり・計画が未 pin（start_agentic_production 前）。resume では始められない。"""
         ...
 
-    async def list_episodes(self, *, limit: int, before: datetime | None) -> EpisodeList: ...
+    async def list_episodes(
+        self,
+        *,
+        limit: int,
+        before: datetime | None,
+        before_id: uuid.UUID | None = None,
+        status: EpisodeStatus | None = None,
+        q: str | None = None,
+    ) -> EpisodeList: ...
 
     async def workspace(self, episode_id: uuid.UUID) -> EpisodeWorkspace: ...
 

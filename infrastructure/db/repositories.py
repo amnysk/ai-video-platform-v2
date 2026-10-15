@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -225,11 +225,37 @@ class EpisodeRepository:
             row.workflow_id = workflow_id
             await self._session.flush()
 
-    async def list_page(self, *, limit: int, before: datetime | None = None) -> list[Episode]:
-        """新しい順の keyset ページ（``created_at < before``）。読み取り専用（ADR-0044）。"""
+    async def list_page(
+        self,
+        *,
+        limit: int,
+        before: datetime | None = None,
+        before_id: uuid.UUID | None = None,
+        status: EpisodeStatus | None = None,
+        q: str | None = None,
+    ) -> list[Episode]:
+        """新しい順の keyset ページ。読み取り専用（ADR-0044、ADR-0045 §5）。
+
+        ``before_id`` があれば ``(created_at, id) < (before, before_id)``（同時刻を落とさない）。
+        無ければ従来どおり ``created_at < before``。``q`` は topic の部分一致（大文字小文字無視、
+        LIKE のワイルドカードは文字として扱う）。
+        """
         stmt = select(EpisodeRow).order_by(EpisodeRow.created_at.desc(), EpisodeRow.id.desc())
         if before is not None:
-            stmt = stmt.where(EpisodeRow.created_at < before)
+            if before_id is not None:
+                stmt = stmt.where(
+                    or_(
+                        EpisodeRow.created_at < before,
+                        and_(EpisodeRow.created_at == before, EpisodeRow.id < before_id),
+                    )
+                )
+            else:
+                stmt = stmt.where(EpisodeRow.created_at < before)
+        if status is not None:
+            stmt = stmt.where(EpisodeRow.status == status.value)
+        if q is not None:
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            stmt = stmt.where(EpisodeRow.topic.ilike(f"%{escaped}%", escape="\\"))
         return [_to_episode(r) for r in (await self._session.scalars(stmt.limit(limit))).all()]
 
     async def list_progress_snapshots(

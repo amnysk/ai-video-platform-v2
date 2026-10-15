@@ -131,7 +131,9 @@ class FakeReads:
     async def is_unstarted_agentic_draft(self, episode_id: uuid.UUID) -> bool:
         return self.unstarted_draft
 
-    async def list_episodes(self, *, limit: int, before: datetime | None) -> EpisodeList:
+    async def list_episodes(
+        self, *, limit: int, before: datetime | None, **_: object
+    ) -> EpisodeList:
         self.calls.append(f"list:{limit}")
         return EpisodeList(episodes=(), next_before=None)
 

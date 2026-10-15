@@ -31,6 +31,7 @@ from contracts.application import (
 from contracts.artifacts import StoryboardScene
 from contracts.assistant_tools import ToolEffect
 from contracts.intervention import CommandStatus, Scope
+from contracts.states import EpisodeStatus
 
 
 class _Frozen(BaseModel):
@@ -65,12 +66,21 @@ class ListEpisodesRequest(_Frozen):
     limit: int = Field(default=50, ge=1, le=200)
     #: keyset cursor。``created_at`` がこれより前の Episode（新しい順）
     before: datetime | None = None
+    #: 複合 cursor の後半（ADR-0045 §5）。``before`` と一緒に渡すと ``(created_at, id)`` で比べる。
+    #: 無ければ従来どおり ``created_at`` だけ（後方互換）。同時刻の Episode を落とさない
+    before_id: uuid.UUID | None = None
+    #: 状態での絞り込み（``EpisodeStatus``）
+    status: EpisodeStatus | None = None
+    #: 題材（topic）の部分一致（大文字小文字を区別しない。``%`` ``_`` は文字として扱う）
+    q: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class EpisodeList(_Frozen):
     episodes: tuple[EpisodeSummary, ...]
     #: 次のページの ``before``。無ければ最後のページ
     next_before: datetime | None
+    #: 次のページの ``before_id``（``next_before`` と対）。最後のページなら None
+    next_before_id: uuid.UUID | None = None
 
 
 class ChangeSetSummary(_Frozen):

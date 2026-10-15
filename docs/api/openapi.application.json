@@ -312,6 +312,18 @@
               }
             ],
             "title": "Next Before"
+          },
+          "next_before_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before Id"
           }
         },
         "required": [
@@ -320,6 +332,28 @@
         ],
         "title": "EpisodeList",
         "type": "object"
+      },
+      "EpisodeStatus": {
+        "description": "docs/domain/episode.md の状態表。",
+        "enum": [
+          "planned",
+          "in_progress",
+          "needs_work",
+          "blocked",
+          "ready_for_review",
+          "approved",
+          "uploaded",
+          "analyzed",
+          "completed",
+          "script_ready",
+          "storyboard_ready",
+          "assets_ready",
+          "render_ready",
+          "failed",
+          "cancelled"
+        ],
+        "title": "EpisodeStatus",
+        "type": "string"
       },
       "EpisodeSummary": {
         "additionalProperties": false,
@@ -1710,6 +1744,57 @@
                 }
               ],
               "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/EpisodeStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
             }
           },
           {
