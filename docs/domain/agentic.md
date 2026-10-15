@@ -115,6 +115,11 @@ Activity `run_agent_stage`（`workers/agents/activities.py`、task queue `agents
 | 8 | 1 transaction で保存（`infrastructure/agents/persist.py`） | rejected は `agent_runs.outcome=rejected_output` だけ（成果物・判断・注記なし） |
 | 9 | 提案を `ProposeStoryboardChange` + `SessionCommandPort` で出す | 通らなくても stage は失敗にしない（`reason=proposal_rejected:<code>`） |
 
+台帳の key: Activity の冪等キー（`agentic:{episode}:{stage}:{plan_hash}`、100 文字超）は
+`provider_reservations.idempotency_key`（VARCHAR(64)）に入らないので、台帳には
+`agent_reservation_key(key)`（`agentic:` + SHA-256 の先頭 40 桁）を使う。`agent_runs` / `decision_records` は元の key のまま
+（255 文字列）。SQLite は長さを検査しないため、実 PostgreSQL の E2E（P1-D）で初めて見つかった。
+
 ### 保存（`persist_stage`、commit は呼び出し側）
 
 - 成果物: ArtifactStore に正準 JSON を先に置き、読み戻して sha256 を照合してから `artifact_metadata` の新しい現行 revision

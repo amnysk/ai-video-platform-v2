@@ -71,7 +71,11 @@ from domain.errors import (
     ProviderInvocationError,
     UnreconciledReservationError,
 )
-from infrastructure.agents.budget_gate import reserve_and_dispatch_agent_call, settle_agent_call
+from infrastructure.agents.budget_gate import (
+    agent_reservation_key,
+    reserve_and_dispatch_agent_call,
+    settle_agent_call,
+)
 from infrastructure.agents.inputs import (
     AssembledInputs,
     PublicMetricsPort,
@@ -300,7 +304,9 @@ class AgentActivities:
     ) -> Any:
         """予約して dispatch する。拒否・停止は ``RunAgentStageResult``（blocked）で返す。"""
         async with self._sf() as session:
-            prior = await ProviderReservationRepository(session).find_by_key(key)
+            prior = await ProviderReservationRepository(session).find_by_key(
+                agent_reservation_key(key)
+            )
         if (
             prior is not None
             and prior.status is ReservationStatus.RESERVED

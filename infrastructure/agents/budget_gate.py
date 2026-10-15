@@ -36,6 +36,17 @@ from infrastructure.intervention.budget import BudgetPolicy, budget_view, check_
 #: 台帳の ``input_hash`` に入れる値の元（冪等キーから決定的に導く）
 _ROUND = 1
 
+#: ``provider_reservations.idempotency_key`` は VARCHAR(64)。Activity の冪等キー
+#: （``agentic:{episode}:{stage}:{plan_hash}`` = 100 文字超）は入らない
+_RESERVATION_KEY_PREFIX = "agentic:"
+_RESERVATION_KEY_DIGEST_CHARS = 40
+
+
+def agent_reservation_key(idempotency_key: str) -> str:
+    """Activity の冪等キーを、台帳の列に収まる決定的な key に写す（衝突は SHA-256 の 160 bit）。"""
+    digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+    return f"{_RESERVATION_KEY_PREFIX}{digest[:_RESERVATION_KEY_DIGEST_CHARS]}"
+
 
 async def reserve_and_dispatch_agent_call(
     session: AsyncSession,
@@ -50,14 +61,15 @@ async def reserve_and_dispatch_agent_call(
     if spec.model_policy_ref != policy.ref:
         raise ValueError(f"spec pins {spec.model_policy_ref} but got policy {policy.ref}")
     repo = ProviderReservationRepository(session)
-    reservation = await repo.find_by_key(idempotency_key)
+    ledger_key = agent_reservation_key(idempotency_key)
+    reservation = await repo.find_by_key(ledger_key)
     if reservation is None:
         stale = [
             row
             for row in await repo.find_unreconciled(
                 episode_id=episode_id, provider=ProviderCall.AGENT_LLM
             )
-            if row.idempotency_key != idempotency_key
+            if row.idempotency_key != ledger_key
         ]
         if stale:
             raise UnreconciledReservationError(
@@ -74,7 +86,7 @@ async def reserve_and_dispatch_agent_call(
         reservation = await repo.reserve(
             episode_id=episode_id,
             provider=ProviderCall.AGENT_LLM,
-            idempotency_key=idempotency_key,
+            idempotency_key=ledger_key,
             input_hash=hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest(),
             round=_ROUND,
             estimated_cost_usd=spec.max_estimated_cost_usd,
