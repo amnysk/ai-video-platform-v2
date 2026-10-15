@@ -36,3 +36,49 @@
   作らない（日次 Planner との衝突を避ける。ADR-0043）。
 - `test_adopt_without_a_strategy_brief_stops_and_changes_nothing`: 入力が無いのに topic を書き換えない。
 - `test_adopt_refuses_a_brief_written_for_another_episode`: 取り違えた brief を採用しない。
+
+## 3. AgenticEpisodeWorkflow / AgenticLearningWorkflow（tests/unit/test_agentic_workflow.py）
+
+time-skipping 環境で、子 workflow と `run_agent_stage` は fake、control gate・upload gate・pin・adopt は本物。
+
+- `test_shorts_agentic_runs_the_stages_in_plan_order`: `shorts_agentic@1` の実行順（strategy -> producer ->
+  creative -> script ... private_upload -> quality）と、producer が topic を書き TopicPlan を作らないこと。
+- `test_existing_stages_use_the_same_ids_queues_and_payloads_as_the_pipeline`: 既存工程が
+  `EpisodePipelineWorkflow` と同じ子 workflow id・入力で起動される（二重起動の規則・resume が共通）。
+- `test_agent_stage_requests_carry_the_pinned_spec_and_plan_hash`: agent worker へ渡すのは pin した
+  spec の版と hash と plan_hash（冪等キー・`agent_spec_drift` 検査の入力）。
+- `test_quality_runs_exactly_once_and_proposals_are_only_counted`: quality は1度だけ・後ろ向きの辺が無く、
+  提案は数えるだけで自動適用や再実行をしない（INV-57 の workflow 側）。
+- `test_the_pinned_plan_is_used_after_the_template_changes`（INV-51 実行時）: 途中で止まった Episode は
+  Template が変わっても元の計画で続く。別 Episode は新しい計画。
+- `test_unknown_unrunnable_and_legacy_templates_are_refused_before_any_stage`: 未知・未実装・legacy は
+  どの stage も始めずに理由付きで止まる（INV-53）。
+- `test_a_drifted_agent_spec_stops_without_retrying`: `agent_spec_drift` は再試行せず、理由を残して止まる。
+- `test_a_failing_agent_stage_is_retried_up_to_the_pinned_spec_limit`: retry 回数は pin 時に履歴へ残した
+  spec の `retry_max_attempts` で、無制限の再試行（有料呼び出しの繰り返し）にならない。
+- `test_a_held_episode_parks_before_the_first_stage`: hold 中は何も起動せず `parked`（失敗ではない）。
+- `test_a_blocked_or_rejected_agent_stage_stops_with_a_recorded_reason`: blocked / rejected_output を
+  黙って飛ばさず、理由付きで止まり、後続を起動しない。
+- `test_the_producer_stops_the_workflow_when_there_is_nothing_to_adopt`: StrategyBrief が無いのに先へ進まない。
+- `test_a_child_that_parks_elsewhere_stops_the_workflow`: 駐機点以外の status は止まる（既存と同じ判定）。
+- `test_the_upload_gate_is_checked_before_the_upload_and_refusal_stops`: 投稿の前に upload gate を通す
+  （private 投稿の保護、AGENTS.md §9）。拒否されたら投稿せず、quality も走らない。
+- `test_learning_runs_the_pinned_post_publish_stage_and_returns_the_outcome_as_is` /
+  `test_learning_returns_the_lesson_revision_when_one_was_produced` /
+  `test_learning_without_a_pinned_plan_is_blocked_and_pins_nothing`: Learning は pin 済みの post_publish を
+  読むだけ（新しい計画を作らない）、`awaiting_public_metrics` を言い換えない。
+- `test_legacy_histories_still_replay_with_the_agentic_workflows_registered` /
+  `test_a_history_produced_by_the_legacy_workflow_replays`: 日次の workflow の履歴は、agentic の workflow を
+  同じ worker に載せても replay できる（INV-55、replay 互換）。
+- `test_the_legacy_workflow_module_does_not_mention_the_agentic_workflow`: `EpisodePipelineWorkflow` の
+  ファイルに agentic の語が入らない。
+
+## 4. worker 登録（tests/unit/test_agentic_worker_registration.py）
+
+- `test_the_default_registration_is_exactly_the_daily_workflows_and_activities`: 既定の pipeline worker の
+  登録（workflow 3 つ・Activity 名）が従来と同一（INV-55）。
+- `test_the_agentic_registration_adds_only_the_agentic_workflows_and_activities`: flag 有効時に足すのは
+  agentic の 2 workflow と 3 Activity だけ。
+- `test_the_agentic_activities_are_exactly_the_contract_names`: Activity 名の宣言元（contracts）と実装の一致。
+- `test_main_builds_the_agentic_activities_only_behind_the_flag`: `main` が flag の内側でだけ agentic を
+  構成する（既定の起動は MinIO にも触れない）。

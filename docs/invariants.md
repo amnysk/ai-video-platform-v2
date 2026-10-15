@@ -616,6 +616,9 @@ role・版を `UnknownAgentSpecError` で拒否する（既存 3 役は Registry
 / `tests/unit/test_workflow_template_compiler.py::test_the_agentic_plan_pins_every_agent_spec_version_and_hash`
 / `tests/unit/test_workflow_template_compiler.py::test_compilation_is_deterministic_and_the_hash_covers_the_agent_specs`
 / `tests/unit/test_workflow_template_compiler.py::test_a_tampered_plan_is_rejected_by_its_own_hash`
+/ `tests/unit/test_agentic_pipeline_activities.py::test_a_pinned_plan_is_returned_unchanged_after_the_template_changes`
+/ `tests/unit/test_agentic_workflow.py::test_the_pinned_plan_is_used_after_the_template_changes`
+/ `tests/unit/test_agentic_workflow.py::test_a_drifted_agent_spec_stops_without_retrying`
 
 ### INV-52 契約同期: OpenAPI・アシスタント tool schema・contracts の model が一致する
 `ProposeStoryboardChangeRequest` / `StoryboardProposalResult`（`contracts/application.py`）が唯一の定義で、OpenAPI の
@@ -687,6 +690,11 @@ contracts を import しない）。downgrade は新語彙の行があれば何�
 / `tests/architecture/test_agentic_default_off.py::test_daily_path_modules_import_nothing_agentic`
 / `tests/architecture/test_agentic_default_off.py::test_the_planning_worker_may_only_read_the_creative_brief`
 / `tests/architecture/test_agentic_default_off.py::test_the_checker_catches_each_import_form_and_checks_allowed_names`
+/ `tests/unit/test_agentic_worker_registration.py::test_the_default_registration_is_exactly_the_daily_workflows_and_activities`
+/ `tests/unit/test_agentic_worker_registration.py::test_main_builds_the_agentic_activities_only_behind_the_flag`
+/ `tests/unit/test_agentic_workflow.py::test_legacy_histories_still_replay_with_the_agentic_workflows_registered`
+/ `tests/unit/test_agentic_workflow.py::test_a_history_produced_by_the_legacy_workflow_replays`
+/ `tests/unit/test_agentic_workflow.py::test_the_legacy_workflow_module_does_not_mention_the_agentic_workflow`
 
 ### INV-56 Agent は Tool Gateway が許した tool だけを上限内で呼び、LLM 費用の欠測を 0 にせず、予約・予算 gate を通ってから呼ぶ
 handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_tools` に無い tool・供給されていない tool は
