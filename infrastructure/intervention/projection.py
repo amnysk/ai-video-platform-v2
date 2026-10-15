@@ -76,6 +76,8 @@ _TOP_LEVEL_REFS: dict[str, str] = {
     "artifact_id": "artifact_id",
     "workflow_id": "workflow_id",
     "run_id": "run_id",
+    "activity_id": "activity_id",
+    "scene_id": "scene_id",
     "reservation_id": "reservation_id",
     "research_call_id": "research_call_id",
     "model": "model",

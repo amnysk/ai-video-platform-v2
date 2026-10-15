@@ -102,3 +102,6 @@
 | テスト | 守る契約 | なぜこの層か | 捕まえる失敗 |
 |---|---|---|---|
 | `test_0018_adds_nullable_columns_and_indexes_and_downgrade_removes_them` | 0018 は `agent_runs` / `decision_records` に NULL 可の列と索引を足し、downgrade で戻る。既存行を強制しない | 実際に alembic を 0017→0018→0017 と動かして形状を見る（models 一致検査は別に走る） | NOT NULL で足して既存行が壊れる、索引の付け忘れ、downgrade で列が残る |
+| `test_outside_an_activity_there_are_no_temporal_ids_and_nothing_is_invented` | Activity の外（test・CLI・API）で作る行と `agent.run.recorded` / `decision.recorded` は Temporal 識別子を持たない。`scene_id` も補完しない | `ActivityEnvironment` を使わない実 DB（SQLite）の記録 | 外側で偽の workflow_id を入れる、イベントに None の項目を足す |
+| `test_inside_an_activity_the_run_the_decision_and_their_events_carry_the_ids` | Activity の内側では `activity.info()` から run・decision の行とイベント refs に workflow / run / activity を載せ、projection は**既存の**ログ項目（`workflow_id` / `run_id`）に出す | `temporalio.testing.ActivityEnvironment`（Temporal server 不要。Activity の入力の形は変えていないことも兼ねる） | 識別子の取り違え（run_id と workflow_run_id）、ログ契約に無い項目の発明 |
+| `test_a_scene_override_decision_is_linked_to_its_scene_and_a_script_edit_is_not` | `scene_id` は payload が単一 Scene を明示する `scene.override_visual` の適用だけ。segment 単位の台本編集は NULL（推測しない） | 実際の propose→apply を通す | 台本編集の判断に Scene を当てずっぽうで付ける、override の Scene の欠落 |

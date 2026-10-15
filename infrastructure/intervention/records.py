@@ -317,6 +317,7 @@ async def record_generation_decision(
             "decision_type": payload.decision_type,
             "agent_run_id": agent_run.agent_run_id,
             "result_revision_id": payload.result_revision,
+            **decision.temporal.event_refs(),
         },
     )
     return decision
