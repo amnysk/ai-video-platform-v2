@@ -298,7 +298,11 @@ def test_no_service_registers_schedule(services) -> None:
     [
         ("FAL_KEY", {"production-image-worker", "production-video-worker"}),
         ("YOUTUBE_", {"upload-worker", "script-worker"}),
-        ("CODEX_", {"script-worker", "storyboard-worker", "scene-alternative-worker"}),
+        # agent-worker は ADR-0043 §6 の `agentic` profile 専用で Codex を使う（core には入らない）
+        (
+            "CODEX_",
+            {"script-worker", "storyboard-worker", "scene-alternative-worker", "agent-worker"},
+        ),
     ],
 )
 def test_per_worker_minimal_env(services, prefix, owners) -> None:

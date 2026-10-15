@@ -607,7 +607,9 @@ role・版を `UnknownAgentSpecError` で拒否する（既存 3 役は Registry
 `manifest_hash`（全項目の正規 JSON の sha256）を literal で固定するテストが守る — 変えるなら spec を書き換えず
 新しい `spec_version` を足す。コンパイル済みの `WorkflowPlan` は agent stage ごとに `agent_spec_version` /
 `agent_spec_hash` / `model_policy_ref` / `prompt_version` を持ち、`plan_hash` が全体を覆う（改ざんは model 検証で拒否）。
-実行時に計画を固定する Activity・hash 不一致の停止（`agent_spec_drift`）は P1 で実装する（ここは Registry と計画の契約まで）。
+hash 不一致の停止は `run_agent_stage`（`workers/agents/activities.py`）が実装する: pin された
+`(role, spec_version, manifest_hash)` で spec を解決し、不一致・未知の版は**非再試行**の `agent_spec_drift`
+（何も保存せず LLM も呼ばない）。計画を固定する Activity（`pin_workflow_plan`）は P1-C。
 **機械検査**: `tests/contract/test_agent_registry.py::test_registered_spec_hashes_are_pinned`
 / `tests/contract/test_agent_registry.py::test_changing_any_field_changes_the_hash`
 / `tests/contract/test_agent_registry.py::test_unknown_role_or_version_is_rejected`
@@ -620,6 +622,8 @@ role・版を `UnknownAgentSpecError` で拒否する（既存 3 役は Registry
 / `tests/unit/test_agentic_workflow.py::test_the_pinned_plan_is_used_after_the_template_changes`
 / `tests/unit/test_agentic_workflow.py::test_a_drifted_agent_spec_stops_without_retrying`
 / `tests/unit/test_agentic_use_cases.py::test_start_rejects_a_legacy_or_unrunnable_template`
+/ `tests/unit/test_agent_stage_activity.py::test_a_changed_spec_hash_is_a_non_retryable_drift`
+/ `tests/unit/test_agent_stage_activity.py::test_an_unknown_pinned_spec_version_is_also_drift`
 
 ### INV-52 契約同期: OpenAPI・アシスタント tool schema・contracts の model が一致する
 `ProposeStoryboardChangeRequest` / `StoryboardProposalResult`（`contracts/application.py`）が唯一の定義で、OpenAPI の
@@ -709,7 +713,9 @@ handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_t
 `ProviderCall.AGENT_LLM` を `spec.max_estimated_cost_usd`（上限）で予約して commit し、最初の予約の前にだけ
 `budget_view` + `check_additional_cost` を検査する（換算率なし = `budget_unverifiable`、超過 = `budget_exceeded`。
 どちらも予約を作らない）。dispatch は gate を通り、hold 中は `EpisodeHeldError` で予約は未 dispatch のまま残る。
-再送は同じ予約を返し再検査しない。
+再送は同じ予約を返し再検査しない。Agent stage（`run_agent_stage`）はこの gate を handler の前に通し、拒否・停止は
+`blocked`（`budget_*` / `held`）で返して成果物を作らず、呼んだ事実は検証より前に台帳へ確定する。前の試行が
+呼び終えていれば保存済みの応答を再生し、LLM を呼び直さない。
 **機械検査**: `tests/unit/test_agent_tool_gateway.py::test_an_unlisted_tool_is_refused_before_anything_is_called`
 / `tests/unit/test_agent_tool_gateway.py::test_a_listed_but_unprovided_tool_is_refused`
 / `tests/unit/test_agent_tool_gateway.py::test_the_llm_call_cap_is_enforced_before_the_next_call`
@@ -724,6 +730,14 @@ handler は `ToolGateway` 経由でしか外部を呼ばない。`spec.allowed_t
 / `tests/unit/test_agent_budget_gate.py::test_a_replay_returns_the_same_reservation_without_a_second_budget_check`
 / `tests/unit/test_agent_run_cost_capture.py::test_an_unknown_cost_stays_null_not_zero`
 / `tests/unit/test_agent_run_cost_capture.py::test_a_known_cost_and_the_agent_spec_are_stored`
+/ `tests/unit/test_agent_stage_activity.py::test_a_budget_refusal_leaves_no_reservation_and_no_artifact`
+/ `tests/unit/test_agent_stage_activity.py::test_an_exceeded_budget_blocks_with_budget_exceeded`
+/ `tests/unit/test_agent_stage_activity.py::test_a_held_episode_is_blocked_with_an_undispatched_reservation`
+/ `tests/unit/test_agent_stage_activity.py::test_a_disabled_agent_is_blocked_not_silently_skipped`
+/ `tests/unit/test_agent_stage_activity.py::test_a_handler_cannot_use_a_tool_outside_its_spec`
+/ `tests/unit/test_agent_stage_activity.py::test_unknown_token_usage_stays_null`
+/ `tests/unit/test_agent_stage_activity.py::test_after_a_crash_between_the_call_and_the_save_the_llm_is_not_called_again`
+
 
 ### INV-57 Agent handler は決定論の規則が最終で、入力は DATA として渡し、修正案は提案に留め、private・欠測から Lesson を作らない
 4 つの handler（`domain/agents/handlers/`）は `AGENT_INPUT_NAMES` の名前の document だけを読み、外へは

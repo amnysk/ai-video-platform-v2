@@ -16,7 +16,7 @@
   読み取りは `enabled_agent_roles(settings)`。無効な role の stage は P1 で `agent_disabled` として止まる。
 - `JPMAS2_AGENT_LLM=fake` を本番（compose の `avp2`）に設定しない。fake は外部へ出ないが、LLM を使う成果物が
   すべて定型になる。
-- flag は env だけで変わる。HTTP・AI・Agent から変える経路は無い。compose への受け渡し（`agentic` profile）は P1。
+- flag は env だけで変わる。HTTP・AI・Agent から変える経路は無い。
 
 ## 2. 費用と予算（INV-56）
 
@@ -82,3 +82,33 @@ DB（`DATABASE_URL`）・MinIO・Temporal に**直接**つなぐ所有者用の�
 読み手は `workers/pipeline/run_worker.py`（登録）と `scripts/agentic.py`（`Deps.agentic_enabled`、`start` / `learn`）の
 2 件、書き手（定義）は `infrastructure/config.py` の 1 件。
 
+## 5. Agent worker（P1-B、ADR-0043 §6）
+
+- 入口: `workers/agents/run_worker.py`（task queue `agents`、Activity `run_agent_stage` だけ。workflow は持たない）。
+  `JPMAS2_AGENTIC_WORKFLOWS` が true でなければ**何も登録せず、理由を出して終了**する（INV-55）。
+- compose: サービス `agent-worker` は **`agentic` profile だけ**（`core` に入れない。既定の `make up` / `deploy-workers`
+  では起動も更新もされない）。起動は所有者の明示的な操作:
+  `docker compose --profile agentic up -d agent-worker`（本番スタック `avp2` に対しては、所有者の承認を得てから）。
+  `tests/contract/test_compose_workers.py` / `test_deploy_workers.py` には「`agentic` 専用 service は deploy 対象外」
+  「Codex を持つ service に `agent-worker` を含める」という明示的な例外を足してある。
+- env（`compose.yaml` の `agent-worker`）: `JPMAS2_AGENTIC_WORKFLOWS`（既定 `false`）・`JPMAS2_ENABLED_AGENTS`（既定 空）・
+  `JPMAS2_AGENT_LLM`（既定 `codex`）・`EPISODE_BUDGET_JPY`・`MONTHLY_BUDGET_JPY`・`BUDGET_USD_JPY_RATE`（既定なし。
+  未設定なら stage は `blocked / budget_unverifiable`）・`CODEX_*`。YouTube / fal の秘密は持たせない。
+- LLM: `codex` は `CodexCliStoryGenerator` を `CodexAgentLlm` に注入（`workers/*/run_worker.py` だけが codex adapter を
+  import してよい / INV-18）。`fake` は外部へ何も出ない決定的な LLM だが、`run_worker` 単体では canned 応答を持たない
+  （隔離 E2E が `llm_factory` を差し替える）。
+- 提案の starter: `workers/agents/starter.py::TemporalCommandStarter`（`InterventionCommandWorkflow` を start。
+  agent の scope は `read` / `comment` / `propose` で、apply はしない）。
+- 隔離試験スタック（`deploy/logging/test/compose.apptest.yaml`）には**まだ入れていない**。P1-D が agent worker を
+  必要とするときは、同じ service 定義に `JPMAS2_AGENT_LLM=fake`・`JPMAS2_AGENTIC_WORKFLOWS=true`・
+  `JPMAS2_ENABLED_AGENTS=...` を渡し、`PublicMetricsPort` の mock と canned の `llm_factory` を持つ入口を使う。
+
+### 参照の棚卸し（AGENTS.md §8、2026-10-15、P1-B 実装後）
+
+`grep -rniE "<key>" apps/ workers/ domain/ infrastructure/ contracts/ docs/ application/`（ADR・設計書を除く）:
+
+| key | 読み手 | 書き手（定義） | 無関係 |
+|---|---|---|---|
+| `jpmas2_agentic_workflows` | `workers/agents/run_worker.py` 2 件 | `infrastructure/config.py` 1 件 | 0 |
+| `enabled_agent_roles` / `jpmas2_enabled_agents` | `workers/agents/run_worker.py` 2 件 | `infrastructure/config.py` 2 件 | 0 |
+| `jpmas2_agent_llm` | `workers/agents/run_worker.py` 2 件 | `infrastructure/config.py` 1 件 | 0 |
