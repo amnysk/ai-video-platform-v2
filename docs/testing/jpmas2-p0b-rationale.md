@@ -61,3 +61,9 @@
 - 既存 `test_the_catalogue_has_exactly_the_agreed_tools` / `test_expected_revision_fields_exist_on_the_envelope_...`
   の期待集合に `propose_storyboard_patch` を追加した（件数 15 -> 16）。ADR-0043 §1 が承認した新 tool で、
   「合意した tool の集合」を検査するテストなので集合の更新が仕様変更の反映になる（検査自体は緩めていない）。
+
+## 6. CLI（tests/unit/test_intervene_propose_storyboard.py）
+
+- `test_it_posts_the_proposal_to_the_application_route`: CLI が HTTP route にだけ送り（DB に触れない）、
+  request の command_id・期待版・提案を本文に載せ、再送用の command_id を stderr に出す。
+- `test_without_a_command_id_it_makes_one_and_omits_unset_options`: 省略時は uuid4、未指定の項目は送らない。
