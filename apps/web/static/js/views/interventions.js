@@ -202,7 +202,7 @@ function proposeDialog(dctx, spec, ws) {
       const { data } = await dctx.api.get(buildPath(sbSpec, { episode_id: dctx.episodeId }));
       storyboard = data.storyboard;
       if (!storyboard) { c.append(h('div', { class: 'alert alert-warn' }, '現行の絵コンテがありません。提案できません。')); return; }
-      scene.append(storyboard.scenes.map((s) => h('option', { value: s.scene_id }, `${s.order}. ${s.scene_id}`)));
+      scene.append(...storyboard.scenes.map((s) => h('option', { value: s.scene_id }, `${s.order}. ${s.scene_id}`)));
       text.value = original();
       current.textContent = `現在: ${original()}`;
       c.append(field('シーン', scene), current, field(`新しい visual_description（${VISUAL_DESCRIPTION_MAX} 文字まで）`, text), field('理由（任意）', rationale));

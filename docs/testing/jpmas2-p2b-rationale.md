@@ -131,3 +131,9 @@ node の単体テスト（§6）は DOM・CSP・実サーバーの応答を通�
   `# pass N>0` を TAP 出力で検査する（reporter は `--test-reporter=tap` で固定）。
 - Chromium は playwright-core（package-lock で固定）対応版を入れ、runner 同梱の版不定の Chrome は使わない。
 - 残る負債: 失敗時の screenshot / trace はハーネス未対応のためログのみ保存。
+
+## E2E 9: 絵コンテの変更提案（実機検証で検出した不具合の回帰）
+
+`scene.append(array)` で `<option>` が 0 個になり、運用者が変更案を作れなかった（旧 E2E は
+`#prop-text` が出るかだけを見ていて検出できなかった）。シーンが選べること、提案が
+`/storyboard/proposals` へ 1 回 202 で届くことまで検査する。

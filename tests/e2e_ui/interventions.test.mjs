@@ -281,3 +281,21 @@ test('12. 詳細に最終取得時刻を出す', { skip }, async () => {
   await openDetail(page, server, IDS.running, server.tokens.owner);
   assert.match(await page.locator('#fetched-at').innerText(), /詳細の最終取得: \d+:\d+:\d+ JST/);
 });
+
+test('9. 絵コンテの変更提案: シーンを選べて、提案が POST される（option が 0 個だった不具合の回帰）', { skip }, async () => {
+  const { server, browser } = env;
+  const { page } = await newPage(browser);
+  await openDetail(page, server, IDS.running, server.tokens.owner);
+  await page.click('button:has-text("絵コンテの変更を提案")');
+  await page.waitForSelector('dialog[open] #prop-text');
+  const options = await dialog(page).locator('select option').count();
+  assert.ok(options >= 2, `シーンが選べる（options=${options}）`);
+  await dialog(page).locator('select').selectOption({ index: 1 });
+  await page.fill('#prop-text', '新しい描写');
+  await page.click('dialog[open] button:has-text("変更案を作る")');
+  await dialog(page).locator('text=受け付けました').waitFor();
+  const sent = posts(await server.log()).filter((e) => e.path.endsWith('/storyboard/proposals'));
+  assert.equal(sent.length, 1, '提案の POST は 1 回');
+  assert.equal(sent[0].status, 202);
+  assert.deepEqual(sent[0].body_keys, ['command_id', 'expected_control_revision', 'proposal']);
+});
