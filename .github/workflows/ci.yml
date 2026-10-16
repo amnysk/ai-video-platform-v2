@@ -69,6 +69,8 @@ jobs:
     name: Integration tests
     runs-on: ubuntu-latest
     env:
+      # CI だけ MinIO image を差し替える（minio/minio は匿名 pull 不可。ADR-0046）
+      COMPOSE_FILE: compose.yaml:compose.ci.yaml
       # step の `if:` では secrets コンテキストが使えない（workflow file issue になり全 job が
       # 0秒で失敗する）。job の env 経由で参照する
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
