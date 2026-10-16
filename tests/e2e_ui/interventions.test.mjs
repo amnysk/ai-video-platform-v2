@@ -61,7 +61,14 @@ test('5c. 確定的な拒否（403）のあとに再送すると、新しい com
   await page.click('dialog[open] button:has-text("hold を要求する")');
   await page.waitForSelector('dialog[open] >> text=HTTP: 403');
   await page.click('dialog[open] button:has-text("hold を要求する")');
-  await until(async () => (await holdPosts(server)).length === 2, { what: 'second post' });
+  // 2 件目はログに現れても、応答が返るまで status が null（CI で実測: [403, null]）。完了まで待つ
+  await until(
+    async () => {
+      const posts = await holdPosts(server);
+      return posts.length === 2 && posts.every((c) => c.status != null);
+    },
+    { what: 'both posts completed' },
+  );
   const calls = await holdPosts(server);
   assert.notEqual(calls[0].command_id, calls[1].command_id);
   assert.deepEqual(calls.map((c) => c.status), [403, 403]);
