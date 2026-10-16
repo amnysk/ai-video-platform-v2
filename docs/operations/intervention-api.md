@@ -173,7 +173,7 @@ scope・人限定の検査は Application Service が行う。`X-Correlation-ID`
 | 操作 | method path（`/v1/intervention` から） | 成功 |
 |---|---|---|
 | `create_episode_draft` | `POST /episodes/drafts` | `201`（再送 `200`） |
-| `list_episodes` | `GET /episodes?limit=&before=` | `200` |
+| `list_episodes` | `GET /episodes?limit=&before=&before_id=&status=&q=` | `200` |
 | `get_episode_workspace` | `GET /episodes/{id}/workspace` | `200` |
 | `start_agentic_production`（人のみ） | `POST /episodes/{id}/production` | `202`（既に開始済み `200`） |
 | `request_hold` | `POST /episodes/{id}/hold` | `202`（再送 `200`） |
@@ -185,6 +185,8 @@ scope・人限定の検査は Application Service が行う。`X-Correlation-ID`
 | `get_agent_decisions` | `GET /episodes/{id}/agent-decisions` | `200` |
 | `get_quality_review` | `GET /episodes/{id}/quality-review` | `200` |
 | `get_workflow_progress` | `GET /episodes/{id}/progress` | `200` |
+
+`list_episodes` の cursor は `(created_at, id)` の複合（ADR-0045 §5）: 応答の `next_before` と `next_before_id` を次の `before` / `before_id` に渡す（同時刻の Episode を落とさない）。`before_id` を付けない旧 client は従来の `created_at` のみ。`status` は `EpisodeStatus`、`q` は topic の部分一致（大文字小文字無視、1〜200 文字、`%` `_` は文字）。
 
 失敗は `{"detail": {"error": <OperationErrorCode>, "message", ...}}`。status: `409`（`command_id_reused`・
 `stale_*`・`invalid_state`）、`403`（`missing_scope`・`forbidden`）、`404`（`episode_not_found`・
