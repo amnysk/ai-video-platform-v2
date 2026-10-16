@@ -334,7 +334,7 @@ async def test_required_malformed_json_is_422_before_authn_with_no_side_effects(
                 content=b"{not json",
                 headers={"Content-Type": "application/json"},
             )
-            # body の無い route は 401（認証が先）、body のある route は 422（解析が先）。どちらも副作用なし
+            # body の無い route は 401（認証が先）、body のある route は 422（解析が先）。副作用なし
             assert r.status_code in (401, 422), (path, r.status_code)
         creating = await client.post(
             "/episodes", content=b"{not json", headers={"Content-Type": "application/json"}

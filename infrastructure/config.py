@@ -219,8 +219,9 @@ class Settings(BaseSettings):
     intervention_principals: SecretStr | None = None
 
     # --- /episodes/* と /research/* の認証（ADR-0045 §4） ---
-    #: ``EPISODES_API_AUTH_REQUIRED``。true なら GET は scope ``read``、POST は ``resume`` かつ人（``human``）の
-    #: Bearer principal を要求する（``INTERVENTION_PRINCIPALS`` を使う）。既定 false = 従来どおり認証なし
+    #: ``EPISODES_API_AUTH_REQUIRED``。true なら GET は scope ``read``、POST は ``resume`` かつ
+    #: 人（``human``）の Bearer principal を要求する（``INTERVENTION_PRINCIPALS`` を使う）。
+    #: 既定 false = 従来どおり認証なし
     episodes_api_auth_required: bool = False
 
     # --- JP-MAS-002 P0（ADR-0043 §5）。既定は全て無効 ---
