@@ -9,8 +9,6 @@ function makeUuid() {
 }
 
 export function createApi({ session, fetchFn = (...a) => globalThis.fetch(...a), uuid = makeUuid, onUnauthorized = () => {} }) {
-  const etags = new Map(); // url -> {etag, data}。サーバーが ETag を返したときだけ使う
-
   function qs(query) {
     const p = new URLSearchParams();
     for (const [k, v] of Object.entries(query ?? {})) {
@@ -31,8 +29,6 @@ export function createApi({ session, fetchFn = (...a) => globalThis.fetch(...a),
       headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body);
     }
-    const cached = method === 'GET' ? etags.get(url) : undefined;
-    if (cached) headers['If-None-Match'] = cached.etag;
 
     let res;
     try {
@@ -43,8 +39,6 @@ export function createApi({ session, fetchFn = (...a) => globalThis.fetch(...a),
     }
     const echoed = res.headers?.get?.(CORRELATION_HEADER) ?? null;
     const shownCid = echoed || cid;
-
-    if (res.status === 304 && cached) return { data: cached.data, status: 200, correlationId: shownCid };
 
     let data = null;
     try {
@@ -65,8 +59,6 @@ export function createApi({ session, fetchFn = (...a) => globalThis.fetch(...a),
       throw new ApiError({ status: res.status, code, serverMessage: message, detail: d ?? null, correlationId: shownCid });
     }
 
-    const etag = res.headers?.get?.('ETag');
-    if (method === 'GET' && etag) etags.set(url, { etag, data });
     return { data, status: res.status, correlationId: shownCid };
   }
 

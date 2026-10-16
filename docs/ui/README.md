@@ -13,7 +13,7 @@
 |---|---|
 | `index.html` / `app.css` | 殻。ライト/ダーク両対応、狭い幅でも横スクロールしない |
 | `js/main.js` | hash routing、ログイン/一覧/詳細の切替 |
-| `js/api.js` | `/v1/intervention` への fetch。Bearer、`X-Correlation-ID`、401 でトークン破棄、ETag は返ってきたときだけ |
+| `js/api.js` | `/v1/intervention` への fetch。Bearer、`X-Correlation-ID`、401 でトークン破棄（ETag は使わない） |
 | `js/state/session.js` | トークン保持（`sessionStorage` のみ） |
 | `js/operations.js` | `operations.json`（backend が生成）の読み込み。path・scope は常にこれから取る |
 | `js/errors.js` | エラーコード → 日本語の理由と対処 |

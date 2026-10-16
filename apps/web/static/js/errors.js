@@ -111,6 +111,17 @@ export const HTTP_ERROR_INFO = {
     action: 'しばらく待ってから再試行してください。',
     retry: true,
   },
+  // 408 / 425: リクエストが処理されたか分からない・早すぎた。同じ command_id で再試行してよい（冪等）
+  request_timeout: {
+    reason: 'サーバーがリクエストを待ちきれませんでした（408）。処理されたかどうか分かりません。',
+    action: '同じ操作として再試行してください（二重には実行されません）。',
+    retry: true,
+  },
+  too_early: {
+    reason: 'リクエストが早すぎるため受け付けられませんでした（425）。',
+    action: '少し待って、同じ操作として再試行してください。',
+    retry: true,
+  },
   server_error: {
     reason: 'サーバーでエラーが起きました。',
     action: '時間をおいて再試行してください。続く場合は相関 ID を添えて報告してください。',
@@ -131,6 +142,8 @@ function httpKey(err) {
   if (err.status === 401) return 'unauthorized';
   if (err.status === 404) return 'not_found';
   if (err.status === 409) return 'conflict';
+  if (err.status === 408) return 'request_timeout';
+  if (err.status === 425) return 'too_early';
   if (err.status === 422) return 'validation';
   if (err.status === 429) return 'rate_limited';
   if (err.status >= 500) return 'server_error';

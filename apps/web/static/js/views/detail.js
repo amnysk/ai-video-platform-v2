@@ -5,7 +5,7 @@ import { extractStages } from '../stages.js';
 import { createRenderGate } from '../render_gate.js';
 import { startPoller } from '../poller.js';
 import { episodeStatusLabel, needsAttention, pipelineKindLabel } from '../status.js';
-import { LLM_COST_UNMEASURED_NOTE, MISSING, formatDateTime, formatUsd } from '../format.js';
+import { LLM_COST_UNMEASURED_NOTE, MISSING, formatDateTime, formatTime, formatUsd } from '../format.js';
 import { stageCard } from './stage_card.js';
 import { auditSection } from './audit.js';
 import { changeSetsPanel, interventionBar } from './interventions.js';
@@ -18,6 +18,8 @@ export function detailView(ctx, episodeId) {
   let workspace = null;
   let progress = null;
   let progressError = null;
+  let workspaceFetchedAt = null; // 最後に読めた時刻（古い画面を新しいと誤解させない）
+  let progressFetchedAt = null;
   let disposed = false;
   const wsGate = createRenderGate(); // 古い workspace 応答が新しい応答を上書きしない
   const openStages = new Set();
@@ -52,6 +54,7 @@ export function detailView(ctx, episodeId) {
         return;
       }
       workspace = data;
+      workspaceFetchedAt = new Date();
       replaceChildren(notice);
       await loadProgress();
       if (disposed || !token.isCurrent()) return; // progress を待つ間に、より新しい読み込みが始まった
@@ -69,6 +72,7 @@ export function detailView(ctx, episodeId) {
       const { data } = await ctx.api.get(buildPath(progSpec, { episode_id: episodeId }));
       if (disposed) return;
       progress = data;
+      progressFetchedAt = new Date();
       progressError = null;
     } catch (err) {
       if (disposed || err?.name === 'AbortError') return;
@@ -88,6 +92,7 @@ export function detailView(ctx, episodeId) {
     replaceChildren(
       top,
       h('p', {}, h('a', { href: '#/' }, '← 一覧に戻る')),
+      h('p', { class: 'muted small', id: 'fetched-at' }, `詳細の最終取得: ${workspaceFetchedAt ? formatTime(workspaceFetchedAt) : MISSING}（操作後に読み直します。自動では更新しません）`),
       h('h2', {}, e.topic ? e.topic : '（トピック未記録）'),
       kv([
         ['Episode ID', h('span', { class: 'episode-id' }, e.episode_id)],
@@ -136,7 +141,7 @@ export function detailView(ctx, episodeId) {
     replaceChildren(
       stagesBox,
       h('h3', {}, 'ステージ'),
-      h('p', { class: 'muted small' }, `経過 (progress) は前面表示中のみ ${POLL_MS / 1000} 秒ごとに更新します。最終取得: ${progress ? '取得済み' : MISSING}`),
+      h('p', { class: 'muted small' }, `経過 (progress) は前面表示中のみ ${POLL_MS / 1000} 秒ごとに更新します。最終取得: ${progressFetchedAt ? formatTime(progressFetchedAt) : MISSING}`),
       progressError ? errorBox(progressError) : null,
       cards,
     );

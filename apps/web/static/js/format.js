@@ -22,6 +22,14 @@ export function formatDateTime(value) {
   return d.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false }) + ' JST';
 }
 
+/** 時刻だけ（JST）。「最終取得」のように、いつの情報かを示すために使う。 */
+export function formatTime(value) {
+  if (isBlank(value)) return MISSING;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false }) + ' JST';
+}
+
 /** USD の10進文字列。null は「未見積り」（0 として表示しない）。 */
 export function formatUsd(value) {
   if (isBlank(value)) return COST_NOT_ESTIMATED;

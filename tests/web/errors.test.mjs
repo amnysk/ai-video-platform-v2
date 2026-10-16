@@ -50,3 +50,14 @@ test('validationLines は loc と msg を短く返す', () => {
   assert.deepEqual(lines, ['proposal.edits: too short']);
   assert.deepEqual(validationLines('x'), []);
 });
+
+test('408 / 425 / 429 は一時的（同じ操作の再試行で成功しうる）として扱う', () => {
+  for (const status of [408, 425, 429]) {
+    const d = describeError(new ApiError({ status }));
+    assert.equal(d.retry, true, String(status));
+    assert.equal(d.reload, false, String(status));
+    assert.notEqual(d.code, 'unknown', String(status));
+  }
+  // 確定的な 4xx は再試行扱いにしない
+  for (const status of [400, 403, 422]) assert.equal(describeError(new ApiError({ status })).retry, false, String(status));
+});

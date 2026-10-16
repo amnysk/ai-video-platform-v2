@@ -22,3 +22,10 @@ test('briefValue はオブジェクトを展開しない', () => {
   assert.equal(briefValue({ secret: 'x' }), '{…}');
   assert.equal(briefValue('a'.repeat(200)).length, 121);
 });
+
+test('formatTime: 時刻だけを JST で。不正値は未記録', async () => {
+  const { formatTime } = await import('../../apps/web/static/js/format.js');
+  assert.equal(formatTime(new Date('2026-10-16T03:04:05Z')), '12:04:05 JST');
+  assert.equal(formatTime(null), '未記録');
+  assert.equal(formatTime('x'), 'x');
+});

@@ -102,7 +102,7 @@ test('11. polling: progress だけを読み、タブが隠れる・画面を離�
   const { server, browser } = env;
   const { page } = await newPage(browser, { clock: true });
   await openDetail(page, server, IDS.running, server.tokens.owner);
-  await page.waitForSelector('text=最終取得: 取得済み');
+  await page.waitForSelector('text=/最終取得: \\d+:\\d+:\\d+ JST/');
   await sleepReal(300);
   const settle = async () => { await sleepReal(400); };
   const calls = async () => (await server.log()).map((e) => `${e.method} ${e.path.replace(IDS.running, ':id')}`);

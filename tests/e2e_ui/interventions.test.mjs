@@ -236,3 +236,37 @@ for (const [label, fulfill] of [
     assert.equal((await server.accepted()).length, 1);
   });
 }
+
+for (const status of [408, 425, 429]) {
+  test(`11. HTTP ${status} は一時的: 再試行は同じ command_id で送る`, { skip }, async () => {
+    const { server, browser } = env;
+    const { page } = await newPage(browser);
+    await openDetail(page, server, IDS.running, server.tokens.owner);
+    let first = true;
+    const sentIds = [];
+    await page.route('**/hold', async (route) => {
+      sentIds.push(route.request().postDataJSON().command_id);
+      if (first) {
+        first = false;
+        await route.fulfill({ status, contentType: 'application/json', body: '{"detail":"later"}' });
+      } else await route.continue();
+    });
+    await page.click('button:has-text("一時停止を要求")');
+    await page.click('dialog[open] button:has-text("hold を要求する")');
+    await page.waitForSelector(`dialog[open] >> text=HTTP: ${status}`);
+    await page.click('dialog[open] button:has-text("再試行（同じ操作として送ります）")');
+    await page.waitForSelector('dialog[open] >> text=受け付けました');
+    assert.equal(sentIds.length, 2);
+    assert.equal(sentIds[0], sentIds[1], '同じ command_id');
+    const calls = await holdPosts(server);
+    assert.equal(calls.length, 1, '最初の応答はブラウザ側で差し替えたので、サーバーに届くのは再試行の 1 回');
+    assert.equal((await server.accepted()).length, 1);
+  });
+}
+
+test('12. 詳細に最終取得時刻を出す', { skip }, async () => {
+  const { server, browser } = env;
+  const { page } = await newPage(browser);
+  await openDetail(page, server, IDS.running, server.tokens.owner);
+  assert.match(await page.locator('#fetched-at').innerText(), /詳細の最終取得: \d+:\d+:\d+ JST/);
+});

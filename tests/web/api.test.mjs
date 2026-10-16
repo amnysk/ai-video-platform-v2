@@ -60,27 +60,16 @@ test('POST は JSON body と Content-Type。同じ correlationId を再利用で
   assert.equal(seen.headers['X-Correlation-ID'], 'fixed');
 });
 
-test('ETag は返ってきたときだけ If-None-Match を送り、304 は前回の本文を返す', async () => {
-  const calls = [];
+test('If-None-Match / ETag は使わない（常に新しい本文を読む。古い本文を 304 で返さない）', async () => {
+  const seen = [];
   const api = createApi({
     session: createSession(memStorage()),
-    fetchFn: async (u, init) => {
-      calls.push(init.headers['If-None-Match'] ?? null);
-      return calls.length === 1 ? res(200, { v: 1 }, { ETag: '"e1"' }) : res(304);
-    },
+    fetchFn: async (u, init) => { seen.push(init.headers['If-None-Match']); return res(200, { n: seen.length }, { ETag: '"e1"' }); },
   });
   await api.get('/v1/p');
   const r = await api.get('/v1/p');
-  assert.deepEqual(calls, [null, '"e1"']);
-  assert.deepEqual(r.data, { v: 1 });
-});
-
-test('ETag を返さないサーバーには If-None-Match を送らない', async () => {
-  const seen = [];
-  const api = createApi({ session: createSession(memStorage()), fetchFn: async (u, init) => { seen.push(init.headers['If-None-Match']); return res(200, {}); } });
-  await api.get('/v1/p');
-  await api.get('/v1/p');
   assert.deepEqual(seen, [undefined, undefined]);
+  assert.deepEqual(r.data, { n: 2 });
 });
 
 test('session: sessionStorage だけを使い、空トークンは保存しない', () => {
