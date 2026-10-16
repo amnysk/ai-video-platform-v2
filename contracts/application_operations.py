@@ -78,7 +78,7 @@ class ListEpisodesRequest(_Frozen):
     def _before_id_needs_before(self) -> ListEpisodesRequest:
         """``before_id`` だけの cursor は不完全。黙って無視せず 422 にする。"""
         if self.before_id is not None and self.before is None:
-            raise ValueError("before_id requires before (the cursor is the pair (before, before_id))")
+            raise ValueError("before_id requires before (the cursor is the pair)")
         return self
 
 

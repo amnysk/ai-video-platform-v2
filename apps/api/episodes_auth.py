@@ -24,7 +24,6 @@ from contracts.application import OperationErrorCode
 from contracts.intervention import ActorType, Scope
 from infrastructure.config import Settings
 
-
 _READ_METHODS = ("GET", "HEAD", "OPTIONS")
 
 

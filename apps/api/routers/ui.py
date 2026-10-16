@@ -6,7 +6,8 @@
   （``..``・エンコードされた ``..``・絶対パス・symlink での脱出）。ディレクトリは ``index.html``。
 - ``/ui`` 配下の**全応答**（成功・404・405・flag OFF の 404・500）に厳格な CSP 等を付ける
   （インラインの script/style・外部 origin を許さない）。route 内で付けると dependency の拒否・405・
-  未処理例外が漏れるため、``UiSecurityHeadersMiddleware``（ASGI、``/ui`` 以外には何もしない）で付ける。
+  未処理例外が漏れるため、
+  ``UiSecurityHeadersMiddleware``（ASGI。``/ui`` 以外には何もしない）で付ける。
 """
 
 from __future__ import annotations

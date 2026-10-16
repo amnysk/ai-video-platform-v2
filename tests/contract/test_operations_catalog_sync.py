@@ -95,9 +95,9 @@ def test_catalog_version_is_stable_and_changes_with_the_content() -> None:
 
 
 def test_the_paid_operation_set_is_pinned() -> None:
-    """P1-2: 有料の外部生成を伴う操作。変えるなら ADR-0044/0045 と UI の警告を見直す（意図的に落とす）。
+    """P1-2: 有料の外部生成を伴う操作。変えるなら ADR-0044/0045 と UI の警告を見直す。
 
-    resume_production は ADR-0044 §resume の通り固定計画を歩き、未完了 stage を再生成しうるため有料。
+    resume_production は ADR-0044 の通り固定計画を歩き、未完了 stage を再生成しうるため有料。
     """
     paid = {o.name.value for o in OPERATIONS if o.paid}
     assert paid == {"start_agentic_production", "resume_production", "apply_approved_change"}
