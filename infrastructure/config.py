@@ -218,6 +218,11 @@ class Settings(BaseSettings):
     #: 読み込みと検査（AI に人専用 scope を与えない等）は ``apps/api/auth.py``。
     intervention_principals: SecretStr | None = None
 
+    # --- /episodes/* と /research/* の認証（ADR-0045 §4） ---
+    #: ``EPISODES_API_AUTH_REQUIRED``。true なら GET は scope ``read``、POST は ``resume`` の Bearer
+    #: principal を要求する（``INTERVENTION_PRINCIPALS`` を使う）。既定 false = 従来どおり認証なし
+    episodes_api_auth_required: bool = False
+
     # --- JP-MAS-002 P0（ADR-0043 §5）。既定は全て無効 ---
     #: ``JPMAS2_APPLICATION_API``。無効なら storyboard 提案 route は ``404 feature_disabled``
     jpmas2_application_api: bool = False

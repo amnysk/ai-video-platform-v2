@@ -35,7 +35,6 @@ from apps.api.routers.intervention import (
 from contracts.application import StartAgenticProductionResult, StoryboardProposalResult
 from contracts.application_operations import (
     OPERATIONS,
-    ListEpisodesRequest,
     OperationName,
     OperationSpec,
 )
@@ -102,7 +101,6 @@ def _endpoint(spec: OperationSpec) -> Callable[..., Awaitable[Any]]:
     """カタログの 1 操作の handler。引数は path・body・query で決まる（signature を組み立てる）。"""
     has_episode = "{episode_id}" in spec.http_path
     has_change_set = "{change_set_id}" in spec.http_path
-    is_list = spec.name is OperationName.LIST_EPISODES
     posts = spec.http_method == "POST"
     method_name = spec.name.value
 
@@ -140,9 +138,9 @@ def _endpoint(spec: OperationSpec) -> Callable[..., Awaitable[Any]]:
         params.append(inspect.Parameter("episode_id", k, annotation=uuid.UUID))
     if has_change_set:
         params.append(inspect.Parameter("change_set_id", k, annotation=str))
-    if is_list:
+    if spec.query_model is not None:
         params.append(
-            inspect.Parameter("payload", k, annotation=Annotated[ListEpisodesRequest, Query()])
+            inspect.Parameter("payload", k, annotation=Annotated[spec.query_model, Query()])
         )
     elif spec.request_model is not None:
         params.append(

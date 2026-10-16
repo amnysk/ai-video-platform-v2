@@ -37,7 +37,7 @@ from contracts.artifact_registry import parse_artifact
 from contracts.artifacts import StoryboardArtifact
 from contracts.intervention import AgentRunOutcome, AnnotationKind, ChangeSetStatus
 from contracts.pipeline import pipeline_workflow_id
-from contracts.states import ArtifactType, JobStatus
+from contracts.states import ArtifactType, EpisodeStatus, JobStatus
 from domain.episode.entities import Episode
 from domain.job.entities import Job
 from infrastructure.agents.pinned_plan import (
@@ -136,9 +136,19 @@ class StoreBackedEpisodeReader:
         await self._episode(episode_id)
         return await has_unstarted_agentic_draft(self._session_factory, episode_id)
 
-    async def list_episodes(self, *, limit: int, before: datetime | None) -> EpisodeList:
+    async def list_episodes(
+        self,
+        *,
+        limit: int,
+        before: datetime | None,
+        before_id: uuid.UUID | None = None,
+        status: EpisodeStatus | None = None,
+        q: str | None = None,
+    ) -> EpisodeList:
         async with self._session_factory() as session:
-            page = await EpisodeRepository(session).list_page(limit=limit + 1, before=before)
+            page = await EpisodeRepository(session).list_page(
+                limit=limit + 1, before=before, before_id=before_id, status=status, q=q
+            )
             agentic = await ArtifactMetadataRepository(session).episode_ids_with_current(
                 ArtifactType.WORKFLOW_PLAN, [e.id for e in page]
             )
@@ -149,6 +159,7 @@ class StoreBackedEpisodeReader:
                 for e in shown
             ),
             next_before=shown[-1].created_at if len(page) > limit else None,
+            next_before_id=uuid.UUID(shown[-1].id) if len(page) > limit else None,
         )
 
     async def workspace(self, episode_id: uuid.UUID) -> EpisodeWorkspace:

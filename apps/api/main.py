@@ -11,7 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.dependencies import get_settings
 from apps.api.intervention_logging import InterventionRequestLoggingMiddleware
-from apps.api.routers import application, episodes, intervention, intervention_insights, research
+from apps.api.routers import (
+    application,
+    episodes,
+    intervention,
+    intervention_insights,
+    research,
+    ui,
+)
 from contracts.assistant_tools import CORRELATION_HEADER
 from contracts.log_contract import EventName, Outcome
 from infrastructure.config import cors_origins
@@ -66,6 +73,8 @@ def create_app() -> FastAPI:
     app.include_router(intervention_insights.router)
     # ADR-0043 §1: application 層のユースケース route。JPMAS2_APPLICATION_API=false なら 404
     app.include_router(application.router)
+    # ADR-0045 §1: 運用者 UI の静的配信。flag OFF なら /ui/* は 404 feature_disabled
+    app.include_router(ui.router)
     # ADR-0044 §4: UI の origin を設定したときだけ CORS を許す（既定は何も付けない）
     origins = cors_origins(get_settings())
     if origins:
