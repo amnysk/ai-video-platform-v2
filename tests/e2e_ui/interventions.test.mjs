@@ -192,3 +192,21 @@ test('8b. 閉じたダイアログの送信ボタンを（保持して）後か�
   await sleep(400);
   assert.equal((await holdPosts(server)).length, 0);
 });
+
+const resumePosts = async (server) => posts(await server.log()).filter((e) => e.path.endsWith('/resume'));
+
+test('9. 再開は有料: 警告を出し、確認チェックが無ければ送らない（権限ヒントにも「有料」）', { skip }, async () => {
+  const { server, browser } = env;
+  const { page } = await newPage(browser);
+  await openDetail(page, server, IDS.awaiting, server.tokens.owner);
+  assert.match(await page.locator('details', { hasText: '各操作に必要な権限' }).innerHTML(), /再開（resume）: 必要な scope「resume」 \/ 有料/);
+  await page.click('button:has-text("再開（resume）")');
+  await page.waitForSelector('dialog[open] #resume-ack');
+  assert.match(await dialog(page).innerText(), /有料の生成が始まりうります/);
+  await page.click('dialog[open] button:has-text("再開する")');
+  await page.waitForSelector('dialog[open] >> text=確認にチェックしてください');
+  assert.equal((await resumePosts(server)).length, 0);
+  await page.check('#resume-ack');
+  await page.click('dialog[open] button:has-text("再開する")');
+  await until(async () => (await resumePosts(server)).length === 1, { what: 'resume post' });
+});

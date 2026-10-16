@@ -81,8 +81,11 @@ route は `episodes.router` と `research.router` の route 表から列挙し�
 
 - `tests/web` は backend が生成する実物 `apps/web/static/operations.json` を直接読む（コピーを持たない。
   推測した形のコピーが実物とずれて、frontend が `request_fields`/`incurs_cost` を前提に書かれていたため）。
-  `tests/web/operations.test.mjs` は有料操作の定数 `PAID_OPERATIONS`（ADR-0044: `start_agentic_production` と
-  `apply_approved_change`）が実カタログに実在すること、カタログに費用項目が無い（増えたら持ち方を見直す）ことを固定する。
+  `tests/web/operations.test.mjs` は、UI が有料かどうかを `operations.json` の `paid` だけから決めること（JS に
+  操作名のリテラルを持たない。フラグを書き換えると判定が変わる）を固定する。有料の集合そのもの
+  （`start_agentic_production` / `resume_production` / `apply_approved_change`）は
+  `tests/contract/test_operations_catalog_sync.py::test_the_paid_operation_set_is_pinned` が固定し、変えるなら意図的に落ちる。
+  `tests/e2e_ui/interventions.test.mjs` 9 は再開ダイアログの警告・確認チェック・権限ヒントの「有料」を実ブラウザで確かめる。
 - `tests/unit/test_ui_hosting.py::test_on_ui_without_trailing_slash_redirects_to_ui_slash`: `/ui` のままだと
   `./js/main.js` が `/js/main.js` に解決されて画面が白くなる。`/ui/` へ 308。OFF のときは redirect せず
   `404 feature_disabled`（OFF の挙動を漏らさない）。

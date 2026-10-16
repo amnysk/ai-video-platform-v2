@@ -65,3 +65,7 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
   依存の付け忘れを検出する。
 - **既知・受容**: `/docs`・`/redoc`・`/openapi.json`・`/healthz` は ON でも認証しない（スキーマと生死確認のみで、
   業務データ・副作用を持たない）。公開したくない環境では reverse proxy 側で絞る。テストで現状を固定した。
+- **有料の宣言は `OperationSpec.paid` に一本化**: `start_agentic_production` / `resume_production` /
+  `apply_approved_change` が `paid=True`（ADR-0044: resume は固定計画を歩き、未完了 stage で有料生成しうる）。
+  `operations.json` に `paid` を出し、UI の `PAID_OPERATIONS` リテラルは廃止。再開ダイアログは有料警告と
+  確認チェックを要求し、権限ヒントにも「有料」を出す。集合は contract test で固定する。

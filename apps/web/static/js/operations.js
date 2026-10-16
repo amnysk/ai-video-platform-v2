@@ -1,11 +1,8 @@
 // apps/web/static/operations.json（scripts/export-operations.py が生成。手で直さない）の読み込み。
 // 実際の形: {api_prefix, catalog_version, operations:[{name, method, path（prefix 込み）, path_params,
-//   required_scope, human_only, effect, body_fields[{name,type,required,nullable,enum}], query_fields[...]}]}。
-// カタログに「費用が発生するか」の項目は無い。ここでは推測せず、PAID_OPERATIONS（ADR-0044）だけを持つ。
+//   required_scope, human_only, paid, effect, body_fields[{name,type,required,nullable,enum}], query_fields[...]}]}。
+// `paid`（有料の外部生成を伴いうるか）もカタログ（contracts の OperationSpec.paid）が唯一の宣言元。JS に操作名の一覧を持たない。
 // 無い・壊れているときは null を返し、画面は「操作カタログが無い」ことを示す（API の path を手書きしない）。
-
-/** ADR-0044: 有料の外部生成を伴う操作は、この 2 つだけ。UI の費用警告はこれと影響プレビューの見積りだけから出す。 */
-export const PAID_OPERATIONS = Object.freeze(['start_agentic_production', 'apply_approved_change']);
 
 function normalize(raw) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.operations)) return null;
@@ -22,7 +19,7 @@ function normalize(raw) {
       effect: o.effect ?? null,
       bodyFields: Array.isArray(o.body_fields) ? o.body_fields : [],
       queryFields: Array.isArray(o.query_fields) ? o.query_fields : [],
-      paid: PAID_OPERATIONS.includes(o.name),
+      paid: o.paid === true, // 欠けている・壊れているときは有料扱いにしない既存挙動と同じ（確認の追加は紙面上の警告であり権限ではない）
     });
   }
   return { apiPrefix: raw.api_prefix ?? null, catalogVersion: raw.catalog_version ?? null, byName };

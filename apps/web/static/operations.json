@@ -1,6 +1,6 @@
 {
   "api_prefix": "/v1/intervention",
-  "catalog_version": "6bef459377f77d7e",
+  "catalog_version": "edb5af2f2d6c7782",
   "operations": [
     {
       "body_fields": [
@@ -21,6 +21,7 @@
       "human_only": false,
       "method": "POST",
       "name": "create_episode_draft",
+      "paid": false,
       "path": "/v1/intervention/episodes/drafts",
       "path_params": [],
       "query_fields": [],
@@ -32,6 +33,7 @@
       "human_only": false,
       "method": "GET",
       "name": "list_episodes",
+      "paid": false,
       "path": "/v1/intervention/episodes",
       "path_params": [],
       "query_fields": [
@@ -91,6 +93,7 @@
       "human_only": false,
       "method": "GET",
       "name": "get_episode_workspace",
+      "paid": false,
       "path": "/v1/intervention/episodes/{episode_id}/workspace",
       "path_params": [
         "episode_id"
@@ -104,6 +107,7 @@
       "human_only": true,
       "method": "POST",
       "name": "start_agentic_production",
+      "paid": true,
       "path": "/v1/intervention/episodes/{episode_id}/production",
       "path_params": [
         "episode_id"
@@ -136,6 +140,7 @@
       "human_only": false,
       "method": "POST",
       "name": "request_hold",
+      "paid": false,
       "path": "/v1/intervention/episodes/{episode_id}/hold",
       "path_params": [
         "episode_id"
@@ -168,6 +173,7 @@
       "human_only": false,
       "method": "POST",
       "name": "resume_production",
+      "paid": true,
       "path": "/v1/intervention/episodes/{episode_id}/resume",
       "path_params": [
         "episode_id"
@@ -181,6 +187,7 @@
       "human_only": false,
       "method": "GET",
       "name": "get_storyboard",
+      "paid": false,
       "path": "/v1/intervention/episodes/{episode_id}/storyboard",
       "path_params": [
         "episode_id"
@@ -213,6 +220,7 @@
       "human_only": false,
       "method": "POST",
       "name": "propose_storyboard_change",
+      "paid": false,
       "path": "/v1/intervention/episodes/{episode_id}/storyboard/proposals",
       "path_params": [
         "episode_id"
@@ -226,6 +234,7 @@
       "human_only": false,
       "method": "GET",
       "name": "preview_change_impact",
+      "paid": false,
       "path": "/v1/intervention/episodes/{episode_id}/change-sets/{change_set_id}/impact",
       "path_params": [
         "episode_id",
@@ -259,6 +268,7 @@
       "human_only": false,
       "method": "POST",
       "name": "apply_approved_change",
+      "paid": true,
       "path": "/v1/intervention/episodes/{episode_id}/change-sets/{change_set_id}/apply",
       "path_params": [
         "episode_id",
@@ -273,6 +283,7 @@
       "human_only": false,
       "method": "GET",
       "name": "get_agent_decisions",
+      "paid": false,
       "path": "/v1/intervention/episodes/{episode_id}/agent-decisions",
       "path_params": [
         "episode_id"
@@ -286,6 +297,7 @@
       "human_only": false,
       "method": "GET",
       "name": "get_quality_review",
+      "paid": false,
       "path": "/v1/intervention/episodes/{episode_id}/quality-review",
       "path_params": [
         "episode_id"
@@ -299,6 +311,7 @@
       "human_only": false,
       "method": "GET",
       "name": "get_workflow_progress",
+      "paid": false,
       "path": "/v1/intervention/episodes/{episode_id}/progress",
       "path_params": [
         "episode_id"

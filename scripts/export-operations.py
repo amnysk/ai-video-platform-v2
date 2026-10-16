@@ -6,7 +6,8 @@
 ``contracts.application_operations.OPERATIONS`` から生成する。UI はこの JSON だけを読み、
 操作の名前・method・path・scope・人限定・入力を手で再掲しない。差分は
 ``tests/contract/test_operations_catalog_sync.py`` が検査する。
-**カタログに無い情報（費用が発生しうるか等）は推測して足さない。**
+``paid``（有料の外部生成を伴いうるか）もカタログ（``OperationSpec.paid``）が唯一の宣言元。
+**カタログに無い情報は推測して足さない。**
 """
 
 from __future__ import annotations
@@ -79,6 +80,7 @@ def build() -> dict[str, Any]:
             "path_params": _path_params(spec.http_path),
             "required_scope": spec.required_scope.value,
             "human_only": spec.human_only,
+            "paid": spec.paid,
             "effect": spec.effect.value,
             "body_fields": _fields(spec.request_model),
             "query_fields": _fields(spec.query_model),

@@ -75,7 +75,7 @@ export function interventionBar(dctx, getWorkspace) {
       btn.title = disabledReason;
     }
     if (spec) {
-      hints.append(h('li', {}, `${label}: 必要な scope「${spec.scope ?? MISSING}」${spec.humanOnly ? ' / 人だけが実行できます' : ''}${spec.paid ? ' / 有料の生成を伴います' : ''}`));
+      hints.append(h('li', {}, `${label}: 必要な scope「${spec.scope ?? MISSING}」${spec.humanOnly ? ' / 人だけが実行できます' : ''}${spec.paid ? ' / 有料（外部生成の費用が発生しうる）' : ''}`));
     }
     bar.append(btn);
     return btn;
@@ -143,6 +143,7 @@ function holdDialog(dctx, spec) {
 
 function resumeDialog(dctx, spec, ws) {
   const legacy = ws.episode.pipeline_kind === 'legacy';
+  const ack = h('input', { type: 'checkbox', id: 'resume-ack' });
   const select = h('select', { id: 'resume-stage' }, h('option', { value: '' }, '指定しない（既定）'), LEGACY_START_STAGES.map((s) => h('option', { value: s }, s)));
   openOperationDialog(dctx, {
     title: '再開（resume）',
@@ -151,14 +152,18 @@ function resumeDialog(dctx, spec, ws) {
     intro: h(
       'div',
       {},
+      spec.paid ? h('div', { class: 'alert alert-warn' }, h('p', { class: 'alert-title' }, '有料の生成が始まりうります'), h('p', {}, '再開は固定の計画を歩き、未完了の stage で外部サービスの有料生成を行うことがあります（完了済みの stage は再利用）。')) : null,
       h('p', {}, `種別: ${ws.episode.pipeline_kind}。現在の制御状態: ${ws.read_model?.control?.control_state ?? MISSING}（revision ${ws.control_revision}）`),
       legacy
         ? h('p', {}, 'Legacy は開始する工程を指定できます。')
         : h('p', {}, 'Agentic は固定の計画を先頭から歩きます（完了済みの stage は再利用）。開始工程は指定できません。'),
       h('p', { class: 'muted' }, '送信後、worker の確認結果（worker_check）を表示します。確認できない場合は「未確認」と表示します。'),
     ),
-    prepare: async (c) => { if (legacy) c.append(field('開始工程 (start_stage)', select)); },
-    validate: () => null,
+    prepare: async (c) => {
+      if (legacy) c.append(field('開始工程 (start_stage)', select));
+      if (spec.paid) c.append(h('label', { class: 'checkbox-row', for: 'resume-ack' }, ack, '有料の生成が発生しうることを理解しました'));
+    },
+    validate: () => (spec.paid && !ack.checked ? '有料の生成が発生しうることへの確認にチェックしてください' : null),
     send: (commandId, cid) =>
       dctx.api.post(
         buildPath(spec, { episode_id: dctx.episodeId }),

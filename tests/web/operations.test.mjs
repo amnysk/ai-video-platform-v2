@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { loadOperations, normalizeOperations, buildPath, availability, PAID_OPERATIONS } from '../../apps/web/static/js/operations.js';
+import { loadOperations, normalizeOperations, buildPath, availability } from '../../apps/web/static/js/operations.js';
 import { repoPath } from './_py.mjs';
 
 // 実物（backend が生成）を読む。コピーは持たない
@@ -38,15 +38,18 @@ test('availability: scope が分からなければ常に有効（権限判定は
   assert.equal(availability(spec, ['apply']).enabled, true);
 });
 
-test('有料操作は ADR-0044 の 2 つで、実カタログに実在する（カタログに費用項目は無い）', () => {
+test('有料かどうかは operations.json の paid だけから決まる（JS に操作名の一覧を持たない）', () => {
   const cat = normalizeOperations(fixture);
-  assert.deepEqual([...PAID_OPERATIONS].sort(), ['apply_approved_change', 'start_agentic_production']);
-  for (const n of PAID_OPERATIONS) assert.ok(cat.byName.has(n), n);
-  assert.deepEqual(
-    [...cat.byName.values()].filter((o) => o.paid).map((o) => o.name).sort(),
-    [...PAID_OPERATIONS].sort(),
-  );
-  for (const o of fixture.operations) {
-    assert.ok(!Object.keys(o).some((k) => /cost|paid/.test(k)), `${o.name}: カタログに費用項目が増えたら PAID_OPERATIONS の持ち方を見直す`);
-  }
+  const fromJson = fixture.operations.filter((o) => o.paid === true).map((o) => o.name).sort();
+  assert.deepEqual([...cat.byName.values()].filter((o) => o.paid).map((o) => o.name).sort(), fromJson);
+  assert.deepEqual(fromJson, ['apply_approved_change', 'resume_production', 'start_agentic_production']);
+  // フラグを書き換えると UI の判定がそのまま変わる（リテラルを見ていない証拠）
+  const flipped = structuredClone(fixture);
+  for (const o of flipped.operations) o.paid = o.name === 'request_hold';
+  const cat2 = normalizeOperations(flipped);
+  assert.deepEqual([...cat2.byName.values()].filter((o) => o.paid).map((o) => o.name), ['request_hold']);
+  // paid が無いカタログは有料と推測しない
+  const bare = structuredClone(fixture);
+  for (const o of bare.operations) delete o.paid;
+  assert.ok([...normalizeOperations(bare).byName.values()].every((o) => o.paid === false));
 });

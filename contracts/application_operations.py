@@ -267,6 +267,9 @@ class OperationSpec:
     http_path: str
     #: GET の query parameter の model（無ければ None）。``request_model``（body）とは別
     query_model: type[BaseModel] | None = None
+    #: 有料の外部生成を伴いうる（UI の警告・確認の唯一の根拠。ADR-0045 review fixes）。
+    #: 既定 False は「読み取り・提案・hold」。増減は ``tests/contract`` が固定した集合と突き合わせる
+    paid: bool = False
 
 
 _EP = "/episodes/{episode_id}"
@@ -312,6 +315,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         StartAgenticProductionResult,
         "POST",
         f"{_EP}/production",
+        paid=True,
     ),
     OperationSpec(
         OperationName.REQUEST_HOLD,
@@ -332,6 +336,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         ResumeAccepted,
         "POST",
         f"{_EP}/resume",
+        paid=True,
     ),
     OperationSpec(
         OperationName.GET_STORYBOARD,
@@ -372,6 +377,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         CommandAccepted,
         "POST",
         f"{_EP}/change-sets/{{change_set_id}}/apply",
+        paid=True,
     ),
     OperationSpec(
         OperationName.GET_AGENT_DECISIONS,
