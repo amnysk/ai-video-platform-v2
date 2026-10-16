@@ -209,6 +209,10 @@ test('9. 再開は有料: 警告を出し、確認チェックが無ければ送
   await page.check('#resume-ack');
   await page.click('dialog[open] button:has-text("再開する")');
   await until(async () => (await resumePosts(server)).length === 1, { what: 'resume post' });
+  // 応答が返るまで待つ。待たないと、サーバー側の処理が次のテストの reset の後に完了して
+  // world.accepted に混ざる（次のテストの accepted().length が 2 になる flake の原因）
+  await page.waitForSelector('dialog[open] .alert');
+  await until(async () => !(await dialog(page).innerText()).includes('送信中'), { what: 'resume settled' });
 });
 
 for (const [label, fulfill] of [
