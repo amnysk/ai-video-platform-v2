@@ -33,6 +33,8 @@ def test_adr_error_vocabulary_is_exact() -> None:
         "command_id_reused", "stale_control_revision", "stale_target_revision", "forbidden",
         "budget_exceeded", "budget_unverifiable", "feature_disabled", "unknown_template",
         "unknown_agent_spec", "template_not_runnable",
+        # ADR-0044 §1（P2-A）
+        "invalid_state", "change_set_not_found", "cost_not_estimated",
     }  # fmt: skip
 
 

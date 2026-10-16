@@ -225,6 +225,13 @@ class EpisodeRepository:
             row.workflow_id = workflow_id
             await self._session.flush()
 
+    async def list_page(self, *, limit: int, before: datetime | None = None) -> list[Episode]:
+        """新しい順の keyset ページ（``created_at < before``）。読み取り専用（ADR-0044）。"""
+        stmt = select(EpisodeRow).order_by(EpisodeRow.created_at.desc(), EpisodeRow.id.desc())
+        if before is not None:
+            stmt = stmt.where(EpisodeRow.created_at < before)
+        return [_to_episode(r) for r in (await self._session.scalars(stmt.limit(limit))).all()]
+
     async def list_progress_snapshots(
         self, statuses: Sequence[EpisodeStatus]
     ) -> list[EpisodeProgressSnapshot]:
@@ -638,6 +645,20 @@ class ArtifactMetadataRepository:
             .order_by(ArtifactMetadataRow.scene_id, ArtifactMetadataRow.id)
         )
         return [_to_artifact(row) for row in (await self._session.scalars(stmt)).all()]
+
+    async def episode_ids_with_current(
+        self, artifact_type: ArtifactType, episode_ids: Sequence[uuid.UUID | str]
+    ) -> set[str]:
+        """``artifact_type`` の現行世代（Episode 単位）を持つ Episode の id（一覧用の一括判定）。"""
+        if not episode_ids:
+            return set()
+        stmt = select(ArtifactMetadataRow.episode_id).where(
+            ArtifactMetadataRow.episode_id.in_([_as_uuid(e) for e in episode_ids]),
+            ArtifactMetadataRow.artifact_type == artifact_type.value,
+            ArtifactMetadataRow.scene_id.is_(None),
+            ArtifactMetadataRow.superseded_at.is_(None),
+        )
+        return {str(e) for e in (await self._session.scalars(stmt)).all()}
 
     async def get(self, artifact_id: uuid.UUID | str) -> ArtifactMetadata | None:
         row = await self._session.get(ArtifactMetadataRow, _as_uuid(artifact_id))

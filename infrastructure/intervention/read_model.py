@@ -374,6 +374,10 @@ def _usd(value: Decimal) -> str:
     return str(value.quantize(Decimal("0.0001")))
 
 
+#: 読み取り側（``infrastructure/application``）が同じ桁で費用を示すための公開名
+format_usd = _usd
+
+
 class EpisodeReadModel:
     def __init__(
         self,

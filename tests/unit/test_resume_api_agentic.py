@@ -14,6 +14,7 @@ from temporalio.common import WorkflowIDReusePolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from contracts.agentic_pipeline import PinWorkflowPlanRequest, agentic_episode_workflow_id
+from infrastructure.config import Settings
 from infrastructure.storage.memory_store import InMemoryArtifactStore
 from tests.unit.test_resume_api import TO_STORYBOARD_READY, FakeResumeStarter, _episode
 from workers.pipeline.agentic_activities import AgenticPipelineActivities
@@ -40,6 +41,7 @@ async def api(session_factory):
     from apps.api.dependencies import (
         get_artifact_store_factory,
         get_session_factory,
+        get_settings,
         get_workflow_starter,
     )
     from apps.api.main import create_app
@@ -50,6 +52,8 @@ async def api(session_factory):
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_workflow_starter] = lambda: starter
     app.dependency_overrides[get_artifact_store_factory] = lambda: lambda: store
+    # flag OFF の再開は 409（test_resume_feature_disabled.py）。ここは ON の環境の挙動を検査する
+    app.dependency_overrides[get_settings] = lambda: Settings(jpmas2_agentic_workflows=True)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client, starter, store
 

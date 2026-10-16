@@ -1,0 +1,12 @@
+# CI 専用 override（compose.yaml の上に重ねる: COMPOSE_FILE=compose.yaml:compose.ci.yaml）。
+# 本番・ローカルの compose.yaml は変えない。経緯と判断は docs/decisions/0046-ci-minio-image.md。
+#
+# minio/minio は Docker Hub から匿名 pull できない（denied、レート制限ではない）。
+# Chainguard の image は匿名で pull でき、タグは latest のみなので digest で固定する。
+# digest の更新手順: docs/operations/ci-minio-image.md
+services:
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:2136d593beacf4461187035eca949fe49abd589d5079735025c711ca58fee0c8
+    # この image は非 root（uid 65532）で動く。CI の data dir は使い捨てで root 所有なので root で動かす。
+    # 本番の data dir には使わない（このファイルは本番 compose の読み込み対象ではない）。
+    user: "0"

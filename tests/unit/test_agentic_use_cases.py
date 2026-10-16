@@ -20,9 +20,11 @@ from contracts.application import (
     CreateEpisodeDraftRequest,
     StartAgenticProductionRequest,
     StartedWorkflow,
+    WorkerCheck,
     episode_draft_id,
 )
 from contracts.intervention import InterventionMode
+from contracts.pipeline import PipelineOptions
 from contracts.states import ArtifactType, EpisodeStatus
 from infrastructure.agents.draft_port import DbEpisodeDraftPort
 from infrastructure.db.models import DailyEpisodeSlotRow, EpisodeRow, TopicPlanRow
@@ -63,6 +65,9 @@ class RecordingStarter:
         return StartedWorkflow(
             workflow_id=agentic_episode_workflow_id(str(episode_id)), started=self._started
         )
+
+    async def probe_workers(self) -> WorkerCheck:
+        return WorkerCheck.UNKNOWN
 
 
 # ------------------------------------------------------------------------------ draft
@@ -246,7 +251,7 @@ async def test_the_temporal_starter_uses_one_workflow_id_per_episode_and_rejects
     None
 ):
     async with await WorkflowEnvironment.start_time_skipping() as wf_env:
-        starter = TemporalAgenticStarter(wf_env.client)
+        starter = TemporalAgenticStarter(wf_env.client, PipelineOptions())
         episode_id = uuid.uuid4()
         first = await starter.start(
             episode_id=episode_id, template_id="shorts_agentic", template_version="1"

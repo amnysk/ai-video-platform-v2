@@ -36,6 +36,11 @@ class OperationErrorCode(StrEnum):
     UNKNOWN_TEMPLATE = "unknown_template"
     UNKNOWN_AGENT_SPEC = "unknown_agent_spec"
     TEMPLATE_NOT_RUNNABLE = "template_not_runnable"
+    # ADR-0044 で新設（P2-A）。``invalid_state`` は ``RejectReason`` と同じ綴り
+    INVALID_STATE = "invalid_state"
+    CHANGE_SET_NOT_FOUND = "change_set_not_found"
+    #: 見積りの無い変更は適用しない（未計測を 0 円として扱わない）
+    COST_NOT_ESTIMATED = "cost_not_estimated"
 
 
 class OperationError(Exception):
@@ -157,11 +162,23 @@ class DraftRecord(_Frozen):
     created: bool
 
 
+class WorkerCheck(StrEnum):
+    """workflow を拾う worker の確認結果（ADR-0044 §3）。確認できなければ ``unknown``。
+
+    ``pollers_present`` でも「実行される」とは断言しない（poller は workflow 型を名乗らない）。
+    """
+
+    POLLERS_PRESENT = "pollers_present"
+    NO_POLLERS = "no_pollers"
+    UNKNOWN = "unknown"
+
+
 class StartedWorkflow(_Frozen):
     """port の結果: 起動した（または既にあった）workflow。"""
 
     workflow_id: str
     started: bool
+    worker_check: WorkerCheck = WorkerCheck.UNKNOWN
 
 
 class CreateEpisodeDraftRequest(_Frozen):
@@ -185,3 +202,5 @@ class StartAgenticProductionResult(_Frozen):
     workflow_id: str
     #: False = 同じ id の workflow が既にある（REJECT_DUPLICATE。二重に始めない）
     started: bool
+    #: ADR-0044 §3。worker の確認結果（``started`` は「投入した」であって「実行中」ではない）
+    worker_check: WorkerCheck = WorkerCheck.UNKNOWN

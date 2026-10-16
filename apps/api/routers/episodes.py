@@ -18,6 +18,7 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from apps.api.dependencies import (
     get_artifact_store_factory,
     get_session_factory,
+    get_settings,
     get_workflow_starter,
 )
 from apps.api.schemas import (
@@ -35,6 +36,7 @@ from apps.api.schemas import (
     StartUploadResponse,
 )
 from apps.api.workflow_starter import WorkflowStarter, render_workflow_id, upload_workflow_id
+from contracts.application import OperationErrorCode
 from contracts.log_contract import EventName, LogStage, Outcome
 from contracts.render import DEFAULT_RENDER_PROFILE_ID, get_render_profile
 from contracts.states import (
@@ -45,7 +47,11 @@ from contracts.states import (
     ProviderCall,
 )
 from domain.pipeline.resume_plan import ReservationSummary, ResumePlan, build_resume_plan
-from infrastructure.agents.pinned_plan import read_pinned_agentic_template
+from infrastructure.agents.pinned_plan import (
+    has_unstarted_agentic_draft,
+    read_pinned_agentic_template,
+)
+from infrastructure.config import Settings
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -377,6 +383,7 @@ async def resume_episode(
     session_factory: SessionFactory,
     starter: Starter,
     store_factory: Annotated[Callable[[], ArtifactStore], Depends(get_artifact_store_factory)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> ResumeResponse:
     """統一再開の実行（INV-16 / ADR-0032 §Decision(2)/(3)）。
 
@@ -412,6 +419,26 @@ async def resume_episode(
 
     # agentic か（pin 済みの計画があるか）の判定は I/O 側。介入 command の resume と同じ決定
     pinned = await read_pinned_agentic_template(session_factory, store_factory, episode_id)
+    if pinned is not None and not settings.jpmas2_agentic_workflows:
+        # AgenticEpisodeWorkflow を拾う worker が無い環境。起動せず legacy にも落とさない
+        message = "agentic workflows are disabled (JPMAS2_AGENTIC_WORKFLOWS=false)"
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, OperationErrorCode.FEATURE_DISABLED.value)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": OperationErrorCode.FEATURE_DISABLED.value, "message": message},
+        )
+    if pinned is None and await has_unstarted_agentic_draft(session_factory, episode_id):
+        # 未開始の draft は legacy に見える。resume で legacy の pipeline を走らせない
+        message = "agentic episode is not started; use start_agentic_production"
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, OperationErrorCode.INVALID_STATE.value)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": OperationErrorCode.INVALID_STATE.value,
+                "reason": "agentic_draft_not_started",
+                "message": message,
+            },
+        )
     try:
         if pinned is not None:
             workflow_id = await starter.start_agentic_workflow(

@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # 既定の `bash -e {0}` は pipefail が無く、`pytest | tee log` が pytest の失敗を隠す
+    shell: bash
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -20,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e ".[dev]"
+      - run: pip install -c constraints.txt -e ".[dev]"
       - run: ruff check --output-format=github .
       - run: ruff format --check .
 
@@ -32,7 +40,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
       - name: Create venv (pyright resolves imports from .venv)
-        run: python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+        run: python -m venv .venv && .venv/bin/pip install -c constraints.txt -e ".[dev]"
       - run: .venv/bin/pyright
 
   unit:
@@ -42,7 +50,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e ".[dev]"
+      - run: pip install -c constraints.txt -e ".[dev]"
       - run: pytest tests/unit -q
 
   contract:
@@ -52,7 +60,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e ".[dev]"
+      - run: pip install -c constraints.txt -e ".[dev]"
       - run: pytest tests/contract -q
 
   architecture:
@@ -62,17 +70,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e ".[dev]"
+      - run: pip install -c constraints.txt -e ".[dev]"
       - run: pytest tests/architecture -q
 
   integration:
     name: Integration tests
     runs-on: ubuntu-latest
+    env:
+      # CI だけ MinIO image を差し替える（minio/minio は匿名 pull 不可。ADR-0046）
+      COMPOSE_FILE: compose.yaml:compose.ci.yaml
+      # step の `if:` では secrets コンテキストが使えない（workflow file issue になり全 job が
+      # 0秒で失敗する）。job の env 経由で参照する
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e ".[dev]"
+      - run: pip install -c constraints.txt -e ".[dev]"
       - name: Prepare MinIO data directory
         run: sudo mkdir -p /mnt/minio-hdd/minio-data && sudo chmod 777 /mnt/minio-hdd/minio-data
       # api / migrate / dummy-worker は image: avp2-app:local を build: から作る（registry には無い）。
@@ -86,7 +100,7 @@ jobs:
         # 追加は本ワークフローの範囲外）。片方だけ設定されている状態で login action を
         # 呼ぶと、空 credential でのログイン失敗がこのジョブ全体を、本来検査したい
         # compose 起動の失敗より前に落としてしまう。両方揃っているときだけ試みる
-        if: ${{ vars.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        if: ${{ vars.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
@@ -115,6 +129,12 @@ jobs:
             temporal operator namespace describe --namespace avp-test --address "$A" >/dev/null 2>&1 \
               || temporal operator namespace create --namespace avp-test --retention 72h --address "$A"
           '
+      - name: Pull the pinned Fluent Bit image for the collector Lua tests
+        # tests/integration/test_logging_collector_lua.py は image が手元に無いと 6 件 skip する。
+        # skip の閾値を上げずに実行させるため、compose 定義（単一の宣言元）の image を pull する
+        run: |
+          image=$(python -c "import yaml;print(yaml.safe_load(open('deploy/logging/compose.logging.yaml'))['services']['fluent-bit']['image'])")
+          docker pull "$image"
       - run: pytest tests/integration -q -m integration -rs | tee pytest-integration.log
         env:
           DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
@@ -153,7 +173,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: compose-logs
-          path: compose-logs.txt
+          path: |
+            compose-logs.txt
+            pytest-integration.log
       - name: Smoke test the running stack
         run: ./scripts/smoke.sh
       - if: always()

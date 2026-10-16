@@ -22,6 +22,7 @@
 | `service.started` / `service.stopped` / `service.start_failed` | `infrastructure/runtime/worker_entry.py:run` / `_stopped`、`apps/api/main.py:_lifespan` | 既存の文言（`worker %s starting revision=%s`）は維持 |
 | `api.request.completed` | `infrastructure/logging/asgi.py:RequestLoggingMiddleware._completed` | `/healthz` は DEBUG。route template と path の `episode_id` |
 | `intervention.api.request` | `apps/api/intervention_logging.py:InterventionRequestLoggingMiddleware` | `/v1/intervention` 配下のみ。主体は `apps/api/auth.py:AUTH_OBSERVER` 経由 |
+| `application.operation.completed` | `apps/api/application_adapters.py:LoggingOperationObserver.record` | `application.service.ApplicationService` が操作ごとに1回呼ぶ（HTTP 以外の入口も同じ） |
 | `schedule.slot.acquired` | `workers/pipeline/activities.py:PipelineActivities.claim_daily_slot` | claim の commit の後 |
 | `schedule.slot.skipped` | `workers/pipeline/workflows.py:_slot_skipped`（`DailyEpisodeWorkflow.run` から） | paused / limit_reached / no_topic_plan / already_started |
 | `stage.started` / `stage.succeeded` | 各工程 workflow の `run` / `_admitted`（`workers/{planning,storyboard,production,render,upload}/workflows.py`）、`workers/pipeline/workflows.py`（`stage=pipeline`） | |
