@@ -61,3 +61,28 @@ route は `episodes.router` と `research.router` の route 表から列挙し�
   （None・数値・reason の無い型は None）、1000 文字で切り詰め、payload の他のキーは JSON に現れない
   （全文露出の回帰を防ぐ）。
 - `tests/web/timeline.test.mjs`: 値があれば表示、無ければ `未記録`（捏造しない）。
+
+## 6. 運用者 UI のテスト（旧 docs/ui/README.md から移動、ADR-0045）
+
+| テスト | 守るもの |
+|---|---|
+| `tests/web/errors.test.mjs` | `OperationErrorCode` / `RejectReason` の全値に日本語の理由があること（新しい code が黙って英語のままにならない） |
+| `tests/web/status.test.mjs` | ラベル表が `EpisodeStatus` 等の enum と過不足なく一致、要注意が enum の部分集合 |
+| `tests/web/cursor.test.mjs` | 複合 cursor と重複排除（ページ境界で行が重複/消失しない） |
+| `tests/web/stages.test.mjs` | 振り分け表のキーが実在する enum、未分類を捨てない、欠落を補完しない |
+| `tests/web/timeline.test.mjs` | 監査の併合順、payload 全文を出さない、trace id の捏造をしない |
+| `tests/web/requests.test.mjs` | body のキーが実物 `operations.json` の `body_fields` と一致、適用前検査（見積り null で送らない） |
+| `tests/web/api.test.mjs` | Bearer/相関 ID、401 でトークン破棄、ETag は返ったときだけ、トークンは sessionStorage のみ |
+| `tests/web/poller.test.mjs` | 前面のときだけ polling、stop 後は何もしない |
+| `tests/contract/test_web_static_csp.py` | CSP を破る記述（inline、`on*`、外部 URL、innerHTML、localStorage、console）が入らない |
+| `tests/unit/test_web_node_tests.py` | 上記 node テストを pytest から実行（node が無ければ skip） |
+
+`tests/web` は実物の `apps/web/static/operations.json` を直接読む（コピーは持たない）。
+
+- `tests/web` は backend が生成する実物 `apps/web/static/operations.json` を直接読む（コピーを持たない。
+  推測した形のコピーが実物とずれて、frontend が `request_fields`/`incurs_cost` を前提に書かれていたため）。
+  `tests/web/operations.test.mjs` は有料操作の定数 `PAID_OPERATIONS`（ADR-0044: `start_agentic_production` と
+  `apply_approved_change`）が実カタログに実在すること、カタログに費用項目が無い（増えたら持ち方を見直す）ことを固定する。
+- `tests/unit/test_ui_hosting.py::test_on_ui_without_trailing_slash_redirects_to_ui_slash`: `/ui` のままだと
+  `./js/main.js` が `/js/main.js` に解決されて画面が白くなる。`/ui/` へ 308。OFF のときは redirect せず
+  `404 feature_disabled`（OFF の挙動を漏らさない）。

@@ -70,19 +70,6 @@ DOM・ログには出さない（`console.*` は使わない）。401 を受け�
 
 `operations.json` が読めないときは、path を手書きで補わず「操作カタログを読み込めません」と再試行を出す。
 
-## テストの意図
+## テスト
 
-| テスト | 守るもの |
-|---|---|
-| `tests/web/errors.test.mjs` | `OperationErrorCode` / `RejectReason` の全値に日本語の理由があること（新しい code が黙って英語のままにならない） |
-| `tests/web/status.test.mjs` | ラベル表が `EpisodeStatus` 等の enum と過不足なく一致、要注意が enum の部分集合 |
-| `tests/web/cursor.test.mjs` | 複合 cursor と重複排除（ページ境界で行が重複/消失しない） |
-| `tests/web/stages.test.mjs` | 振り分け表のキーが実在する enum、未分類を捨てない、欠落を補完しない |
-| `tests/web/timeline.test.mjs` | 監査の併合順、payload 全文を出さない、trace id の捏造をしない |
-| `tests/web/requests.test.mjs` | body のキーが `operations.json` の `request_fields` と一致、適用前検査（見積り null で送らない） |
-| `tests/web/api.test.mjs` | Bearer/相関 ID、401 でトークン破棄、ETag は返ったときだけ、トークンは sessionStorage のみ |
-| `tests/web/poller.test.mjs` | 前面のときだけ polling、stop 後は何もしない |
-| `tests/contract/test_web_static_csp.py` | CSP を破る記述（inline、`on*`、外部 URL、innerHTML、localStorage、console）が入らない |
-| `tests/unit/test_web_node_tests.py` | 上記 node テストを pytest から実行（node が無ければ skip） |
-
-`tests/web` は実物の `apps/web/static/operations.json` を直接読む（コピーは持たない）。
+テストの意図は [docs/testing/jpmas2-p2b-rationale.md](../testing/jpmas2-p2b-rationale.md)（§6 以降）。
