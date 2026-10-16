@@ -24,7 +24,8 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
    （タブを閉じると消える。localStorage・cookie は使わない）。UI のボタン非表示は権限制御ではない。
    権限はサーバー側（ADR-0044 §2 `_authorize`）が強制し、UI は 401/403 の理由をそのまま表示する。
 4. **`/episodes/*` の opt-in 認証**: 設定 `EPISODES_API_AUTH_REQUIRED`（既定 false = 現行互換）。true のとき
-   GET は scope `read`、POST は scope `resume`（作成・再開・起動系）の principal を要求し、無ければ 401/403。
+   GET は scope `read` の principal、POST（作成・再開・起動系）は scope `resume` **かつ人（`actor_type=human`）**
+   の principal を要求し、無ければ 401/403（AI は 403 `forbidden`, `reason=human_only`）。
    `/healthz` は対象外。smoke スクリプトは既定のまま動く。本番で true にするのは所有者の判断。
 5. **cursor**: `list_episodes` に `before_id` を足し、`(created_at, id)` の複合比較にする。応答に `next_before_id`。
    `before_id` が無ければ従来動作（後方互換）。絞り込み `status`（EpisodeStatus）と `q`（topic の部分一致）を足す。
@@ -60,7 +61,7 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
 
 - **`/episodes/*`・`/research/*` の POST は人限定**（§4 の修正）: ON のとき scope だけでなく
   `actor_type=human` も要求する。`ai_assistant`/`agent` は `resume` を持っていても 403
-  `forbidden`（`reason=human_only`。ApplicationService と同じ code・文言の形）。GET は `read` のみ（AI 可）。
+  `forbidden`（`reason=human_only`。ApplicationService と error code・`reason` は同じで、message の文面は異なる）。GET は `read` のみ（AI 可）。
   OFF は従来と同一。`create_app()` の route 表（OpenAPI）から全 `/episodes*`・`/research*` を列挙するテストで、
   依存の付け忘れを検出する。
 - **既知・受容**: `/docs`・`/redoc`・`/openapi.json`・`/healthz` は ON でも認証しない（スキーマと生死確認のみで、
@@ -77,3 +78,4 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
 - **セキュリティヘッダは `/ui` 配下の全応答に**: flag OFF の 404・405（POST/HEAD）・500 を含む。`UiSecurityHeadersMiddleware`（`/ui` 以外には触れない ASGI middleware）で付け、route 内では付けない。
 - **api.js**: 使っていない ETag/If-None-Match を削除（常に新しい本文を読む）。HTTP 408/425/429 は一時的として、再試行は同じ command_id。詳細画面に workspace と progress の最終取得時刻を出す。
 - **fail closed（UI）**: `control_revision` が整数でないとき、hold/resume/propose は送信せず理由を表示する（null を送るとサーバーは stale 検査を省くため）。`operations.json` の `paid` が boolean でない操作は有料として扱い、詳細画面に「カタログが不正です」を出す。「制作を開始」ボタンの「有料」表記も `spec.paid` から出す。
+- **不正な JSON は認証より先に 422**: `/episodes*`・`/research*` では FastAPI が body の解析を dependency（認証）より先に行うため、body を取る POST に不正な JSON を送ると未認証でも 422 になる（body の無い route は 401）。副作用は無く（handler・starter は呼ばれない）、情報も漏れない。受容し、テストで固定した。

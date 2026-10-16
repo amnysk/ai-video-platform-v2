@@ -295,3 +295,49 @@ async def test_docs_openapi_and_healthz_stay_unauthenticated_when_required(requi
     _, client = required
     for path in ("/healthz", "/openapi.json", "/docs", "/redoc"):
         assert (await client.get(path)).status_code == 200, path
+
+
+async def test_required_malformed_json_is_422_before_authn_with_no_side_effects(
+    session_factory, artifact_store
+) -> None:
+    """ADR-0045 Consequences: FastAPI は body の解析を dependency（認証）より先に行う。
+
+    不正な JSON は未認証でも 422（情報は出ない）。handler・starter は一度も呼ばれない。
+    """
+    calls: list[str] = []
+
+    class Counting:
+        async def start_episode_workflow(self, **_: Any) -> str:
+            calls.append("episode")
+            return "wf"
+
+        async def start_research(self, **_: Any) -> str:
+            calls.append("research")
+            return "wf"
+
+    from apps.api.dependencies import get_workflow_starter
+    from apps.api.routers.research import get_research_starter
+
+    app = _build(session_factory, artifact_store, required=True)
+    app.dependency_overrides[get_workflow_starter] = lambda: Counting()
+    app.dependency_overrides[get_research_starter] = lambda: Counting()
+    targets = [
+        path
+        for path, ops in app.openapi()["paths"].items()
+        if path.startswith(("/episodes", "/research")) and "post" in ops
+    ]
+    assert len(targets) >= 5
+    async with _client(app) as client:
+        for path in targets:
+            r = await client.post(
+                _concrete(path),
+                content=b"{not json",
+                headers={"Content-Type": "application/json"},
+            )
+            # body の無い route は 401（認証が先）、body のある route は 422（解析が先）。どちらも副作用なし
+            assert r.status_code in (401, 422), (path, r.status_code)
+        creating = await client.post(
+            "/episodes", content=b"{not json", headers={"Content-Type": "application/json"}
+        )
+    assert creating.status_code == 422
+    assert calls == []
