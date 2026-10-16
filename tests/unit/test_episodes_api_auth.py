@@ -69,7 +69,7 @@ def _routes(_app) -> list[tuple[str, str]]:
         for router in (episodes.router, research.router)
         for route in router.routes
         if isinstance(route, APIRoute)
-        for method in sorted(route.methods - {"HEAD", "OPTIONS"})
+        for method in sorted((route.methods or set()) - {"HEAD", "OPTIONS"})
     ]
     assert len(found) >= 10  # 列挙が空振りしていない
     return found
@@ -201,7 +201,9 @@ async def test_required_reads_the_same_intervention_principals_setting(
     app = _build(session_factory, artifact_store, required=True)
     del app.dependency_overrides[get_episodes_registry]
     settings = Settings(  # type: ignore[call-arg]
-        _env_file=None, episodes_api_auth_required=True, intervention_principals=PRINCIPALS
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        episodes_api_auth_required=True,
+        intervention_principals=PRINCIPALS,  # pyright: ignore[reportArgumentType]
     )
     app.dependency_overrides[get_settings] = lambda: settings
     async with _client(app) as client:
