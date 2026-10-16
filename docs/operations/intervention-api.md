@@ -145,6 +145,14 @@ scope 不足は `403 missing_scope`、principal 未設定は `503 intervention_d
 この経路では読まない。実装は `apps/api/episodes_auth.py`。compose の `api` は現状 `INTERVENTION_PRINCIPALS` も
 この flag も渡さない（`.env` から api コンテナへ渡す設定は運用側で足す。本変更では compose を変えていない）。
 
+### 運用者 UI の静的配信 `/ui/`（ADR-0045 §1）
+`apps/web/static/` を `GET /ui/` で配信する（`apps/api/routers/ui.py`）。**`JPMAS2_APPLICATION_API=true` のときだけ**。
+OFF（既定）では `/ui/*` は application route と同じ `404 feature_disabled`（ファイルに触れる前）。解決後の実パスが
+`apps/web/static` の下に無いもの（`..`・エンコードされた `..`・絶対パス・外を指す symlink）は 404、ディレクトリは
+`index.html`。全応答に `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self';
+frame-ancestors 'none'; base-uri 'none'`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、
+`Cache-Control: no-store`。UI 自体は認証せず、操作は `/v1/intervention` が Bearer で認可する。
+
 ### `POST /v1/intervention/episodes/{episode_id}/storyboard/proposals`（scope `propose`、ADR-0043）
 絵コンテの映像文の変更案を、edit（1〜12件）ごとの `propose_change`（`scene.override_visual`）にする。
 **`JPMAS2_APPLICATION_API=true` のときだけ有効**（既定は `404 feature_disabled`）。本文は

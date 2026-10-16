@@ -31,3 +31,15 @@ route は `episodes.router` と `research.router` の route 表から列挙し�
 - `required_reads_the_same_intervention_principals_setting`: 新しい認証方式を作っていない。
 - `default_is_off_and_needs_no_token` / `off_ignores_even_an_invalid_token`: 既定 OFF は従来と同一
   （存在しない Episode は 401 ではなく 404）。
+
+## 3. `/ui/` の静的配信（tests/unit/test_ui_hosting.py、ADR-0045 §1）
+
+静的ディレクトリは dependency で差し替え、実 UI の資産に依存しない。
+- `on_serves_index_files_...`: index・サブディレクトリの index・通常ファイルを配信し、CSP 等の 4 ヘッダが付く。
+- `on_unknown_file_is_404_...` / `on_with_a_missing_static_directory_is_404_not_500`: 無いものは 404（UI 未配置でも 500 にしない）。
+- `off_every_ui_path_is_the_same_404_feature_disabled_as_the_api` / `off_does_not_touch_the_files`:
+  OFF の拒否は application route と同じ body で、存在しない directory でも変わらない（ファイルより先）。
+- `path_traversal_never_leaves_the_static_directory`: 生の `..`・`%2e%2e`・`%2f`・`\\`・絶対パス・NUL が外のファイルを返さない。
+  HTTP client は `..` を畳むため、`unnormalised_dot_dot_*` は ASGI に畳まれない path を直接渡す。
+- `a_symlink_pointing_outside_is_not_served`: 実パスで検査する（symlink での脱出）。
+- `ui_is_get_only`: 書き込みの口にしない。
