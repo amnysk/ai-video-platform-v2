@@ -68,6 +68,10 @@ jobs:
   integration:
     name: Integration tests
     runs-on: ubuntu-latest
+    env:
+      # step の `if:` では secrets コンテキストが使えない（workflow file issue になり全 job が
+      # 0秒で失敗する）。job の env 経由で参照する
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -86,7 +90,7 @@ jobs:
         # 追加は本ワークフローの範囲外）。片方だけ設定されている状態で login action を
         # 呼ぶと、空 credential でのログイン失敗がこのジョブ全体を、本来検査したい
         # compose 起動の失敗より前に落としてしまう。両方揃っているときだけ試みる
-        if: ${{ vars.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        if: ${{ vars.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
