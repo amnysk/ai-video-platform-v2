@@ -43,3 +43,26 @@ def test_production_compose_is_not_switched() -> None:
     base = _load("compose.yaml")["services"]["minio"]
     assert base["image"].startswith("minio/minio")
     assert "/mnt/minio-hdd/minio-data:/data" in base["volumes"]
+
+
+def test_workflow_shell_fails_on_pipe_errors() -> None:
+    """`pytest ... | tee log` の終了コードは tee のものになり、pytest の失敗が緑になる。
+
+    既定 shell は `bash -e {0}`（pipefail なし）。`shell: bash` は `-eo pipefail`。
+    """
+    wf = _load(".github/workflows/ci.yml")
+    assert wf["defaults"]["run"]["shell"] == "bash"
+
+
+def test_workflow_token_is_read_only() -> None:
+    assert _load(".github/workflows/ci.yml")["permissions"] == {"contents": "read"}
+
+
+def test_integration_pytest_log_is_uploaded() -> None:
+    wf = _load(".github/workflows/ci.yml")
+    paths = [
+        s["with"]["path"]
+        for s in wf["jobs"]["integration"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/upload-artifact")
+    ]
+    assert any("pytest-integration.log" in p for p in paths)
