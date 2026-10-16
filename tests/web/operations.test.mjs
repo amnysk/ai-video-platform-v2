@@ -48,8 +48,20 @@ test('有料かどうかは operations.json の paid だけから決まる（JS 
   for (const o of flipped.operations) o.paid = o.name === 'request_hold';
   const cat2 = normalizeOperations(flipped);
   assert.deepEqual([...cat2.byName.values()].filter((o) => o.paid).map((o) => o.name), ['request_hold']);
-  // paid が無いカタログは有料と推測しない
-  const bare = structuredClone(fixture);
-  for (const o of bare.operations) delete o.paid;
-  assert.ok([...normalizeOperations(bare).byName.values()].every((o) => o.paid === false));
+});
+
+test('paid が boolean でない操作は有料として扱い（fail closed）、壊れたカタログとして列挙する', () => {
+  const broken = structuredClone(fixture);
+  for (const o of broken.operations) {
+    if (o.name === 'request_hold') delete o.paid; // 欠落
+    if (o.name === 'get_storyboard') o.paid = 'false'; // boolean ではない
+  }
+  const cat = normalizeOperations(broken);
+  assert.equal(cat.byName.get('request_hold').paid, true);
+  assert.equal(cat.byName.get('get_storyboard').paid, true);
+  assert.deepEqual([...cat.malformedPaid].sort(), ['get_storyboard', 'request_hold']);
+  // 正常なカタログでは空、明示 false は false のまま
+  const ok = normalizeOperations(fixture);
+  assert.deepEqual(ok.malformedPaid, []);
+  assert.equal(ok.byName.get('request_hold').paid, false);
 });

@@ -7,8 +7,10 @@
 function normalize(raw) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.operations)) return null;
   const byName = new Map();
+  const malformedPaid = []; // paid が boolean でない操作。有料として扱い（fail closed）、画面に警告を出す
   for (const o of raw.operations) {
     if (!o || typeof o.name !== 'string' || typeof o.path !== 'string') continue;
+    if (typeof o.paid !== 'boolean') malformedPaid.push(o.name);
     byName.set(o.name, {
       name: o.name,
       method: String(o.method || 'GET').toUpperCase(),
@@ -19,10 +21,10 @@ function normalize(raw) {
       effect: o.effect ?? null,
       bodyFields: Array.isArray(o.body_fields) ? o.body_fields : [],
       queryFields: Array.isArray(o.query_fields) ? o.query_fields : [],
-      paid: o.paid === true, // 欠けている・壊れているときは有料扱いにしない既存挙動と同じ（確認の追加は紙面上の警告であり権限ではない）
+      paid: typeof o.paid === 'boolean' ? o.paid : true, // 欠落・不正は有料扱い（確認を増やす側に倒す）
     });
   }
-  return { apiPrefix: raw.api_prefix ?? null, catalogVersion: raw.catalog_version ?? null, byName };
+  return { apiPrefix: raw.api_prefix ?? null, catalogVersion: raw.catalog_version ?? null, byName, malformedPaid };
 }
 
 export async function loadOperations(fetchFn, url = './operations.json') {

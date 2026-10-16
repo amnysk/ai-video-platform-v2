@@ -15,6 +15,13 @@ export function pinControlRevision(workspace) {
   return Number.isInteger(r) ? r : null;
 }
 
+/** 送信してよい revision か。null を送るとサーバーは stale 検査を省くので、整数でなければ拒否する。 */
+export function controlRevisionProblem(revision) {
+  return Number.isInteger(revision)
+    ? null
+    : '制御状態の revision を取得できていません。ページを再読み込みして、最新の状態を読み込んでからやり直してください。';
+}
+
 export function buildHoldBody({ commandId, expectedControlRevision, reason }) {
   const r = (reason ?? '').trim();
   return { command_id: commandId, expected_control_revision: expectedControlRevision, reason: r || null };

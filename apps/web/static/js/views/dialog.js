@@ -6,7 +6,7 @@
 import { h, replaceChildren } from '../dom.js';
 import { errorBox, loading } from '../components.js';
 import { describeError } from '../errors.js';
-import { pinControlRevision, verifyEpisode } from '../requests.js';
+import { controlRevisionProblem, pinControlRevision, verifyEpisode } from '../requests.js';
 import { MISSING } from '../format.js';
 
 let dialogSeq = 0;
@@ -99,7 +99,7 @@ export function openOperationDialog(ctx, cfg) {
   async function onSubmit() {
     if (inflight || finished) return;
     const mismatch = verifyEpisode(cfg.episodeId, ctx.getWorkspace());
-    const invalid = mismatch ?? cfg.validate();
+    const invalid = mismatch ?? (cfg.needsRevision ? controlRevisionProblem(controlRevision) : null) ?? cfg.validate();
     if (invalid) {
       replaceChildren(msg, h('div', { class: 'alert alert-error', role: 'alert' }, invalid));
       return;

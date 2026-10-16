@@ -76,3 +76,4 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
 - **2xx は失敗として表示しない**: 送信が 2xx で返ったあと、本文が空・想定外で結果を描画できなくても「送信は受理されました。画面の更新に失敗」を出し、送信ボタンは戻さず、workspace は読み直す。
 - **セキュリティヘッダは `/ui` 配下の全応答に**: flag OFF の 404・405（POST/HEAD）・500 を含む。`UiSecurityHeadersMiddleware`（`/ui` 以外には触れない ASGI middleware）で付け、route 内では付けない。
 - **api.js**: 使っていない ETag/If-None-Match を削除（常に新しい本文を読む）。HTTP 408/425/429 は一時的として、再試行は同じ command_id。詳細画面に workspace と progress の最終取得時刻を出す。
+- **fail closed（UI）**: `control_revision` が整数でないとき、hold/resume/propose は送信せず理由を表示する（null を送るとサーバーは stale 検査を省くため）。`operations.json` の `paid` が boolean でない操作は有料として扱い、詳細画面に「カタログが不正です」を出す。「制作を開始」ボタンの「有料」表記も `spec.paid` から出す。

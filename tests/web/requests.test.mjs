@@ -84,3 +84,12 @@ test('pinControlRevision: ダイアログを開いた時点の control_revision 
   assert.equal(pinControlRevision(null), null);
   assert.equal(pinControlRevision({ control_revision: '4' }), null);
 });
+
+test('controlRevisionProblem: revision が整数でなければ送信を拒否する（null を送るとサーバーは stale 検査を飛ばす）', async () => {
+  const { controlRevisionProblem } = await import('../../apps/web/static/js/requests.js');
+  assert.equal(controlRevisionProblem(4), null);
+  assert.equal(controlRevisionProblem(0), null);
+  for (const bad of [null, undefined, '4', 1.5, NaN]) {
+    assert.match(controlRevisionProblem(bad), /制御状態の revision を取得できていません/, String(bad));
+  }
+});

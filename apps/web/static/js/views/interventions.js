@@ -60,8 +60,9 @@ export function interventionBar(dctx, getWorkspace) {
   const bar = h('div', { class: 'actions', role: 'group', 'aria-label': '介入操作' });
   const hints = h('ul', { class: 'plain muted small' });
 
-  function opButton(name, label, onClick, { extraDisabled = null, danger = false } = {}) {
+  function opButton(name, labelOrFn, onClick, { extraDisabled = null, danger = false } = {}) {
     const spec = ops.byName.get(name);
+    const label = typeof labelOrFn === 'function' ? labelOrFn(spec) : labelOrFn;
     let disabledReason = extraDisabled;
     if (!spec) disabledReason = '操作カタログに無い操作です';
     else {
@@ -86,10 +87,14 @@ export function interventionBar(dctx, getWorkspace) {
   opButton('request_hold', '一時停止を要求（hold）', (spec) => holdDialog(dctx, spec));
   opButton('resume_production', '再開（resume）', (spec) => resumeDialog(dctx, spec, ws()));
   opButton('propose_storyboard_change', '絵コンテの変更を提案', (spec) => proposeDialog(dctx, spec, ws()));
-  opButton('start_agentic_production', '制作を開始（有料・人のみ）', (spec) => startDialog(dctx, spec, ws()), { danger: true });
+  opButton('start_agentic_production', (spec) => `制作を開始${spec?.paid ? '（有料' : '（'}${spec?.humanOnly ? '・人のみ）' : '）'}`, (spec) => startDialog(dctx, spec, ws()), { danger: true });
   opButton('get_storyboard', '絵コンテを見る', (spec) => storyboardDialog(dctx, spec));
   opButton('get_quality_review', '品質レビューを見る', (spec) => qualityDialog(dctx, spec));
-  return h('div', {}, bar, h('details', {}, h('summary', {}, '各操作に必要な権限'), hints));
+  const broken = ops.malformedPaid ?? [];
+  const warning = broken.length
+    ? h('div', { class: 'alert alert-warn', role: 'alert' }, h('p', { class: 'alert-title' }, 'カタログが不正です'), h('p', {}, `operations.json の paid が不正な操作（${broken.join(', ')}）は有料として扱います。サーバーの配信状態を確認してください。`))
+    : null;
+  return h('div', {}, warning, bar, h('details', {}, h('summary', {}, '各操作に必要な権限'), hints));
 }
 
 export function changeSetsPanel(dctx, workspace) {
@@ -130,6 +135,7 @@ function holdDialog(dctx, spec) {
   const reason = h('textarea', { id: 'hold-reason', maxlength: HOLD_REASON_MAX });
   openOperationDialog(dctx, {
     title: '一時停止を要求（hold）',
+    needsRevision: true,
     episodeId: dctx.episodeId,
     submitLabel: 'hold を要求する',
     intro: h('p', {}, '一時停止を「要求」します。要求の受付は、直ちに止まったことを意味しません。制御状態は画面の「制御」欄で確認してください。'),
@@ -147,6 +153,7 @@ function resumeDialog(dctx, spec, ws) {
   const select = h('select', { id: 'resume-stage' }, h('option', { value: '' }, '指定しない（既定）'), LEGACY_START_STAGES.map((s) => h('option', { value: s }, s)));
   openOperationDialog(dctx, {
     title: '再開（resume）',
+    needsRevision: true,
     episodeId: dctx.episodeId,
     submitLabel: '再開する',
     intro: h(
@@ -186,6 +193,7 @@ function proposeDialog(dctx, spec, ws) {
   scene.addEventListener('change', () => { text.value = original(); current.textContent = `現在: ${original()}`; });
   openOperationDialog(dctx, {
     title: '絵コンテの変更を提案',
+    needsRevision: true,
     episodeId: dctx.episodeId,
     submitLabel: '変更案を作る',
     intro: h('p', {}, '編集できるのは visual_description だけです（framing などは未対応）。提案は適用ではありません。作成後に「影響を見る」で費用と影響を確認し、別操作で承認・適用します。'),
