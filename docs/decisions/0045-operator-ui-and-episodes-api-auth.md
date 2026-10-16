@@ -73,3 +73,4 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
 - **一覧の「さらに読み込む」は、最後に「検索」を押した時点の絞り込みを使う**（入力欄だけ編集中の値は使わない。`cursor.js` の `createSearchFilters`）。
 - **render の世代管理**（`render_gate.js`）: `render()` は await のあと古ければ捨て、直前の view を必ず dispose する。遅い応答が新しい画面を上書きして poller を漏らすことは無い。
 - **control_revision の固定**: hold/resume/propose はダイアログを開いた時点の `control_revision`（`pinControlRevision`）を送る（apply はプレビュー時の値を固定済み）。古ければサーバーが stale として拒否する。detail の `loadWorkspace` は世代管理し、古い応答が新しい応答を上書きしない。
+- **2xx は失敗として表示しない**: 送信が 2xx で返ったあと、本文が空・想定外で結果を描画できなくても「送信は受理されました。画面の更新に失敗」を出し、送信ボタンは戻さず、workspace は読み直す。

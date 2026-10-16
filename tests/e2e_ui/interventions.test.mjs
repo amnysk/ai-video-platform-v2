@@ -210,3 +210,29 @@ test('9. 再開は有料: 警告を出し、確認チェックが無ければ送
   await page.click('dialog[open] button:has-text("再開する")');
   await until(async () => (await resumePosts(server)).length === 1, { what: 'resume post' });
 });
+
+for (const [label, fulfill] of [
+  ['本文が空', { status: 202, contentType: 'application/json', body: '' }],
+  ['本文が想定外（null）', { status: 202, contentType: 'application/json', body: 'null' }],
+]) {
+  test(`10. 2xx なのに応答の${label}: 失敗ではなく「受理（画面更新に失敗）」を出し、再送させず、workspace を読み直す`, { skip }, async () => {
+    const { server, browser } = env;
+    const { page } = await newPage(browser);
+    await openDetail(page, server, IDS.running, server.tokens.owner);
+    await page.click('button:has-text("一時停止を要求")');
+    await page.route('**/hold', async (route) => {
+      await route.fetch(); // サーバーは本当に受理する
+      await route.fulfill(fulfill);
+    });
+    await server.clearLog();
+    await page.click('dialog[open] button:has-text("hold を要求する")');
+    await page.waitForSelector('dialog[open] >> text=送信は受理されました。画面の更新に失敗');
+    const text = await dialog(page).innerText();
+    assert.match(text, /再読み込みしてください/);
+    assert.doesNotMatch(text, /失敗しました|HTTP:|再試行/);
+    assert.equal(await page.locator('dialog[open] button:has-text("hold を要求する")').isVisible(), false, '送信ボタンは出さない');
+    await until(async () => (await server.log()).some((e) => e.method === 'GET' && e.path.endsWith('/workspace')), { what: 'workspace reload' });
+    assert.equal((await holdPosts(server)).length, 1, 'POST は 1 回だけ');
+    assert.equal((await server.accepted()).length, 1);
+  });
+}

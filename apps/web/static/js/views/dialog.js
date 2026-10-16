@@ -109,16 +109,37 @@ export function openOperationDialog(ctx, cfg) {
     const correlationId = ctx.uuid();
     try {
       const { data, correlationId: echoed } = await cfg.send(commandId, correlationId, { controlRevision });
+      // ここに来た = サーバーは 2xx で受理した。以降は何が起きても「失敗」と表示せず、再送もさせない
       finished = true;
       replaceChildren(body);
-      replaceChildren(
-        msg,
-        h('div', { class: 'alert alert-ok', role: 'status' }, h('p', { class: 'alert-title' }, '受け付けました'), cfg.renderSuccess(data), h('p', { class: 'muted small' }, `相関 ID: ${echoed ?? correlationId ?? MISSING}`)),
-      );
+      let rendered = null;
+      try {
+        rendered = cfg.renderSuccess(data);
+      } catch {
+        rendered = null; // 本文が空・想定外の形
+      }
+      if (rendered === null || rendered === undefined) {
+        replaceChildren(
+          msg,
+          h('div', { class: 'alert alert-warn', role: 'status' },
+            h('p', { class: 'alert-title' }, '送信は受理されました。画面の更新に失敗'),
+            h('p', {}, '結果を表示できませんでした。ページを再読み込みしてください。同じ操作を送り直す必要はありません。結果は「監査・履歴」で確認できます。'),
+            h('p', { class: 'muted small' }, `相関 ID: ${echoed ?? correlationId ?? MISSING}`)),
+        );
+      } else {
+        replaceChildren(
+          msg,
+          h('div', { class: 'alert alert-ok', role: 'status' }, h('p', { class: 'alert-title' }, '受け付けました'), rendered, h('p', { class: 'muted small' }, `相関 ID: ${echoed ?? correlationId ?? MISSING}`)),
+        );
+      }
       submit.hidden = true;
       cancel.textContent = '閉じる';
-      ctx.announce('操作を受け付けました');
-      await ctx.reloadWorkspace();
+      try {
+        ctx.announce(rendered === null || rendered === undefined ? '操作は受理されました。画面の更新に失敗しました' : '操作を受け付けました');
+        await ctx.reloadWorkspace();
+      } catch {
+        // 受理済み。読み直しの失敗は workspace 側が表示する。ここで失敗扱いにしない
+      }
     } catch (err) {
       if (err?.name === 'AbortError') {
         setBusy(false);
