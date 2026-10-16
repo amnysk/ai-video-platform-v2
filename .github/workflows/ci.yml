@@ -181,6 +181,55 @@ jobs:
       - if: always()
         run: docker compose --profile core down -v
 
+  browser-e2e:
+    name: Browser E2E
+    # P2-B の UI（tests/web, tests/e2e_ui）。これまで CI には node_modules も browser も無く、
+    # ラッパーの skipif で黙って skip されていた。ここでは skip を許さず、実際に実行して数える。
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: actions/setup-node@v4
+        with: {node-version: "22.22.3"}
+      - run: pip install -c constraints.txt -e ".[dev]"
+      - name: Install playwright-core (pinned by package-lock.json)
+        run: npm ci
+        working-directory: tests/e2e_ui
+      - name: Install the Chromium revision that matches playwright-core
+        # runner 同梱の google-chrome は版が固定されないので使わない
+        run: npx --no-install playwright-core install --with-deps chromium
+        working-directory: tests/e2e_ui
+      - name: Node UI tests (no skips)
+        run: |
+          node --test --test-reporter=tap tests/web/*.test.mjs 2>&1 | tee node-web.log
+          grep -qE '^# fail 0$' node-web.log
+          grep -qE '^# skipped 0$' node-web.log
+          grep -qE '^# cancelled 0$' node-web.log
+          grep -qE '^# pass [1-9][0-9]*$' node-web.log
+      - name: Browser E2E (no skips)
+        run: |
+          export CHROME_PATH=$(find "$HOME/.cache/ms-playwright" -type f -name chrome -path '*chrome-linux*' | head -1)
+          test -x "$CHROME_PATH" || { echo "pinned Chromium not found"; exit 1; }
+          "$CHROME_PATH" --version
+          node --test --test-reporter=tap tests/e2e_ui/*.test.mjs 2>&1 | tee e2e.log
+          grep -qE '^# fail 0$' e2e.log
+          grep -qE '^# skipped 0$' e2e.log
+          grep -qE '^# cancelled 0$' e2e.log
+          grep -qE '^# pass [1-9][0-9]*$' e2e.log
+      - name: Pytest wrappers also ran (not skipped)
+        run: |
+          pytest tests/e2e_ui tests/unit/test_web_node_tests.py -q -rs 2>&1 | tee py-wrappers.log
+          ! grep -qi skipped py-wrappers.log
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-logs
+          path: |
+            node-web.log
+            e2e.log
+            py-wrappers.log
+
   docker-build:
     name: Docker build
     runs-on: ubuntu-latest

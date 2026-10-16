@@ -203,7 +203,13 @@ class ApplicationService:
 
     async def list_episodes(self, caller: Caller, request: ListEpisodesRequest) -> EpisodeList:
         async def body(_: _Context) -> EpisodeList:
-            return await self._reads.list_episodes(limit=request.limit, before=request.before)
+            return await self._reads.list_episodes(
+                limit=request.limit,
+                before=request.before,
+                before_id=request.before_id,
+                status=request.status,
+                q=request.q,
+            )
 
         return await self._observed(OperationName.LIST_EPISODES, caller, None, body)
 

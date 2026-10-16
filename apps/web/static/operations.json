@@ -1,0 +1,323 @@
+{
+  "api_prefix": "/v1/intervention",
+  "catalog_version": "edb5af2f2d6c7782",
+  "operations": [
+    {
+      "body_fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "brief",
+          "nullable": false,
+          "required": true,
+          "type": "object"
+        }
+      ],
+      "effect": "propose",
+      "human_only": false,
+      "method": "POST",
+      "name": "create_episode_draft",
+      "paid": false,
+      "path": "/v1/intervention/episodes/drafts",
+      "path_params": [],
+      "query_fields": [],
+      "required_scope": "propose"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "list_episodes",
+      "paid": false,
+      "path": "/v1/intervention/episodes",
+      "path_params": [],
+      "query_fields": [
+        {
+          "name": "limit",
+          "nullable": false,
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "before",
+          "nullable": true,
+          "required": false,
+          "type": "string:date-time"
+        },
+        {
+          "name": "before_id",
+          "nullable": true,
+          "required": false,
+          "type": "string:uuid"
+        },
+        {
+          "enum": [
+            "planned",
+            "in_progress",
+            "needs_work",
+            "blocked",
+            "ready_for_review",
+            "approved",
+            "uploaded",
+            "analyzed",
+            "completed",
+            "script_ready",
+            "storyboard_ready",
+            "assets_ready",
+            "render_ready",
+            "failed",
+            "cancelled"
+          ],
+          "name": "status",
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "q",
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "required_scope": "read"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "get_episode_workspace",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/workspace",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "read"
+    },
+    {
+      "body_fields": [],
+      "effect": "control",
+      "human_only": true,
+      "method": "POST",
+      "name": "start_agentic_production",
+      "paid": true,
+      "path": "/v1/intervention/episodes/{episode_id}/production",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "resume"
+    },
+    {
+      "body_fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "expected_control_revision",
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "reason",
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "effect": "control",
+      "human_only": false,
+      "method": "POST",
+      "name": "request_hold",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/hold",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "hold"
+    },
+    {
+      "body_fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "expected_control_revision",
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "start_stage",
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "effect": "control",
+      "human_only": false,
+      "method": "POST",
+      "name": "resume_production",
+      "paid": true,
+      "path": "/v1/intervention/episodes/{episode_id}/resume",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "resume"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "get_storyboard",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/storyboard",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "read"
+    },
+    {
+      "body_fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "expected_control_revision",
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "proposal",
+          "nullable": false,
+          "required": true,
+          "type": "object"
+        }
+      ],
+      "effect": "propose",
+      "human_only": false,
+      "method": "POST",
+      "name": "propose_storyboard_change",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/storyboard/proposals",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "propose"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "preview_change_impact",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/change-sets/{change_set_id}/impact",
+      "path_params": [
+        "episode_id",
+        "change_set_id"
+      ],
+      "query_fields": [],
+      "required_scope": "read"
+    },
+    {
+      "body_fields": [
+        {
+          "name": "command_id",
+          "nullable": false,
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "expected_control_revision",
+          "nullable": true,
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "approved_max_cost_usd",
+          "nullable": false,
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "effect": "apply",
+      "human_only": false,
+      "method": "POST",
+      "name": "apply_approved_change",
+      "paid": true,
+      "path": "/v1/intervention/episodes/{episode_id}/change-sets/{change_set_id}/apply",
+      "path_params": [
+        "episode_id",
+        "change_set_id"
+      ],
+      "query_fields": [],
+      "required_scope": "apply"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "get_agent_decisions",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/agent-decisions",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "read"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "get_quality_review",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/quality-review",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "read"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "get_workflow_progress",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/progress",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "read"
+    }
+  ]
+}

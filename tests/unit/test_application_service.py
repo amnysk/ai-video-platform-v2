@@ -41,6 +41,7 @@ from contracts.intervention import (
     ResumePayload,
     Scope,
 )
+from contracts.states import EpisodeStatus
 
 EP = uuid.uuid4()
 ALL_SCOPES = frozenset(Scope)
@@ -131,7 +132,15 @@ class FakeReads:
     async def is_unstarted_agentic_draft(self, episode_id: uuid.UUID) -> bool:
         return self.unstarted_draft
 
-    async def list_episodes(self, *, limit: int, before: datetime | None) -> EpisodeList:
+    async def list_episodes(
+        self,
+        *,
+        limit: int,
+        before: datetime | None,
+        before_id: uuid.UUID | None = None,
+        status: EpisodeStatus | None = None,
+        q: str | None = None,
+    ) -> EpisodeList:
         self.calls.append(f"list:{limit}")
         return EpisodeList(episodes=(), next_before=None)
 

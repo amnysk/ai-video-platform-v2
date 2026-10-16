@@ -1,0 +1,9 @@
+{
+  "name": "jpmas2-e2e-ui",
+  "private": true,
+  "type": "module",
+  "description": "Browser E2E for the operator UI (docs/testing/jpmas2-p2b-rationale.md). Not part of the app; dev only.",
+  "devDependencies": {
+    "playwright-core": "1.49.1"
+  }
+}

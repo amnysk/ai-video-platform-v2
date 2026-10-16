@@ -21,6 +21,7 @@ from apps.api.dependencies import (
     get_settings,
     get_workflow_starter,
 )
+from apps.api.episodes_auth import require_episodes_auth
 from apps.api.schemas import (
     ArtifactView,
     CreateEpisodeRequest,
@@ -63,7 +64,9 @@ from infrastructure.storage.artifact_store import ArtifactStore
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/episodes", tags=["episodes"])
+router = APIRouter(
+    prefix="/episodes", tags=["episodes"], dependencies=[Depends(require_episodes_auth)]
+)
 
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 Starter = Annotated[WorkflowStarter, Depends(get_workflow_starter)]

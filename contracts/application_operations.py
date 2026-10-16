@@ -16,7 +16,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from contracts.agentic import QualityReview
 from contracts.agentic_pipeline import PipelineKind
@@ -31,6 +31,7 @@ from contracts.application import (
 from contracts.artifacts import StoryboardScene
 from contracts.assistant_tools import ToolEffect
 from contracts.intervention import CommandStatus, Scope
+from contracts.states import EpisodeStatus
 
 
 class _Frozen(BaseModel):
@@ -65,12 +66,28 @@ class ListEpisodesRequest(_Frozen):
     limit: int = Field(default=50, ge=1, le=200)
     #: keyset cursor。``created_at`` がこれより前の Episode（新しい順）
     before: datetime | None = None
+    #: 複合 cursor の後半（ADR-0045 §5）。``before`` と一緒に渡すと ``(created_at, id)`` で比べる。
+    #: 無ければ従来どおり ``created_at`` だけ（後方互換）。同時刻の Episode を落とさない
+    before_id: uuid.UUID | None = None
+    #: 状態での絞り込み（``EpisodeStatus``）
+    status: EpisodeStatus | None = None
+    #: 題材（topic）の部分一致（大文字小文字を区別しない。``%`` ``_`` は文字として扱う）
+    q: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _before_id_needs_before(self) -> ListEpisodesRequest:
+        """``before_id`` だけの cursor は不完全。黙って無視せず 422 にする。"""
+        if self.before_id is not None and self.before is None:
+            raise ValueError("before_id requires before (the cursor is the pair)")
+        return self
 
 
 class EpisodeList(_Frozen):
     episodes: tuple[EpisodeSummary, ...]
     #: 次のページの ``before``。無ければ最後のページ
     next_before: datetime | None
+    #: 次のページの ``before_id``（``next_before`` と対）。最後のページなら None
+    next_before_id: uuid.UUID | None = None
 
 
 class ChangeSetSummary(_Frozen):
@@ -255,6 +272,11 @@ class OperationSpec:
     http_method: Literal["GET", "POST"]
     #: ``/v1/intervention`` からの相対 path
     http_path: str
+    #: GET の query parameter の model（無ければ None）。``request_model``（body）とは別
+    query_model: type[BaseModel] | None = None
+    #: 有料の外部生成を伴いうる（UI の警告・確認の唯一の根拠。ADR-0045 review fixes）。
+    #: 既定 False は「読み取り・提案・hold」。増減は ``tests/contract`` が固定した集合と突き合わせる
+    paid: bool = False
 
 
 _EP = "/episodes/{episode_id}"
@@ -279,6 +301,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         EpisodeList,
         "GET",
         "/episodes",
+        ListEpisodesRequest,
     ),
     OperationSpec(
         OperationName.GET_EPISODE_WORKSPACE,
@@ -299,6 +322,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         StartAgenticProductionResult,
         "POST",
         f"{_EP}/production",
+        paid=True,
     ),
     OperationSpec(
         OperationName.REQUEST_HOLD,
@@ -319,6 +343,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         ResumeAccepted,
         "POST",
         f"{_EP}/resume",
+        paid=True,
     ),
     OperationSpec(
         OperationName.GET_STORYBOARD,
@@ -359,6 +384,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         CommandAccepted,
         "POST",
         f"{_EP}/change-sets/{{change_set_id}}/apply",
+        paid=True,
     ),
     OperationSpec(
         OperationName.GET_AGENT_DECISIONS,

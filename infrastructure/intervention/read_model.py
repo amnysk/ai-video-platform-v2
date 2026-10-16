@@ -215,6 +215,14 @@ class ChangeSetView(_View):
     created_at: str
 
 
+COMMAND_REASON_MAX = 1000
+
+
+def _command_reason(payload: dict[str, Any] | None) -> str | None:
+    reason = (payload or {}).get("reason")
+    return reason[:COMMAND_REASON_MAX] if isinstance(reason, str) else None
+
+
 class CommandView(_View):
     command_id: str
     type: str
@@ -229,6 +237,9 @@ class CommandView(_View):
     result: dict[str, Any] | None
     received_at: str
     finished_at: str | None
+    #: ``payload.reason`` が str のときだけ（1000 文字まで）。payload 全体は出さない
+    reason: str | None = None
+    correlation_id: str | None = None
 
 
 class ReservationView(_View):
@@ -505,6 +516,8 @@ class EpisodeReadModel:
                         result=c.result,
                         received_at=c.received_at.isoformat(),
                         finished_at=_iso(c.finished_at),
+                        reason=_command_reason(c.payload),
+                        correlation_id=c.correlation_id,
                     )
                     for c in await store.list_commands(episode_id)
                 ],

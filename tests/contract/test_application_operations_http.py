@@ -22,6 +22,7 @@ from contracts.application_operations import (
 )
 from contracts.assistant_tools import CORRELATION_HEADER
 from contracts.intervention import ActorType
+from contracts.states import EpisodeStatus
 from tests.contract.test_application_contract_sync import _model_schema, _resolve
 from tests.support.application_http import (
     AUTH,
@@ -255,3 +256,45 @@ def test_the_catalog_paths_do_not_collide_with_existing_intervention_routes() ->
             key = (getattr(route, "path", ""), method)
             seen[key] = seen.get(key, 0) + 1
     assert all(seen[key] == 1 for key in catalog)
+
+
+async def test_list_episodes_takes_before_id_status_and_q_as_query() -> None:
+    service = FakeApplicationService()
+    before = datetime(2026, 10, 1, tzinfo=UTC)
+    cursor = uuid.uuid4()
+    async with _client(build_app(service)) as client:
+        ok = await client.get(
+            PREFIX + "/episodes",
+            params={
+                "before": before.isoformat(),
+                "before_id": str(cursor),
+                "status": "planned",
+                "q": "cats",
+            },
+            headers=AUTH,
+        )
+        bad_status = await client.get(PREFIX + "/episodes", params={"status": "nope"}, headers=AUTH)
+        bad_id = await client.get(PREFIX + "/episodes", params={"before_id": "x"}, headers=AUTH)
+    assert ok.status_code == 200
+    assert service.calls[0][1][1] == ListEpisodesRequest(
+        before=before, before_id=cursor, status=EpisodeStatus.PLANNED, q="cats"
+    )
+    assert bad_status.status_code == bad_id.status_code == 422
+    assert len(service.calls) == 1
+
+
+async def test_list_episodes_before_id_without_before_is_422() -> None:
+    """P2-1: 複合 cursor の後半だけでは意味が無い（黙って無視すると先頭ページに戻る）。"""
+    service = FakeApplicationService()
+    async with _client(build_app(service)) as client:
+        alone = await client.get(
+            PREFIX + "/episodes", params={"before_id": str(uuid.uuid4())}, headers=AUTH
+        )
+        both = await client.get(
+            PREFIX + "/episodes",
+            params={"before_id": str(uuid.uuid4()), "before": "2026-10-01T00:00:00+00:00"},
+            headers=AUTH,
+        )
+    assert alone.status_code == 422
+    assert both.status_code == 200
+    assert len(service.calls) == 1
