@@ -121,6 +121,12 @@ jobs:
             temporal operator namespace describe --namespace avp-test --address "$A" >/dev/null 2>&1 \
               || temporal operator namespace create --namespace avp-test --retention 72h --address "$A"
           '
+      - name: Pull the pinned Fluent Bit image for the collector Lua tests
+        # tests/integration/test_logging_collector_lua.py は image が手元に無いと 6 件 skip する。
+        # skip の閾値を上げずに実行させるため、compose 定義（単一の宣言元）の image を pull する
+        run: |
+          image=$(python -c "import yaml;print(yaml.safe_load(open('deploy/logging/compose.logging.yaml'))['services']['fluent-bit']['image'])")
+          docker pull "$image"
       - run: pytest tests/integration -q -m integration -rs | tee pytest-integration.log
         env:
           DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
