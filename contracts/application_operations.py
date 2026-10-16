@@ -265,6 +265,8 @@ class OperationSpec:
     http_method: Literal["GET", "POST"]
     #: ``/v1/intervention`` からの相対 path
     http_path: str
+    #: GET の query parameter の model（無ければ None）。``request_model``（body）とは別
+    query_model: type[BaseModel] | None = None
 
 
 _EP = "/episodes/{episode_id}"
@@ -289,6 +291,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         EpisodeList,
         "GET",
         "/episodes",
+        ListEpisodesRequest,
     ),
     OperationSpec(
         OperationName.GET_EPISODE_WORKSPACE,

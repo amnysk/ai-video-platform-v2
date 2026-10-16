@@ -43,3 +43,13 @@ route は `episodes.router` と `research.router` の route 表から列挙し�
   HTTP client は `..` を畳むため、`unnormalised_dot_dot_*` は ASGI に畳まれない path を直接渡す。
 - `a_symlink_pointing_outside_is_not_served`: 実パスで検査する（symlink での脱出）。
 - `ui_is_get_only`: 書き込みの口にしない。
+
+## 4. UI 向け操作カタログ（tests/contract/test_operations_catalog_sync.py、ADR-0045 §2）
+
+- `committed_catalog_equals_a_fresh_generation`: `apps/web/static/operations.json` は `OPERATIONS` から
+  `scripts/export-operations.py` で作ったものと同じ（OpenAPI 断片と同じ方式。手で直した JSON は落ちる）。
+- `the_13_names_match_operations_exactly`: UI だけの操作を足していない・操作を落としていない（13 のまま）。
+- `each_entry_carries_the_catalog_facts_and_nothing_invented`: method・path・scope・人限定・effect はカタログのまま、
+  キー集合も固定（カタログに無い「費用が発生しうるか」等を推測して足さない）。
+- `fields_come_from_the_request_models`: 必須/任意/null 可/enum が pydantic model 由来で、path parameter が path から取れる。
+- `catalog_version_is_stable_and_changes_with_the_content`: 版は決定的で、内容が変われば変わる。
