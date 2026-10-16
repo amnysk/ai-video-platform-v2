@@ -70,3 +70,4 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
   `operations.json` に `paid` を出し、UI の `PAID_OPERATIONS` リテラルは廃止。再開ダイアログは有料警告と
   確認チェックを要求し、権限ヒントにも「有料」を出す。集合は contract test で固定する。
 - **`before_id` だけの cursor は 422**: `ListEpisodesRequest` が `before` との対を検証する（黙って先頭ページに戻らない）。
+- **一覧の「さらに読み込む」は、最後に「検索」を押した時点の絞り込みを使う**（入力欄だけ編集中の値は使わない。`cursor.js` の `createSearchFilters`）。

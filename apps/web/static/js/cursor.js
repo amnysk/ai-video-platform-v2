@@ -32,3 +32,16 @@ export function mergePage(existing, page) {
   }
   return { items, added };
 }
+
+/** 最後に「検索」を押した時点の絞り込み。「さらに読み込む」はこれを使う（入力欄の途中の値は使わない）。 */
+export function createSearchFilters() {
+  let filters = { status: '', q: '' };
+  return {
+    submit({ status = '', q = '' } = {}) {
+      filters = { status, q };
+    },
+    current() {
+      return { ...filters };
+    },
+  };
+}

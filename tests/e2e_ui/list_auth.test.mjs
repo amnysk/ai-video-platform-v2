@@ -105,3 +105,25 @@ test('2. 401 → ログイン画面。トークンは sessionStorage だけで�
   const r = await fetch(`${server.base}/v1/intervention/episodes`);
   assert.equal(r.status, 401);
 });
+
+test('1b. 「さらに読み込む」は検索ボタンを押した時点の絞り込みを使う（入力欄だけ変えても変わらない）', { skip }, async () => {
+  const { server, browser } = env;
+  const { page } = await newPage(browser);
+  await login(page, server.base, server.tokens.owner);
+  await page.waitForSelector('table');
+  await page.fill('#q', 'paging-');
+  await page.click('button:has-text("検索")');
+  await until(async () => (await rows(page)).length === 50, { what: '50 rows' });
+  // 検索はしないまま入力欄だけ変える
+  await page.fill('#q', 'zzz-not-submitted');
+  await page.selectOption('#status', 'failed');
+  await server.clearLog();
+  const before = (await rows(page)).length;
+  await page.getByRole('button', { name: 'さらに読み込む' }).click();
+  await until(async () => (await rows(page)).length > before, { what: 'next page' });
+  const calls = (await server.log()).filter((e) => e.path === '/v1/intervention/episodes');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].query, /q=paging-/);
+  assert.doesNotMatch(calls[0].query, /zzz-not-submitted/);
+  assert.doesNotMatch(calls[0].query, /status=/);
+});

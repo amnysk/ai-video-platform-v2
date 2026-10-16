@@ -1,6 +1,6 @@
 import { h, replaceChildren } from '../dom.js';
 import { badge, errorBox, loading } from '../components.js';
-import { buildListQuery, mergePage, nextCursor } from '../cursor.js';
+import { buildListQuery, createSearchFilters, mergePage, nextCursor } from '../cursor.js';
 import { EPISODE_STATUS_LABEL, episodeStatusLabel, needsAttention, pipelineKindLabel } from '../status.js';
 import { formatDateTime, orMissing } from '../format.js';
 import { detailHref } from '../router.js';
@@ -13,6 +13,7 @@ export function listView(ctx) {
   let cursor = null;
   let seq = 0; // 古い応答を捨てる
   let disposed = false;
+  const filters = createSearchFilters(); // 「検索」を押した時点の値。さらに読み込むはこれを使う
 
   const q = h('input', { type: 'search', id: 'q', name: 'q', autocomplete: 'off' });
   const status = h(
@@ -23,7 +24,7 @@ export function listView(ctx) {
   );
   const form = h(
     'form',
-    { class: 'toolbar', role: 'search', onsubmit: (e) => { e.preventDefault(); load(true); } },
+    { class: 'toolbar', role: 'search', onsubmit: (e) => { e.preventDefault(); filters.submit({ status: status.value, q: q.value }); load(true); } },
     h('div', {}, h('label', { for: 'q' }, 'トピック検索'), q),
     h('div', {}, h('label', { for: 'status' }, '状態で絞り込み'), status),
     h('div', {}, h('button', { type: 'submit', class: 'btn btn-primary' }, '検索')),
@@ -41,7 +42,7 @@ export function listView(ctx) {
     if (reset) replaceChildren(body, loading());
     try {
       const { data } = await ctx.api.get(spec.path, {
-        query: buildListQuery({ limit: PAGE_SIZE, before: cursor?.before, beforeId: cursor?.beforeId, status: status.value, q: q.value }),
+        query: buildListQuery({ limit: PAGE_SIZE, before: cursor?.before, beforeId: cursor?.beforeId, ...filters.current() }),
       });
       if (disposed || my !== seq) return;
       const merged = mergePage(items, data);

@@ -24,3 +24,19 @@ test('mergePage: id で重複排除し順序を保つ', () => {
   assert.equal(r.added, 1);
   assert.equal(a.length, 2); // 引数を破壊しない
 });
+
+test('さらに読み込むは、最後に検索ボタンを押したときの絞り込みを使う（入力欄の途中の値ではない）', async () => {
+  const { createSearchFilters, buildListQuery } = await import('../../apps/web/static/js/cursor.js');
+  const f = createSearchFilters();
+  assert.deepEqual(f.current(), { status: '', q: '' });
+  f.submit({ status: 'failed', q: ' cats ' });
+  // 入力欄を書き換えても（submit していない）、current() は submit 時の値のまま
+  assert.deepEqual(buildListQuery({ limit: 50, before: 'b', beforeId: 'i', ...f.current() }), {
+    limit: 50, before: 'b', before_id: 'i', status: 'failed', q: 'cats',
+  });
+  // current() の戻り値を書き換えても内部状態は変わらない
+  f.current().q = 'x';
+  assert.equal(f.current().q, ' cats ');
+  f.submit({ status: '', q: '' });
+  assert.deepEqual(f.current(), { status: '', q: '' });
+});
