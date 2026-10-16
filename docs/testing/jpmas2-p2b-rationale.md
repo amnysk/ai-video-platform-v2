@@ -89,6 +89,7 @@ route は `episodes.router` と `research.router` の route 表から列挙し�
 - `tests/web/render_gate.test.mjs`（fake timer）: 遅い render が後から終わっても新しい画面を上書きせず、poller が 1 本（離れたら 0 本）であること。
 - `tests/unit/test_ui_hosting.py` の P2-6 群: flag OFF の 404・405（POST/HEAD ほか）・500 でもセキュリティヘッダが付き、
   `/ui` 以外には付かない（route 内で付けていた頃は dependency の拒否と 405 で漏れていた）。
+- `tests/e2e_ui/platform.test.mjs` 13: operations.json が遅い間に画面が変わっても、古い render が view を作らない（workspace 取得 1 回）。main.js の `isCurrent()` 判定を外すと 2 回になって落ちることを確認済み。
 - `tests/unit/test_ui_hosting.py::test_on_ui_without_trailing_slash_redirects_to_ui_slash`: `/ui` のままだと
   `./js/main.js` が `/js/main.js` に解決されて画面が白くなる。`/ui/` へ 308。OFF のときは redirect せず
   `404 feature_disabled`（OFF の挙動を漏らさない）。

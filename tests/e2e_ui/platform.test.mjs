@@ -143,3 +143,26 @@ test('11. polling: progress だけを読み、タブが隠れる・画面を離�
 });
 
 const sleepReal = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('13. 遅い operations.json の間に画面が変わっても、古い render は view を作らない（workspace 取得は 1 回）', { skip }, async () => {
+  // main.js の `if (!token.isCurrent()) return;` を外すと、遅れて戻った render が hash を読み直して
+  // もう 1 つ detailView を作り、workspace を 2 回読む。
+  const { server, browser } = env;
+  const { page } = await newPage(browser);
+  await login(page, server.base, server.tokens.owner);
+  await page.waitForSelector('table');
+  let calls = 0;
+  await page.route('**/operations.json', async (route) => {
+    calls += 1;
+    if (calls === 1) await sleepReal(1500); // 1 回目だけ遅い
+    await route.continue();
+  });
+  await server.clearLog();
+  await page.goto(`${server.base}/ui/`, { waitUntil: 'domcontentloaded' });
+  await page.evaluate((id) => { location.hash = `#/episodes/${id}`; }, IDS.running);
+  await page.waitForSelector('text=介入操作');
+  await sleepReal(2200); // 遅かった 1 回目が戻るのを待つ
+  const wsReads = (await server.log()).filter((e) => e.method === 'GET' && e.path.endsWith('/workspace'));
+  assert.equal(calls, 2, 'operations.json は 2 回要求された（render が 2 回走った）');
+  assert.equal(wsReads.length, 1, '古い render は detailView を作らない');
+});
