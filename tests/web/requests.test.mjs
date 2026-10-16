@@ -8,12 +8,12 @@ import {
 import { normalizeOperations } from '../../apps/web/static/js/operations.js';
 import { pyEnumValues, repoPath } from './_py.mjs';
 
-const cat = normalizeOperations(JSON.parse(readFileSync(repoPath('tests/web/fixtures/operations.json'), 'utf8')));
-const fields = (n) => cat.byName.get(n).requestFields.slice().sort();
+const cat = normalizeOperations(JSON.parse(readFileSync(repoPath('apps/web/static/operations.json'), 'utf8')));
+const fields = (n) => cat.byName.get(n).bodyFields.map((f) => f.name).sort();
 const keys = (o) => Object.keys(o).sort();
 const sb = { manifest_id: 'm', revision_id: 'r' };
 
-test('body のキーは operations の request_fields と一致する', () => {
+test('body のキーは 実 operations.json の body_fields と一致する', () => {
   assert.deepEqual(keys(buildHoldBody({ commandId: 'c', expectedControlRevision: 1 })), fields('request_hold'));
   assert.deepEqual(keys(buildResumeBody({ commandId: 'c', expectedControlRevision: 1 })), fields('resume_production'));
   assert.deepEqual(keys(buildApplyBody({ commandId: 'c', expectedControlRevision: 1, input: '1' })), fields('apply_approved_change'));

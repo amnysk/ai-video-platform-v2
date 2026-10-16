@@ -75,7 +75,7 @@ export function interventionBar(dctx, getWorkspace) {
       btn.title = disabledReason;
     }
     if (spec) {
-      hints.append(h('li', {}, `${label}: 必要な scope「${spec.scope ?? MISSING}」${spec.humanOnly ? ' / 人だけが実行できます' : ''}${spec.incursCost ? ' / 費用が発生しえます' : ''}`));
+      hints.append(h('li', {}, `${label}: 必要な scope「${spec.scope ?? MISSING}」${spec.humanOnly ? ' / 人だけが実行できます' : ''}${spec.paid ? ' / 有料の生成を伴います' : ''}`));
     }
     bar.append(btn);
     return btn;

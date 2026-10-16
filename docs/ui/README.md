@@ -85,5 +85,4 @@ DOM・ログには出さない（`console.*` は使わない）。401 を受け�
 | `tests/contract/test_web_static_csp.py` | CSP を破る記述（inline、`on*`、外部 URL、innerHTML、localStorage、console）が入らない |
 | `tests/unit/test_web_node_tests.py` | 上記 node テストを pytest から実行（node が無ければ skip） |
 
-`tests/web/fixtures/operations.json` は backend が生成する `operations.json` の想定形のコピー（テスト専用）。
-backend の生成物が揃ったら、その形との一致を contract test で確かめる。
+`tests/web` は実物の `apps/web/static/operations.json` を直接読む（コピーは持たない）。

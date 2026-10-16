@@ -1,5 +1,5 @@
 // 書き込み操作の request body の組み立てと入力検査。DOM 無し。
-// キーは operations.json の request_fields と一致しなければならない（tests/web/requests.test.mjs）。
+// キーは operations.json の body_fields と一致しなければならない（tests/web/requests.test.mjs）。
 // 検査は利用者への親切であり、権限・規則の最終判定はサーバー。
 
 export const VISUAL_DESCRIPTION_MAX = 600; // contracts/intervention.py SceneOverrideVisual と同じ

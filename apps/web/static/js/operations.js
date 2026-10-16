@@ -1,33 +1,31 @@
-// apps/web/static/operations.json（backend が contracts/application_operations.py から生成）の読み込み。
-// 形（想定）: {catalog_version, operations:[{name, method, path, scope, human_only,
-//   request_fields, incurs_cost}]}。path は `/v1/intervention` を含む場合も含まない場合も受ける。
+// apps/web/static/operations.json（scripts/export-operations.py が生成。手で直さない）の読み込み。
+// 実際の形: {api_prefix, catalog_version, operations:[{name, method, path（prefix 込み）, path_params,
+//   required_scope, human_only, effect, body_fields[{name,type,required,nullable,enum}], query_fields[...]}]}。
+// カタログに「費用が発生するか」の項目は無い。ここでは推測せず、PAID_OPERATIONS（ADR-0044）だけを持つ。
 // 無い・壊れているときは null を返し、画面は「操作カタログが無い」ことを示す（API の path を手書きしない）。
 
-export const API_PREFIX = '/v1/intervention';
+/** ADR-0044: 有料の外部生成を伴う操作は、この 2 つだけ。UI の費用警告はこれと影響プレビューの見積りだけから出す。 */
+export const PAID_OPERATIONS = Object.freeze(['start_agentic_production', 'apply_approved_change']);
 
 function normalize(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  const list = Array.isArray(raw.operations)
-    ? raw.operations
-    : raw.operations && typeof raw.operations === 'object'
-      ? Object.entries(raw.operations).map(([name, v]) => ({ name, ...v }))
-      : null;
-  if (!list) return null;
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.operations)) return null;
   const byName = new Map();
-  for (const o of list) {
+  for (const o of raw.operations) {
     if (!o || typeof o.name !== 'string' || typeof o.path !== 'string') continue;
-    const path = o.path.startsWith(API_PREFIX) ? o.path : API_PREFIX + o.path;
     byName.set(o.name, {
       name: o.name,
       method: String(o.method || 'GET').toUpperCase(),
-      path,
-      scope: o.scope ?? null,
-      humanOnly: Boolean(o.human_only ?? o.humanOnly),
-      requestFields: Array.isArray(o.request_fields) ? o.request_fields : [],
-      incursCost: Boolean(o.incurs_cost ?? o.cost ?? o.costly),
+      path: o.path,
+      pathParams: Array.isArray(o.path_params) ? o.path_params : [],
+      scope: o.required_scope ?? null,
+      humanOnly: o.human_only === true,
+      effect: o.effect ?? null,
+      bodyFields: Array.isArray(o.body_fields) ? o.body_fields : [],
+      queryFields: Array.isArray(o.query_fields) ? o.query_fields : [],
+      paid: PAID_OPERATIONS.includes(o.name),
     });
   }
-  return { catalogVersion: raw.catalog_version ?? null, byName };
+  return { apiPrefix: raw.api_prefix ?? null, catalogVersion: raw.catalog_version ?? null, byName };
 }
 
 export async function loadOperations(fetchFn, url = './operations.json') {
