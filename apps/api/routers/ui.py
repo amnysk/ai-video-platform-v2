@@ -4,16 +4,20 @@
   ``404 feature_disabled``。**ファイルに触れる前**に返す（``require_application_api``）。
 - 静的ファイルは ``apps/web/static`` だけ。解決後の実パスがその下に無いものは 404
   （``..``・エンコードされた ``..``・絶対パス・symlink での脱出）。ディレクトリは ``index.html``。
-- 全応答に厳格な CSP 等を付ける（インラインの script/style・外部 origin を許さない）。
+- ``/ui`` 配下の**全応答**（成功・404・405・flag OFF の 404・500）に厳格な CSP 等を付ける
+  （インラインの script/style・外部 origin を許さない）。route 内で付けると dependency の拒否・405・
+  未処理例外が漏れるため、``UiSecurityHeadersMiddleware``（ASGI、``/ui`` 以外には何もしない）で付ける。
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from apps.api.routers.application import require_application_api
 
@@ -29,6 +33,56 @@ SECURITY_HEADERS: dict[str, str] = {
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-store",
 }
+
+
+_log = logging.getLogger(__name__)
+
+
+def _is_ui_path(path: str) -> bool:
+    return path == "/ui" or path.startswith("/ui/")
+
+
+class UiSecurityHeadersMiddleware:
+    """``/ui`` 配下の全応答に ``SECURITY_HEADERS`` を付ける（他の path には触れない）。
+
+    未処理例外は、応答を始める前なら中身を出さない 500 を自分で返す（ヘッダ付き）。
+    例外そのものは ``logging`` に残す。
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not _is_ui_path(scope.get("path", "")):
+            await self.app(scope, receive, send)
+            return
+        started = False
+        names = {k.lower().encode("latin-1") for k in SECURITY_HEADERS}
+
+        async def send_with_headers(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+                kept = [(k, v) for k, v in message.get("headers", []) if k.lower() not in names]
+                kept += [
+                    (k.lower().encode("latin-1"), v.encode("latin-1"))
+                    for k, v in SECURITY_HEADERS.items()
+                ]
+                message = {**message, "headers": kept}
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_headers)
+        except Exception:
+            _log.exception("unhandled error while serving /ui")
+            if started:
+                raise
+            response = JSONResponse(
+                {"detail": {"error": "internal_error", "message": "internal server error"}},
+                status_code=500,
+                headers=SECURITY_HEADERS,
+            )
+            await response(scope, receive, send)
 
 
 def get_ui_static_dir() -> Path:

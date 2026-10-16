@@ -75,6 +75,8 @@ def create_app() -> FastAPI:
     app.include_router(application.router)
     # ADR-0045 §1: 運用者 UI の静的配信。flag OFF なら /ui/* は 404 feature_disabled
     app.include_router(ui.router)
+    # /ui 配下の全応答（404・405・500 を含む）に CSP 等を付ける。ログ middleware より外側に置く
+    app.add_middleware(ui.UiSecurityHeadersMiddleware)
     # ADR-0044 §4: UI の origin を設定したときだけ CORS を許す（既定は何も付けない）
     origins = cors_origins(get_settings())
     if origins:

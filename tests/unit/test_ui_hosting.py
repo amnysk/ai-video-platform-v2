@@ -216,3 +216,47 @@ async def test_off_ui_without_trailing_slash_is_404_feature_disabled_not_a_redir
     r = await off.get("/ui", follow_redirects=False)
     assert r.status_code == 404
     assert r.json()["detail"]["error"] == "feature_disabled"
+
+
+# ---- P2-6: セキュリティヘッダは /ui/* の「全」応答に付く（成功・404・405・500・flag OFF）
+
+
+async def test_flag_off_404_carries_the_security_headers(off) -> None:
+    for path in ("/ui/", "/ui/app.js", "/ui/nope"):
+        r = await off.get(path)
+        assert r.status_code == 404 and r.json()["detail"]["error"] == "feature_disabled"
+        _assert_secure(r)
+
+
+async def test_405_for_post_and_head_carries_the_security_headers(on) -> None:
+    for method in ("POST", "PUT", "DELETE", "PATCH", "HEAD"):
+        r = await on.request(method, "/ui/")
+        assert r.status_code == 405, method
+        _assert_secure(r)
+    # /ui（末尾スラッシュ無し）の POST も
+    _assert_secure(await on.post("/ui"))
+
+
+async def test_a_500_inside_ui_still_carries_the_security_headers(static_root: Path) -> None:
+    from apps.api.routers.ui import get_ui_static_dir
+
+    app = _app(static_root, flag=True)
+
+    def boom() -> Path:
+        raise RuntimeError("secret internal detail")
+
+    app.dependency_overrides[get_ui_static_dir] = boom
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        r = await client.get("/ui/")
+    assert r.status_code == 500
+    _assert_secure(r)
+    assert "secret internal detail" not in r.text
+
+
+async def test_security_headers_are_not_added_outside_ui(on) -> None:
+    for path in ("/healthz", "/v1/intervention/episodes", "/nope"):
+        r = await on.get(path)
+        assert "content-security-policy" not in r.headers, path
+        assert r.headers.get("referrer-policy") is None, path
