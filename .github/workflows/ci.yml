@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # 既定の `bash -e {0}` は pipefail が無く、`pytest | tee log` が pytest の失敗を隠す
+    shell: bash
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -165,7 +173,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: compose-logs
-          path: compose-logs.txt
+          path: |
+            compose-logs.txt
+            pytest-integration.log
       - name: Smoke test the running stack
         run: ./scripts/smoke.sh
       - if: always()
