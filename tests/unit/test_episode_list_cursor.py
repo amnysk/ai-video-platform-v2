@@ -97,3 +97,9 @@ def test_request_validates_q_length_and_defaults_are_backward_compatible() -> No
         ListEpisodesRequest(q="x" * 201)
     with pytest.raises(ValueError):
         ListEpisodesRequest(q="")
+
+
+def test_before_id_without_before_is_rejected_by_the_contract() -> None:
+    with pytest.raises(ValueError, match="before_id"):
+        ListEpisodesRequest(before_id=uuid.uuid4())
+    assert ListEpisodesRequest(before=SAME, before_id=uuid.uuid4()).before == SAME

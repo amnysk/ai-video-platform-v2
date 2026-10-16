@@ -69,3 +69,4 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
   `apply_approved_change` が `paid=True`（ADR-0044: resume は固定計画を歩き、未完了 stage で有料生成しうる）。
   `operations.json` に `paid` を出し、UI の `PAID_OPERATIONS` リテラルは廃止。再開ダイアログは有料警告と
   確認チェックを要求し、権限ヒントにも「有料」を出す。集合は contract test で固定する。
+- **`before_id` だけの cursor は 422**: `ListEpisodesRequest` が `before` との対を検証する（黙って先頭ページに戻らない）。

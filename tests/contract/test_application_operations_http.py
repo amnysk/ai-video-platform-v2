@@ -281,3 +281,20 @@ async def test_list_episodes_takes_before_id_status_and_q_as_query() -> None:
     )
     assert bad_status.status_code == bad_id.status_code == 422
     assert len(service.calls) == 1
+
+
+async def test_list_episodes_before_id_without_before_is_422() -> None:
+    """P2-1: 複合 cursor の後半だけでは意味が無い（黙って無視すると先頭ページに戻る）。"""
+    service = FakeApplicationService()
+    async with _client(build_app(service)) as client:
+        alone = await client.get(
+            PREFIX + "/episodes", params={"before_id": str(uuid.uuid4())}, headers=AUTH
+        )
+        both = await client.get(
+            PREFIX + "/episodes",
+            params={"before_id": str(uuid.uuid4()), "before": "2026-10-01T00:00:00+00:00"},
+            headers=AUTH,
+        )
+    assert alone.status_code == 422
+    assert both.status_code == 200
+    assert len(service.calls) == 1

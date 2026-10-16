@@ -16,7 +16,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from contracts.agentic import QualityReview
 from contracts.agentic_pipeline import PipelineKind
@@ -73,6 +73,13 @@ class ListEpisodesRequest(_Frozen):
     status: EpisodeStatus | None = None
     #: 題材（topic）の部分一致（大文字小文字を区別しない。``%`` ``_`` は文字として扱う）
     q: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _before_id_needs_before(self) -> ListEpisodesRequest:
+        """``before_id`` だけの cursor は不完全。黙って無視せず 422 にする。"""
+        if self.before_id is not None and self.before is None:
+            raise ValueError("before_id requires before (the cursor is the pair (before, before_id))")
+        return self
 
 
 class EpisodeList(_Frozen):
