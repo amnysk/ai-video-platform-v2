@@ -15,7 +15,12 @@ Phase 1 の生成は `uuid.uuid4()`（[[episode]] と同じ。UUIDv7 は Phase 2
 
 ## 属性
 
-- `id`, `episode_id`, `type`（`dummy` / 将来 `plan` / `generate` / `render` / `upload` ...）
+- `id`, `episode_id`, `type`（`dummy` / `write_script`（ADR-0011）/ `plan_storyboard`（ADR-0015）/
+  `produce_scene_*` / `assemble_production`（ADR-0017）/ `render_final_video`（ADR-0019）/ `upload_final_video`（ADR-0020）...。語彙の権威は `contracts/states.py::JobType`）
+- `write_script` は Episode 1 つに複数あってよい（ADR-0044 §3-1）: brief を持ち TopicPlan の無い Episode で、
+  最新の台本 job が `succeeded` / `skipped` かつ現行 brief の input_hash に一致する現行台本が無いとき、台本の
+  作り直しは新しい job を作る。非終端の job があればそれを返す（Activity の再試行で増えない）。旧 job・旧台本は消さない。
+  それ以外の Episode は従来どおり最初の job を返す
 - `attempts` — これまでに実施した試行回数。Activity開始のたびに加算する
 - `max_attempts` — 試行枠。TemporalのRetryPolicyの `maximum_attempts` と同じ値を使う
 - `status`: `queued` / `running` / `succeeded` / `retryable_failed` /

@@ -82,3 +82,29 @@ def test_cancel_is_available_from_every_non_terminal_status() -> None:
         if status in EPISODE_TERMINAL_STATUSES:
             continue
         assert transition_episode(status, EpisodeEvent.CANCELLED) is EpisodeStatus.CANCELLED
+
+
+def test_storyboard_stage_rows_of_adr_0015() -> None:
+    """script_ready -> in_progress -> storyboard_ready -> in_progress（ADR-0015）。"""
+    s = transition_episode(EpisodeStatus.SCRIPT_READY, EpisodeEvent.STAGE_ADMITTED)
+    assert s is EpisodeStatus.IN_PROGRESS
+    s = transition_episode(s, EpisodeEvent.STORYBOARD_READY)
+    assert s is EpisodeStatus.STORYBOARD_READY
+    assert s not in EPISODE_TERMINAL_STATUSES
+    s = transition_episode(s, EpisodeEvent.STAGE_ADMITTED)
+    assert s is EpisodeStatus.IN_PROGRESS
+
+
+@pytest.mark.parametrize(
+    ("current", "event"),
+    [
+        (EpisodeStatus.SCRIPT_READY, EpisodeEvent.STORYBOARD_READY),  # 工程を飛ばせない
+        (EpisodeStatus.PLANNED, EpisodeEvent.STORYBOARD_READY),
+        (EpisodeStatus.STORYBOARD_READY, EpisodeEvent.SCRIPT_READY),
+        (EpisodeStatus.STORYBOARD_READY, EpisodeEvent.STORYBOARD_READY),
+    ],
+)
+def test_invalid_storyboard_transitions_are_rejected(
+    current: EpisodeStatus, event: EpisodeEvent
+) -> None:
+    assert isinstance(transition_episode(current, event), Rejected)

@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shlex
 import tomllib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO / "Dockerfile"
+#: 隔離試験の test-runner（担当C）。本番イメージを土台に dev extras を足す（I-29）
+TEST_RUNNER_DOCKERFILE = REPO / "deploy" / "logging" / "test" / "Dockerfile.test-runner"
 PYPROJECT = REPO / "pyproject.toml"
 
 
@@ -29,13 +32,23 @@ def _distribution_names() -> set[str]:
     return names
 
 
-def _pip_install_commands() -> str:
+def _optional_distribution_names() -> set[str]:
+    """``[project.optional-dependencies]`` の全 extras の名前（dev の pytest 等）。"""
+    data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    names = set()
+    for specs in data["project"].get("optional-dependencies", {}).values():
+        for spec in specs:
+            names.add(re.split(r"[\[<>=!~;\s]", spec, maxsplit=1)[0].strip().lower())
+    return names
+
+
+def _pip_install_commands(dockerfile: pathlib.Path = DOCKERFILE) -> str:
     """Dockerfile の `pip install` 命令だけを取り出す（継続行を連結）。
 
     COPY している `alembic.ini` や CMD の `uvicorn` を依存の再掲と誤認しないよう、
     検査対象を「依存をインストールしている場所」に限定する。
     """
-    lines = DOCKERFILE.read_text(encoding="utf-8").splitlines()
+    lines = dockerfile.read_text(encoding="utf-8").splitlines()
     commands: list[str] = []
     buffer: list[str] = []
     continuing = False
@@ -83,3 +96,34 @@ def test_every_declared_dependency_is_pinned_by_constraints() -> None:
     }
     missing = sorted(_distribution_names() - pinned)
     assert not missing, f"constraints.txt に固定されていない依存: {missing}"
+
+
+def test_test_runner_dockerfile_does_not_restate_python_dependencies() -> None:
+    """隔離試験の test-runner も pyproject の依存（extras を含む）を書き直さない（I-29）。
+
+    ``pip install "/app[dev]"`` のように extras で取り込む。パッケージ名を足すと落ちる。
+    """
+    installed = _pip_install_commands(TEST_RUNNER_DOCKERFILE)
+    assert installed, "test-runner に pip install が見つからない（検査が空振りしている）"
+    names = _distribution_names() | _optional_distribution_names()
+    restated = sorted(
+        n for n in names if re.search(rf"(?<![\w/.-]){re.escape(n)}(?![\w-])", installed)
+    )
+    assert not restated, (
+        f"Dockerfile.test-runner が pyproject.toml の依存を再掲している（AGENTS.md §8）: {restated}"
+    )
+    # pyproject に無いパッケージを直接足すのも同じ（宣言の場所が2つになる）。入れてよいのは
+    # プロジェクト自身（パス）だけ。オプションとその値（-c FILE 等）は除く
+    targets = []
+    for command in installed.splitlines():
+        words = shlex.split(command.split("pip install", 1)[1])
+        skip = False
+        for w in words:
+            if skip:
+                skip = False
+            elif w in {"-c", "-r", "--constraint", "--requirement", "-t", "--target"}:
+                skip = True
+            elif not w.startswith("-"):
+                targets.append(w)
+    named = [t for t in targets if not t.startswith(("/", "."))]
+    assert not named, f"Dockerfile.test-runner がパッケージ名を直接入れている: {named}"

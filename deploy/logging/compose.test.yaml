@@ -1,0 +1,17 @@
+# 隔離試験用の上書き（担当C の deploy/logging/test が使う）。本番では使わない。
+#   docker compose -p avp2-oslog-c --env-file <test env> \
+#     -f deploy/logging/compose.logging.yaml -f deploy/logging/compose.test.yaml ...
+# - Fluent Bit の buffer を容量制限つき tmpfs に（AVP_LOG_BUFFER_TMPFS_SIZE、既定 64m）
+# - bootstrap が短縮した ISM policy（opensearch/ism-test）と ISM の実行間隔（既定 1 分）を使う
+services:
+  fluent-bit:
+    environment:
+      AVP_LOG_STORAGE_PATH: /fb-buffer
+      AVP_LOG_STORAGE_LIMIT: ${AVP_LOG_STORAGE_LIMIT:-48M}
+    tmpfs:
+      - /tmp
+      - /fb-buffer:size=${AVP_LOG_BUFFER_TMPFS_SIZE:-64m},mode=0700
+  bootstrap:
+    environment:
+      AVP_ISM_POLICY_DIR: ism-test
+      AVP_ISM_JOB_INTERVAL_MIN: ${AVP_ISM_JOB_INTERVAL_MIN:-1}

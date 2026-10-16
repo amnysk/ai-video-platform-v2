@@ -1,0 +1,10 @@
+{
+  "episode_id": "0b6f1a42-3c9e-4d7a-8f10-a1b2c3d4e5f6", "episode_status": "needs_work", "pipeline_kind": "agentic", "workflow_id": "w",
+  "jobs": [
+    {"job_id": "j1", "type": "write_script", "status": "succeeded", "attempts": 1, "max_attempts": 3, "scene_id": null, "updated_at": "2026-10-01T01:00:00+00:00"},
+    {"job_id": "j2", "type": "produce_scene_image", "status": "retryable_failed", "attempts": 2, "max_attempts": 3, "scene_id": "sb1", "updated_at": "2026-10-01T05:00:00+00:00"},
+    {"job_id": "j3", "type": "render_final_video", "status": "terminal_failed", "attempts": 3, "max_attempts": 3, "scene_id": null, "updated_at": "2026-10-01T06:00:00+00:00"}
+  ],
+  "agent_runs": [],
+  "failure": {"code": "provider_rejected", "message": "m", "source": "job", "source_id": "j2", "at": "2026-10-01T05:00:00+00:00"}
+}

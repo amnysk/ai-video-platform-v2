@@ -1,0 +1,529 @@
+{
+  "events": [
+    {
+      "eventId": "1",
+      "eventTime": "2026-10-05T23:22:10.995Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "RenderWorkflow"
+        },
+        "taskQueue": {
+          "name": "render-test-469feac833"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJlcGlzb2RlX2lkIjoiZXAtMSIsInJlbmRlcl9wcm9maWxlX2lkIjoibG9uZ19mb3JtX2hvcml6b250YWwiLCJyZW5kZXJfdGFza19xdWV1ZSI6InJlbmRlci1tZWRpYS10ZXN0LWY4OTc5YTc5NzgifQ=="
+            }
+          ]
+        },
+        "workflowExecutionTimeout": "315360000s",
+        "workflowRunTimeout": "315360000s",
+        "workflowTaskTimeout": "10s",
+        "originalExecutionRunId": "5ec551e8-b316-4554-b1f0-807b2e1b47e0",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "firstExecutionRunId": "5ec551e8-b316-4554-b1f0-807b2e1b47e0",
+        "attempt": 1,
+        "firstWorkflowTaskBackoff": "0s",
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "2",
+      "eventTime": "2026-10-05T23:22:10.995Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "render-test-469feac833"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "3",
+      "eventTime": "2026-10-05T23:22:10.996Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "historySizeBytes": "396"
+      }
+    },
+    {
+      "eventId": "4",
+      "eventTime": "2026-10-05T23:22:11.007Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "binaryChecksum": "4e1ad54b4a59a94a945a4f22f526bcac",
+        "sdkMetadata": {
+          "coreUsedFlags": [
+            3,
+            1,
+            2
+          ],
+          "sdkName": "temporal-python",
+          "sdkVersion": "1.32.0"
+        },
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "5",
+      "eventTime": "2026-10-05T23:22:11.007Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "1",
+        "activityType": {
+          "name": "render_admit"
+        },
+        "taskQueue": {
+          "name": "render-test-469feac833",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJlcGlzb2RlX2lkIjoiZXAtMSIsInJ1bl9pZCI6IjVlYzU1MWU4LWIzMTYtNDU1NC1iMWYwLTgwN2IyZTFiNDdlMCIsIndvcmtmbG93X2lkIjoiZXBpc29kZS1lcC0xLXJlbmRlci01NWYyMTY1ZiJ9"
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "3600s",
+        "scheduleToStartTimeout": "3600s",
+        "startToCloseTimeout": "30s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "3",
+        "retryPolicy": {
+          "initialInterval": "0.200s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "60s",
+          "nonRetryableErrorTypes": [
+            "NeedsInputError",
+            "PromptContractError",
+            "ProviderUnavailableError",
+            "ProviderCredentialSuspectedOutageError",
+            "UnreconciledReservationError",
+            "StoryboardInputMissingError",
+            "StoryboardInputInvalidError",
+            "GenerationSpecUnavailableError",
+            "ProviderSubmitAmbiguousError",
+            "ProviderRejectedError",
+            "ProviderRejectedRetryBlockedError",
+            "ProviderInputFetchError",
+            "ProviderInputFetchRetryExhaustedError",
+            "SceneAlternativeNotApplicableError",
+            "SceneAlternativeLimitReachedError",
+            "SceneAlternativeInfeasibleError",
+            "SceneAlternativeInvalidError",
+            "SceneAlternativePlannerUnavailableError",
+            "ProductionInputMissingError",
+            "ProductionInputInvalidError",
+            "VoiceLanguageUnsupportedError",
+            "RenderInputMissingError",
+            "RenderInputStaleError",
+            "RenderSourceMediaError",
+            "DurationReconciliationError",
+            "VoiceTimelineOverflowError",
+            "VoiceExceedsSceneSpanError",
+            "RenderEngineUnavailableError",
+            "FinalVideoValidationError",
+            "UnknownRenderProfileError",
+            "UploadInputMissingError",
+            "UploadsPausedError",
+            "UploadAuthError",
+            "UploadRejectedError",
+            "UploadOutcomeUnknownError",
+            "UploadProcessingFailedError",
+            "UploadOwnershipLostError",
+            "TopicPlanningExhaustedError",
+            "PermanentError",
+            "RenderInputIntegrityError",
+            "UploadIntegrityError"
+          ]
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "6",
+      "eventTime": "2026-10-05T23:22:11.008Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "5",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "7",
+      "eventTime": "2026-10-05T23:22:11.009Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJhZG1pdHRlZCI6dHJ1ZSwicmVuZGVyX3RpbWVvdXRfc2Vjb25kcyI6MTIwLCJzdGF0dXMiOiJpbl9wcm9ncmVzcyJ9"
+            }
+          ]
+        },
+        "scheduledEventId": "5",
+        "startedEventId": "6",
+        "identity": "2406057@yoshiki-XPS-8930"
+      }
+    },
+    {
+      "eventId": "8",
+      "eventTime": "2026-10-05T23:22:11.009Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "render-test-469feac833"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "9",
+      "eventTime": "2026-10-05T23:22:11.010Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "8",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "historySizeBytes": "2211"
+      }
+    },
+    {
+      "eventId": "10",
+      "eventTime": "2026-10-05T23:22:11.013Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "8",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "binaryChecksum": "4e1ad54b4a59a94a945a4f22f526bcac",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "11",
+      "eventTime": "2026-10-05T23:22:11.013Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "2",
+        "activityType": {
+          "name": "render_final_video"
+        },
+        "taskQueue": {
+          "name": "render-media-test-f8979a7978",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJlcGlzb2RlX2lkIjoiZXAtMSIsInJlbmRlcl9wcm9maWxlX2lkIjoibG9uZ19mb3JtX2hvcml6b250YWwiLCJydW5faWQiOiI1ZWM1NTFlOC1iMzE2LTQ1NTQtYjFmMC04MDdiMmUxYjQ3ZTAiLCJ3b3JrZmxvd19pZCI6ImVwaXNvZGUtZXAtMS1yZW5kZXItNTVmMjE2NWYifQ=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "315360000s",
+        "scheduleToStartTimeout": "315360000s",
+        "startToCloseTimeout": "22020s",
+        "heartbeatTimeout": "60s",
+        "workflowTaskCompletedEventId": "9",
+        "retryPolicy": {
+          "initialInterval": "10s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "120s",
+          "maximumAttempts": 3,
+          "nonRetryableErrorTypes": [
+            "NeedsInputError",
+            "PromptContractError",
+            "ProviderUnavailableError",
+            "ProviderCredentialSuspectedOutageError",
+            "UnreconciledReservationError",
+            "StoryboardInputMissingError",
+            "StoryboardInputInvalidError",
+            "GenerationSpecUnavailableError",
+            "ProviderSubmitAmbiguousError",
+            "ProviderRejectedError",
+            "ProviderRejectedRetryBlockedError",
+            "ProviderInputFetchError",
+            "ProviderInputFetchRetryExhaustedError",
+            "SceneAlternativeNotApplicableError",
+            "SceneAlternativeLimitReachedError",
+            "SceneAlternativeInfeasibleError",
+            "SceneAlternativeInvalidError",
+            "SceneAlternativePlannerUnavailableError",
+            "ProductionInputMissingError",
+            "ProductionInputInvalidError",
+            "VoiceLanguageUnsupportedError",
+            "RenderInputMissingError",
+            "RenderInputStaleError",
+            "RenderSourceMediaError",
+            "DurationReconciliationError",
+            "VoiceTimelineOverflowError",
+            "VoiceExceedsSceneSpanError",
+            "RenderEngineUnavailableError",
+            "FinalVideoValidationError",
+            "UnknownRenderProfileError",
+            "UploadInputMissingError",
+            "UploadsPausedError",
+            "UploadAuthError",
+            "UploadRejectedError",
+            "UploadOutcomeUnknownError",
+            "UploadProcessingFailedError",
+            "UploadOwnershipLostError",
+            "TopicPlanningExhaustedError",
+            "PermanentError",
+            "RenderInputIntegrityError",
+            "UploadIntegrityError"
+          ]
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "12",
+      "eventTime": "2026-10-05T23:22:11.013Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "11",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "13",
+      "eventTime": "2026-10-05T23:22:11.014Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJhcnRpZmFjdF9pZCI6IjAyZDQ3MWFhLTE0NjgtNGY1NS04ZjgyLTZmZjIwZDE2ZmIwNCIsImpvYl9pZCI6IiIsInNoYTI1NiI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJza2lwcGVkIjpmYWxzZSwidmVyc2lvbiI6MX0="
+            }
+          ]
+        },
+        "scheduledEventId": "11",
+        "startedEventId": "12",
+        "identity": "2406057@yoshiki-XPS-8930"
+      }
+    },
+    {
+      "eventId": "14",
+      "eventTime": "2026-10-05T23:22:11.014Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "render-test-469feac833"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "15",
+      "eventTime": "2026-10-05T23:22:11.015Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "14",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "historySizeBytes": "4164"
+      }
+    },
+    {
+      "eventId": "16",
+      "eventTime": "2026-10-05T23:22:11.017Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "14",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "binaryChecksum": "4e1ad54b4a59a94a945a4f22f526bcac",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "17",
+      "eventTime": "2026-10-05T23:22:11.017Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "3",
+        "activityType": {
+          "name": "render_mark_ready"
+        },
+        "taskQueue": {
+          "name": "render-test-469feac833",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJlcGlzb2RlX2lkIjoiZXAtMSIsInJ1bl9pZCI6IjVlYzU1MWU4LWIzMTYtNDU1NC1iMWYwLTgwN2IyZTFiNDdlMCIsIndvcmtmbG93X2lkIjoiZXBpc29kZS1lcC0xLXJlbmRlci01NWYyMTY1ZiJ9"
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "3600s",
+        "scheduleToStartTimeout": "3600s",
+        "startToCloseTimeout": "30s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "15",
+        "retryPolicy": {
+          "initialInterval": "0.200s",
+          "backoffCoefficient": 2.0,
+          "maximumInterval": "60s",
+          "nonRetryableErrorTypes": [
+            "NeedsInputError",
+            "PromptContractError",
+            "ProviderUnavailableError",
+            "ProviderCredentialSuspectedOutageError",
+            "UnreconciledReservationError",
+            "StoryboardInputMissingError",
+            "StoryboardInputInvalidError",
+            "GenerationSpecUnavailableError",
+            "ProviderSubmitAmbiguousError",
+            "ProviderRejectedError",
+            "ProviderRejectedRetryBlockedError",
+            "ProviderInputFetchError",
+            "ProviderInputFetchRetryExhaustedError",
+            "SceneAlternativeNotApplicableError",
+            "SceneAlternativeLimitReachedError",
+            "SceneAlternativeInfeasibleError",
+            "SceneAlternativeInvalidError",
+            "SceneAlternativePlannerUnavailableError",
+            "ProductionInputMissingError",
+            "ProductionInputInvalidError",
+            "VoiceLanguageUnsupportedError",
+            "RenderInputMissingError",
+            "RenderInputStaleError",
+            "RenderSourceMediaError",
+            "DurationReconciliationError",
+            "VoiceTimelineOverflowError",
+            "VoiceExceedsSceneSpanError",
+            "RenderEngineUnavailableError",
+            "FinalVideoValidationError",
+            "UnknownRenderProfileError",
+            "UploadInputMissingError",
+            "UploadsPausedError",
+            "UploadAuthError",
+            "UploadRejectedError",
+            "UploadOutcomeUnknownError",
+            "UploadProcessingFailedError",
+            "UploadOwnershipLostError",
+            "TopicPlanningExhaustedError",
+            "PermanentError",
+            "RenderInputIntegrityError",
+            "UploadIntegrityError"
+          ]
+        },
+        "priority": {}
+      }
+    },
+    {
+      "eventId": "18",
+      "eventTime": "2026-10-05T23:22:11.017Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_STARTED",
+      "activityTaskStartedEventAttributes": {
+        "scheduledEventId": "17",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "19",
+      "eventTime": "2026-10-05T23:22:11.018Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "activityTaskCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJvd25lZCI6dHJ1ZSwic3RhdHVzIjoicmVuZGVyX3JlYWR5In0="
+            }
+          ]
+        },
+        "scheduledEventId": "17",
+        "startedEventId": "18",
+        "identity": "2406057@yoshiki-XPS-8930"
+      }
+    },
+    {
+      "eventId": "20",
+      "eventTime": "2026-10-05T23:22:11.018Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "render-test-469feac833"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "21",
+      "eventTime": "2026-10-05T23:22:11.018Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "20",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "historySizeBytes": "5921"
+      }
+    },
+    {
+      "eventId": "22",
+      "eventTime": "2026-10-05T23:22:11.020Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "20",
+        "identity": "2406057@yoshiki-XPS-8930",
+        "binaryChecksum": "4e1ad54b4a59a94a945a4f22f526bcac",
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "23",
+      "eventTime": "2026-10-05T23:22:11.020Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED",
+      "workflowExecutionCompletedEventAttributes": {
+        "result": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJhZG1pdHRlZCI6dHJ1ZSwiZXBpc29kZV9pZCI6ImVwLTEiLCJmYWlsdXJlX2NsYXNzIjpudWxsLCJmaW5hbF92aWRlbyI6eyJhcnRpZmFjdF9pZCI6IjAyZDQ3MWFhLTE0NjgtNGY1NS04ZjgyLTZmZjIwZDE2ZmIwNCIsImpvYl9pZCI6IiIsInNoYTI1NiI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJza2lwcGVkIjpmYWxzZSwidmVyc2lvbiI6MX0sIm93bmVkIjp0cnVlLCJzdGF0dXMiOiJyZW5kZXJfcmVhZHkifQ=="
+            }
+          ]
+        },
+        "workflowTaskCompletedEventId": "21"
+      }
+    }
+  ]
+}

@@ -6,28 +6,67 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
+from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from temporalio.exceptions import WorkflowAlreadyStartedError
 
-from apps.api.dependencies import get_session_factory, get_workflow_starter
+from apps.api.dependencies import (
+    get_artifact_store_factory,
+    get_session_factory,
+    get_settings,
+    get_workflow_starter,
+)
+from apps.api.episodes_auth import require_episodes_auth
 from apps.api.schemas import (
     ArtifactView,
     CreateEpisodeRequest,
     CreateEpisodeResponse,
     EpisodeView,
     JobView,
+    ResumePlanResponse,
+    ResumeResponse,
+    StartProductionResponse,
+    StartRenderRequest,
+    StartRenderResponse,
+    StartStoryboardResponse,
+    StartUploadResponse,
 )
-from apps.api.workflow_starter import WorkflowStarter
+from apps.api.workflow_starter import WorkflowStarter, render_workflow_id, upload_workflow_id
+from contracts.application import OperationErrorCode
+from contracts.log_contract import EventName, LogStage, Outcome
+from contracts.render import DEFAULT_RENDER_PROFILE_ID, get_render_profile
+from contracts.states import (
+    PRODUCTION_ADMISSIBLE_STATUSES,
+    RENDER_ADMISSIBLE_STATUSES,
+    UPLOAD_ADMISSIBLE_STATUSES,
+    EpisodeStatus,
+    ProviderCall,
+)
+from domain.pipeline.resume_plan import ReservationSummary, ResumePlan, build_resume_plan
+from infrastructure.agents.pinned_plan import (
+    has_unstarted_agentic_draft,
+    read_pinned_agentic_template,
+)
+from infrastructure.config import Settings
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
     JobRepository,
+    ProviderReservationRepository,
 )
+from infrastructure.logging.emit import emit, log_guard
+from infrastructure.storage.artifact_store import ArtifactStore
 
-router = APIRouter(prefix="/episodes", tags=["episodes"])
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    prefix="/episodes", tags=["episodes"], dependencies=[Depends(require_episodes_auth)]
+)
 
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 Starter = Annotated[WorkflowStarter, Depends(get_workflow_starter)]
@@ -43,7 +82,9 @@ async def create_episode(
         episode = await EpisodeRepository(session).create(topic=payload.topic)
         await session.commit()
 
-    workflow_id = await starter.start_episode_workflow(episode_id=episode.id)
+    workflow_id = await starter.start_episode_workflow(
+        episode_id=episode.id, pipeline=payload.pipeline
+    )
 
     async with session_factory() as session:
         # Temporal参照は相関のためだけに持つ。状態の権威はDB（INV-7 / INV-8）。
@@ -51,6 +92,416 @@ async def create_episode(
         await session.commit()
 
     return CreateEpisodeResponse(id=episode.id, status=episode.status, workflow_id=workflow_id)
+
+
+@router.post(
+    "/{episode_id}/storyboard",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=StartStoryboardResponse,
+)
+async def start_storyboard(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+) -> StartStoryboardResponse:
+    """storyboard 工程を起動するだけ（INV-16）。
+
+    状態の前提（``script_ready`` / ``storyboard_ready``）は workflow の admit Activity が
+    判定する。ここで判定すると、判定と起動の間に状態が変わる窓を API が抱えるため。
+    """
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+
+    try:
+        workflow_id = await starter.start_storyboard_workflow(episode_id=episode.id)
+    except WorkflowAlreadyStartedError as exc:
+        # 同じ Episode の storyboard workflow が実行中。二重起動しない（ADR-0015）。
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"storyboard workflow already running for episode {episode.id}",
+        ) from exc
+    return StartStoryboardResponse(
+        episode_id=episode.id, status=episode.status, workflow_id=workflow_id
+    )
+
+
+@router.post(
+    "/{episode_id}/production",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=StartProductionResponse,
+)
+async def start_production(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+) -> StartProductionResponse:
+    """production 工程を起動するだけ（INV-16 / ADR-0017）。
+
+    入場の権威は workflow の admit Activity。ここでは明らかに入れない状態を早めに 409 で返す
+    （``in_progress`` は閉じた run の引き継ぎがありうるので admit に任せる）。
+    ``needs_work`` / ``blocked`` への POST は再試行 / 再開の操作になる。
+    """
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    if (
+        episode.status not in PRODUCTION_ADMISSIBLE_STATUSES
+        and episode.status is not EpisodeStatus.IN_PROGRESS
+    ):
+        allowed = ", ".join(sorted(s.value for s in PRODUCTION_ADMISSIBLE_STATUSES))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"episode {episode.id} is {episode.status.value}; production can start only "
+                f"from {allowed}"
+            ),
+        )
+
+    try:
+        workflow_id = await starter.start_production_workflow(episode_id=episode.id)
+    except WorkflowAlreadyStartedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"production workflow already running for episode {episode.id}",
+        ) from exc
+    return StartProductionResponse(
+        episode_id=episode.id, status=episode.status, workflow_id=workflow_id
+    )
+
+
+@router.post(
+    "/{episode_id}/render",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=StartRenderResponse,
+)
+async def start_render(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+    payload: Annotated[StartRenderRequest | None, Body()] = None,
+) -> StartRenderResponse:
+    """render 工程を起動するだけ（INV-16 / ADR-0019）。
+
+    入場の権威は workflow の admit Activity。ここでは未知の profile（422）と、明らかに入れない状態
+    （409）を早めに返す。profile は Activity でも再検証する。
+    """
+    profile_id = (payload.render_profile_id if payload else None) or DEFAULT_RENDER_PROFILE_ID
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    try:
+        get_render_profile(profile_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown render profile: {profile_id}",
+        ) from exc
+    if (
+        episode.status not in RENDER_ADMISSIBLE_STATUSES
+        and episode.status is not EpisodeStatus.IN_PROGRESS
+    ):
+        allowed = ", ".join(sorted(s.value for s in RENDER_ADMISSIBLE_STATUSES))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"episode {episode.id} is {episode.status.value}; render can start only "
+                f"from {allowed}"
+            ),
+        )
+    if episode.status in {EpisodeStatus.NEEDS_WORK, EpisodeStatus.BLOCKED}:
+        # 再開は render 自身が止めた Episode だけ（入場トークンの workflow id / 権威は admit）
+        async with session_factory() as session:
+            owner = await EpisodeRepository(session).get_workflow_id(episode.id)
+        owner_workflow = (owner or "").rsplit(":", 1)[0]
+        if owner_workflow != render_workflow_id(episode.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"episode {episode.id} is {episode.status.value} but was stopped by another "
+                    f"stage ({owner_workflow or 'unknown'}); resume that stage instead"
+                ),
+            )
+
+    try:
+        workflow_id = await starter.start_render_workflow(
+            episode_id=episode.id, render_profile_id=profile_id
+        )
+    except WorkflowAlreadyStartedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"render workflow already running for episode {episode.id}",
+        ) from exc
+    return StartRenderResponse(
+        episode_id=episode.id,
+        status=episode.status,
+        workflow_id=workflow_id,
+        render_profile_id=profile_id,
+    )
+
+
+@router.post(
+    "/{episode_id}/upload",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=StartUploadResponse,
+)
+async def start_upload(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+) -> StartUploadResponse:
+    """upload 工程を起動するだけ（INV-16 / ADR-0020）。本文は受け取らない。
+
+    入場の権威は workflow の admit Activity。ここでは明らかに入れない状態を早めに 409 で返す。
+    ``uploaded`` は再投稿しないので 409（INV-14 / INV-19）。
+    """
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    if episode.status is EpisodeStatus.UPLOADED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"episode {episode.id} is already uploaded; it is never uploaded twice",
+        )
+    if (
+        episode.status not in UPLOAD_ADMISSIBLE_STATUSES
+        and episode.status is not EpisodeStatus.IN_PROGRESS
+    ):
+        allowed = ", ".join(sorted(s.value for s in UPLOAD_ADMISSIBLE_STATUSES))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"episode {episode.id} is {episode.status.value}; upload can start only "
+                f"from {allowed}"
+            ),
+        )
+    if episode.status in {EpisodeStatus.NEEDS_WORK, EpisodeStatus.BLOCKED}:
+        async with session_factory() as session:
+            owner = await EpisodeRepository(session).get_workflow_id(episode.id)
+        owner_workflow = (owner or "").rsplit(":", 1)[0]
+        if owner_workflow != upload_workflow_id(episode.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"episode {episode.id} is {episode.status.value} but was stopped by another "
+                    f"stage ({owner_workflow or 'unknown'}); resume that stage instead"
+                ),
+            )
+    try:
+        workflow_id = await starter.start_upload_workflow(episode_id=episode.id)
+    except WorkflowAlreadyStartedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"upload workflow already running for episode {episode.id}",
+        ) from exc
+    return StartUploadResponse(
+        episode_id=episode.id, status=episode.status, workflow_id=workflow_id
+    )
+
+
+async def _load_resume_plan(
+    episode_id: uuid.UUID, session_factory: SessionFactory
+) -> tuple[EpisodeStatus, ResumePlan] | None:
+    """再開計画を読み取り専用で組み立てる（ADR-0032 §Decision(1)/(2)）。
+
+    GET の dry-run と POST の再検証が**同じ関数**を呼ぶ（TOCTOU を避ける）。ここは読み取りだけ
+    （``session.commit()`` を呼ばない）。provider 呼び出し・予約 INSERT・workflow start は
+    ``domain.pipeline.resume_plan`` 同様ここでも一切行わない。
+
+    未照合予約は対象工程の provider に絞らず、Episode の全 provider について読む
+    （ADR-0013 §Decision が「同じ Episode + provider」を単位に未照合を確認するのと同じ粒度。
+    対象工程の絞り込みは `determine_target_stage` 自体が「決められない」ケースを持つため、
+    工程を先に決めてから provider を絞るより、Episode 全体を毎回見るほうが単純で安全側に倒れる。
+    `build_resume_plan` 自身が `ReservationStatus.RESERVED` かつ `raw_output_key is None` の行
+    だけを未照合として使うので、余分な行を渡しても判定は変わらない）。
+    """
+    async with session_factory() as session:
+        episode = await EpisodeRepository(session).get(episode_id)
+        if episode is None:
+            return None
+        owner_workflow_id = await EpisodeRepository(session).get_workflow_id(episode.id)
+        reservation_repo = ProviderReservationRepository(session)
+        reservations: list[ReservationSummary] = []
+        for provider in ProviderCall:
+            for row in await reservation_repo.list_for_episode_provider(episode.id, provider):
+                reservations.append(
+                    ReservationSummary(
+                        id=row.id,
+                        provider=row.provider,
+                        status=row.status,
+                        raw_output_key=row.raw_output_key,
+                    )
+                )
+
+    plan = build_resume_plan(
+        episode_id=str(episode.id),
+        status=episode.status,
+        owner_workflow_id=owner_workflow_id,
+        unreconciled_reservations=reservations,
+    )
+    return episode.status, plan
+
+
+def _resume_plan_response(episode_id: uuid.UUID, plan: ResumePlan) -> ResumePlanResponse:
+    return ResumePlanResponse(
+        episode_id=str(episode_id),
+        resumable=plan.resumable,
+        target_stage=plan.target_stage,
+        stages_to_run=list(plan.stages_to_run),
+        unresolved_blockers=list(plan.unresolved_blockers),
+        unreconciled_reservation_ids=[r.id for r in plan.unreconciled_reservations],
+        possible_new_charges=list(plan.possible_new_charges),
+        reason=plan.reason,
+    )
+
+
+@router.get("/{episode_id}/resume/plan", response_model=ResumePlanResponse)
+async def get_resume_plan(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+) -> ResumePlanResponse:
+    """統一再開の dry-run（INV-16 / ADR-0032 §Decision(1)）。
+
+    ``WorkflowStarter`` を依存に注入しない: これにより workflow を起動する経路がこのハンドラに
+    構造的に存在しない（コードレビューで機械的に確認できる。ADR-0032 §Decision(1)）。
+    """
+    loaded = await _load_resume_plan(episode_id, session_factory)
+    if loaded is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    _current_status, plan = loaded
+    return _resume_plan_response(episode_id, plan)
+
+
+@router.post(
+    "/{episode_id}/resume",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ResumeResponse,
+)
+async def resume_episode(
+    episode_id: uuid.UUID,
+    session_factory: SessionFactory,
+    starter: Starter,
+    store_factory: Annotated[Callable[[], ArtifactStore], Depends(get_artifact_store_factory)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> ResumeResponse:
+    """統一再開の実行（INV-16 / ADR-0032 §Decision(2)/(3)）。
+
+    dry-run と同じ ``_load_resume_plan`` を再度呼んでから判定する（クライアントがキャッシュした
+    古い plan を信用しない。TOCTOU を避ける）。``EpisodePipelineWorkflow`` を決定論的な
+    workflow id（``pipeline_workflow_id``）で起動する。実行中の同じ id は Temporal が拒否する
+    （``WorkflowAlreadyStartedError`` → 409。二重再開の防止も、通常実行との同時実行の防止も
+    ここに依存する。アプリ側でロックを自作しない）。
+    `claim_daily_slot` は呼ばない（``DailyEpisodeWorkflow`` を経由しない。日次枠を消費しない）。
+    """
+    ep = str(episode_id)
+    with log_guard():
+        emit(
+            logger,
+            EventName.EPISODE_RESUME_REQUESTED,
+            logging.INFO,
+            "resume requested episode=%s",
+            ep,
+            episode_id=ep,
+            stage=LogStage.RESUME.value,
+        )
+    loaded = await _load_resume_plan(episode_id, session_factory)
+    if loaded is None:
+        _resume_rejected(ep, status.HTTP_404_NOT_FOUND, "episode not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="episode not found")
+    current_status, plan = loaded
+    if not plan.resumable or plan.target_stage is None:
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, plan.reason or "not resumable")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=plan.reason or f"episode {episode_id} is not resumable",
+        )
+
+    # agentic か（pin 済みの計画があるか）の判定は I/O 側。介入 command の resume と同じ決定
+    pinned = await read_pinned_agentic_template(session_factory, store_factory, episode_id)
+    if pinned is not None and not settings.jpmas2_agentic_workflows:
+        # AgenticEpisodeWorkflow を拾う worker が無い環境。起動せず legacy にも落とさない
+        message = "agentic workflows are disabled (JPMAS2_AGENTIC_WORKFLOWS=false)"
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, OperationErrorCode.FEATURE_DISABLED.value)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": OperationErrorCode.FEATURE_DISABLED.value, "message": message},
+        )
+    if pinned is None and await has_unstarted_agentic_draft(session_factory, episode_id):
+        # 未開始の draft は legacy に見える。resume で legacy の pipeline を走らせない
+        message = "agentic episode is not started; use start_agentic_production"
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, OperationErrorCode.INVALID_STATE.value)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": OperationErrorCode.INVALID_STATE.value,
+                "reason": "agentic_draft_not_started",
+                "message": message,
+            },
+        )
+    try:
+        if pinned is not None:
+            workflow_id = await starter.start_agentic_workflow(
+                episode_id=str(episode_id),
+                template_id=pinned.template_id,
+                template_version=pinned.template_version,
+            )
+        else:
+            workflow_id = await starter.start_pipeline_workflow(
+                episode_id=str(episode_id), start_stage=plan.target_stage
+            )
+    except WorkflowAlreadyStartedError as exc:
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, "pipeline workflow already running")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"pipeline workflow already running for episode {episode_id}",
+        ) from exc
+    with log_guard():
+        emit(
+            logger,
+            EventName.EPISODE_RESUME_STARTED,
+            logging.INFO,
+            "resume started episode=%s target_stage=%s",
+            ep,
+            plan.target_stage,
+            episode_id=ep,
+            stage=LogStage.RESUME.value,
+            workflow_id=workflow_id,
+            outcome=Outcome.STARTED.value,
+            attributes={
+                "target_stage": plan.target_stage,
+                "stages_to_run": list(plan.stages_to_run),
+                "episode_status": str(current_status),
+            },
+        )
+
+    return ResumeResponse(
+        episode_id=str(episode_id),
+        status=current_status,
+        workflow_id=workflow_id,
+        target_stage=plan.target_stage,
+        stages_to_run=list(plan.stages_to_run),
+    )
+
+
+def _resume_rejected(episode_id: str, http_status: int, reason: str) -> None:
+    with log_guard():
+        emit(
+            logger,
+            EventName.EPISODE_RESUME_REJECTED,
+            logging.INFO,
+            "resume rejected episode=%s status=%s",
+            episode_id,
+            http_status,
+            episode_id=episode_id,
+            stage=LogStage.RESUME.value,
+            http_status=http_status,
+            outcome=Outcome.REJECTED.value,
+            attributes={"reason": reason},
+        )
 
 
 @router.get("/{episode_id}", response_model=EpisodeView)

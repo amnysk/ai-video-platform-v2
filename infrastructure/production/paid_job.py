@@ -1,0 +1,1075 @@
+"""非同期ジョブ型の有料呼び出しの INV-15 オーケストレーション（ADR-0013 / ADR-0017 §3 / ADR-0034）。
+
+画像・動画の worker が共有する（worker 間 import を避けるため infrastructure に置く / INV-3）。
+メディア固有の検証・正規化・Artifact 化は呼び出し側が行う。
+
+書き込み順序（ADR-0017 §3）:
+
+submit: 再利用確認 → 台帳からラウンドを決める → 未照合確認 → reserve **commit** →
+        dispatched **commit** → submit → provider job 参照 **commit**
+
+台帳のラウンド（ADR-0017 §3 / ADR-0034）: ``PaidJobSpec.round`` は workflow の run ごとの
+試行番号にすぎず、冪等キーには使わない。同じ入力の最新の予約から導く:
+
+- 無い → 1
+- ``reserved`` → その予約を再開
+  （参照あり: await / dispatch 済み参照なし: 人手照合 / 未 dispatch: そのまま進む）
+- Artifact が紐づいている、または evidence があり失敗の記録が無い → その予約を await で再開
+- provider がこの入力自体を拒否していた（``input_rejected_by_provider``、ADR-0034）
+  → **新しいラウンドを作らず** ``ProviderRejectedRetryBlockedError`` を送出する
+  （同じ入力を再送しても同じ拒否を繰り返すだけで課金だけが増える。回復は人間が入力を
+  直して新しい input_hash を作ることだけ）
+- それ以外（取得物なしで spent・検証に落ちた evidence・abandoned）→ 最新ラウンド + 1
+
+同じラウンドの並行 INSERT は ``idempotency_key`` の一意制約で片方が落ちるので、読み直して再開する。
+await:  参照を台帳から読む → poll（heartbeat）→ download → 生の取得物を ``provider-raw/`` へ →
+        ``mark_spent(evidence)`` **commit** → 呼び出し側へ返す（検証はその後）
+
+heartbeat: poll の各回に加え、download・evidence 保存・spent の commit の間は背景タスクが
+``heartbeat_interval_seconds`` ごとに送る（1つの長い await で heartbeat timeout を越えない）。
+並行した別の await 試行（heartbeat 切れの旧試行）が同じ evidence で先に spent にしていたら、
+それを受け入れて続ける（紐づいた Artifact があればそれを返す）。
+
+submit の失敗:
+
+- ``ProviderSubmitAmbiguousError`` / cancel: 予約は ``reserved`` + dispatched + 参照なしで残す
+  （曖昧の証拠。人手照合まで同じシーンの新ラウンドを止める）
+- adapter が「受理されなかった」と分類した例外（``NOT_ACCEPTED_SUBMIT_ERRORS``: 接続前の失敗・
+  429・4xx）だけ: ADR-0013 の「戻ってきた上での失敗」なので
+  ``spent`` + ``reconciled_by="conservative"``。
+  台帳に「受理されなかった」辺は無く、``abandoned`` は人手専用なので、課金された前提で確定して
+  次ラウンドを進める（安全側。見積もり額は過大計上になりうる / ADR-0017 負債）
+- それ以外の例外はすべて曖昧扱い（``ProviderSubmitAmbiguousError`` として送出し、予約は残す）
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
+from typing import Any, Protocol
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from contracts.log_contract import (
+    ClassificationBasis,
+    ErrorCategory,
+    EventName,
+    Outcome,
+    ProviderOperation,
+)
+from contracts.production_activities import (
+    AUTH_INCIDENT_SUPPRESSION_THRESHOLD,
+    AUTH_INCIDENT_WINDOW_MINUTES,
+    INPUT_FETCH_RETRIES_PER_SCENE,
+)
+from contracts.states import ArtifactType, ProviderCall, RejectionCategory, ReservationStatus
+from domain.artifact.entities import ArtifactMetadata
+from domain.errors import (
+    InvalidTransitionError,
+    MediaValidationError,
+    ProviderCredentialSuspectedOutageError,
+    ProviderInputFetchError,
+    ProviderInputFetchRetryExhaustedError,
+    ProviderJobFailedError,
+    ProviderPollDeadlineError,
+    ProviderRejectedError,
+    ProviderRejectedRetryBlockedError,
+    ProviderRejection,
+    ProviderSubmitAmbiguousError,
+    ProviderUnavailableError,
+    UnreconciledReservationError,
+    classify_failure,
+)
+from domain.production.identity import idempotency_key
+from domain.production.ports import JobFailed, JobPending, JobStatus, ProviderJobRef
+from infrastructure.artifact.verify import ArtifactVerdict, find_and_verify_current, verify_artifact
+from infrastructure.db.repositories import (
+    ArtifactMetadataRepository,
+    ProviderAuthIncidentRepository,
+    ProviderRejectionRepository,
+    ProviderReservation,
+    ProviderReservationRepository,
+)
+from infrastructure.logging.context import log_context
+from infrastructure.logging.emit import emit, log_guard
+from infrastructure.logging.ledger import reservation_fields
+from infrastructure.storage.artifact_store import ArtifactStore
+from infrastructure.workdir import WorkDirectory
+
+logger = logging.getLogger(__name__)
+
+PROVIDER_RAW_PREFIX = "provider-raw"
+_COST_QUANTUM = Decimal("0.0001")
+#: 長い単発の await（download / 保存 / commit）の間に送る heartbeat の間隔（秒）
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 20.0
+#: 同じラウンドの並行 INSERT に負けたときに読み直す回数
+_RESERVE_ATTEMPTS = 3
+#: submit がこれらを投げたら「受理されていない」と adapter が示している（fal_queue の分類）。
+#: ここに無い例外は受理されたか分からないものとして扱う（再送しない・消さない）。
+NOT_ACCEPTED_SUBMIT_ERRORS: tuple[type[Exception], ...] = (
+    ProviderJobFailedError,
+    ProviderRejectedError,
+    ProviderInputFetchError,
+    ProviderUnavailableError,
+)
+
+
+class AsyncJobGenerator(Protocol):
+    """``ImageGenerator`` / ``VideoGenerator`` の共通部分（request 型は問わない）。"""
+
+    @property
+    def generator_id(self) -> str: ...
+
+    def estimate_cost_usd(self, request: Any) -> float: ...
+
+    async def submit(self, request: Any) -> ProviderJobRef: ...
+
+    async def poll(self, ref: ProviderJobRef) -> JobStatus: ...
+
+    async def download(self, ref: ProviderJobRef, dest: Any) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PaidJobSpec:
+    """1ラウンドの有料呼び出しの同一性。"""
+
+    episode_id: str
+    scene_id: str
+    provider: ProviderCall
+    artifact_type: ArtifactType
+    input_hash: str
+    #: workflow の run ごとの試行番号（ログ用）。**台帳のラウンドではない**（台帳から導く）
+    round: int
+    job_id: str | None = None
+    #: 再利用の完全性検証（ADR-0033）が「現在有効な生成設定版」として使う値。
+    #: ``generator.generation_profile_id`` そのままとは限らない ── video のように
+    #: generator + 付随パラメータ（motion profile 等）を合成した値を Activity 側が持つ場合は、
+    #: その合成済みの値をここへ渡す（``PaidJobRunner`` は provider 固有の合成方法を知らない）。
+    #: 省略時はこの型のチェックを行わない。
+    current_generation_profile_id: str | None = None
+    #: ADR-0035: 生成レシピの版を除いた入力指紋（``artifact_metadata.content_fingerprint``）。
+    #: レシピの版だけが違う成功済み成果物を再利用する鍵。省略時はこの経路を使わない。
+    content_fingerprint: str | None = None
+    #: ADR-0035: 入力メディア（動画なら ``image_url`` に渡す画像）の sha256。provider に拒否された
+    #: 画像を、テキストを変えて再送しないための鍵（INV-32）。入力メディアが無ければ ``None``。
+    source_media_sha256: str | None = None
+    #: ADR-0035 (4): 旧方式（4d96027 まで）で再計算した input_hash の候補。旧方式で作られた
+    #: 成果物の再利用と、旧方式の予約（進行中の課金ジョブ・拒否された入力）の照合に使う。
+    legacy_input_hashes: tuple[str, ...] = ()
+
+    def key_for_round(self, ledger_round: int) -> str:
+        return idempotency_key(
+            provider=self.provider.value, input_hash=self.input_hash, round=ledger_round
+        )
+
+    @property
+    def idempotency_key(self) -> str:
+        """台帳ラウンド1の冪等キー（テスト・照合用）。実際のキーは ``key_for_round``。"""
+        return self.key_for_round(1)
+
+
+@dataclass(frozen=True, slots=True)
+class Reused:
+    """同じ入力の現行 Artifact があった。生成器を呼んでいない。"""
+
+    artifact: ArtifactMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class Submitted:
+    """provider job 参照が台帳にある（今回 submit したか、既にあった）。await で待つ。"""
+
+    reservation_id: str
+    #: 今回の呼び出しで submit したか（再開なら False）
+    newly_submitted: bool
+    #: 台帳のラウンド
+    round: int
+
+
+SubmitOutcome = Reused | Submitted
+
+
+@dataclass(frozen=True, slots=True)
+class PaidOutput:
+    """await の結果。``artifact`` があれば既に検証・保存済み（``data`` は空）。"""
+
+    reservation: ProviderReservation
+    data: bytes
+    raw_output_key: str
+    artifact: ArtifactMetadata | None = None
+
+
+def raw_output_key(episode_id: str, reservation_id: str) -> str:
+    return f"{PROVIDER_RAW_PREFIX}/{episode_id}/{reservation_id}/output.bin"
+
+
+def raw_result_key(episode_id: str, reservation_id: str) -> str:
+    return f"{PROVIDER_RAW_PREFIX}/{episode_id}/{reservation_id}/result.json"
+
+
+def estimated_cost(value: float) -> Decimal:
+    return Decimal(str(value)).quantize(_COST_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+class _FileDestination:
+    """``MediaDestination`` のファイル実装（作業領域へストリーミング）。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._handle = path.open("wb")
+
+    async def write(self, chunk: bytes) -> None:
+        await asyncio.to_thread(self._handle.write, chunk)
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+class PaidJobRunner:
+    def __init__(
+        self,
+        *,
+        session_factory: async_sessionmaker[AsyncSession],
+        store: ArtifactStore,
+        workdir: WorkDirectory,
+        heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    ) -> None:
+        self._session_factory = session_factory
+        self._store = store
+        self._workdir = workdir
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
+
+    # ------------------------------------------------------------------ submit
+
+    async def submit(
+        self, spec: PaidJobSpec, generator: AsyncJobGenerator, request: Any
+    ) -> SubmitOutcome:
+        # ログの文脈（ADR-0040 / log-contract §5）。adapter は観測した値だけを足す
+        with log_context(**_spec_fields(spec)):
+            return await self._submit(spec, generator, request)
+
+    async def _submit(
+        self, spec: PaidJobSpec, generator: AsyncJobGenerator, request: Any
+    ) -> SubmitOutcome:
+        reservation: ProviderReservation | None = None
+        prepared = False
+        for _ in range(_RESERVE_ATTEMPTS):
+            async with self._session_factory() as session:
+                # 再利用の唯一のゲート（ADR-0033）: DB行だけでなく実体（MinIO）も検証する。
+                # 欠落・破損・版不一致は「現行が無い」のと同じに倒し、新ラウンドへ進む
+                existing = await find_and_verify_current(
+                    repo=ArtifactMetadataRepository(session),
+                    store=self._store,
+                    episode_id=spec.episode_id,
+                    artifact_type=spec.artifact_type,
+                    input_hash=spec.input_hash,
+                    scene_id=spec.scene_id,
+                    # 「現在有効な生成設定版」は呼び出し元（Activity）が spec に渡した値
+                    # （fal の固定定数をここへ直接埋め込まない。fake/real どちらでも同じ形で効く）
+                    current_generation_profile_id=spec.current_generation_profile_id,
+                    # ADR-0035 (4): レシピの版だけが違う成功済み成果物・旧方式の成果物も再利用する
+                    content_fingerprint=spec.content_fingerprint,
+                    legacy_input_hashes=spec.legacy_input_hashes,
+                )
+                if existing is not None:
+                    with log_guard():
+                        emit(
+                            logger,
+                            EventName.ARTIFACT_REUSED,
+                            logging.INFO,
+                            "reusing current artifact %s for scene %s",
+                            existing.id,
+                            spec.scene_id,
+                            artifact_id=existing.id,
+                            artifact_type=existing.artifact_type.value,
+                            outcome=Outcome.REUSED.value,
+                        )
+                    return Reused(artifact=existing)
+
+                reservations = ProviderReservationRepository(session)
+                # hash の方式が変わっても、旧方式の予約（進行中の課金ジョブ・拒否された入力）を
+                # 見落とさない（ADR-0035 (4)）
+                latest = await reservations.find_latest_for_inputs(
+                    spec.episode_id,
+                    spec.provider,
+                    spec.scene_id,
+                    (spec.input_hash, *spec.legacy_input_hashes),
+                )
+                try:
+                    plan = _plan_round(latest)
+                except (UnreconciledReservationError, ProviderRejectedRetryBlockedError) as exc:
+                    _blocked(latest, exc)
+                    raise
+                if isinstance(plan, Submitted):
+                    _resumed(latest, "await")
+                    return plan
+                if isinstance(plan, ProviderReservation):
+                    _resumed(plan, "dispatch")
+                if isinstance(plan, int) and latest is not None:
+                    await self._check_input_fetch_retry(spec, latest)
+                if isinstance(plan, ProviderReservation):
+                    candidate: ProviderReservation | None = plan
+                    ledger_round = plan.round
+                else:
+                    candidate = None
+                    ledger_round = plan
+                key = spec.key_for_round(ledger_round)
+                # ここに来るのは「新しいラウンド」か
+                # 「reserved + 未 dispatch」（呼んでいない証拠）だけ
+                stale = [
+                    row
+                    for row in await reservations.find_unreconciled(
+                        episode_id=spec.episode_id,
+                        provider=spec.provider,
+                        scene_id=spec.scene_id,
+                    )
+                    if row.idempotency_key != key
+                ]
+                if stale:
+                    _blocked(stale[0], None)
+                    raise UnreconciledReservationError(
+                        f"unreconciled reservation {stale[0].id} blocks a new "
+                        f"{spec.provider.value} call for scene {spec.scene_id}"
+                    )
+                # 非課金の準備（例: 元画像のアップロード）は予約の**前**。
+                # 失敗しても台帳に何も残らない。
+                # 認可障害ゲート（ADR-0030）もここで初めて評価する: Reused / Submitted /
+                # stale-unreconciled の早期returnより後なので、provider I/O が要らない
+                # 済んだ工程の再開（sb1〜sb5 の再利用等）を抑止期間中でも止めない
+                if not prepared:
+                    await self._check_auth_outage_gate(spec.provider)
+                    await self._check_rejected_image_gate(spec)
+                    prepare = getattr(generator, "prepare", None)
+                    if prepare is not None:
+                        try:
+                            request = await prepare(request)
+                        except ProviderUnavailableError as exc:
+                            await self._record_auth_incident(spec, exc)
+                            raise
+                        else:
+                            await self._resolve_auth_incidents(spec.provider)
+                    prepared = True
+                if candidate is None:
+                    try:
+                        candidate = await reservations.reserve(
+                            episode_id=spec.episode_id,
+                            job_id=spec.job_id,
+                            provider=spec.provider,
+                            idempotency_key=key,
+                            input_hash=spec.input_hash,
+                            round=ledger_round,
+                            scene_id=spec.scene_id,
+                            estimated_cost_usd=estimated_cost(generator.estimate_cost_usd(request)),
+                        )
+                        await session.commit()
+                    except IntegrityError:
+                        # 並行する試行が同じラウンドを先に INSERT した。読み直して再開する
+                        await session.rollback()
+                        logger.info(
+                            "ledger round %s for scene %s was reserved concurrently; re-reading",
+                            ledger_round,
+                            spec.scene_id,
+                        )
+                        continue
+                reservation = candidate
+                break
+        if reservation is None:
+            raise UnreconciledReservationError(
+                f"could not settle a ledger round for scene {spec.scene_id} "
+                f"after {_RESERVE_ATTEMPTS} concurrent attempts"
+            )
+
+        with log_context(reservation_id=reservation.id, provider_attempt=reservation.round):
+            return await self._dispatch_and_submit(spec, generator, request, reservation)
+
+    async def _dispatch_and_submit(
+        self,
+        spec: PaidJobSpec,
+        generator: AsyncJobGenerator,
+        request: Any,
+        reservation: ProviderReservation,
+    ) -> Submitted:
+        async with self._session_factory() as session:
+            await ProviderReservationRepository(session).mark_dispatched(reservation.id)
+            await session.commit()
+
+        try:
+            ref = await generator.submit(request)
+        except NOT_ACCEPTED_SUBMIT_ERRORS as exc:
+            await self._spend_conservatively(
+                reservation.id, exc, source_media_sha256=spec.source_media_sha256
+            )
+            raise
+        except Exception as exc:
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.LOG_RECORD,
+                    logging.WARNING,
+                    "paid submit ambiguous; reservation left dispatched without ref "
+                    "reservation=%s episode=%s scene=%s error=%s",
+                    reservation.id,
+                    spec.episode_id,
+                    spec.scene_id,
+                    type(exc).__name__,
+                    provider_operation=ProviderOperation.SUBMIT.value,
+                    outcome=Outcome.AMBIGUOUS.value,
+                    error_type=type(exc).__name__,
+                    error_category=ErrorCategory.SUBMIT_AMBIGUOUS.value,
+                    classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                )
+            if isinstance(exc, ProviderSubmitAmbiguousError):
+                raise
+            raise ProviderSubmitAmbiguousError(
+                f"paid submit outcome unknown: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        # 参照が消えると回収できないので、commit 前にログにも残す（secret ではない）。
+        # 課金の確定ではなく provider の応答の観測（log-contract §9 の例外）
+        with log_guard():
+            emit(
+                logger,
+                EventName.PROVIDER_CALL_SUCCEEDED,
+                logging.INFO,
+                "paid submit accepted reservation=%s episode=%s scene=%s ref=%s",
+                reservation.id,
+                spec.episode_id,
+                spec.scene_id,
+                ref,
+                provider_operation=ProviderOperation.SUBMIT.value,
+                provider_request_id=_provider_request_id(ref),
+                outcome=Outcome.SUCCEEDED.value,
+            )
+        async with self._session_factory() as session:
+            await ProviderReservationRepository(session).record_provider_job_ref(
+                reservation.id, ref
+            )
+            await session.commit()
+        return Submitted(
+            reservation_id=reservation.id, newly_submitted=True, round=reservation.round
+        )
+
+    # ------------------------------------------------------------------ await
+
+    async def await_output(
+        self,
+        reservation_id: str,
+        generator: AsyncJobGenerator,
+        *,
+        poll_interval_seconds: float,
+        deadline_seconds: float | None = None,
+        max_bytes: int | None = None,
+        heartbeat: Callable[..., None] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        source_media_sha256: str | None = None,
+    ) -> PaidOutput:
+        """provider job 参照に対して待ち、生の取得物を evidence にして返す。**再 submit しない**。
+
+        cancel（``CancelledError``）はそのまま伝える。provider 側のジョブは cancel しない。
+        ``source_media_sha256`` は入力メディア（動画なら ``image_url`` の画像）の sha256。
+        provider が内容を拒否したとき ``provider_rejections`` に残す（INV-32 の鍵。ADR-0035）。
+        """
+        reservation = await self._load(reservation_id)
+        fields: dict[str, Any] = {}
+        with log_guard():  # 文脈が作れなくても await は進める（INV-38）
+            fields = reservation_fields(reservation)
+            fields.pop("reservation_status", None)  # 時点の値なので文脈には持たない
+        with log_context(**fields):
+            return await self._await_output(
+                reservation,
+                generator,
+                poll_interval_seconds=poll_interval_seconds,
+                deadline_seconds=deadline_seconds,
+                max_bytes=max_bytes,
+                heartbeat=heartbeat,
+                sleep=sleep,
+                clock=clock,
+                source_media_sha256=source_media_sha256,
+            )
+
+    async def _await_output(
+        self,
+        reservation: ProviderReservation,
+        generator: AsyncJobGenerator,
+        *,
+        poll_interval_seconds: float,
+        deadline_seconds: float | None,
+        max_bytes: int | None,
+        heartbeat: Callable[..., None] | None,
+        sleep: Callable[[float], Awaitable[None]],
+        clock: Callable[[], float],
+        source_media_sha256: str | None,
+    ) -> PaidOutput:
+        reservation_id = reservation.id
+        raw_key = raw_output_key(reservation.episode_id, reservation.id)
+
+        if reservation.outcome_artifact_id is not None:
+            meta = await self._verified_outcome_artifact(reservation.outcome_artifact_id)
+            if meta is not None:
+                return PaidOutput(reservation, b"", reservation.raw_output_key or raw_key, meta)
+            # 紐づいた Artifact が壊れている/欠落している（ADR-0033）。「紐づいて完了済み」を
+            # 信じて素通りせず、下の evidence（生の取得物）から検証をやり直す経路へ落ちる。
+
+        if reservation.status is ReservationStatus.SPENT:
+            if reservation.raw_output_key is None:
+                raise ProviderJobFailedError(
+                    f"round consumed without output (reservation {reservation.id}): "
+                    f"{reservation.error_summary or 'no evidence'}"
+                )
+            data = await self._store.get_bytes(reservation.raw_output_key)
+            return PaidOutput(reservation, data, reservation.raw_output_key)
+        if reservation.status is not ReservationStatus.RESERVED:
+            raise ProviderJobFailedError(
+                f"reservation {reservation.id} is {reservation.status.value}; nothing to await"
+            )
+        if reservation.provider_job_ref is None:
+            raise UnreconciledReservationError(
+                f"reservation {reservation.id} has no provider job ref to await"
+            )
+
+        # 取得物の保存と spent の commit の間で落ちていた: 保存済みの取得物が evidence
+        if await self._store.exists(raw_key):
+            async with self._keepalive(heartbeat, reservation.id, "evidence"):
+                await self._mark_spent_with_evidence(reservation.id, raw_key)
+                data = await self._store.get_bytes(raw_key)
+                return await self._output_after_spent(reservation_id, data, raw_key)
+
+        ref = ProviderJobRef(reservation.provider_job_ref)
+        started = clock()
+        polls = 0
+        last_state: str | None = None
+        while True:
+            polls += 1
+            if heartbeat is not None:
+                heartbeat({"reservation_id": reservation.id, "polls": polls})
+            status = await generator.poll(ref)
+            # この Activity 試行の最初の観測と、状態が変わった時だけ INFO（log-contract §6）
+            state = _job_state(status)
+            if state != last_state:
+                with log_guard():
+                    emit(
+                        logger,
+                        EventName.PROVIDER_JOB_STATE_CHANGED,
+                        logging.INFO,
+                        "provider job %s after %s poll(s)",
+                        state,
+                        polls,
+                        outcome=Outcome.STATE_CHANGED.value,
+                        attributes={"state": state, "previous_state": last_state, "polls": polls},
+                    )
+                last_state = state
+            if isinstance(status, JobFailed):
+                error: Exception
+                if status.rejected:
+                    error = ProviderRejectedError(status.message, rejection=status.rejection)
+                elif status.input_unreachable:
+                    # 内容の拒否ではない: 画像ゲート・再送禁止の対象外。拒否台帳には分類つきで残し
+                    # 再試行回数（INV-35）をそこから数える（ADR-0035 (8)）
+                    error = ProviderInputFetchError(status.message, rejection=status.rejection)
+                else:
+                    error = ProviderJobFailedError(status.message)
+                await self._spend_conservatively(
+                    reservation.id, error, source_media_sha256=source_media_sha256
+                )
+                raise error
+            if not isinstance(status, JobPending):
+                break
+            if deadline_seconds is not None and clock() - started >= deadline_seconds:
+                raise ProviderPollDeadlineError(
+                    f"provider job for reservation {reservation.id} still pending after "
+                    f"{deadline_seconds}s; ref stays in the ledger for a later await"
+                )
+            await sleep(poll_interval_seconds)
+
+        async with self._keepalive(heartbeat, reservation.id, "download"):
+            data = await self._download(reservation, generator, ref, max_bytes=max_bytes)
+        if heartbeat is not None:
+            heartbeat({"reservation_id": reservation.id, "downloaded": len(data)})
+
+        async with self._keepalive(heartbeat, reservation.id, "evidence"):
+            await self._store_result_evidence(reservation, generator, ref)
+            await self._store.put_bytes(raw_key, data, "application/octet-stream")
+            await self._mark_spent_with_evidence(reservation.id, raw_key)
+            return await self._output_after_spent(reservation_id, data, raw_key)
+
+    async def record_output_rejected(self, reservation_id: str, exc: BaseException) -> None:
+        """spent 済みの取得物が検証に落ちた。状態は変えず失敗を記録する。
+
+        記録があると次の submit はこの予約を再開せず、新しいラウンドへ進む（ADR-0017 §3）。
+        """
+        async with self._session_factory() as session:
+            await ProviderReservationRepository(session).record_failure(
+                reservation_id,
+                failure_class=classify_failure(exc),
+                error_summary=f"{type(exc).__name__}: {exc}",
+            )
+            await session.commit()
+
+    async def attach_artifact(self, session: AsyncSession, reservation_id: str, artifact_id: str):
+        """呼び出し側の Artifact 記録と同じトランザクションで紐づける。"""
+        return await ProviderReservationRepository(session).attach_artifact(
+            reservation_id, artifact_id
+        )
+
+    # ------------------------------------------------------------------ internal
+
+    async def _download(
+        self,
+        reservation: ProviderReservation,
+        generator: AsyncJobGenerator,
+        ref: ProviderJobRef,
+        *,
+        max_bytes: int | None,
+    ) -> bytes:
+        work_job_id = reservation.job_id or reservation.id
+        work = self._workdir.create(reservation.episode_id, work_job_id)
+        path = work.tmp / f"{reservation.id}.download"
+        dest = _FileDestination(path)
+        try:
+            try:
+                await generator.download(ref, dest)
+            finally:
+                dest.close()
+            data = path.read_bytes()
+            if max_bytes is not None and len(data) > max_bytes:
+                raise MediaValidationError(
+                    f"downloaded {len(data)} bytes, above the {max_bytes} byte cap"
+                )
+            if not data:
+                raise ProviderJobFailedError("provider download was empty")
+        except (MediaValidationError, ProviderJobFailedError, ProviderRejectedError) as exc:
+            # 取得物そのものが使えない: 課金された前提でラウンドを確定する
+            await self._spend_conservatively(reservation.id, exc)
+            raise
+        finally:
+            path.unlink(missing_ok=True)
+        self._workdir.cleanup(reservation.episode_id, work_job_id)
+        return data
+
+    async def _store_result_evidence(
+        self, reservation: ProviderReservation, generator: AsyncJobGenerator, ref: ProviderJobRef
+    ) -> None:
+        describe = getattr(generator, "describe_result", None)
+        if describe is None:
+            return
+        try:
+            payload = await describe(ref)
+            body = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+            await self._store.put_text(raw_result_key(reservation.episode_id, reservation.id), body)
+        except Exception as exc:  # evidence の補足情報。取得物本体が主証拠なので止めない
+            logger.warning(
+                "could not store provider result json reservation=%s: %s",
+                reservation.id,
+                type(exc).__name__,
+            )
+
+    async def _load(self, reservation_id: str) -> ProviderReservation:
+        async with self._session_factory() as session:
+            reservation = await ProviderReservationRepository(session).get(reservation_id)
+        if reservation is None:
+            raise UnreconciledReservationError(f"reservation {reservation_id} not found")
+        return reservation
+
+    async def _mark_spent_with_evidence(self, reservation_id: str, raw_key: str) -> None:
+        """evidence で spent にする。**同じ evidence で既に spent なら冪等に受け入れる**。
+
+        heartbeat 切れで並行した旧試行が先に commit していた場合に当たる。別の evidence や
+        conservative で閉じていた場合は食い違いなので ``InvalidTransitionError`` のまま
+        （needs_input）。
+        """
+        try:
+            async with self._session_factory() as session:
+                await ProviderReservationRepository(session).mark_spent(
+                    reservation_id, raw_output_key=raw_key, reconciled_by="evidence"
+                )
+                await session.commit()
+        except InvalidTransitionError:
+            current = await self._load(reservation_id)
+            if current.status is ReservationStatus.SPENT and current.raw_output_key == raw_key:
+                logger.info(
+                    "reservation already spent with the same evidence (concurrent attempt) "
+                    "reservation=%s",
+                    reservation_id,
+                )
+                return
+            raise
+
+    async def _output_after_spent(
+        self, reservation_id: str, data: bytes, raw_key: str
+    ) -> PaidOutput:
+        reservation = await self._load(reservation_id)
+        if reservation.outcome_artifact_id is not None:
+            meta = await self._verified_outcome_artifact(reservation.outcome_artifact_id)
+            if meta is not None:
+                return PaidOutput(reservation, b"", raw_key, meta)
+        return PaidOutput(reservation, data, raw_key)
+
+    async def _verified_outcome_artifact(self, artifact_id: str) -> ArtifactMetadata | None:
+        """紐づいた Artifact を実体まで検証してから返す（ADR-0033）。
+
+        ``reservation.outcome_artifact_id`` が指す行は「この予約はもう完了している」という
+        DB 上の主張でしかない。実体（MinIO）が欠落・破損していれば、それを「完了済み」として
+        黙って返さない ── ``find_and_verify_current`` が予約の**前**でやっていることと同じ検査を、
+        予約の**後**（await での再開）でも必ず通す。検証に落ちても行・object は削除・変更しない
+        （呼び出し側が evidence から再検証する経路へ落ちるだけ）。
+        """
+        async with self._session_factory() as session:
+            meta = await ArtifactMetadataRepository(session).get(artifact_id)
+        if meta is None:
+            return None
+        result = await verify_artifact(self._store, meta)
+        if result.verdict is not ArtifactVerdict.REUSABLE:
+            return None
+        return meta
+
+    @contextlib.asynccontextmanager
+    async def _keepalive(
+        self, heartbeat: Callable[..., None] | None, reservation_id: str, phase: str
+    ) -> AsyncIterator[None]:
+        """単発の長い await の間、背景タスクで heartbeat を送る。
+
+        Temporal の activity context は contextvar なので、Activity 内で作ったタスクから送れる。
+        """
+        if heartbeat is None:
+            yield
+            return
+        beat = heartbeat
+        interval = self._heartbeat_interval_seconds
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(interval)
+                beat({"reservation_id": reservation_id, "phase": phase})
+
+        task = asyncio.create_task(_loop())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    # ---------------------------------------------------- provider 認可障害の抑止（ADR-0030）
+
+    async def _check_auth_outage_gate(self, provider: ProviderCall) -> None:
+        """同じ provider の未解決 incident が閾値を超えていれば、予約を作らずに止める。"""
+        since = datetime.now(UTC) - timedelta(minutes=AUTH_INCIDENT_WINDOW_MINUTES)
+        async with self._session_factory() as session:
+            count = await ProviderAuthIncidentRepository(session).count_unresolved_within_window(
+                provider, since=since
+            )
+        if count >= AUTH_INCIDENT_SUPPRESSION_THRESHOLD:
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.PROVIDER_CALL_SUPPRESSED,
+                    logging.WARNING,
+                    "suppressing new %s submits: %s unresolved auth incident(s)",
+                    provider.value,
+                    count,
+                    provider=provider.value,
+                    outcome=Outcome.BLOCKED.value,
+                    error_type=ProviderCredentialSuspectedOutageError.__name__,
+                    error_category=ErrorCategory.SUPPRESSED_BY_INCIDENT.value,
+                    classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                    attributes={"unresolved_incidents": count},
+                )
+            raise ProviderCredentialSuspectedOutageError(
+                f"{provider.value}: {count} unresolved auth incidents in the last "
+                f"{AUTH_INCIDENT_WINDOW_MINUTES} minutes; suppressing new submits until "
+                "a call succeeds or the incidents are resolved"
+            )
+
+    async def _record_auth_incident(self, spec: PaidJobSpec, exc: ProviderUnavailableError) -> None:
+        async with self._session_factory() as session:
+            await ProviderAuthIncidentRepository(session).record(
+                provider=spec.provider,
+                http_status=getattr(exc, "http_status", None),
+                episode_id=spec.episode_id,
+                now=datetime.now(UTC),
+            )
+            await session.commit()
+
+    async def _resolve_auth_incidents(self, provider: ProviderCall) -> None:
+        async with self._session_factory() as session:
+            resolved = await ProviderAuthIncidentRepository(session).resolve_open_for_provider(
+                provider, now=datetime.now(UTC)
+            )
+            await session.commit()
+        if resolved:
+            logger.info(
+                "resolved %s open auth incident(s) for provider=%s after a successful call",
+                resolved,
+                provider.value,
+            )
+
+    async def _spend_conservatively(
+        self,
+        reservation_id: str,
+        exc: BaseException,
+        *,
+        source_media_sha256: str | None = None,
+    ) -> None:
+        """課金された前提でラウンドを確定する。内容拒否なら同じトランザクションで記録する。
+
+        拒否の記録（ADR-0035）は adapter が組み立てた ``ProviderRejection`` をそのまま使う。
+        ``error_summary`` の文字列からは推測しない。構造化されていない拒否（adapter 内部の
+        入力検査など）も1行残す（対象は ``unknown``）── 拒否の件数と復旧の判断材料にする。
+        """
+        async with self._session_factory() as session:
+            spent = await ProviderReservationRepository(session).mark_spent(
+                reservation_id,
+                raw_output_key=None,
+                reconciled_by="conservative",
+                failure_class=classify_failure(exc),
+                error_summary=f"{type(exc).__name__}: {exc}",
+                # provider が入力そのものを拒否した（content policy 等）ことの機械判定
+                # （ADR-0034）。型で決める。文字列一致では決めない。
+                input_rejected_by_provider=isinstance(exc, ProviderRejectedError),
+            )
+            if isinstance(exc, (ProviderRejectedError, ProviderInputFetchError)):
+                await ProviderRejectionRepository(session).record(
+                    episode_id=spent.episode_id,
+                    scene_id=spent.scene_id,
+                    provider=spent.provider,
+                    reservation_id=spent.id,
+                    input_hash=spent.input_hash,
+                    rejection=exc.rejection or ProviderRejection(),
+                    source_media_sha256=source_media_sha256,
+                )
+            await session.commit()
+
+    # ------------------------------------- 入力の取得失敗の自動再試行は1回だけ（INV-35）
+
+    async def _check_input_fetch_retry(
+        self, spec: PaidJobSpec, latest: ProviderReservation
+    ) -> None:
+        """直前のラウンドが「provider が入力を取得できなかった」で終わったときの新ラウンド判定。
+
+        新しいラウンドは prepare で入力を上げ直すので、同じ壊れた URL は使わない。自動の再試行は
+        そのシーンで ``INPUT_FETCH_RETRIES_PER_SCENE`` 回まで。回数は拒否台帳の
+        ``input_unreachable`` 件数から数える（resume でリセットしない）。超えたら予約を作る前に
+        止める（予約も課金も作らない）。
+        """
+        async with self._session_factory() as session:
+            rejections = ProviderRejectionRepository(session)
+            last = await rejections.find_for_reservation(latest.id)
+            if last is None or last.category is not RejectionCategory.INPUT_UNREACHABLE:
+                return
+            failures = await rejections.count_input_unreachable(
+                spec.episode_id, spec.provider, spec.scene_id
+            )
+        if failures <= INPUT_FETCH_RETRIES_PER_SCENE:
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.SCENE_INPUT_REFETCH,
+                    logging.INFO,
+                    "provider could not fetch the input for scene %s; re-uploading (%s/%s)",
+                    spec.scene_id,
+                    failures,
+                    INPUT_FETCH_RETRIES_PER_SCENE,
+                    outcome=Outcome.STARTED.value,
+                    error_category=ErrorCategory.INPUT_UNREACHABLE.value,
+                    attributes={"failures": failures, "limit": INPUT_FETCH_RETRIES_PER_SCENE},
+                )
+        if failures > INPUT_FETCH_RETRIES_PER_SCENE:
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.RESERVATION_BLOCKED,
+                    logging.WARNING,
+                    "input re-upload retry used up for scene %s (%s failures)",
+                    spec.scene_id,
+                    failures,
+                    outcome=Outcome.BLOCKED.value,
+                    error_type=ProviderInputFetchRetryExhaustedError.__name__,
+                    error_category=ErrorCategory.INPUT_UNREACHABLE.value,
+                    attributes={"failures": failures, "limit": INPUT_FETCH_RETRIES_PER_SCENE},
+                )
+            raise ProviderInputFetchRetryExhaustedError(
+                f"{spec.provider.value} could not fetch the input for scene {spec.scene_id} "
+                f"{failures} time(s); the automatic re-upload retry "
+                f"(limit {INPUT_FETCH_RETRIES_PER_SCENE}) is used up. A human needs to check "
+                "the provider's file access before another paid attempt."
+            )
+
+    # ------------------------------------------------ 拒否された入力画像の再送禁止（INV-32）
+
+    async def _check_rejected_image_gate(self, spec: PaidJobSpec) -> None:
+        """provider が拒否した入力画像を、テキストを変えて再送しない（予約 INSERT の前）。
+
+        同じ ``input_hash`` の再送は ``_plan_round`` が止める（ADR-0034）。ここはそれとは別に、
+        入力画像の sha256 だけで止める: 拒否の位置が画像（``body.image_url``）なら、動画用の
+        テキストを変えても同じ画像は同じ判定になるはずで、費用だけが増える（ADR-0035）。
+        """
+        if spec.source_media_sha256 is None:
+            return
+        async with self._session_factory() as session:
+            rejected = await ProviderRejectionRepository(session).find_rejected_image(
+                spec.provider, spec.source_media_sha256
+            )
+        if rejected is not None:
+            with log_guard():
+                emit(
+                    logger,
+                    EventName.RESERVATION_BLOCKED,
+                    logging.WARNING,
+                    "input image was rejected before (rejection %s); not resubmitting",
+                    rejected.id,
+                    outcome=Outcome.BLOCKED.value,
+                    error_type=ProviderRejectedRetryBlockedError.__name__,
+                    attributes={"rejection_id": rejected.id, "reason": rejected.reason},
+                )
+            raise ProviderRejectedRetryBlockedError(
+                f"{spec.provider.value} rejected this input image before "
+                f"(rejection {rejected.id}, reason={rejected.reason or 'unknown'}); "
+                "resubmitting the same image with different text would repeat the rejection. "
+                "The scene needs a different image."
+            )
+
+
+def _spec_fields(spec: PaidJobSpec) -> dict[str, Any]:
+    """文脈が作れなくても submit は進める（INV-38）。"""
+    try:
+        return _spec_fields_unsafe(spec)
+    except Exception:
+        return {}
+
+
+def _spec_fields_unsafe(spec: PaidJobSpec) -> dict[str, Any]:
+    return {
+        "episode_id": spec.episode_id,
+        "scene_id": spec.scene_id,
+        "provider": spec.provider.value,
+        "input_hash": spec.input_hash,
+        "job_id": spec.job_id,
+        # PaidJobSpec.round は run ごとの試行番号（台帳ラウンドではない / log-contract §3）
+        "attributes": {"run_attempt": spec.round},
+    }
+
+
+def _provider_request_id(ref: str) -> str | None:
+    """provider job 参照（JSON）の ``request_id``。読めなければ付けない（推測しない）。"""
+    try:
+        value = json.loads(ref).get("request_id")
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _job_state(status: JobStatus) -> str:
+    if isinstance(status, JobPending):
+        return "pending"
+    if isinstance(status, JobFailed):
+        return "failed"
+    return "succeeded"
+
+
+def _resumed(row: ProviderReservation | None, phase: str) -> None:
+    if row is None:
+        return
+    with log_guard():
+        emit(
+            logger,
+            EventName.RESERVATION_RESUMED,
+            logging.INFO,
+            "resuming reservation %s (round %s) at %s",
+            row.id,
+            row.round,
+            phase,
+            **reservation_fields(row),
+            outcome=Outcome.RESUMED.value,
+            attributes={"phase": phase},
+        )
+
+
+def _blocked(row: ProviderReservation | None, exc: BaseException | None) -> None:
+    with log_guard():
+        fields = reservation_fields(row) if row is not None else {}
+        emit(
+            logger,
+            EventName.RESERVATION_BLOCKED,
+            logging.WARNING,
+            "new round blocked by reservation %s",
+            fields.get("reservation_id"),
+            **fields,
+            outcome=Outcome.BLOCKED.value,
+            error_type=type(exc).__name__
+            if exc is not None
+            else UnreconciledReservationError.__name__,
+            error_category=ErrorCategory.UNRECONCILED_RESERVATION.value
+            if not isinstance(exc, ProviderRejectedRetryBlockedError)
+            else None,
+        )
+
+
+def _plan_round(latest: ProviderReservation | None) -> Submitted | ProviderReservation | int:
+    """同じ入力の最新の予約から次の動作を決める（ADR-0017 §3 / ADR-0034 で1行追加）。
+
+    - ``Submitted``: その予約を await で再開する（再 submit しない）
+    - ``ProviderReservation``: ``reserved`` + 未 dispatch。この予約のまま dispatch へ進む
+    - ``int``: 新しい台帳ラウンドの番号
+    - 例外: この入力へ新しいラウンドを作ってはいけない（``UnreconciledReservationError`` /
+      ``ProviderRejectedRetryBlockedError``）
+    """
+    if latest is None:
+        return 1
+    if latest.status is ReservationStatus.RESERVED:
+        if latest.provider_job_ref is not None:
+            return Submitted(reservation_id=latest.id, newly_submitted=False, round=latest.round)
+        if latest.dispatched_at is not None:
+            raise UnreconciledReservationError(
+                f"reservation {latest.id} was dispatched without a provider job ref"
+            )
+        return latest
+    if latest.outcome_artifact_id is not None:
+        # 紐づいた Artifact は await が返す
+        return Submitted(reservation_id=latest.id, newly_submitted=False, round=latest.round)
+    if (
+        latest.status is ReservationStatus.SPENT
+        and latest.raw_output_key is not None
+        and latest.failure_class is None
+    ):
+        # spent と Artifact 記録の間で落ちた: 保存済みの取得物から検証を再開する
+        return Submitted(reservation_id=latest.id, newly_submitted=False, round=latest.round)
+    if latest.status is ReservationStatus.SPENT and latest.input_rejected_by_provider:
+        # ADR-0034: provider がこの input_hash を拒否した（content policy 等）。
+        # そのまま新しいラウンドを作って再送しても同じ拒否を繰り返すだけで、課金だけが
+        # 増える。台帳は append-only（spent から自動では戻らない）。回復は人間がプロンプト・
+        # 素材を直して**新しい input_hash** を作ることだけ。この予約・Artifact・MinIO 実体は
+        # 変更しない。
+        raise ProviderRejectedRetryBlockedError(
+            f"reservation {latest.id} (round {latest.round}) was rejected by the provider "
+            "for this exact input; resubmitting the same input_hash would only repeat the "
+            "rejection. Fix the prompt/input to produce a new input_hash before retrying."
+        )
+    # 取得物なしで spent（受理されず・provider 拒否以外の理由）/ 検証に落ちた evidence / abandoned
+    return latest.round + 1
+
+
+__all__ = [
+    "DEFAULT_HEARTBEAT_INTERVAL_SECONDS",
+    "NOT_ACCEPTED_SUBMIT_ERRORS",
+    "PROVIDER_RAW_PREFIX",
+    "AsyncJobGenerator",
+    "PaidJobRunner",
+    "PaidJobSpec",
+    "PaidOutput",
+    "Reused",
+    "SubmitOutcome",
+    "Submitted",
+    "estimated_cost",
+    "raw_output_key",
+    "raw_result_key",
+]

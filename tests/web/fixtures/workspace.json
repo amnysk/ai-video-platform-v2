@@ -1,0 +1,36 @@
+{
+  "episode": {"episode_id": "0b6f1a42-3c9e-4d7a-8f10-a1b2c3d4e5f6", "status": "needs_work", "topic": "テスト題材", "pipeline_kind": "agentic", "created_at": "2026-10-01T00:00:00+00:00", "updated_at": "2026-10-02T00:00:00+00:00"},
+  "workflow_id": "agentic-episode-0b6f1a42-3c9e-4d7a-8f10-a1b2c3d4e5f6",
+  "control_revision": 3,
+  "pending_change_sets": [],
+  "read_model": {
+    "episode_id": "0b6f1a42-3c9e-4d7a-8f10-a1b2c3d4e5f6",
+    "phase": "needs_work",
+    "control": {"control_state": "running", "control_revision": 3, "persisted": true},
+    "manifest": {"manifest_id": "m1", "members": [
+      {"slot": "script", "revision_id": "r-script", "artifact_type": "script", "scene_id": null, "version": 1, "sha256": "aa", "created_at": "2026-10-01T01:00:00+00:00", "is_current": true, "readable": true, "upstream": [{"revision_id": "r-brief", "slot": "creative_brief", "source": "json_ref", "adopted_revision_id": null}], "stale": false, "stale_reasons": []},
+      {"slot": "storyboard", "revision_id": "r-sb", "artifact_type": "storyboard", "scene_id": null, "version": 1, "is_current": true, "readable": true, "upstream": [], "stale": true, "stale_reasons": ["upstream_changed"]},
+      {"slot": "mystery", "revision_id": "r-x", "artifact_type": "something_new", "upstream": [], "stale": false, "stale_reasons": []}
+    ]},
+    "script": {"revision_id": "r-script", "title": "題名", "hook": "つかみ", "language": "ja", "total_duration_ms": 30000, "segments": [{"segment_id": "s1", "narration": "N", "visual": "V", "duration_ms": 5000}]},
+    "evidence": [{"research_artifact_id": "ra1", "artifact_type": "research_script_verification", "request_id": "q", "is_current": true, "verdict": "pass", "script_revision_id": "r-script"}],
+    "decisions": [
+      {"decision_id": "d1", "decision_type": "choose_topic", "actor_type": "agent", "actor_id": "strategy", "agent_run_id": "ar1", "command_id": null, "created_at": "2026-10-01T00:30:00+00:00", "derived": false,
+       "payload": {"question": "どの題材?", "candidates": [{"id": "c1", "summary": "A"}, {"id": "c2", "summary": "B", "rejected_reason": "弱い"}], "selected_candidate": "c1", "rationale_kind": "none", "rationale": null, "evidence_refs": [], "uncertainties": ["不明点"]}},
+      {"decision_id": "d2", "decision_type": "brand_new_type", "actor_type": "human", "actor_id": "u", "created_at": "2026-10-01T02:00:00+00:00", "derived": true, "payload": {"question": "q", "candidates": [{"id": "x", "summary": "y"}], "rationale_kind": "human"}}
+    ],
+    "agent_runs": [
+      {"agent_run_id": "ar1", "role": "strategy", "step": "choose_topic", "model": null, "prompt_version": null, "tool_invocations": [{"name": "web_search"}, {}], "token_usage": {"input": 10}, "outcome": "succeeded", "created_at": "2026-10-01T00:20:00+00:00", "snapshot_object_key": "k"},
+      {"agent_run_id": "ar2", "role": "writer_director", "step": "write_script", "model": "gpt-x", "tool_invocations": [], "token_usage": null, "outcome": "failed", "created_at": "2026-10-01T00:50:00+00:00", "snapshot_object_key": "k2"}
+    ],
+    "change_sets": [{"change_set_id": "cs1", "kind": "scene.override_visual", "status": "applied", "base_revision_id": "r-sb0", "applied_revision_id": "r-sb", "base_manifest_id": "m0", "applied_manifest_id": "m1", "rationale": null, "proposed_by_command_id": "cmd1", "decided_by_command_id": "cmd2", "actor_type": "ai_assistant", "actor_id": "bot", "created_at": "2026-10-01T03:00:00+00:00"}],
+    "commands": [
+      {"command_id": "cmd1", "type": "propose_change", "status": "applied", "done": true, "actor_type": "ai_assistant", "actor_id": "bot", "granted_scope": "propose", "reject_reason": null, "result": {"outcome": "ok", "secret_like": "must-not-be-printed"}, "received_at": "2026-10-01T02:59:00+00:00", "finished_at": "2026-10-01T02:59:01+00:00", "reason": "確認のため", "correlation_id": "corr-cmd1"},
+      {"command_id": "cmd3", "type": "resume", "status": "received", "done": false, "actor_type": "human", "actor_id": "u", "granted_scope": "resume", "reject_reason": null, "result": null, "received_at": "2026-10-01T04:00:00+00:00", "finished_at": null}
+    ],
+    "reservations": {"in_flight": [], "unknown_outcome": [{"reservation_id": "res1", "provider": "fal", "status": "reserved", "scene_id": "sb1", "round": 1, "dispatched_at": null, "provider_job_ref_present": false, "estimated_cost_usd": null}], "undispatched": []},
+    "costs": {"provider_usd": "0.0000", "research_usd": "0.0000", "measured_usd": "0.0000", "unmeasured": [], "llm": "unmeasured"},
+    "events": [{"seq": 1, "event_name": "decision.recorded", "actor_type": "agent", "actor_id": "strategy", "refs": {"stage": "strategy", "trace_id": "t-1"}, "command_id": null, "created_at": "2026-10-01T00:31:00+00:00"},
+               {"seq": 2, "event_name": "intervention.command.received", "actor_type": "human", "actor_id": "u", "refs": {}, "command_id": "cmd3", "created_at": "2026-10-01T04:00:00+00:00"}]
+  }
+}

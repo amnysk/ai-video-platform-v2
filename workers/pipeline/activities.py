@@ -1,0 +1,210 @@
+"""Pipeline Activity（ADR-0023）。状態の読み書きだけ。次の工程を決めない（INV-4）。
+
+- ``check_paused``: PAUSED（env OR DB）。``include_uploads`` なら UPLOADS_PAUSED も
+- ``claim_daily_slot``: 日次枠の claim を commit する（trigger id で冪等 / ADR-0021）
+- ``upload_gate``: 自動投稿してよいか。拒否は理由を返す（例外にしない）
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable, Sequence
+from datetime import date
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from temporalio import activity
+from temporalio.client import Client
+
+from contracts.log_contract import EventName, LogStage, Outcome
+from contracts.operations import OperationalSwitch
+from contracts.pipeline import (
+    PIPELINE_CHECK_PAUSED,
+    PIPELINE_CLAIM_DAILY_SLOT,
+    PIPELINE_CONTROL_GATE,
+    PIPELINE_UPLOAD_GATE,
+    CheckPausedRequest,
+    CheckPausedResult,
+    ClaimDailySlotRequest,
+    ClaimDailySlotResult,
+    ControlGateRequest,
+    ControlGateResult,
+    PipelineStage,
+    UploadGateRequest,
+    UploadGateResult,
+)
+from contracts.schedule_guard import WATCHDOG_CHECK_ACTIVITY, WatchdogCheckRequest, WatchdogResult
+from contracts.states import ArtifactType, EpisodeStatus, ProviderCall, ReservationStatus
+from infrastructure.db.repositories import (
+    ArtifactMetadataRepository,
+    DailyEpisodeSlotRepository,
+    EpisodeRepository,
+    OperationalSwitchRepository,
+    ProviderReservationRepository,
+)
+from infrastructure.intervention.gate import evaluate_stage_gate
+from infrastructure.logging.emit import emit, log_guard
+from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
+from infrastructure.temporal.schedules import TemporalScheduleControl
+from infrastructure.temporal.watchdog import (
+    TemporalPipelineOutcomeChecker,
+    TemporalWorkflowStartCounter,
+    run_daily_watchdog,
+)
+
+
+class PipelineActivities:
+    #: 通知の唯一の差し替え口（ADR-0027 §運用）。既定はログのみ。Slack / メール等へ
+    #: 差し替えるときはこの1箇所を変える（AGENTS.md §8）。``scripts/schedule-guard.py status``
+    #: がこの属性を直接読んで「通知未設定」を診断する（ADR-0031 §3。新しい設定フラグは増やさない）。
+    notifier_factory: Callable[[], LoggingAnomalyNotifier] = LoggingAnomalyNotifier
+
+    def __init__(
+        self,
+        *,
+        session_factory: async_sessionmaker[AsyncSession],
+        paused_env: bool,
+        uploads_paused_env: bool,
+        temporal_client: Client | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._paused_env = paused_env
+        self._uploads_paused_env = uploads_paused_env
+        self._temporal_client = temporal_client
+
+    def activities(self) -> Sequence[Callable[..., object]]:
+        acts: list[Callable[..., object]] = [
+            self.check_paused,
+            self.claim_daily_slot,
+            self.upload_gate,
+            self.control_gate,
+        ]
+        if self._temporal_client is not None:
+            # watchdog は Temporal を読む（Schedule / visibility）ので client がある worker だけ持つ
+            acts.append(self.watchdog_check)
+        return acts
+
+    @activity.defn(name=WATCHDOG_CHECK_ACTIVITY)
+    async def watchdog_check(self, request: WatchdogCheckRequest) -> WatchdogResult:
+        """Daily の起動と Schedule の状態を検査し、異常を記録する（ADR-0027）。"""
+        assert self._temporal_client is not None
+        return await run_daily_watchdog(
+            control=TemporalScheduleControl(self._temporal_client),
+            session_factory=self._session_factory,
+            workflow_counter=TemporalWorkflowStartCounter(self._temporal_client),
+            notifier=self.notifier_factory(),
+            request=request,
+            pipeline_outcome_checker=TemporalPipelineOutcomeChecker(self._temporal_client),
+        )
+
+    async def _paused_reason(self, session: AsyncSession, *, include_uploads: bool) -> str | None:
+        switches = OperationalSwitchRepository(session)
+        if self._paused_env:
+            return "PAUSED (env)"
+        if await switches.is_on(OperationalSwitch.PAUSED):
+            return "paused (db switch)"
+        if include_uploads:
+            if self._uploads_paused_env:
+                return "UPLOADS_PAUSED (env)"
+            if await switches.is_on(OperationalSwitch.UPLOADS_PAUSED):
+                return "uploads_paused (db switch)"
+        return None
+
+    @activity.defn(name=PIPELINE_CHECK_PAUSED)
+    async def check_paused(self, request: CheckPausedRequest) -> CheckPausedResult:
+        async with self._session_factory() as session:
+            reason = await self._paused_reason(session, include_uploads=request.include_uploads)
+        return CheckPausedResult(paused=reason is not None, reason=reason)
+
+    @activity.defn(name=PIPELINE_CLAIM_DAILY_SLOT)
+    async def claim_daily_slot(self, request: ClaimDailySlotRequest) -> ClaimDailySlotResult:
+        async with self._session_factory() as session:
+            claim = await DailyEpisodeSlotRepository(session).claim(
+                slot_date=date.fromisoformat(request.slot_date),
+                trigger_id=request.trigger_id,
+                daily_limit=request.daily_limit,
+                topic=request.topic,
+                topic_plan_id=request.topic_plan_id,
+            )
+            # 返す Episode に結び付いている plan（ADR-0025）。None なら pipeline は始めない
+            episode = (
+                await EpisodeRepository(session).get(claim.episode_id)
+                if claim.episode_id is not None
+                else None
+            )
+            # commit 後に応答を失っても、再試行は同じ trigger_id で EXISTING を引く
+            await session.commit()
+        # commit の後（log-contract §9）。LIMIT_REACHED は枠を取れていない（Workflow が
+        # schedule.slot.skipped を出す）
+        if claim.episode_id is not None:
+            with log_guard():
+                emit(
+                    logging.getLogger(__name__),
+                    EventName.SCHEDULE_SLOT_ACQUIRED,
+                    logging.INFO,
+                    "daily slot %s claim=%s episode=%s",
+                    request.slot_date,
+                    claim.outcome.value,
+                    claim.episode_id,
+                    episode_id=claim.episode_id,
+                    stage=LogStage.SCHEDULE.value,
+                    outcome=Outcome.SUCCEEDED.value,
+                    attributes={
+                        "slot_date": request.slot_date,
+                        "claim": claim.outcome.value,
+                        "slot_index": claim.slot_index,
+                        "trigger_id": request.trigger_id,
+                        "topic_plan_id": episode.topic_plan_id if episode is not None else None,
+                    },
+                )
+        return ClaimDailySlotResult(
+            outcome=claim.outcome.value,
+            episode_id=claim.episode_id,
+            topic_plan_id=episode.topic_plan_id if episode is not None else None,
+        )
+
+    @activity.defn(name=PIPELINE_CONTROL_GATE)
+    async def control_gate(self, request: ControlGateRequest) -> ControlGateResult:
+        """新方式の待機地点・停止（ADR-0041 §5）。``control_gate=True`` の実行だけが呼ぶ。
+
+        待機に入るとき（``waiting_review`` と ``checkpoint.waiting``）は同じ commit。
+        拒否は例外にしない。
+        """
+        async with self._session_factory() as session:
+            result = await evaluate_stage_gate(
+                session, request.episode_id, PipelineStage(request.stage)
+            )
+            await session.commit()
+        return result
+
+    @activity.defn(name=PIPELINE_UPLOAD_GATE)
+    async def upload_gate(self, request: UploadGateRequest) -> UploadGateResult:
+        ep = request.episode_id
+        async with self._session_factory() as session:
+            episode = await EpisodeRepository(session).get(ep)
+            status = episode.status.value if episode is not None else ""
+            reason = await self._paused_reason(session, include_uploads=True)
+            if reason is None:
+                reason = await self._refusal(session, ep, episode is not None, status)
+        return UploadGateResult(allowed=reason is None, reason=reason, status=status)
+
+    async def _refusal(
+        self, session: AsyncSession, ep: str, exists: bool, status: str
+    ) -> str | None:
+        if not exists:
+            return "episode not found"
+        if status != EpisodeStatus.RENDER_READY:
+            return f"episode is {status}, not render_ready"
+        final = await ArtifactMetadataRepository(session).find_current_by_type(
+            ep, ArtifactType.FINAL_VIDEO
+        )
+        if final is None:
+            return "no current final_video artifact"
+        reservations = await ProviderReservationRepository(session).list_for_episode_provider(
+            ep, ProviderCall.YOUTUBE_UPLOAD
+        )
+        for r in reservations:
+            if r.status is ReservationStatus.SPENT:
+                return f"upload reservation {r.id} is spent (already uploaded?)"
+            if r.status is ReservationStatus.RESERVED and r.dispatched_at is not None:
+                return f"upload reservation {r.id} is dispatched (outcome unknown)"
+        return None

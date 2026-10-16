@@ -13,7 +13,11 @@ Artifactは v2 の**再開の単位**である。工程ごとの再開フラグ�
 
 - **本体**: MinIO（INV-9）。キーは content-addressed
   （`artifacts/{episode_id}/{artifact_type}/{sha256}.json`）。
-  キーの形は `domain/artifact/keys.py` の `artifact_object_key()` が唯一の定義
+  キーの形は `domain/artifact/keys.py` の `artifact_object_key()` が唯一の定義。
+  シーン単位の Artifact は `artifacts/{episode_id}/{artifact_type}/{scene_id}/{sha256}.json`（ADR-0018）
+- **メディア本体**（画像・音声・動画のバイナリ）: `media/{episode_id}/{artifact_type}/{scene_id}/{sha256}.{ext}`
+  （`media_object_key()`、ADR-0017）。Artifact JSON の `media` 記述子から参照する。
+  完成動画（Episode 単位）も同じ `media/` 配下に置く（ADR-0019）
 - **参照とメタ**: PostgreSQL
 
 DBにバイナリを入れない。書き順は必ず MinIO → DB。
@@ -27,11 +31,22 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 - `produced_by_job_id`
 - `created_at`
 
-**Phase 2 発効**（ADR-0010。まだ列が存在しない）:
+**Phase 2 で実装済み**（ADR-0012）:
 
-- `version` — 同じ `(episode_id, artifact_type)` 内で単調増加（INV-10 の Phase 2 部分）
-- `status`: `current` / `superseded`
-- `input_hash` — この成果物を作った入力の指紋（工程skipによる途中再開に使う）
+- `input_hash` — この成果物を作った**入力**の指紋。非決定的な生成器（LLM）では
+  sha256 が毎回変わるため、**同一性の軸はこちら**
+- `version` — 同じ `(episode_id, artifact_type)` 内で単調増加
+- `superseded_at` — NULL なら現行世代。partial unique index により
+  「現行は常に1本」を DB が保証する
+
+**Phase 4 で実装済み**（ADR-0018）:
+
+- `scene_id` — シーン単位の Artifact（`scene_image` / `scene_voice` / `scene_video`）。
+  `version` / `superseded_at` / 同一内容の判定はすべて `(episode_id, artifact_type, scene_id)` の中で閉じる。
+  NULL は Episode 単位（script / storyboard / production_manifest）
+
+**まだ無いもの**:
+
 - `content_type`
 
 ## immutability
@@ -47,24 +62,55 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 
 - すべてのArtifactはスキーマを持つ（INV-10）。Phase 1 の置き場は
   `contracts/artifacts.py`（`contracts/schemas/` への分割は Phase 2）
+- 版の解決は `contracts/artifact_registry.py`（`(artifact_type, schema_version)` → model、INV-54。詳細は [agentic.md](./agentic.md)）
 - 読み込み時に必ず検証する。想定外の `schema_version` は
   `permanent` 失敗（推測して読まない）
 - 後方互換を壊すスキーマ変更はADRを要する（AGENTS.md §6）
 
-## 想定するschema（Phase 1で定義予定）
+## schema 一覧（語彙の権威は `contracts/states.py::ArtifactType`）
 
 | artifact_type | 生成worker | 内容 |
 |---|---|---|
-| `episode_plan` | planning | 企画（トピック、切り口、想定尺） |
-| `script` | planning | 台本と出典 |
-| `scene_plan` | planning | シーン分割と各シーンの指示 |
-| `asset_manifest` | generation | 生成素材の一覧と参照 |
-| `edit_decisions` | render | 編集判断（字幕、オーバーレイ、BGM） |
-| `final_video` | render | 完成動画 |
-| `review_report` | render | 品質ゲートの判定結果 |
-| `video_metadata` | upload | タイトル・説明・タグ |
-| `upload_receipt` | upload | YouTube video_id と投稿時刻 |
-| `performance_report` | analytics | 実績メトリクス |
+| `script` | planning（Phase 2 実装済み） | 台本（title / hook / scenes / metadata） |
+| `storyboard` | storyboard（Phase 3 実装済み、ADR-0015） | シーン分割と各シーンの映像指示・尺（旧予定名 `scene_plan`）。ナレーションは持たず `script_scene_id` で台本を参照 |
+| `scene_image` | production image（Phase 4、ADR-0017） | storyboard シーンの静止画（1080x1920）。メディア本体への記述子 |
+| `scene_voice` | production voice（Phase 4、ADR-0017） | 台本シーンのナレーション音声。ナレーション文は持たず台本を参照 |
+| `scene_video` | production video（Phase 4、ADR-0017） | storyboard シーンの動画（元画像を参照、音声なし、fps は `fps_millis`） |
+| `production_manifest` | production（Phase 4、ADR-0017。旧予定名 `asset_manifest`） | 全シーンの画像・動画・音声の参照一覧 |
+| `scene_visual_override` | production（ADR-0035） | provider に拒否されたシーンの代替映像案（映像対象・映像指示・根拠・対処した拒否）。storyboard の世代は変えず、そのシーンの映像の項目だけを差し替える。シーン単位・current は supersede で1本 |
+| `final_video` | render（Phase 5、ADR-0019） | 完成動画（mp4 本体への記述子、入力の固定、profile・エンジン・描画計画 sha256、実測、時間軸・音声配置・字幕 cue（文字オフセットのみ）、技術検査の合格記録）。Episode 単位 |
+| `user_brief` | agentic（ADR-0043） | 人の制作依頼（theme・対象・尺・トーン・守ること）。予算・公開設定・Schedule は持たない。Episode 単位 |
+| `strategy_brief` | agentic（ADR-0043） | Strategy の企画候補（1〜5）・推奨・成功基準・引用・不確実性・使った Lesson。Episode 単位 |
+| `creative_brief` | agentic（ADR-0043） | 採用した企画の演出指針（題材・角度・時代・フック・トーン）。台本の ScriptBrief へ渡せる。Episode 単位 |
+| `quality_review` | agentic（ADR-0043） | 品質評価（所見・重大度・根拠・確信度）。常に自己評価で、視聴者データではない。Episode 単位 |
+| `lesson` | agentic（ADR-0043） | 投稿後の学習（観測・仮説・代替説明・実験。状態 proposed→testing→validated 等）。Episode 単位 |
+| `workflow_plan` | agentic（ADR-0043） | コンパイル済みの実行計画（template と agent spec の版・hash を固定）。Episode 単位 |
+| `review_report`（**未実装**） | render（Phase 5B 予定） | 創作面の品質判定の結果 |
+
+旧予定の `episode_plan` は作らない。企画は `topic_plans` / `topic_candidates` の行に残し、台本は `script` の `topic` から始まる（ADR-0025）。
+旧予定の `edit_decisions` は採らない。描画計画（`contracts/render.py::RenderPlan`）は固定入力からの純粋関数なので
+保存せず、正準 JSON の sha256 を `final_video.render_plan_sha256` に残す（ADR-0019）。
+旧予定の `video_metadata` は作らない。台本から決定的に導出し、送った値を `upload_receipt` に残す（ADR-0020）。
+| `upload_receipt` | upload（Phase 6、ADR-0020） | 入力 final_video の固定・投稿先チャンネル・YouTube video_id・private・送ったメタデータのスナップショット・upload key・bytes・照合方法。時刻と secret / session URI は持たない。Episode 単位 |
+| `performance_report`（**未実装**） | analytics | 実績メトリクス |
+
+## 再開判定（Phase 2 以降）
+
+非決定的な生成器（LLM）は同じ入力でも違う内容を返すので、
+**「同じ内容なら同じキー」では「同じ入力から作られたか」を判定できない**。
+したがって再開判定は `input_hash` で行う（ADR-0012）。
+
+- **生成器を呼ばない条件（skip）**: `superseded_at IS NULL` かつ `input_hash` 一致の
+  Artifact が既にある → それを返し、Job を `skipped` にする
+- **呼ぶ条件**: `input_hash` が変わった / 前ラウンドが検証で落ちた /
+  人間が明示的に再生成を要求した。**この3つ以外で有料呼び出しをしない**
+- **CreativeBrief の版（agentic の Episode だけ）**: TopicPlan が無く現行の `creative_brief` がある Episode の
+  台本の `input_hash` には、その CreativeBrief の内容 hash（`artifact_metadata.sha256`）を畳み込む
+  （`domain.script.identity.with_brief_revision`）。brief が変わったら古い brief で作った台本は採用されず、
+  台本だけが作り直される（他の工程の成果物は触らない）。plan のある Episode・brief の無い Episode は
+  畳み込まないので従来の値のまま（INV-55）。migration は無い。brief を持つ旧い台本の行は新しい hash と
+  一致せず、1度だけ作り直される（行から「どの brief で作ったか」を判別できないための安全側。flag 既定 OFF の
+  agentic のみに影響）。
 
 ## Artifactが持たないもの
 

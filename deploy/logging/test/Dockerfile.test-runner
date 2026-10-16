@@ -1,0 +1,29 @@
+# 隔離 app スタックの test-runner（compose.apptest.yaml）。本番の worker イメージを土台にし、
+# dev extras（pytest 等）だけを足す。パッケージ名はここに書かない（AGENTS.md §8 / ADR-0009）:
+# 宣言は pyproject.toml の [project.optional-dependencies].dev、固定は constraints.txt。
+# テスト対象のコードは実行時に worktree を /src へ read-only で mount して使う。
+ARG BASE_IMAGE=avp2-oslog-c-worker:test
+FROM ${BASE_IMAGE}
+USER root
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --disable-pip-version-check -c /app/constraints.txt "/app[dev]"
+# time-skipping の Temporal test server（WorkflowEnvironment.start_time_skipping）は初回に
+# temporal.download から取得する。隔離スタックの network は internal（外へ出られない）なので、
+# ビルド時に SDK 自身に取得させて焼いておき、実行時に tmpfs の /tmp へ写す（compose の entrypoint）。
+RUN install -d -o 1000 -g 1000 /opt/temporal-testsrv
+USER 1000:1000
+RUN TMPDIR=/opt/temporal-testsrv python - <<'PY'
+import asyncio
+
+from temporalio.testing import WorkflowEnvironment
+
+
+async def main() -> None:
+    env = await WorkflowEnvironment.start_time_skipping()
+    await env.shutdown()
+
+
+asyncio.run(main())
+PY
+WORKDIR /src
+CMD ["pytest", "--version"]

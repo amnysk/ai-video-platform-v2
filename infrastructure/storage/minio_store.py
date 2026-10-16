@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -14,9 +16,25 @@ from minio.error import S3Error
 
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from infrastructure.config import Settings
-from infrastructure.storage.artifact_store import ArtifactConflictError, PutResult
+from infrastructure.storage.artifact_store import (
+    STREAM_CHUNK_BYTES,
+    ArtifactConflictError,
+    ObjectStat,
+    PutResult,
+    read_bytes_source,
+)
 
 CONTENT_TYPE = "application/json"
+TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
+_MISSING = frozenset({"NoSuchKey", "NoSuchObject", "NotFound"})
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(STREAM_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class MinioArtifactStore:
@@ -47,7 +65,104 @@ class MinioArtifactStore:
         await asyncio.to_thread(_ensure)
 
     async def put_json(self, key: str, payload: Mapping[str, Any]) -> PutResult:
-        body = canonical_json_bytes(payload)
+        return await self._put(key, canonical_json_bytes(payload), CONTENT_TYPE)
+
+    async def put_text(self, key: str, body: str) -> PutResult:
+        return await self._put(key, body.encode("utf-8"), TEXT_CONTENT_TYPE)
+
+    async def get_text(self, key: str) -> str:
+        body = await self._get_bytes(key)
+        if body is None:
+            raise KeyError(key)
+        return body.decode("utf-8")
+
+    async def put_bytes(self, key: str, data: bytes | Path, content_type: str) -> PutResult:
+        return await self._put(key, read_bytes_source(data), content_type)
+
+    async def get_bytes(self, key: str) -> bytes:
+        body = await self._get_bytes(key)
+        if body is None:
+            raise KeyError(key)
+        return body
+
+    async def sha256_of(self, key: str) -> str:
+        return await asyncio.to_thread(self._stream_sha256, key, None)
+
+    async def download_to(self, key: str, path: Path) -> str:
+        return await asyncio.to_thread(self._stream_sha256, key, path)
+
+    def _stream_sha256(self, key: str, path: Path | None) -> str:
+        """get_object を塊ごとに読み、sha256 を取りながら（あれば）ファイルへ書く。"""
+        digest = hashlib.sha256()
+        response = None
+        try:
+            try:
+                response = self._client.get_object(self._bucket, key)
+            except S3Error as err:
+                if err.code in _MISSING:
+                    raise KeyError(key) from err
+                raise
+            handle = path.open("wb") if path is not None else None
+            try:
+                for chunk in response.stream(STREAM_CHUNK_BYTES):
+                    digest.update(chunk)
+                    if handle is not None:
+                        handle.write(chunk)
+            finally:
+                if handle is not None:
+                    handle.close()
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
+        return digest.hexdigest()
+
+    async def put_file(self, key: str, path: Path, content_type: str) -> PutResult:
+        """ファイルを流して保存する。既存キーは流して sha256 を比べる（INV-11 / INV-17）。
+
+        「存在確認 → fput_object」の間に別の書き手が同じキーへ書く競合は残る。受け入れる理由:
+        呼び出し元のキーは内容アドレス（``episode_media_object_key`` / ``media_object_key`` は
+        本体の sha256 をキーに含む）なので、同じキーへ競合して書く者は必ず同じバイト列を書く。
+        後勝ちでも保存物は同じで、直後の読み戻し sha256 がそれを確かめる。
+        内容アドレスでないキーには使わないこと。
+        """
+        path = Path(path)
+        digest = await asyncio.to_thread(_file_sha256, path)
+        size = path.stat().st_size
+        try:
+            existing = await self.sha256_of(key)
+        except KeyError:
+            existing = None
+        if existing is not None:
+            if existing != digest:
+                raise ArtifactConflictError(
+                    f"artifact already exists with different content: {key}"
+                )
+            return PutResult(key=key, sha256=digest, size=size, existed=True)
+
+        def _put() -> None:
+            self._client.fput_object(self._bucket, key, str(path), content_type=content_type)
+
+        await asyncio.to_thread(_put)
+        return PutResult(key=key, sha256=digest, size=size, existed=False)
+
+    async def stat(self, key: str) -> ObjectStat:
+        def _stat() -> ObjectStat:
+            try:
+                info = self._client.stat_object(self._bucket, key)
+            except S3Error as err:
+                if err.code in {"NoSuchKey", "NoSuchObject", "NotFound"}:
+                    raise KeyError(key) from err
+                raise
+            return ObjectStat(
+                size=int(info.size or 0),
+                etag=str(info.etag or ""),
+                content_type=info.content_type,
+            )
+
+        return await asyncio.to_thread(_stat)
+
+    async def _put(self, key: str, body: bytes, content_type: str) -> PutResult:
         digest = sha256_hex(body)
 
         existing = await self._get_bytes(key)
@@ -64,7 +179,7 @@ class MinioArtifactStore:
                 key,
                 io.BytesIO(body),
                 length=len(body),
-                content_type=CONTENT_TYPE,
+                content_type=content_type,
             )
 
         await asyncio.to_thread(_put)

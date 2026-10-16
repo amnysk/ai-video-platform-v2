@@ -1,0 +1,17 @@
+# internal users のテンプレート（ADR-0040 §6）。hash は scripts/security-init.sh が repo 外のパスワードから作る。
+# イメージ同梱の internal_users.yml（demo ユーザー入り）は使わない。
+_meta:
+  type: "internalusers"
+  config_version: 2
+avp_fluentbit:
+  hash: "__HASH_FLUENTBIT__"
+  reserved: true
+  description: "Fluent Bit writer"
+avp_viewer:
+  hash: "__HASH_VIEWER__"
+  reserved: true
+  description: "read-only viewer (Dashboards, check-pipeline)"
+avp_dashboards:
+  hash: "__HASH_DASHBOARDS__"
+  reserved: true
+  description: "Dashboards server"

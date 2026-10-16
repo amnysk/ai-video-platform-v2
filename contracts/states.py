@@ -21,6 +21,12 @@ class EpisodeStatus(StrEnum):
     UPLOADED = "uploaded"
     ANALYZED = "analyzed"
     COMPLETED = "completed"
+    SCRIPT_READY = "script_ready"
+    STORYBOARD_READY = "storyboard_ready"
+    #: 画像・音声・動画が揃った駐機点（ADR-0017）。Phase 5 Render の入口。
+    ASSETS_READY = "assets_ready"
+    #: 完成動画が技術検査を通って保存された駐機点（ADR-0019）。Phase 6 Upload の入口。
+    RENDER_READY = "render_ready"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -71,15 +77,204 @@ RETRYABLE_FAILURE_CLASSES: frozenset[FailureClass] = frozenset(
 
 
 class JobType(StrEnum):
-    """工程の種類。Phase 1 は骨組みの dummy だけ。"""
+    """工程の種類。
+
+    job（工程）と artifact（成果物）は同名にしない。「script が失敗した」が
+    どちらの話か決まらなくなるため（Phase 2 のレビュー指摘）。
+    """
 
     DUMMY = "dummy"
+    WRITE_SCRIPT = "write_script"
+    PLAN_STORYBOARD = "plan_storyboard"  # ADR-0015
+    # ADR-0017: Production（シーン単位の job は jobs.scene_id で区別する / ADR-0018）
+    PRODUCE_SCENE_IMAGE = "produce_scene_image"
+    PRODUCE_SCENE_VOICE = "produce_scene_voice"
+    PRODUCE_SCENE_VIDEO = "produce_scene_video"
+    ASSEMBLE_PRODUCTION = "assemble_production"
+    #: ADR-0019: Render（Episode 単位。scene_id は NULL）
+    RENDER_FINAL_VIDEO = "render_final_video"
+    #: ADR-0020: Upload（Episode 単位。scene_id は NULL）
+    UPLOAD_FINAL_VIDEO = "upload_final_video"
+    #: ADR-0035: provider に拒否されたシーンの代替映像案を計画する（シーン単位）
+    PLAN_SCENE_ALTERNATIVE = "plan_scene_alternative"
 
 
 class ArtifactType(StrEnum):
     """Artifactの種類。docs/domain/artifact.md の表に対応する。"""
 
     DUMMY = "dummy"
+    SCRIPT = "script"
+    STORYBOARD = "storyboard"  # ADR-0015
+    # ADR-0017 / ADR-0018: シーン単位の成果物（artifact_metadata.scene_id で区別する）
+    SCENE_IMAGE = "scene_image"
+    SCENE_VOICE = "scene_voice"
+    SCENE_VIDEO = "scene_video"
+    PRODUCTION_MANIFEST = "production_manifest"
+    #: ADR-0019: 完成動画（Episode 単位。scene_id は NULL）
+    FINAL_VIDEO = "final_video"
+    #: ADR-0020: 投稿受領（Episode 単位。YouTube video id と送ったメタデータの snapshot）
+    UPLOAD_RECEIPT = "upload_receipt"
+    #: ADR-0035: 拒否されたシーンの代替映像案（シーン単位。current は supersede で1本）
+    SCENE_VISUAL_OVERRIDE = "scene_visual_override"
+    # ADR-0043: 自律改善型制作の成果物（すべて Episode 単位。scene_id は NULL）。内容と版は
+    # ``contracts/agentic.py``、(type, schema_version) の解決は ``contracts/artifact_registry.py``
+    USER_BRIEF = "user_brief"
+    STRATEGY_BRIEF = "strategy_brief"
+    CREATIVE_BRIEF = "creative_brief"
+    QUALITY_REVIEW = "quality_review"
+    LESSON = "lesson"
+    WORKFLOW_PLAN = "workflow_plan"
+
+
+class Pipeline(StrEnum):
+    """どの workflow を起動するか。
+
+    workflow 名と task queue の対応は ``PIPELINE_WORKFLOWS`` が唯一の定義元。
+    """
+
+    SKELETON = "skeleton"
+    SCRIPT = "script"
+
+
+#: パイプライン -> (workflow名, task queue)。API と worker がここから導出する。
+PIPELINE_WORKFLOWS: dict[Pipeline, tuple[str, str]] = {
+    Pipeline.SKELETON: ("EpisodeSkeletonWorkflow", "episode-skeleton"),
+    Pipeline.SCRIPT: ("ScriptWorkflow", "script"),
+}
+
+#: storyboard 工程の (workflow名, task queue)（ADR-0015）。
+#: ``Pipeline`` には載せない。Pipeline は Episode **作成時**に起動する workflow の語彙で、
+#: storyboard は既存 Episode（``script_ready``）に対して起動するため。
+STORYBOARD_WORKFLOW: tuple[str, str] = ("StoryboardWorkflow", "storyboard")
+
+#: production 工程の (workflow名, task queue)（ADR-0017）。
+#: storyboard と同じ理由で Pipeline に載せない。
+PRODUCTION_WORKFLOW: tuple[str, str] = ("ProductionWorkflow", "production")
+
+#: production 工程へ入ってよい Episode 状態（ADR-0017）。駐機点に加え、production 自身の
+#: 失敗で止まった ``needs_work`` / ``blocked`` からの再実行（人間の POST が再開の操作）。
+#: 判定の権威は workflow の admit Activity。API はこれで早めに 409 を返すだけ。
+PRODUCTION_ADMISSIBLE_STATUSES: frozenset[EpisodeStatus] = frozenset(
+    {
+        EpisodeStatus.STORYBOARD_READY,
+        EpisodeStatus.ASSETS_READY,
+        EpisodeStatus.NEEDS_WORK,
+        EpisodeStatus.BLOCKED,
+    }
+)
+
+#: メディア種別ごとの task queue（ADR-0017）。並行数は worker 側の設定で queue ごとに決める。
+PRODUCTION_IMAGE_TASK_QUEUE = "production-image"
+PRODUCTION_VOICE_TASK_QUEUE = "production-voice"
+PRODUCTION_VIDEO_TASK_QUEUE = "production-video"
+
+#: render 工程の (workflow名, task queue)（ADR-0019）。storyboard と同じ理由で Pipeline に載せない。
+RENDER_WORKFLOW: tuple[str, str] = ("RenderWorkflow", "render")
+#: render の task queue。workflow と状態系 Activity（ADR-0019 §8）。
+RENDER_TASK_QUEUE: str = RENDER_WORKFLOW[1]
+#: 重い描画 Activity（``render_final_video``）だけの task queue。描画の並行数を絞っても
+#: workflow と状態系 Activity（``RENDER_TASK_QUEUE``）は待たされない（ADR-0019 §8）。
+RENDER_MEDIA_TASK_QUEUE = "render-media"
+
+#: render 工程へ入ってよい Episode 状態（ADR-0019）。駐機点 ``assets_ready``、再描画の
+#: ``render_ready``、render 自身の失敗で止まった ``needs_work`` / ``blocked``
+#: （production と同じ規則）。
+#: 判定の権威は workflow の admit Activity。API はこれで早めに 409 を返すだけ。
+RENDER_ADMISSIBLE_STATUSES: frozenset[EpisodeStatus] = frozenset(
+    {
+        EpisodeStatus.ASSETS_READY,
+        EpisodeStatus.RENDER_READY,
+        EpisodeStatus.NEEDS_WORK,
+        EpisodeStatus.BLOCKED,
+    }
+)
+
+#: upload 工程の (workflow名, task queue)（ADR-0020）。storyboard と同じ理由で Pipeline に載せない。
+UPLOAD_WORKFLOW: tuple[str, str] = ("UploadWorkflow", "upload")
+#: upload の task queue。workflow と状態系 Activity。
+UPLOAD_TASK_QUEUE: str = UPLOAD_WORKFLOW[1]
+#: 投稿 Activity（``upload_final_video``）だけの task queue。並行数 1 で quota と帯域を守る。
+UPLOAD_MEDIA_TASK_QUEUE = "upload-media"
+
+#: upload 工程へ入ってよい Episode 状態（ADR-0020）。駐機点 ``render_ready`` と、upload 自身の
+#: 失敗で止まった ``needs_work`` / ``blocked``（入場トークンが upload workflow のときだけ。
+#: 判定の権威は admit Activity）。``uploaded`` は含めない（再投稿しない。INV-19）。
+UPLOAD_ADMISSIBLE_STATUSES: frozenset[EpisodeStatus] = frozenset(
+    {
+        EpisodeStatus.RENDER_READY,
+        EpisodeStatus.NEEDS_WORK,
+        EpisodeStatus.BLOCKED,
+    }
+)
+
+
+class ProviderCall(StrEnum):
+    """予約台帳が扱う外部呼び出しの種類（ADR-0013）。
+
+    provider を増やすときはここに足す。台帳のテーブル定義は共有する。
+    """
+
+    CODEX_SCRIPT = "codex_script"
+    #: 台本と値を分け、未照合予約の検査を工程ごとに独立させる（ADR-0015）。
+    CODEX_STORYBOARD = "codex_storyboard"
+    #: 有料の非同期ジョブ型 provider（ADR-0017）。ローカルの非課金 TTS は台帳に載せない。
+    FAL_IMAGE = "fal_image"
+    FAL_VIDEO = "fal_video"
+    #: YouTube resumable upload（ADR-0020）。課金は無いが「1 回しか起こしてはならない外部副作用」
+    #: なので台帳で重複を防ぐ。Episode 単位（scene_id は NULL）。
+    YOUTUBE_UPLOAD = "youtube_upload"
+    #: ADR-0035: 拒否されたシーンの代替映像案を LLM に計画させる（シーン単位）
+    CODEX_SCENE_ALTERNATIVE = "codex_scene_alternative"
+    #: ADR-0043: Agent 段の LLM 呼び出し（Episode 単位。scene_id は NULL）。見積りは spec の上限
+    AGENT_LLM = "agent_llm"
+
+
+class ReservationStatus(StrEnum):
+    """予約台帳の状態（ADR-0013）。
+
+    ``reserved`` から自動で出られるのは evidence による照合だけ。
+    「自動で解放しない」は遷移表に辺を**書かないこと**で表現する。
+    """
+
+    RESERVED = "reserved"
+    SPENT = "spent"
+    ABANDONED = "abandoned"
+
+
+class RejectedInput(StrEnum):
+    """provider が内容を拒否したとき、拒否の対象になった入力（ADR-0035）。
+
+    fal の 422 ``detail[].loc`` から決める（``body.image_url`` → ``image``、
+    ``body.prompt`` → ``prompt``）。判定できなければ ``unknown``。
+    """
+
+    IMAGE = "image"
+    PROMPT = "prompt"
+    UNKNOWN = "unknown"
+
+
+class RejectionCategory(StrEnum):
+    """provider の拒否・失敗の分類（ADR-0035 (8)）。HTTP status だけでは決めない。
+
+    adapter が応答の error type から決める（provider 固有の型名→分類の対応は adapter が持つ）。
+    分類ごとに復旧が違う:
+
+    - ``content_policy``: 入力の内容が方針で拒否された。そのシーンだけ別の映像案（ADR-0035 (3)）
+    - ``input_unreachable``: provider がこちらの入力（URL のファイル）を取得できなかった。
+      内容の判定ではない。新しい URL で最大1回だけ自動再試行（INV-35）
+    - ``input_validation``: 入力が provider の検証に通らない（大きさ・形式など）。人の判断
+    - ``unknown``: 分類できない。人の判断
+    """
+
+    CONTENT_POLICY = "content_policy"
+    INPUT_VALIDATION = "input_validation"
+    INPUT_UNREACHABLE = "input_unreachable"
+    UNKNOWN = "unknown"
+
+
+RESERVATION_TERMINAL_STATUSES: frozenset[ReservationStatus] = frozenset(
+    {ReservationStatus.SPENT, ReservationStatus.ABANDONED}
+)
 
 
 DEFAULT_MAX_ATTEMPTS = 3

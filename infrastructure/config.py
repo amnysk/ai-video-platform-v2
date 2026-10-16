@@ -2,7 +2,64 @@
 
 from __future__ import annotations
 
+import logging
+from decimal import Decimal
+from typing import Literal
+
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from contracts.intervention import (
+    DEFAULT_EPISODE_BUDGET_JPY,
+    DEFAULT_MONTHLY_BUDGET_JPY,
+    AgentRole,
+)
+from contracts.pipeline import (
+    DAILY_SCHEDULE_ID,
+    DEFAULT_DAILY_EPISODE_LIMIT,
+    DEFAULT_DAILY_SCHEDULE_CRON,
+    DEFAULT_SCHEDULE_TIMEZONE,
+)
+from contracts.production_activities import (
+    DEFAULT_AWAIT_REEXECUTIONS,
+    DEFAULT_IMAGE_CONCURRENCY,
+    DEFAULT_IMAGE_MAX_ROUNDS,
+    DEFAULT_VIDEO_CONCURRENCY,
+    DEFAULT_VIDEO_MAX_ROUNDS,
+    DEFAULT_VOICE_CONCURRENCY,
+    MAX_RECOVERY_COST_USD_PER_EPISODE,
+    MAX_SCENE_ALTERNATIVES_PER_EPISODE,
+    MAX_SCENE_ALTERNATIVES_PER_SCENE,
+)
+from contracts.render import (
+    DEFAULT_RENDER_CONCURRENCY,
+    DEFAULT_RENDER_FFMPEG_THREADS,
+    DEFAULT_RENDER_MIN_FREE_BYTES,
+    DEFAULT_RENDER_PROFILE_ID,
+    DEFAULT_RENDER_TIMEOUT_SECONDS,
+)
+from contracts.research import (
+    DEFAULT_RESEARCH_PROVIDER,
+    EVIDENCE_REVERIFY_DAYS,
+    RESEARCH_PROVIDER_MODES,
+    TREND_FRESH_HOURS,
+    ResearchProviderMode,
+)
+from contracts.schedule_guard import (
+    DEFAULT_BLOCKED_GRACE_MINUTES,
+    DEFAULT_COMPLETION_DEADLINE_HOURS,
+    DEFAULT_STAGE_STALL_GRACE_MINUTES,
+    DEFAULT_UPLOAD_DEADLINE_HOURS,
+    DEFAULT_WATCHDOG_CRON,
+    DEFAULT_WATCHDOG_GRACE_SECONDS,
+)
+from contracts.topic_planning import (
+    CONTENT_PROFILES,
+    DEFAULT_CONTENT_PROFILE_ID,
+    DEFAULT_STRATEGY_PROFILE_ID,
+    STRATEGY_PROFILES,
+)
+from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
 
 
 class Settings(BaseSettings):
@@ -19,5 +76,250 @@ class Settings(BaseSettings):
     temporal_namespace: str = "default"
     temporal_task_queue: str = "episode-skeleton"
 
+    # --- Codex CLI（台本生成） ---
+    #: 実行ファイルの絶対パス。空なら ``shutil.which("codex")`` で解決する。
+    #: nvm 配下の codex は PATH に無いことがあるので明示できるようにしてある。
+    codex_binary: str = ""
+    codex_model: str = ""  # 空なら codex の既定（~/.codex/config.toml）に従う
+    #: CLI 側にタイムアウトオプションが無いので、Python 側の上限がこれだけ。
+    codex_timeout_seconds: int = 900
+    #: codex を ``-C`` で走らせる作業ディレクトリ（sandbox は read-only）。
+    codex_workspace: str = "."
+
+    # --- storyboard（ADR-0015 / ADR-0016） ---
+    #: 一時作業領域の root。正式Artifactの保存先ではない（docs/operations/work-directories.md）。
+    ai_video_work_root: str = "/mnt/minio-hdd/ai-video-work"
+    #: OpenMontage の共有 checkout。**読み取り専用**。未設定なら storyboard 生成器を組めない。
+    openmontage_repo_path: str | None = None
+    #: 仕様 blob を読む固定 commit。作業ツリーの未コミット変更は読まない。
+    openmontage_commit: str = "2fa571e39ad0632148dad77c7a2134f7e6fe0797"
+    storyboard_timeout_seconds: int = 900
+
+    # --- production（ADR-0017） ---
+    #: 有料の画像・動画 provider の鍵。**secret**。未設定なら該当 worker を組めない。
+    #: ``SecretStr``: repr / model_dump / ログに値を出さない。使う箇所で ``get_secret_value()``。
+    fal_key: SecretStr | None = None
+    #: task queue ごとの並行 Activity 数（worker が max_concurrent_activities に使う）
+    image_concurrency: int = DEFAULT_IMAGE_CONCURRENCY
+    voice_concurrency: int = DEFAULT_VOICE_CONCURRENCY
+    video_concurrency: int = DEFAULT_VIDEO_CONCURRENCY
+    #: ローカル TTS の音声モデル。未設定なら voice worker を組めない。
+    piper_voice_path: str | None = None
+    #: Piper を入れた**隔離 venv** の python（scripts/setup-piper.sh）。
+    #: piper-tts は GPL-3.0 なので共有 venv に入れない。
+    piper_python: str | None = None
+    #: 合成パラメータ。未設定なら音声モデルの .onnx.json の既定値を使う。
+    piper_length_scale: float | None = None
+    piper_noise_scale: float | None = None
+    piper_noise_w_scale: float | None = None
+    production_submit_timeout_seconds: int = 120
+    #: await の poll 期限。Activity の start_to_close
+    #: （``AWAIT_START_TO_CLOSE_SECONDS``）より**短く**
+    #: 取り、Temporal に殺される前に ``ProviderPollDeadlineError`` を返す（参照は台帳に残る）
+    production_await_timeout_seconds: int = 35 * 60
+    production_await_heartbeat_seconds: int = 90
+    #: fal API の1回の読み取り待ちの上限。heartbeat timeout（90秒）より十分短くする
+    production_fal_read_timeout_seconds: int = 30
+    production_poll_interval_seconds: int = 10
+    production_voice_timeout_seconds: int = 300
+    #: ProductionWorkflow の1実行あたりの submit 試行予算（台帳のラウンド番号ではない）
+    production_image_max_rounds: int = DEFAULT_IMAGE_MAX_ROUNDS
+    production_video_max_rounds: int = DEFAULT_VIDEO_MAX_ROUNDS
+    #: 状態不明の await 失敗に対し、同じ予約で await を追加実行する回数
+    production_await_reexecutions: int = DEFAULT_AWAIT_REEXECUTIONS
+    #: 内容拒否からの自動復旧（代替映像案）の上限（ADR-0035 (8)、INV-34）。既定は contracts。
+    #: 1シーンの上限は workflow 入力（1実行で planner を呼ぶ回数）と計画 Activity（DB から数えた
+    #: 回数の判定）の両方に届く。Episode の回数・費用の上限は計画 Activity だけが判定する
+    production_max_scene_alternatives_per_scene: int = MAX_SCENE_ALTERNATIVES_PER_SCENE
+    production_max_scene_alternatives_per_episode: int = MAX_SCENE_ALTERNATIVES_PER_EPISODE
+    production_max_recovery_cost_usd: float = MAX_RECOVERY_COST_USD_PER_EPISODE
+
+    # --- render（Phase 5） ---
+    #: 固定版 static ffmpeg の絶対パスと sha256（scripts/install-render-ffmpeg.sh が表示する）。
+    #: 未設定・不一致なら render worker を組めない（起動前に検証する）。
+    render_ffmpeg_path: str | None = None
+    render_ffmpeg_sha256: str | None = None
+    #: ffprobe は任意（プラットフォームの検査は PyAV で行う）。
+    render_ffprobe_path: str | None = None
+    render_ffprobe_sha256: str | None = None
+    #: 字幕フォント。sha256 は render の input_hash に入る。
+    render_font_path: str = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    render_font_sha256: str = "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
+    render_ffmpeg_threads: int = DEFAULT_RENDER_FFMPEG_THREADS
+    #: render task queue の並行 Activity 数
+    render_concurrency: int = DEFAULT_RENDER_CONCURRENCY
+    render_timeout_seconds: int = DEFAULT_RENDER_TIMEOUT_SECONDS
+    #: 作業領域に最低限残す空き容量（バイト）。見込み使用量はこれに上乗せする。
+    render_min_free_bytes: int = DEFAULT_RENDER_MIN_FREE_BYTES
+
+    # --- upload（Phase 6） ---
+    #: OAuth installed app の client。secret は ``SecretStr``。
+    youtube_client_id: str | None = None
+    youtube_client_secret: SecretStr | None = None
+    #: refresh token のファイル（repo 外・0600）。``scripts/youtube-oauth.py`` が書く。
+    youtube_refresh_token_path: str | None = None
+    #: 投稿先 channel の識別子（冪等キーの destination に入る）
+    youtube_channel_id: str | None = None
+    #: ``UPLOADS_PAUSED=true`` なら session を開始する前に止める
+    uploads_paused: bool = False
+    #: resumable upload の chunk（256 KiB の倍数）
+    youtube_chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES
+
+    # --- pipeline（ADR-0023） ---
+    #: 1 日（``schedule_timezone`` の日付）に自動生成する Episode の上限
+    daily_episode_limit: int = DEFAULT_DAILY_EPISODE_LIMIT
+    #: Temporal Schedule の cron（``schedule_timezone`` で解釈する）
+    daily_schedule_cron: str = DEFAULT_DAILY_SCHEDULE_CRON
+    schedule_timezone: str = DEFAULT_SCHEDULE_TIMEZONE
+    daily_schedule_id: str = DAILY_SCHEDULE_ID
+    #: daily watchdog（ADR-0027）。別の Schedule で毎時。猶予は予定時刻からの秒数
+    watchdog_cron: str = DEFAULT_WATCHDOG_CRON
+    watchdog_grace_seconds: int = DEFAULT_WATCHDOG_GRACE_SECONDS
+    #: Episode 進行・完成・投稿の監視（ADR-0031）。工程・尺に固有の値をここ以外に埋め込まない
+    stage_stall_grace_minutes: int = DEFAULT_STAGE_STALL_GRACE_MINUTES
+    blocked_grace_minutes: int = DEFAULT_BLOCKED_GRACE_MINUTES
+    completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
+    upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
+    #: 自動 pipeline が Render に渡す出力 profile（Shorts 前提にしない）
+    pipeline_render_profile_id: str = DEFAULT_RENDER_PROFILE_ID
+    #: ``PAUSED=true`` なら Daily の起動と投稿ゲートを止める（DB の switch と OR）
+    paused: bool = False
+
+    # --- Topic Planner（ADR-0025） ---
+    #: profile の **id** だけを選ぶ。中身は ``contracts.topic_planning`` が唯一の宣言元
+    topic_strategy_profile_id: str = DEFAULT_STRATEGY_PROFILE_ID
+    topic_content_profile_id: str = DEFAULT_CONTENT_PROFILE_ID
+    #: True なら planning worker が YouTube Analytics を live で取る（YOUTUBE_* の OAuth を使う）。
+    #: False なら保存済み snapshot があればそれ（stale）、無ければ Analytics 無しで企画する
+    youtube_analytics_enabled: bool = False
+
+    # --- Research（ADR-0037） ---
+    #: ``fake``（固定コーパス。実ネットワークに出ない）か ``none``（既定。依頼は ``blocked``）。
+    #: 実 Provider は registry に無い（選定は所有者の判断と ADR を待つ）
+    research_provider: ResearchProviderMode = DEFAULT_RESEARCH_PROVIDER
+    #: 鮮度キャッシュの窓（ADR-0037 §5）。既定は ``contracts/research.py`` が唯一の宣言元
+    trend_fresh_hours: int = TREND_FRESH_HOURS
+    evidence_reverify_days: int = EVIDENCE_REVERIFY_DAYS
+    #: 依頼が上限を指定しなかったときに凍結する金額・quota の上限。未設定なら実 Provider の依頼は
+    #: ``blocked``（ADR-0037 §6）。Fake / none には影響しない
+    research_max_cost_usd: Decimal | None = None
+    research_max_youtube_units: int | None = None
+    #: B6 の opt-in（既定 OFF）。OFF のとき planning worker は Research のコードを読み込まず、
+    #: prompt・版・Temporal の履歴は接続前と同じ（ADR-0039 §B6 / ADR-0038 §B6、INV-37）。
+    #: Topic Planner が確定済みの最新 Trend（検証済み・鮮度つき）を prompt に参考として載せる
+    planner_trend_enabled: bool = False
+    #: 台本の後に Evidence を依頼して照合する（助言だけ。結果で Episode を止めない）
+    script_evidence_enabled: bool = False
+
+    # --- 介入 API の principal（JP-MAS-001 / ADR-0041 §8、INV-47。担当 C） ---
+    #: ``sha256(token) → {actor_type, actor_id, scopes}`` の JSON、またはその JSON ファイルのパス。
+    #: **未設定なら介入 API（/v1/intervention）は全て 503**（既定で何も開けない）。
+    #: 平文の token は置かない。
+    #: 読み込みと検査（AI に人専用 scope を与えない等）は ``apps/api/auth.py``。
+    intervention_principals: SecretStr | None = None
+
+    # --- /episodes/* と /research/* の認証（ADR-0045 §4） ---
+    #: ``EPISODES_API_AUTH_REQUIRED``。true なら GET は scope ``read``、POST は ``resume`` かつ
+    #: 人（``human``）の Bearer principal を要求する（``INTERVENTION_PRINCIPALS`` を使う）。
+    #: 既定 false = 従来どおり認証なし
+    episodes_api_auth_required: bool = False
+
+    # --- JP-MAS-002 P0（ADR-0043 §5）。既定は全て無効 ---
+    #: ``JPMAS2_APPLICATION_API``。無効なら storyboard 提案 route は ``404 feature_disabled``
+    jpmas2_application_api: bool = False
+    #: ``JPMAS2_AGENTIC_WORKFLOWS``。agentic workflow / agent activity の登録と
+    #: ``StartAgenticProduction``。既定 false（日次経路は参照しない / INV-55）
+    jpmas2_agentic_workflows: bool = False
+    #: ``JPMAS2_ENABLED_AGENTS``。有効な agent role（``AgentRole`` の値のカンマ区切り）。
+    #: 空 = 全て無効。未知の名前は起動時に失敗する。読み取りは ``enabled_agent_roles``
+    jpmas2_enabled_agents: str = ""
+    #: ``JPMAS2_AGENT_LLM``。agent が使う LLM。``fake`` は隔離試験スタック専用の決定的な偽物
+    jpmas2_agent_llm: Literal["codex", "fake"] = "codex"
+
+    #: ``API_CORS_ORIGINS``。UI の origin のカンマ区切り（ADR-0044 §4）。
+    #: 空 = CORS middleware を付けない。
+    #: 読み取りは ``cors_origins``（``*`` は拒否する）
+    api_cors_origins: str = ""
+
+    # --- JP-MAS-001 判断記録の捕捉（ADR-0041、担当A） ---
+    #: Topic Planner（producer）の実行記録（ContextSnapshot・agent_run）と choose_topic の
+    #: 判断記録を残す。Planner は Episode より前に走るので mode で切り替えられず、この設定が唯一の
+    #: 入口。既定 OFF（OFF のとき planning worker は何も書かず、prompt・履歴も変わらない）。
+    #: ON のとき snapshot を保存できなければ候補生成を失敗させる（needs_input）。
+    #: Episode の工程（script / storyboard）は ``episode_controls.mode != legacy`` で決まり、
+    #: この設定とは無関係
+    topic_planner_capture_enabled: bool = False
+
+    # --- 介入の予算（JP-MAS-001 / ADR-0041 §9、INV-47。担当 B） ---
+    #: 1本・1か月の上限（円）。既定の宣言元は ``contracts.intervention``。
+    #: 介入 API・AI からは変えない
+    episode_budget_jpy: int = DEFAULT_EPISODE_BUDGET_JPY
+    monthly_budget_jpy: int = DEFAULT_MONTHLY_BUDGET_JPY
+    #: 1 USD あたりの円。**既定なし**: 未設定なら有料の見積りを伴う変更は ``budget_unverifiable``
+    budget_usd_jpy_rate: Decimal | None = None
+
+    @field_validator("jpmas2_enabled_agents")
+    @classmethod
+    def _known_enabled_agents(cls, v: str) -> str:
+        _parse_enabled_agents(v)
+        return v
+
+    @field_validator("research_provider", mode="before")
+    @classmethod
+    def _research_provider_fails_closed(cls, v: object) -> object:
+        """未知・誤記の値は ``none``（依頼は ``blocked``）へ落とし、起動は止めない。
+
+        ADR-0037 §8.5。script-worker もこの値を読むので、検証エラーにすると
+        Research を使っていない日次の企画・台本まで止まる。
+        """
+        if v in RESEARCH_PROVIDER_MODES:
+            return v
+        logging.getLogger(__name__).warning(
+            "unknown RESEARCH_PROVIDER %r; falling back to %r", v, DEFAULT_RESEARCH_PROVIDER
+        )
+        return DEFAULT_RESEARCH_PROVIDER
+
+    @field_validator("topic_strategy_profile_id")
+    @classmethod
+    def _known_strategy(cls, v: str) -> str:
+        if v not in STRATEGY_PROFILES:
+            raise ValueError(f"unknown strategy profile {v!r}; known: {sorted(STRATEGY_PROFILES)}")
+        return v
+
+    @field_validator("topic_content_profile_id")
+    @classmethod
+    def _known_content(cls, v: str) -> str:
+        if v not in CONTENT_PROFILES:
+            raise ValueError(f"unknown content profile {v!r}; known: {sorted(CONTENT_PROFILES)}")
+        return v
+
     def __repr__(self) -> str:  # pragma: no cover - 事故防止のための表示抑制
         return "Settings(<redacted>)"
+
+
+def _parse_enabled_agents(raw: str) -> frozenset[AgentRole]:
+    roles: set[AgentRole] = set()
+    for name in (part.strip() for part in raw.split(",")):
+        if not name:
+            continue
+        try:
+            roles.add(AgentRole(name))
+        except ValueError:
+            known = ", ".join(sorted(r.value for r in AgentRole))
+            raise ValueError(
+                f"unknown agent role {name!r} in JPMAS2_ENABLED_AGENTS; known: {known}"
+            ) from None
+    return frozenset(roles)
+
+
+def cors_origins(settings: Settings) -> tuple[str, ...]:
+    """``API_CORS_ORIGINS`` の origin（空白・空要素は捨てる）。``*`` は設定の誤りとして拒否する。"""
+    origins = tuple(o.strip() for o in settings.api_cors_origins.split(",") if o.strip())
+    if "*" in origins:
+        raise ValueError("API_CORS_ORIGINS must list exact origins; wildcard is not allowed")
+    return origins
+
+
+def enabled_agent_roles(settings: Settings) -> frozenset[AgentRole]:
+    """``JPMAS2_ENABLED_AGENTS`` で有効にした role。空なら何も有効でない。"""
+    return _parse_enabled_agents(settings.jpmas2_enabled_agents)

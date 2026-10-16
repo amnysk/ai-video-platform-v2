@@ -33,4 +33,40 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0007](./0007-infrastructure-may-depend-on-domain.md) | infrastructure → domain の依存を許可 | Accepted |
 | [0008](./0008-adopt-psycopg3-as-the-only-postgres-driver.md) | PostgreSQLドライバを psycopg v3 に一本化 | Accepted |
 | [0009](./0009-python-dependency-single-source.md) | Python依存の宣言元を pyproject.toml ひとつに | Accepted |
-| [0010](./0010-phase1-artifact-versioning-deferral.md) | INV-10 の `version` と INV-14 を Phase 2 発効に | Accepted |
+| [0010](./0010-phase1-artifact-versioning-deferral.md) | INV-10 の `version` と INV-14 を Phase 2 発効に | Accepted（0012 が version 部分を発効） |
+| [0011](./0011-episode-script-ready-state.md) | Episode に `script_ready` を導入 | Accepted |
+| [0012](./0012-artifact-identity-for-nondeterministic-generators.md) | Artifact の同一性を input_hash へ移す | Accepted |
+| [0013](./0013-provider-reservation-ledger.md) | 外部AI呼び出しの予約台帳と INV-15 の意味論 | Accepted |
+| [0014](./0014-llm-output-defects-are-retryable.md) | LLM出力の形式不正は retryable | Accepted |
+| [0015](./0015-storyboard-stage.md) | Storyboard 工程と Episode `storyboard_ready` | Accepted |
+| [0016](./0016-openmontage-guided-storyboard-generation.md) | Storyboard 生成は固定した OpenMontage 仕様で誘導した Codex | Accepted |
+| [0017](./0017-production-stage.md) | Production 工程（画像・音声・動画）と Episode `assets_ready` | Accepted |
+| [0018](./0018-scene-scoped-artifacts.md) | シーン単位の Artifact・job・予約 | Accepted |
+| [0019](./0019-render-stage.md) | Render 工程（完成動画）と Episode `render_ready` | Accepted |
+| [0020](./0020-upload-stage.md) | Upload 工程（YouTube private 投稿）と Episode `uploaded` | Accepted |
+| [0021](./0021-operational-switches-daily-slots-and-test-db-isolation.md) | 運用スイッチ・日次 Episode 枠とテストDBの隔離 | Accepted |
+| [0022](./0022-youtube-processing-check.md) | 投稿後の YouTube 処理状態の確認と送信中の一時停止 | Accepted |
+| [0023](./0023-daily-schedule-and-episode-pipeline.md) | Daily Schedule と Episode pipeline workflow | Accepted |
+| [0024](./0024-compose-managed-workers.md) | 常駐 Worker を Docker Compose で管理する | Accepted |
+| [0025](./0025-topic-planner.md) | Topic Planner（TopicPlan を確定してから Episode を作る） | Accepted |
+| [0026](./0026-script-locale.md) | 台本の locale は Strategy profile が決め、Topic Plan の題材を明示的に渡す | Accepted |
+| [0027](./0027-daily-schedule-guard-and-watchdog.md) | Daily Schedule の望ましい状態・maintenance pause・watchdog | Accepted |
+| [0028](./0028-voice-fit-before-render.md) | 音声の実尺を描画の前に区間へ合わせる | Accepted |
+| [0029](./0029-topic-planner-activity-payload-shape.md) | Topic Planner の Activity 境界は型注釈どおりの形だけを返す | Accepted |
+| [0030](./0030-provider-auth-failure-diagnostics-and-suppression.md) | provider 準備呼び出しの失敗診断・分類の是正と共有障害の抑止 | Accepted |
+| [0031](./0031-daily-watchdog-progress-completion-upload.md) | Daily Watchdog を起動・進行・完成・投稿の4段階で判定する | Accepted |
+| [0032](./0032-unified-episode-resume-entrypoint.md) | Episode の統一再開エントリポイント | Accepted |
+| [0033](./0033-artifact-reuse-integrity-verification.md) | Artifact 再利用の完全性検証 | Accepted |
+| [0034](./0034-provider-content-rejection-retry-and-prompt-mitigation.md) | provider のコンテンツ拒否は同じ入力で自動再送しない・拒否理由を全文残す・写実的な肖像を避ける | Accepted |
+| [0035](./0035-scene-visual-subject-and-rejection-recovery.md) | シーンの映像対象を Storyboard で決め、内容拒否をシーン単位で復旧する | Accepted |
+| [0036](./0036-research-search-provider-adapters.md) | 調査用の検索・本文取得を Port の背後の Adapter に閉じ、SSRF 規則を通してだけ取得する | Accepted |
+| [0037](./0037-research-foundation-separate-persistence.md) | Research の依頼・外部呼び出し台帳・成果物を本番の表から分離して永続化する | Accepted |
+| [0038](./0038-evidence-research-and-script-verification.md) | Evidence Research と台本の照合を research の成果物として実装する | Accepted |
+| [0039](./0039-trend-research.md) | Trend Research を research の成果物として実装し、検証つきで読み出せるようにする | Accepted |
+| [0040](./0040-structured-logs-and-opensearch-search-replica.md) | 構造化 JSON ログと OpenSearch の検索用副本（ログは業務判断に使わない） | Accepted |
+| [0041](./0041-decision-records-and-intervention.md) | 判断記録と介入（JP-MAS-001 v2.0）を既存の表・台帳・pipeline に重ねる | Proposed |
+| [0042](./0042-assistant-tool-adapter.md) | 対話 AI アシスタントは介入 API の tool adapter として接続する | Proposed |
+| [0043](./0043-agentic-production-foundation.md) | 自律改善型制作の土台（Application 層・Agent Registry・Workflow Template / JP-MAS-002 P0・P1） | Accepted |
+| [0044](./0044-ui-mcp-shared-application-backend.md) | UI・MCP 共通のバックエンド（操作カタログ・Application Service・/v1 API / JP-MAS-002 P2-A） | Accepted |
+| [0045](./0045-operator-ui-and-episodes-api-auth.md) | 運用者 UI（P2-B）と `/episodes/*` の opt-in 認証 | Accepted |
+| [0046](./0046-ci-minio-image.md) | CI の MinIO image を Chainguard（digest 固定）に差し替える | Accepted |

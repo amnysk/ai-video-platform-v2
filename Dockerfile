@@ -1,4 +1,4 @@
-# api / dummy-worker / migrate の共通イメージ。起動コマンドだけ compose 側で切り替える。
+# api / dummy-worker / migrate の共通の土台（最終形は app stage）。起動コマンドだけ compose 側で切り替える。
 FROM python:3.13-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
@@ -12,10 +12,16 @@ WORKDIR /app
 COPY pyproject.toml README.md constraints.txt alembic.ini ./
 COPY contracts ./contracts
 COPY domain ./domain
+COPY application ./application
 COPY infrastructure ./infrastructure
 COPY workers ./workers
 COPY apps/__init__.py ./apps/__init__.py
 COPY apps/api ./apps/api
+# script / storyboard worker が読むプロンプト雛形。api 自体は使わないが、workers/ の import
+# チェーン（workers.planning.activities 等）が実行時に require するため base から持つ
+# （CI の「base だけで workers.*.workflows が import できるか」チェックが base を対象にするため。
+# worker stage は base を継承するのでここに置けば worker 側の COPY は不要）。
+COPY prompts ./prompts
 
 # 版の固定は constraints.txt（宣言と固定の役割を分ける）。
 # cache mount を効かせるため PIP_NO_CACHE_DIR / --no-cache-dir は使わない。
@@ -25,4 +31,64 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # alembic.ini の script_location が相対パスなので、ソースも /app に置いたまま使う。
 ENV PYTHONPATH=/app
 
-CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 共通の JSON ログ設定で起動する（ADR-0040 §1。uvicorn の CLI のログ設定を使わない）
+CMD ["python", "-m", "apps.api.serve"]
+
+# ---------------------------------------------------------------------------
+# api / migrate / dummy-worker が使う最終イメージ（compose の target: app）。
+# ビルド元の git revision（scripts/deploy-workers.sh が渡す。docs/operations/workers.md §10）を label に持つ。
+# revision を base に置かないのは、base の設定が変わると worker stage の apt / npm / piper の層が
+# 毎回作り直されるため（実測 2026-09-20: base に LABEL を置くと revision ごとに約 1 分の再ビルド）。
+FROM base AS app
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"
+# ログの git_sha（ADR-0040。worker stage と同じ ARG 由来。api / migrate が使う）
+ENV AVP_GIT_REVISION="${GIT_REVISION}"
+
+# ---------------------------------------------------------------------------
+# 常駐 Worker 共通イメージ（ADR-0024）。script / storyboard / production* / render / upload / pipeline
+# がこの1枚を使い、起動する worker は compose の command で選ぶ。
+# base の Python 依存（pyproject.toml 由来）はそのまま引き継ぎ、ここでは**Python 依存を足さない**。
+# 秘密（Codex 認証・OAuth token・API キー）はイメージに焼かない。実行時に env / bind mount で渡す。
+FROM base AS worker
+
+# Codex CLI の版（host の codex と揃える）。
+ARG CODEX_VERSION=0.154.0
+# scripts/setup-piper.sh と同じ版であること（tests/contract/test_compose_workers.py が検査）。
+ARG PIPER_TTS_VERSION=1.8.0
+
+# git: storyboard が OpenMontage checkout（ro mount）から固定 commit の blob を読む。
+# nodejs/npm: Codex CLI の実行環境。
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends git nodejs npm ca-certificates \
+    && git config --system --add safe.directory '*'
+
+RUN --mount=type=cache,target=/root/.npm \
+    npm install -g "@openai/codex@${CODEX_VERSION}" \
+    && codex --version
+
+# piper-tts は GPL-3.0 のため共有の Python 環境に入れず隔離 venv に置く（ADR-0017）。
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/piper/venv \
+    && /opt/piper/venv/bin/pip install --disable-pip-version-check "piper-tts==${PIPER_TTS_VERSION}"
+
+# 非 root 実行用の HOME。compose は user: ${AVP_UID}:${AVP_GID}（既定 1000）で動かし、
+# ~/.codex は host から rw mount する。
+RUN groupadd --gid 1000 avp \
+    && useradd --uid 1000 --gid 1000 --home-dir /home/avp --create-home --shell /usr/sbin/nologin avp \
+    && chmod 0775 /home/avp
+ENV HOME=/home/avp \
+    PIPER_PYTHON=/opt/piper/venv/bin/python \
+    CODEX_BINARY=/usr/local/bin/codex
+USER 1000:1000
+
+# revision は最後に置く（重い apt / npm / piper の層より後ろ）。
+# ENV は worker_entry が起動ログに出す（api / migrate は worker_entry を使わないので base には置かない）。
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"
+ENV AVP_GIT_REVISION="${GIT_REVISION}"
+
+CMD ["python", "-m", "infrastructure.runtime.worker_entry", "workers.dummy.run_worker"]

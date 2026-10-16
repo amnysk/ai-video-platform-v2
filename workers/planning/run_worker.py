@@ -1,0 +1,225 @@
+"""Script Worker のエントリポイント。
+
+**Ubuntu ホストのプロセス**として動く（Codex CLI がホストにあるため）。
+Workerは他のWorkerを呼ばない（INV-3）。次のJobも決めない（INV-4）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from temporalio.client import Client
+from temporalio.worker import Worker
+
+from contracts.topic_planning import TOPIC_PLANNER_TASK_QUEUE
+from domain.errors import AnalyticsUnavailableError
+from infrastructure.analytics.youtube_analytics import (
+    PROVIDER_ID,
+    AnalyticsScopeMissingError,
+    YouTubeAnalyticsProvider,
+)
+from infrastructure.config import Settings
+from infrastructure.db.session import session_factory_from_settings
+from infrastructure.logging.temporal import worker_interceptors
+from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
+from infrastructure.providers.process import SubprocessRunner
+from infrastructure.storage.artifact_store import ArtifactStore
+from infrastructure.storage.minio_store import MinioArtifactStore
+from infrastructure.temporal.connect import connect_with_retry
+from infrastructure.youtube.errors import YouTubeAuthError
+from infrastructure.youtube.oauth import RefreshTokenCredentials
+from workers.planning.activities import ScriptActivities
+from workers.planning.topic_activities import TopicPlannerActivities, TrendBriefSource
+from workers.planning.topic_workflows import TopicPlannerWorkflow
+from workers.planning.workflows import ScriptWorkflow
+
+logger = logging.getLogger(__name__)
+
+#: Topic Planner も同じ queue（Codex を持つこの worker）で動く（ADR-0025）
+SCRIPT_TASK_QUEUE = TOPIC_PLANNER_TASK_QUEUE
+#: Analytics API の1リクエストの上限（秒）
+ANALYTICS_HTTP_TIMEOUT_SECONDS = 30.0
+
+WORKFLOWS = [ScriptWorkflow, TopicPlannerWorkflow]
+
+
+class ResearchRegistrations:
+    """Research への opt-in 接続（ADR-0038 §B6 / ADR-0039 §B6）が worker に足すもの。
+
+    既定（両方 OFF）は何も足さない: 登録する workflow は ``WORKFLOWS``、Activity は従来のまま、
+    Planner は Trend を読まない。
+    """
+
+    def __init__(
+        self,
+        *,
+        trend: TrendBriefSource | None = None,
+        workflows: Sequence[type] = tuple(WORKFLOWS),
+        activities: Sequence[Callable[..., object]] = (),
+    ) -> None:
+        self.trend = trend
+        self.workflows = list(workflows)
+        self.activities = list(activities)
+
+
+def research_registrations(
+    settings: Settings,
+    *,
+    client: Client | None,
+    session_factory: async_sessionmaker[AsyncSession],
+    store: ArtifactStore,
+    clock: Callable[[], datetime],
+) -> ResearchRegistrations:
+    """設定が OFF なら Research のコードを import しない。
+
+    接続の組み立ては ``workers/planning/research_wiring.py`` だけが行う。
+    """
+    if not (settings.planner_trend_enabled or settings.script_evidence_enabled):
+        return ResearchRegistrations()
+    from workers.planning.research_wiring import build_research_links
+    from workers.planning.workflows import EvidenceScriptWorkflow
+
+    links = build_research_links(
+        settings, session_factory=session_factory, store=store, client=client, clock=clock
+    )
+    if links.evidence is None:
+        return ResearchRegistrations(trend=links.trend)
+    return ResearchRegistrations(
+        trend=links.trend,
+        workflows=[EvidenceScriptWorkflow, TopicPlannerWorkflow],
+        activities=links.evidence.all_activities(),
+    )
+
+
+def build_analytics_provider(
+    settings: Settings, client: httpx.AsyncClient
+) -> YouTubeAnalyticsProvider | None:
+    """``YOUTUBE_ANALYTICS_ENABLED`` のときだけ組む。
+
+    組めなければ None（Planner は劣化して続ける）。
+    """
+    if not settings.youtube_analytics_enabled:
+        return None
+    if not (
+        settings.youtube_client_id
+        and settings.youtube_client_secret
+        and settings.youtube_refresh_token_path
+    ):
+        logger.warning(
+            "YOUTUBE_ANALYTICS_ENABLED but YOUTUBE_CLIENT_ID / _SECRET / _REFRESH_TOKEN_PATH "
+            "are not all set; planning without live analytics"
+        )
+        return None
+    try:
+        credentials = RefreshTokenCredentials.from_file(
+            settings.youtube_client_id,
+            settings.youtube_client_secret,
+            settings.youtube_refresh_token_path,
+            client=client,
+        )
+    except YouTubeAuthError as exc:
+        # メッセージは adapter が token を含めないよう作っている
+        logger.warning("youtube analytics disabled: %s", exc)
+        return None
+    return YouTubeAnalyticsProvider(credentials, client=client)
+
+
+async def log_analytics_scope_status(provider: YouTubeAnalyticsProvider) -> None:
+    """起動時に scope を確かめてログに残す（診断だけ。失敗しても worker は起動する）。"""
+    try:
+        await provider.verify_scopes()
+    except AnalyticsScopeMissingError as exc:
+        logger.warning("youtube analytics: %s", exc)
+    except AnalyticsUnavailableError as exc:
+        logger.warning("youtube analytics scope check skipped (%s)", type(exc).__name__)
+    else:
+        logger.info("youtube analytics scope granted")
+
+
+def topic_capture_store(settings: Settings, store: ArtifactStore) -> ArtifactStore | None:
+    """Topic Planner の実行記録の保存先。``TOPIC_PLANNER_CAPTURE_ENABLED``（既定 OFF）時だけ。"""
+    return store if settings.topic_planner_capture_enabled else None
+
+
+async def main() -> None:
+    settings = Settings()
+
+    client = await connect_with_retry(settings)
+    store = MinioArtifactStore.from_settings(settings)
+    await store.ensure_bucket()
+
+    binary = resolve_codex_binary(settings.codex_binary)
+    workspace = Path(settings.codex_workspace).expanduser()
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    generator = CodexCliStoryGenerator(
+        binary=binary,
+        model=settings.codex_model,
+        runner=SubprocessRunner(),
+        workspace=workspace,
+    )
+
+    session_factory = session_factory_from_settings(settings)
+    activities = ScriptActivities(
+        session_factory=session_factory,
+        store=store,
+        generator=generator,
+        bucket=settings.minio_bucket,
+        generator_id="codex",
+        model=settings.codex_model,
+        timeout_seconds=settings.codex_timeout_seconds,
+    )
+
+    research = research_registrations(
+        settings,
+        client=client,
+        session_factory=session_factory,
+        store=store,
+        clock=lambda: datetime.now(UTC),
+    )
+
+    async with httpx.AsyncClient(timeout=ANALYTICS_HTTP_TIMEOUT_SECONDS) as http:
+        analytics = build_analytics_provider(settings, http)
+        if analytics is not None:
+            await log_analytics_scope_status(analytics)
+        topic_activities = TopicPlannerActivities(
+            session_factory=session_factory,
+            generator=generator,
+            analytics=analytics,
+            analytics_provider_id=PROVIDER_ID,
+            clock=lambda: datetime.now(UTC),
+            timeout_seconds=settings.codex_timeout_seconds,
+            trend=research.trend,
+            capture_store=topic_capture_store(settings, store),
+        )
+        logger.info(
+            "script worker listening on task queue %s (codex=%s, live analytics=%s, "
+            "planner trend=%s, script evidence=%s)",
+            SCRIPT_TASK_QUEUE,
+            binary,
+            analytics is not None,
+            research.trend is not None,
+            bool(research.activities),
+        )
+        async with Worker(
+            client,
+            interceptors=worker_interceptors(),
+            task_queue=SCRIPT_TASK_QUEUE,
+            workflows=research.workflows,
+            activities=[
+                *activities.all_activities(),
+                *topic_activities.all_activities(),
+                *research.activities,
+            ],
+        ):
+            await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

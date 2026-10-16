@@ -11,7 +11,6 @@ import pytest_asyncio
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.artifact.keys import artifact_object_key
 from infrastructure.storage.artifact_store import ArtifactConflictError
-from infrastructure.storage.minio_store import MinioArtifactStore
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("MINIO_ENDPOINT"),
@@ -21,12 +20,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest_asyncio.fixture
 async def store():
-    from infrastructure.config import Settings
+    from tests.support.minio import connect_test_artifact_store
 
-    settings = Settings()
-    store = MinioArtifactStore.from_settings(settings)
-    await store.ensure_bucket()
-    return store
+    return await connect_test_artifact_store()
 
 
 async def test_put_get_exists_roundtrip_against_real_minio(store) -> None:
@@ -61,3 +57,29 @@ async def test_reput_is_idempotent_and_conflict_is_detected(store) -> None:
 
     with pytest.raises(ArtifactConflictError):
         await store.put_json(key, payload | {"message": "different"})
+
+
+async def test_streaming_put_readback_and_download_against_real_minio(store, tmp_path) -> None:
+    """大きなメディア用の流す経路（ADR-0019）。チャンク境界をまたぐ大きさで検査する。"""
+    from infrastructure.storage.artifact_store import STREAM_CHUNK_BYTES, readback_sha256
+
+    body = os.urandom(STREAM_CHUNK_BYTES + 12345)
+    source = tmp_path / "final.mp4"
+    source.write_bytes(body)
+    digest = sha256_hex(body)
+    key = f"media/{uuid.uuid4()}/final_video/{digest}.mp4"
+
+    with pytest.raises(KeyError):
+        await store.sha256_of(key)
+    put = await store.put_file(key, source, "video/mp4")
+    assert (put.sha256, put.size, put.existed) == (digest, len(body), False)
+    assert (await store.put_file(key, source, "video/mp4")).existed is True
+    assert await readback_sha256(store, key) == digest
+    target = tmp_path / "copy.mp4"
+    assert await store.download_to(key, target) == digest
+    assert target.read_bytes() == body
+
+    other = tmp_path / "other.mp4"
+    other.write_bytes(b"different")
+    with pytest.raises(ArtifactConflictError):
+        await store.put_file(key, other, "video/mp4")

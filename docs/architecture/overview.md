@@ -51,9 +51,10 @@ workerを直接叩かない（INV-2）。
 | レイヤ | ディレクトリ | 責務 | 依存してよい先 |
 |---|---|---|---|
 | Presentation | `apps/web` | 操作UI | HTTP API のみ |
-| Application | `apps/api` | command受付・検証・workflow起動 | domain, contracts, infrastructure |
+| Application | `apps/api` | command受付・検証・workflow起動 | application, domain, contracts, infrastructure |
+| Use case | `application/` | 入口（HTTP・CLI・アシスタント・内部Agent）が共通に通る操作（ADR-0043）。infrastructure は port（Protocol）越しにだけ使う | domain, contracts |
 | Orchestration | Temporal workflow定義（`workers/*/workflows.py`） | 工程順序・retry方針 | domain, contracts |
-| Execution | `workers/*/activities.py` | 1工程の実行 | domain, contracts, infrastructure |
+| Execution | `workers/*/activities.py` | 1工程の実行 | application, domain, contracts, infrastructure |
 | Domain | `domain/` | Episode/Job/Artifactのモデルと遷移規則 | contracts のみ |
 | Contracts | `contracts/` | Artifactスキーマ・payload定義 | なし |
 | Infrastructure | `infrastructure/` | DB / MinIO / Temporal client / provider adapter / 計装 | domain, contracts（ADR-0007） |
@@ -81,10 +82,16 @@ Temporalは「その実行がどこまで進んだか」を持ち、PostgreSQL�
 
 ## 現在の実装状況
 
-**Phase 1（最小の縦切り）**。上の箱のうち、UI以外は骨組みが通っている:
-FastAPI が Episode を作って workflow を start し、
-`EpisodeSkeletonWorkflow` が dummy Activity を1つ実行し、
-Artifact を MinIO へ、メタデータを PostgreSQL へ書き、Episode を `completed` にする。
+**Phase 6 + 日次自動化（ADR-0023 / ADR-0025）**。UI 以外の箱は実体がある:
 
-まだ無いもの: Next.js UI、企画/台本/素材生成/レンダー/投稿/分析の各worker、
-有料provider adapter、OpenTelemetry の実配線。
+- Temporal Schedule（`avp-daily-episode`）→ `DailyEpisodeWorkflow`（queue `pipeline`）→ 子
+  `TopicPlannerWorkflow`（queue `script`）が Topic を決めて `topic_plans` に保存 → Episode を claim →
+  `EpisodePipelineWorkflow` が Script → Storyboard → Production → Render → upload gate → Upload（YouTube private）を
+  子 workflow として順に起動する
+- worker は compose の1サービス1 worker（ADR-0024）: pipeline / planning / storyboard / production（+ image・voice・video）/
+  render / upload
+- 有料 provider 呼び出しと投稿は予約台帳（`provider_reservations`）で二重実行を防ぐ
+- 骨組みの `EpisodeSkeletonWorkflow`（`workers/dummy`、ADR-0006）も残る
+
+まだ無いもの: Next.js UI、analytics worker（`performance_report`。YouTube Analytics は Topic Planner が読むだけ）、
+品質ゲート（`review_report`）、OpenTelemetry の実配線。

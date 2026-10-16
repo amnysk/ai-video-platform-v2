@@ -1,31 +1,80 @@
 # データフロー
 
-## 1. 正常系（企画から分析まで）
+## 1. 正常系（日次の自動生成 / ADR-0023・ADR-0025）
 
 ```text
-[UI] ──POST /episodes──> [FastAPI]
-                            │ 1. 入力検証
-                            │ 2. INSERT episode (state=planned) ── PostgreSQL
-                            │ 3. start_workflow(EpisodeWorkflow, episode_id)
-                            └──> 202 Accepted {episode_id}
-
-[Temporal] EpisodeWorkflow
-    │
-    ├─ Activity: plan          → Artifact(episode_plan v1)      → MinIO + DB参照
-    ├─ Activity: write_script  → Artifact(script v1)
-    ├─ Activity: plan_scenes   → Artifact(scene_plan v1)
-    ├─ Activity: generate      → Artifact(asset_manifest v1) + 素材   [有料]
-    ├─ Activity: render        → Artifact(final_video v1)
-    ├─ Activity: quality_gate  → Artifact(review_report v1)
-    │      └─ 不合格 → 失敗クラス分類 → retryable なら再生成へ分岐
-    ├─ (signal待ち: 人間承認が要る場合)
-    ├─ Activity: package       → Artifact(video_metadata v1)
-    ├─ Activity: upload        → Artifact(upload_receipt v1)     [private投稿]
-    └─ (timer: 成熟待ち)
-       Activity: fetch_metrics → Artifact(performance_report v1)
+[Temporal Schedule avp-daily-episode] → DailyEpisodeWorkflow（queue "pipeline"）
+    ├─ pipeline_check_paused                   停止中なら何もせず終わる
+    ├─ 子 TopicPlannerWorkflow（queue "script"）→ topic_plans / topic_candidates（§1a）
+    ├─ pipeline_claim_daily_slot               Episode を作り topic / topic_plan_id を結ぶ
+    └─ 子 EpisodePipelineWorkflow（id episode-{id}-pipeline、ABANDON）
+          ├─ ScriptWorkflow        → Artifact(script)                     台本の言語は strategy profile で決まる（ADR-0026）
+          ├─ StoryboardWorkflow    → Artifact(storyboard)                 [有料枠・予約台帳]
+          ├─ ProductionWorkflow    → Artifact(scene_* / production_manifest) [有料・予約台帳]
+          ├─ RenderWorkflow        → Artifact(final_video)
+          ├─ pipeline_upload_gate  投稿を許すか（operational switch）。不可なら render_ready で止まる
+          └─ UploadWorkflow        → Artifact(upload_receipt)             [YouTube private 投稿]
+          各子が駐機状態（script_ready …）以外を返す・失敗する → そこで止まり結果を返す
 ```
 
-各Activityの前後で、domainの遷移規則を通してEpisode/Job状態がPostgreSQLへ書かれる。
+各工程は子 workflow として名前と task queue で起動する（INV-3）。各 Activity の前後で domain の遷移規則を通して
+Episode/Job 状態が PostgreSQL へ書かれる。Artifact 本体は MinIO、参照は `artifact_metadata`。
+手動経路（`POST /episodes` と工程ごとの `POST /episodes/{id}/<stage>`）も同じ子 workflow を直接起動する。
+
+未実装: 品質ゲート（`review_report`）、人間承認の signal 待ち、実績回収（`performance_report`）。
+
+## 1a. 日次の企画（Topic Planner / ADR-0025）
+
+```text
+[Temporal Schedule] → DailyEpisodeWorkflow（queue "pipeline"）
+    ├─ pipeline_check_paused
+    ├─ 子 TopicPlannerWorkflow（queue "script"、id topic-plan-{date}-{strategy}-{content}）
+    │     ├─ topic_find_plan          既存 Plan があれば返す（再生成しない / INV-22）
+    │     ├─ topic_gather_context     Analytics（live → snapshot → none）+ Content Memory（PG から導出）
+    │     └─ ラウンド × max_rounds
+    │           ├─ topic_generate_candidates  Codex → TopicCandidateBatch で検証（INV-23）
+    │           └─ topic_select_and_save      重複判定 → 採点 → 選択 → topic_plans / topic_candidates を1トランザクション
+    │     失敗 → Daily も失敗、Episode を作らない（INV-21）
+    ├─ pipeline_claim_daily_slot（topic, topic_plan_id）→ episodes.topic_plan_id
+    └─ topic_plan_id があるときだけ 子 EpisodePipelineWorkflow
+```
+
+## 1b. storyboard 工程（Phase 3 実装済み / ADR-0015）
+
+```text
+[UI] ──POST /episodes/{id}/storyboard──> [FastAPI]
+        │ Episode の存在確認（404）→ start_workflow(StoryboardWorkflow, id=episode-{id}-storyboard)
+        └──> 202（状態の前提は判定しない。workflow の admit が判定する）
+
+[Temporal] StoryboardWorkflow（task queue "storyboard"、host process の worker）
+    ├─ storyboard_admit_episode   script_ready|storyboard_ready → in_progress（他は何もせず終了）
+    ├─ storyboard_create_job      非終端の plan_storyboard job を再利用、無ければ作成
+    ├─ storyboard_generate × ラウンド（maximum_attempts=1、retry は workflow のラウンド）
+    │     現行 script を読む（sha256 + 契約検証）→ input_hash
+    │     → 同じ input_hash の現行 storyboard があれば job=skipped で返す（生成器を呼ばない）
+    │     → 予約 commit → dispatch commit → 生成 → 生出力 put → spent commit
+    │     → 解釈 → 時間軸正規化 → 採番 → 契約 → 台本カバレッジ
+    │     → MinIO put → 読み戻し sha256 照合 → artifact_metadata 記録 → job succeeded
+    └─ storyboard_mark_ready（in_progress → storyboard_ready）| storyboard_record_failure
+```
+
+## 1c. render 工程（Phase 5 / ADR-0019）
+
+```text
+[UI] ──POST /episodes/{id}/render {render_profile_id?}──> [FastAPI]
+        │ profile id の検証（4xx）→ start_workflow(RenderWorkflow, id=episode-{id}-render)
+        └──> 202（重複は 409）
+
+[Temporal] RenderWorkflow（task queue "render"）
+    ├─ render_admit          assets_ready|render_ready → in_progress（render 自身の needs_work|blocked は再開）
+    ├─ render_final_video    （単一の重い Activity、heartbeat ≤10秒）
+    │     現行 production_manifest を PG から解決 → script / storyboard / 音声 / 動画を MinIO から読み
+    │     sha256 照合 + 契約検証 → 描画計画 → input_hash
+    │     → 同じ input_hash の現行 final_video があれば job=skipped で返す
+    │     → 空き容量の事前検査 → 作業領域 → 描画 → 実測 → 技術検査（合格のみ先へ）
+    │     → mp4 と JSON を MinIO put → 読み戻し sha256 照合 → artifact_metadata 記録 → job succeeded
+    └─ render_mark_ready（in_progress → render_ready）| render_record_failure
+```
 
 ## 2. Artifactの読み書き
 
@@ -80,13 +129,15 @@ from_stage より前の工程は課金なしで素通りする。
 ```text
 upload Activity
    │
-   ├─ 冪等キー = (episode_id, final_video.version)
-   ├─ DBに upload_attempt を INSERT（キーにUNIQUE制約）
-   │     └─ 既存行があり status=succeeded → その receipt を返して終了
-   │     └─ 既存行があり status=in_flight → YouTube側を照会して照合
-   │                                        （**再送しない**）
-   ├─ YouTube resumable upload 実行
-   └─ upload_attempt を succeeded + video_id で更新
+   ├─ final_video を検証（PG メタデータ → MinIO JSON sha256 → 契約 → メディアの sha256）
+   ├─ upload key = sha256(stage, episode_id, final_video sha256, チャンネル)   （ADR-0020 §3）
+   ├─ provider_reservations に予約（UNIQUE(idempotency_key)、youtube_upload、1ラウンドのみ）
+   │     └─ SPENT + video id あり → YouTube を呼ばず receipt を返して終了
+   ├─ session 開始 → session URI を予約に保存 → dispatched_at を commit
+   ├─ チャンク送信（失敗は status query から再開）
+   │     └─ session 失効 / 結果不明 → マーカー照合。無ければ blocked（**新しい session を開かない**）
+   ├─ video id を予約に保存（SPENT）
+   └─ upload_receipt を保存 → Episode uploaded
 ```
 
 INV-14 / INV-15。プロセスが外部呼び出しの最中に死んでも、

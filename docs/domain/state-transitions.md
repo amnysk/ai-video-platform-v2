@@ -16,9 +16,18 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 | `in_progress` | `failed` | `permanent` 失敗 | workflow |
 | `in_progress` | `ready_for_review` | 全成果物が揃った（`ARTIFACTS_READY`） | workflow |
 | `in_progress` | `completed` | 骨組みworkflowの正常終了（`SKELETON_COMPLETED`、ADR-0006） | workflow |
-| `needs_work` | `in_progress` | 自動再試行が枠内 | workflow |
+| `in_progress` | `script_ready` | 台本が生成・検証された（`SCRIPT_READY`、ADR-0011） | script worker |
+| `script_ready` | `in_progress` | 次工程を開始（`STAGE_ADMITTED`、Phase 3 の入口） | workflow |
+| `in_progress` | `storyboard_ready` | storyboard が生成・検証された（`STORYBOARD_READY`、ADR-0015） | storyboard worker |
+| `storyboard_ready` | `in_progress` | 次工程を開始（`STAGE_ADMITTED`、Phase 4 の入口） | workflow |
+| `in_progress` | `assets_ready` | シーン素材（画像・音声・動画）とマニフェストが揃った（`ASSETS_READY`、ADR-0017） | production workflow |
+| `assets_ready` | `in_progress` | production の再実行 / 次工程を開始（`STAGE_ADMITTED`、Phase 5 の入口） | workflow |
+| `in_progress` | `render_ready` | 完成動画が技術検査に合格し保存された（`RENDER_READY`、ADR-0019） | render workflow |
+| `render_ready` | `in_progress` | 再描画（別 profile 等）/ 次工程を開始（`STAGE_ADMITTED`、Phase 6 の入口） | workflow |
+| `in_progress` | `uploaded` | 完成動画を private 投稿し受領 Artifact を保存した（`UPLOAD_SUCCEEDED`、ADR-0020） | upload workflow |
+| `needs_work` | `in_progress` | 自動再試行が枠内 / 人間が工程を再実行（production / render の POST、ADR-0017 §8 / ADR-0019） | workflow |
 | `needs_work` | `blocked` | 再生成の枠を使い切った | workflow |
-| `blocked` | `in_progress` | 人間が再開をsignal | API (人間) |
+| `blocked` | `in_progress` | 人間が再開をsignal（production / render は POST が再開、ADR-0017 §8 / ADR-0019） | API (人間) |
 | `blocked` | `cancelled` | 人間が中止 | API (人間) |
 | `ready_for_review` | `approved` | 承認 | API (人間 or 自動ゲート) |
 | `ready_for_review` | `needs_work` | 差し戻し | API (人間) |
@@ -45,6 +54,15 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 - `ready_for_review` → 人間の承認/差し戻し（通報される）
 - `approved` → 投稿（自動）
 - `uploaded` → 成熟後に実績回収（自動、timer）
+- `script_ready` → 次工程の開始（自動。Phase 3 の `StoryboardWorkflow` が `STAGE_ADMITTED` を呼ぶ）
+- `storyboard_ready` → 次工程の開始（自動。Phase 4 の `ProductionWorkflow` が `STAGE_ADMITTED` を呼ぶ、ADR-0017）
+- `assets_ready` → 次工程の開始（Phase 5 の `RenderWorkflow` が `STAGE_ADMITTED` を呼ぶ、ADR-0019）
+- `render_ready` → 次工程の開始（Phase 6 Upload の POST、ADR-0020。再描画の POST も出口、ADR-0019）
+
+追記（ADR-0044 §3-1）: brief を持ち TopicPlan の無い Episode が、台本より後の駐機点（`storyboard_ready` /
+`assets_ready` / `render_ready`）にいて brief が変わったとき、台本の作り直しは `STAGE_ADMITTED`（上の表の既存の辺）で
+`in_progress` に入り直し、台本が通れば `script_ready` に戻る。遷移表は変えない。日次・TopicPlan・legacy の
+Episode は従来どおり `workflow_started` を拒否する。
 
 `completed` は骨組みworkflow専用の終端であり、本番パイプラインの正常系は
 `ready_for_review` を通る（ADR-0006）。

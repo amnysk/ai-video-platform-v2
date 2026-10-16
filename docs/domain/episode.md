@@ -23,9 +23,13 @@ Phase 1 の生成は `uuid.uuid4()`（`infrastructure/db/repositories.py`）。
 | `blocked` | 人間の判断待ち（予算・権利・分類不能な失敗） | |
 | `ready_for_review` | 成果物が揃い、人間の確認を待つ | |
 | `approved` | 投稿してよいと判定された | |
-| `uploaded` | private投稿済み | |
+| `uploaded` | private投稿済み。upload workflow が `render_ready` から入り受領 Artifact を保存した（ADR-0020）。再投稿しない | |
 | `analyzed` | 実績を回収し、学習へ反映済み | ✔ |
 | `completed` | 骨組みworkflowが正常終了した（ADR-0006） | ✔ |
+| `script_ready` | 台本が生成・検証され、次工程を待つ（ADR-0011） | |
+| `storyboard_ready` | storyboard が生成・検証され、次工程を待つ（ADR-0015） | |
+| `assets_ready` | シーン素材とマニフェストが揃い、次工程を待つ（ADR-0017） | |
+| `render_ready` | 完成動画が技術検査に合格して保存され、次工程を待つ（ADR-0019） | |
 | `failed` | permanent失敗。回復経路なし | ✔ |
 | `cancelled` | 所有者が明示的に中止した | ✔ |
 
@@ -41,12 +45,16 @@ Phase 1 の生成は `uuid.uuid4()`（`infrastructure/db/repositories.py`）。
 
 - `id`, `created_at`, `updated_at`
 - `status`, `status_changed_at`（列名。本文では state と同義）
-- `topic`, `workflow_id`, `blocked_reason`
+- `topic`（最大 `contracts.topic.TOPIC_MAX_CHARS` = 200 字。列は migration 0009 で `String(200)`）,
+  `workflow_id`（Temporal 参照。**状態の権威ではない** / INV-8）, `blocked_reason`（`blocked` のとき非NULL）
+- `topic_plan_id` — 題材を決めた `topic_plans` 行（ADR-0025、一意・NULL 可。Planner 導入前の Episode は NULL）
 
-**Phase 2 発効**（まだ列が存在しない）:
-- `title_draft`, `topic`, `format`（例: `youtube_short`）
-- `workflow_id`, `workflow_run_id` — Temporal参照。**状態の権威ではない**（INV-8）
-- `blocked_reason` — `blocked` のときのみ非NULL。失敗クラスと人間向け説明
+関連テーブル（ADR-0025）: `topic_plans`（1日・1 profile の組に1つの確定 Topic）、`topic_candidates`
+（検討した候補、plan 削除で消える）、`analytics_snapshots`（YouTube Analytics の取得結果）。
+Topic の企画は Artifact ではなくこれらの行として残る。
+
+**未実装**（列が存在しない）:
+- `title_draft`, `format`（例: `youtube_short`）, `workflow_run_id`
 - `retry_budget_used` — 課金を伴う再生成の消費数
 - `cost_jpy_committed`, `cost_jpy_reserved`
 

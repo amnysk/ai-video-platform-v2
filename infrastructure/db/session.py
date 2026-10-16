@@ -11,7 +11,12 @@ from infrastructure.config import Settings
 
 @lru_cache(maxsize=1)
 def build_session_factory(database_url: str) -> async_sessionmaker[AsyncSession]:
-    engine = create_async_engine(database_url, pool_pre_ping=True)
+    engine = create_async_engine(
+        database_url,
+        pool_pre_ping=True,
+        # 例外文に SQL の引数（予約の session URI 等）を載せない（INV-20）
+        hide_parameters=True,
+    )
     return async_sessionmaker(engine, expire_on_commit=False)
 
 

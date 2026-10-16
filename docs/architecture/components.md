@@ -9,14 +9,25 @@
 - **持たない**: ドメインロジック、状態遷移の判断、Temporalクライアント、DB接続
 - **呼んでよい**: `apps/api` のHTTP APIのみ（INV-1）
 
+## apps/assistant （対話 AI アシスタントの tool adapter、ADR-0042）
+
+- **持つ**: tool 定義（`contracts/assistant_tools.py`）の実行、`/v1/intervention` への HTTP 要求、
+  適用前の見積り再確認、決定的な `command_id` の導出（INV-49）
+- **持たない**: DB 接続、Temporal クライアント、worker・infrastructure の import、LLM の呼び出し、
+  予算・Schedule・公開設定を変える操作（INV-47）
+- **呼んでよい**: `apps/api` の `/v1/intervention` HTTP API と `contracts` のみ（INV-48）
+
 ## apps/api （FastAPI）
 
 - **持つ**: HTTPルーティング、リクエスト検証、認可、
   DBへのcommand永続化、Temporal workflow の start / signal / query
 - **持たない**: 動画生成・レンダリング・アップロード・外部AI呼び出しの同期実行（INV-16）、
   工程の順序判断
-- **呼んでよい**: `domain`, `contracts`, `infrastructure`
+- **呼んでよい**: `application`, `domain`, `contracts`, `infrastructure`
 - ハンドラの本体は「検証 → domainのcommandを作る → 永続化 → workflowへ渡す → 202を返す」
+- Research（`routers/research.py`、ADR-0037 §8.5）: `POST /research/requests`（Gateway で受け付け、`queued` の
+  ときだけ `ResearchWorkflow` を起動）、`POST /research/requests/{id}/resume`、`GET /research/requests/{id}`
+  （DB だけを読む）。Episode のエンドポイントは Research を呼ばない
 
 ## Temporal workflow 定義（`workers/<stage>/workflows.py`）
 
@@ -26,15 +37,25 @@
 
 ## workers/* （Temporal Activity）
 
-1工程 = 1モジュール。現時点で想定するもの:
+1工程 = 1モジュール。実装済みのもの（`pipeline` は順序だけを持つ workflow と状態系 Activity。ADR-0023）:
 
 | worker | 入力Artifact | 出力Artifact | 外部副作用 |
 |---|---|---|---|
-| `planning` | （なし / 学習ログ） | `episode_plan` | LLM |
-| `generation` | `episode_plan`, `scene_plan` | `asset_manifest`, 素材本体 | **有料** provider |
-| `render` | `asset_manifest`, `edit_decisions` | `final_video` | なし（ローカル計算） |
-| `upload` | `final_video`, `video_metadata` | `upload_receipt` | **YouTube投稿** |
-| `analytics` | `upload_receipt` | `performance_report` | YouTube Analytics |
+| `planning` | （Topic Planner）Content Memory（`topic_plans` + `episodes`）・Analytics snapshot / （台本）TopicPlan の topic | `topic_plans` / `topic_candidates` 行（ADR-0025）/ `script` | LLM（Codex CLI）。Topic 生成は予約台帳の外（ADR-0025 §12）/ YouTube Analytics（読み取りのみ） |
+| `storyboard` | 現行の `script` | `storyboard`（ADR-0015） | LLM（Codex CLI + OpenMontage 仕様、**有料**・予約台帳） |
+| `production`（旧 `generation`） | 現行の `storyboard`, `script` | `scene_image` / `scene_voice` / `scene_video`, `production_manifest`（ADR-0017） | **有料** provider（画像・動画）/ ローカル TTS |
+| `render` | 現行の `production_manifest`（と、それが指す `script` / `storyboard` / シーン素材） | `final_video`（ADR-0019） | なし（ローカル計算。CPU・ディスクを占有） |
+| `upload` | 現行の `final_video`（と、メタデータを導出する `script`） | `upload_receipt`（ADR-0020） | **YouTube private 投稿**（予約台帳 `youtube_upload`、1ラウンドのみ） |
+| `pipeline` | DB の Episode 状態・operational switch | `episodes` 行の claim（`topic_plan_id` を結ぶ） | なし（工程の起動は子 workflow） |
+| `research` | `research_requests` の依頼（依頼 ID だけを受け取る） | `research_artifacts`（`research_trend` / `research_evidence`。本番の Artifact ではない。ADR-0037） | 検索・本文取得は `RESEARCH_PROVIDER`（`fake` / `none`。既定 `none` = 呼ばずに `blocked`）。実 Provider は未配線。呼び出しは `research_calls` 台帳（INV-36）。Episode の工程はこの worker を起動しない・待たない（INV-37） |
+| `analytics`（**未実装**。`workers/analytics` は空） | `upload_receipt` | `performance_report`（予定） | YouTube Analytics。現状は Topic Planner が `analytics_snapshots` へ読み取るだけ |
+
+- **Research への opt-in 接続（B6、既定 OFF。ADR-0039 §B6 / ADR-0038 §B6）**: `planning` だけが Research を呼べる。
+  `PLANNER_TREND_ENABLED` の Topic Planner は `ResearchGateway.latest_trend` を**読むだけ**（起動・待機しない）。
+  `SCRIPT_EVIDENCE_ENABLED` の台本工程は Gateway で Evidence を依頼し、`research_starter` で `ResearchWorkflow` を
+  起動し、上限つきで待って `ScriptVerifier` で照合する（結果は助言。Episode を止めない）。呼び出しは
+  `workers/planning` の 3 モジュール（`topic_trend.py` / `script_evidence_activities.py` / `research_wiring.py`）に
+  閉じ、Workflow と本番工程は Research を import しない（`tests/architecture/test_research_opt_in_boundary.py`）
 
 - **持つ**: 「入力Artifactを読む → 処理する → 出力Artifactを書く → 結果を返す」
 - **持たない**: 次のJobの決定（INV-4）、他workerのimport（INV-3）、
@@ -61,13 +82,19 @@
 | モジュール | 責務 |
 |---|---|
 | `db/` | SQLAlchemy モデル、マイグレーション（Alembic）、リポジトリ実装 |
+| `db/research_repositories.py` | Research の依頼・外部呼び出し台帳・成果物（`research_*` の表）。本番の表・`repositories.py`・課金コードに触れない（ADR-0037 / INV-37。設計: [research-request.md](../domain/research-request.md)） |
+| `research/gateway.py` | Research の受け付け（冪等）、鮮度キャッシュ（再利用前に成果物の本体を読み戻して sha256 を照合）、予算の門（Provider 未設定・実 Provider の上限未設定は呼ぶ前に `blocked`）、`blocked` の再開（ADR-0037 §5 / §6 / §8.1） |
+| `research/executor.py` | Research の実行器（Temporal 非依存）。外部呼び出しは `reserve → dispatch → spent` で `research_calls` を通し、上限で止めて `partial`、一時障害は retryable、成否不明は送り直さない。成果物は書く → 読み戻す → 記録（ADR-0037 §8.2 / INV-36） |
+| `research/registry.py` | `RESEARCH_PROVIDER`（`fake` / `none`。既定 `none`）から Provider・Handler・見積もりを組む。実 Provider は組まない（ADR-0037 §6） |
+| `research/raw_store.py` | 外部呼び出しの生データ（`research/{request_id}/raw/`）。再実行が同じ呼び出しを送り直さないための証拠 |
+| `temporal/research_starter.py` | `ResearchWorkflow` の起動（依頼 1 件 = workflow id 1 つ。実行中なら二重に起動しない。完了は待たない。ADR-0037 §8.5） |
 | `storage/` | MinIO クライアント、Artifactの put/get、キー規約 |
-| `temporal/` | Temporal client の生成、task queue名、worker起動。**Phase 1 では空**。
-  実体は `apps/api/workflow_starter.py` と `workers/dummy/run_worker.py` にあり、
-  task queue名は `infrastructure/config.py` の `Settings`。worker が増える前にここへ寄せる |
+| `temporal/` | Temporal への接続（`connect.py`）、Daily Schedule の定義（`schedules.py`）、worker の health（`poller_check.py`）、実行の点検（`run_inspector.py`）。workflow 名と task queue 名は `contracts/`（`pipeline.py` / `states.py` / `topic_planning.py`） |
 | `providers/` | fal.ai / YouTube / LLM の adapter。**必ずProtocolの背後に置く** |
 | `observability/` | OpenTelemetry のtracer/meter設定、Prometheus exporter |
 
+- worker の常駐は compose の1サービス1 worker（共通イメージ `worker` target）。起動は
+  `infrastructure/runtime/worker_entry.py`、health は `infrastructure/temporal/poller_check.py`（ADR-0024）
 - provider adapter は必ずfakeに差し替えられること（INV-18）
 - secretはここから外へ出さない（INV-20）
 

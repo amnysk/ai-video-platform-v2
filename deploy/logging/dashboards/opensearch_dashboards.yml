@@ -1,0 +1,12 @@
+# OpenSearch Dashboards 3.8.0（ADR-0040 §6）。パスワードと cookie の鍵は keystore（dashboards-keystore.sh）。
+server.host: "0.0.0.0"
+server.name: avp2-logging-dashboards
+opensearch.hosts: ["https://opensearch:9200"]
+opensearch.ssl.verificationMode: full
+opensearch.ssl.certificateAuthorities: ["/usr/share/opensearch-dashboards/config/certs/ca.pem"]
+opensearch.username: "avp_dashboards"
+opensearch.requestHeadersAllowlist: ["authorization", "securitytenant"]
+opensearch_security.multitenancy.enabled: false
+opensearch_security.readonly_mode.roles: []
+# 5601 は 127.0.0.1 だけに公開し、外からは SSH トンネルで見る（http のため secure cookie は使えない）
+opensearch_security.cookie.secure: false

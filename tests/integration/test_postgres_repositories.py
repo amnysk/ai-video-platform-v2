@@ -2,15 +2,17 @@
 
 tests/unit/test_repositories.py と同じコードパスを実PostgreSQLで走らせる。
 スキーマは `Base.metadata.create_all` で作る（**Alembicは通さない**）。
+接続先は ``TEST_DATABASE_URL``（``_test`` DB）だけ。一時スキーマに閉じ込め、最後にスキーマごと消す。
 Alembic の実スキーマ検証は tests/integration/test_migration_against_postgres.py が担当する。
 """
 
 from __future__ import annotations
 
-import os
+import uuid
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from contracts.states import ArtifactType, EpisodeStatus, JobStatus, JobType
@@ -21,23 +23,36 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
 )
+from tests.support.db import assert_destructive_allowed, require_test_database_url
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+TEST_DATABASE_URL = require_test_database_url()
 
 pytestmark = pytest.mark.skipif(
-    not DATABASE_URL or "postgresql" not in DATABASE_URL,
-    reason="DATABASE_URL must point at PostgreSQL (docker compose --profile core up -d)",
+    not TEST_DATABASE_URL,
+    reason="TEST_DATABASE_URL (*_test) must point at PostgreSQL (docker compose --profile core)",
 )
 
 
 @pytest_asyncio.fixture
 async def pg_session_factory():
-    engine = create_async_engine(DATABASE_URL or "")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    yield async_sessionmaker(engine, expire_on_commit=False)
-    await engine.dispose()
+    schema = f"repo_test_{uuid.uuid4().hex[:12]}"
+    admin = create_async_engine(TEST_DATABASE_URL or "")
+    async with admin.begin() as conn:
+        await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+    engine = create_async_engine(
+        TEST_DATABASE_URL or "", connect_args={"options": f"-c search_path={schema}"}
+    )
+    try:
+        assert_destructive_allowed(TEST_DATABASE_URL)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        yield async_sessionmaker(engine, expire_on_commit=False)
+    finally:
+        await engine.dispose()
+        assert_destructive_allowed(TEST_DATABASE_URL)
+        async with admin.begin() as conn:
+            await conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        await admin.dispose()
 
 
 async def test_full_episode_row_lifecycle_on_postgres(pg_session_factory) -> None:
@@ -100,3 +115,31 @@ async def test_duplicate_artifact_digest_is_idempotent_on_postgres(pg_session_fa
 
         assert first.id == second.id
         assert len(await artifacts.list_for_episode(episode.id)) == 1
+
+
+async def test_artifact_generation_a_b_a_on_postgres(pg_session_factory) -> None:
+    """A→B→A の復帰が partial unique index（現行は1本）と衝突しないこと。"""
+    async with pg_session_factory() as session:
+        episode = await EpisodeRepository(session).create(topic="t")
+        artifacts = ArtifactMetadataRepository(session)
+
+        def kwargs(sha: str, input_hash: str) -> dict:
+            return dict(
+                episode_id=episode.id,
+                artifact_type=ArtifactType.STORYBOARD,
+                schema_version="1.0",
+                bucket="artifacts",
+                object_key=f"artifacts/{episode.id}/storyboard/{sha}.json",
+                sha256=sha,
+                input_hash=input_hash,
+            )
+
+        first = await artifacts.record(**kwargs("a" * 64, "h1"))
+        await session.commit()
+        await artifacts.record(**kwargs("b" * 64, "h2"))
+        await session.commit()
+        again = await artifacts.record(**kwargs("a" * 64, "h1"))
+        await session.commit()
+
+        current = await artifacts.find_current_by_type(episode.id, ArtifactType.STORYBOARD)
+        assert current is not None and current.id == first.id == again.id
