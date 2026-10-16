@@ -73,3 +73,7 @@ DOM・ログには出さない（`console.*` は使わない）。401 を受け�
 ## テスト
 
 テストの意図は [docs/testing/jpmas2-p2b-rationale.md](../testing/jpmas2-p2b-rationale.md)（§6 以降）。
+
+- 純ロジック: `node --test tests/web/*.test.mjs`（pytest からは `tests/unit/test_web_node_tests.py`）
+- ブラウザ E2E: `cd tests/e2e_ui && npm ci` のあと `node --test tests/e2e_ui/*.test.mjs`（リポジトリ直下から）。
+  Chrome・playwright-core が無ければ skip。本物の app を fake port で起動し、DB・外部 API には触れない。

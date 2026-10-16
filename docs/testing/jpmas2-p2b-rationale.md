@@ -86,3 +86,33 @@ route は `episodes.router` と `research.router` の route 表から列挙し�
 - `tests/unit/test_ui_hosting.py::test_on_ui_without_trailing_slash_redirects_to_ui_slash`: `/ui` のままだと
   `./js/main.js` が `/js/main.js` に解決されて画面が白くなる。`/ui/` へ 308。OFF のときは redirect せず
   `404 feature_disabled`（OFF の挙動を漏らさない）。
+
+## 7. ブラウザ E2E（tests/e2e_ui/、ADR-0045）
+
+node の単体テスト（§6）は DOM・CSP・実サーバーの応答を通らない。画面の約束は実ブラウザで確かめる。
+
+- **構成**: `tests/e2e_ui/server.py` が本物の FastAPI app を uvicorn（別 thread・ephemeral port）で起動する。
+  `ApplicationService` は本物（scope・人限定の検査も本物）で、port だけ `tests/support/ui_e2e_world.py` の
+  メモリ実装（command_id の冪等・再利用 409・stale revision 409 を backend と同じ規則で再現）。
+  DB・Temporal・MinIO・有料 API には接続しない。`/__e2e/*` はテスト専用の管理口で、本番 app には無い。
+  ブラウザは `playwright-core`（`cd tests/e2e_ui && npm ci`。lockfile 固定、`node_modules` は git 管理外）と
+  システムの Chrome。どれかが無ければ pytest wrapper（`test_ui_e2e.py`）と各 spec が skip する。
+- **サーバーが権威であること**: 全リクエストを ASGI の外側で記録し（principal・status・error・command_id）、
+  「ボタンを隠した」ではなく「サーバーが受けて拒否した」ことを assert する（シナリオ 4・5・6・7）。
+- `list_auth.test.mjs`（1, 2）: 129 件（125 件が同一 `created_at`）を辿って重複も欠落も無いこと、2 ページ目以降が
+  `before_id` を送ること。401 でトークンを破棄、保存先は sessionStorage だけ（localStorage・cookie・URL・DOM に無い）。
+- `detail.test.mjs`（3, 4）: 記録の無い項目が「未記録」、LLM 費用が 0 円でなく未計測。監査の `reason` /
+  `correlation_id` が read model の値（ブラウザが送った `X-Correlation-ID` と一致）で、無ければ「未記録」。
+  読み取り専用 principal の hold / apply が 403 `missing_scope` で、command が 1 件も受け付けられていないこと。
+- `interventions.test.mjs`（5–8）: 二重クリックで POST 1 回。応答だけ失われた通信失敗の再試行は同じ `command_id`
+  （サーバーは 200 の再送扱い・command は 1 件）、403 のあとは新しい `command_id`。`stale_control_revision` で
+  説明・workspace 再読込・再送不可。適用は上限額の空/不足/未確認を送らず、見積り null は画面もサーバー
+  （422 `cost_not_estimated`）も拒否。別 Episode へ移動するとダイアログが閉じ、閉じたダイアログの送信ボタンを
+  保持して押しても送られない（このテストが `dialog.js` の穴を見つけて直した）。
+- `platform.test.mjs`（9–11）: flag OFF は `/ui/*`・`/v1/*` とも 404 `feature_disabled` で資産を返さない。全画面・
+  全ダイアログで CSP 違反 0 件と console の error/warning 0 件、4 つのセキュリティヘッダ、対照として inline
+  script が実際に遮断されること（テストが空振りしていない証拠）。polling は progress だけを読み、タブが隠れる/
+  画面を離れると止まる（`page.clock` で時間を進めて件数を数える）。`/ui` は `/ui/` へ redirect。
+- 見つけた問題: `<link rel="icon" href="data:,">` は CSP（`default-src 'self'` が img-src に効く）違反で
+  console error になる。`./favicon.svg`（同一 origin）に替えた。
+- 注意: ページは `unsafe-eval` が無いため Playwright の `waitForFunction` は使えない（`harness.mjs` の `until`）。

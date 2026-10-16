@@ -78,6 +78,8 @@ export function openOperationDialog(ctx, cfg) {
   };
 
   dlg.addEventListener('cancel', (ev) => { if (inflight) ev.preventDefault(); });
+  // 閉じた（画面遷移で閉じられた場合を含む）ダイアログは二度と送らない。保持されたボタンからの送信も止める
+  dlg.addEventListener('close', () => { finished = true; });
 
   async function prepare() {
     ready = false;

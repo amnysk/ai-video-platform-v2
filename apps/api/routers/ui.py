@@ -70,7 +70,7 @@ def _resolve(root: Path, relative: str) -> Path | None:
 
 @router.get("")
 async def redirect_to_slash() -> Response:
-    """``/ui`` → ``/ui/``。index.html の相対 URL（``./js/main.js``）が ``/ui/`` を基準にするため。"""
+    """``/ui`` → ``/ui/``（index.html の相対 URL の基準を ``/ui/`` にする）。"""
     return RedirectResponse("/ui/", status_code=308, headers=SECURITY_HEADERS)
 
 
