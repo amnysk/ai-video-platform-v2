@@ -202,18 +202,20 @@ jobs:
         working-directory: tests/e2e_ui
       - name: Node UI tests (no skips)
         run: |
-          node --test tests/web/*.test.mjs 2>&1 | tee node-web.log
+          node --test --test-reporter=tap tests/web/*.test.mjs 2>&1 | tee node-web.log
           grep -qE '^# fail 0$' node-web.log
           grep -qE '^# skipped 0$' node-web.log
+          grep -qE '^# cancelled 0$' node-web.log
           grep -qE '^# pass [1-9][0-9]*$' node-web.log
       - name: Browser E2E (no skips)
         run: |
           export CHROME_PATH=$(find "$HOME/.cache/ms-playwright" -type f -name chrome -path '*chrome-linux*' | head -1)
           test -x "$CHROME_PATH" || { echo "pinned Chromium not found"; exit 1; }
           "$CHROME_PATH" --version
-          node --test tests/e2e_ui/*.test.mjs 2>&1 | tee e2e.log
+          node --test --test-reporter=tap tests/e2e_ui/*.test.mjs 2>&1 | tee e2e.log
           grep -qE '^# fail 0$' e2e.log
           grep -qE '^# skipped 0$' e2e.log
+          grep -qE '^# cancelled 0$' e2e.log
           grep -qE '^# pass [1-9][0-9]*$' e2e.log
       - name: Pytest wrappers also ran (not skipped)
         run: |

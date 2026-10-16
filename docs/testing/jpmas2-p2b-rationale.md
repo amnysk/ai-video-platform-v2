@@ -123,3 +123,11 @@ node の単体テスト（§6）は DOM・CSP・実サーバーの応答を通�
 - 見つけた問題: `<link rel="icon" href="data:,">` は CSP（`default-src 'self'` が img-src に効く）違反で
   console error になる。`./favicon.svg`（同一 origin）に替えた。
 - 注意: ページは `unsafe-eval` が無いため Playwright の `waitForFunction` は使えない（`harness.mjs` の `until`）。
+
+## CI の browser-e2e ジョブ（ゼロ skip）
+
+- これまで CI は node_modules も browser も無く、ラッパーの skipif で E2E 26 件が黙って skip されて
+  いた（緑だが未実行）。専用ジョブで実際に実行し、`# fail 0` / `# skipped 0` / `# cancelled 0` /
+  `# pass N>0` を TAP 出力で検査する（reporter は `--test-reporter=tap` で固定）。
+- Chromium は playwright-core（package-lock で固定）対応版を入れ、runner 同梱の版不定の Chrome は使わない。
+- 残る負債: 失敗時の screenshot / trace はハーネス未対応のためログのみ保存。
