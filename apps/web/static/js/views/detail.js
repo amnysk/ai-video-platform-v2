@@ -2,6 +2,7 @@ import { h, replaceChildren } from '../dom.js';
 import { badge, errorBox, kv, listOrMissing, loading, missing } from '../components.js';
 import { buildPath } from '../operations.js';
 import { extractStages } from '../stages.js';
+import { createRenderGate } from '../render_gate.js';
 import { startPoller } from '../poller.js';
 import { episodeStatusLabel, needsAttention, pipelineKindLabel } from '../status.js';
 import { LLM_COST_UNMEASURED_NOTE, MISSING, formatDateTime, formatUsd } from '../format.js';
@@ -18,6 +19,7 @@ export function detailView(ctx, episodeId) {
   let progress = null;
   let progressError = null;
   let disposed = false;
+  const wsGate = createRenderGate(); // 古い workspace 応答が新しい応答を上書きしない
   const openStages = new Set();
   let audit = null;
 
@@ -40,9 +42,10 @@ export function detailView(ctx, episodeId) {
   };
 
   async function loadWorkspace() {
+    const token = wsGate.begin();
     try {
       const { data } = await ctx.api.get(buildPath(wsSpec, { episode_id: episodeId }));
-      if (disposed) return;
+      if (disposed || !token.isCurrent()) return;
       if (String(data?.episode?.episode_id).toLowerCase() !== episodeId) {
         replaceChildren(root, h('h2', {}, 'Episode 詳細'), h('div', { class: 'alert alert-error', role: 'alert' }, 'URL の Episode と返ってきたデータの Episode が一致しません。表示を中止しました。'));
         workspace = null;
@@ -51,9 +54,10 @@ export function detailView(ctx, episodeId) {
       workspace = data;
       replaceChildren(notice);
       await loadProgress();
+      if (disposed || !token.isCurrent()) return; // progress を待つ間に、より新しい読み込みが始まった
       renderAll();
     } catch (err) {
-      if (disposed || err?.name === 'AbortError') return;
+      if (disposed || !token.isCurrent() || err?.name === 'AbortError') return;
       if (!workspace) replaceChildren(root, h('h2', {}, 'Episode 詳細'), errorBox(err, { onRetry: loadWorkspace }), h('p', {}, h('a', { href: '#/' }, '一覧に戻る')));
       else replaceChildren(notice, errorBox(err, { onRetry: loadWorkspace }));
     }

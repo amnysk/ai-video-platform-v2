@@ -135,8 +135,8 @@ function holdDialog(dctx, spec) {
     intro: h('p', {}, '一時停止を「要求」します。要求の受付は、直ちに止まったことを意味しません。制御状態は画面の「制御」欄で確認してください。'),
     prepare: async (c) => c.append(field('理由（任意）', reason, `${HOLD_REASON_MAX} 文字まで`)),
     validate: () => validateHold({ reason: reason.value }),
-    send: (commandId, cid) =>
-      dctx.api.post(buildPath(spec, { episode_id: dctx.episodeId }), buildHoldBody({ commandId, expectedControlRevision: dctx.getWorkspace().control_revision, reason: reason.value }), { correlationId: cid }),
+    send: (commandId, cid, { controlRevision }) =>
+      dctx.api.post(buildPath(spec, { episode_id: dctx.episodeId }), buildHoldBody({ commandId, expectedControlRevision: controlRevision, reason: reason.value }), { correlationId: cid }),
     renderSuccess: acceptedView,
   });
 }
@@ -164,10 +164,10 @@ function resumeDialog(dctx, spec, ws) {
       if (spec.paid) c.append(h('label', { class: 'checkbox-row', for: 'resume-ack' }, ack, '有料の生成が発生しうることを理解しました'));
     },
     validate: () => (spec.paid && !ack.checked ? '有料の生成が発生しうることへの確認にチェックしてください' : null),
-    send: (commandId, cid) =>
+    send: (commandId, cid, { controlRevision }) =>
       dctx.api.post(
         buildPath(spec, { episode_id: dctx.episodeId }),
-        buildResumeBody({ commandId, expectedControlRevision: dctx.getWorkspace().control_revision, startStage: legacy ? select.value : null }),
+        buildResumeBody({ commandId, expectedControlRevision: controlRevision, startStage: legacy ? select.value : null }),
         { correlationId: cid },
       ),
     renderSuccess: (d) =>
@@ -200,10 +200,10 @@ function proposeDialog(dctx, spec, ws) {
       c.append(field('シーン', scene), current, field(`新しい visual_description（${VISUAL_DESCRIPTION_MAX} 文字まで）`, text), field('理由（任意）', rationale));
     },
     validate: () => !storyboard ? '現行の絵コンテがありません' : validateProposal({ sceneId: scene.value, original: original(), text: text.value, rationale: rationale.value }),
-    send: (commandId, cid) =>
+    send: (commandId, cid, { controlRevision }) =>
       dctx.api.post(
         buildPath(spec, { episode_id: dctx.episodeId }),
-        buildProposeBody({ commandId, expectedControlRevision: dctx.getWorkspace().control_revision, episodeId: dctx.episodeId, storyboard, sceneId: scene.value, text: text.value, rationale: rationale.value }),
+        buildProposeBody({ commandId, expectedControlRevision: controlRevision, episodeId: dctx.episodeId, storyboard, sceneId: scene.value, text: text.value, rationale: rationale.value }),
         { correlationId: cid },
       ),
     renderSuccess: (d) => h('div', {}, kv([['リクエスト', d.request_command_id]]), (d.commands ?? []).map((c) => h('div', {}, `${c.scene_id}: ${labelOf(COMMAND_STATUS_LABEL, c.status)}${c.created ? '' : '（同じ内容の再送）'}`)), h('p', {}, '変更案は「変更案（承認待ち）」に表示されます。')),

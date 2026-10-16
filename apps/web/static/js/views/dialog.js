@@ -6,7 +6,7 @@
 import { h, replaceChildren } from '../dom.js';
 import { errorBox, loading } from '../components.js';
 import { describeError } from '../errors.js';
-import { verifyEpisode } from '../requests.js';
+import { pinControlRevision, verifyEpisode } from '../requests.js';
 import { MISSING } from '../format.js';
 
 let dialogSeq = 0;
@@ -54,12 +54,13 @@ export function openReadDialog(ctx, { title, episodeId, load }) {
 }
 
 /**
- * @param cfg {title, episodeId, intro?, prepare?(body), validate(), send(commandId, correlationId),
+ * @param cfg {title, episodeId, intro?, prepare?(body), validate(), send(commandId, correlationId, {controlRevision}),
  *             renderSuccess(data, correlationId), submitLabel, danger?}
  */
 export function openOperationDialog(ctx, cfg) {
   const { dlg, msg, body, actions } = baseDialog(ctx, cfg);
   let commandId = ctx.uuid();
+  const controlRevision = pinControlRevision(ctx.getWorkspace()); // 開いた時点の値。送信時に読み直さない
   let inflight = false;
   let finished = false;
   let ready = !cfg.prepare;
@@ -107,7 +108,7 @@ export function openOperationDialog(ctx, cfg) {
     replaceChildren(msg, loading('送信中…'));
     const correlationId = ctx.uuid();
     try {
-      const { data, correlationId: echoed } = await cfg.send(commandId, correlationId);
+      const { data, correlationId: echoed } = await cfg.send(commandId, correlationId, { controlRevision });
       finished = true;
       replaceChildren(body);
       replaceChildren(

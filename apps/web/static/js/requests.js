@@ -8,6 +8,13 @@ export const RATIONALE_MAX = 4000;
 /** legacy の resume が受ける start_stage（contracts/pipeline.py PipelineStage の値） */
 export const LEGACY_START_STAGES = ['script', 'storyboard', 'production', 'render', 'upload'];
 
+/** ダイアログを開いた時点の control_revision。送信時に workspace を読み直されていても、これを送る
+ *  （再試行で同じ command_id に別の payload を載せない。古ければサーバーが stale として拒否する）。 */
+export function pinControlRevision(workspace) {
+  const r = workspace?.control_revision;
+  return Number.isInteger(r) ? r : null;
+}
+
 export function buildHoldBody({ commandId, expectedControlRevision, reason }) {
   const r = (reason ?? '').trim();
   return { command_id: commandId, expected_control_revision: expectedControlRevision, reason: r || null };

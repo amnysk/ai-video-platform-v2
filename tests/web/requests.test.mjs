@@ -75,3 +75,12 @@ test('verifyEpisode: route と workspace の Episode が違えば中止', () => 
   assert.match(verifyEpisode('bbb', ws), /一致しません/);
   assert.match(verifyEpisode('aaa', null), /一致しません/);
 });
+
+test('pinControlRevision: ダイアログを開いた時点の control_revision を取り出す（無ければ null）', async () => {
+  const { pinControlRevision } = await import('../../apps/web/static/js/requests.js');
+  assert.equal(pinControlRevision({ control_revision: 4 }), 4);
+  assert.equal(pinControlRevision({ control_revision: 0 }), 0);
+  assert.equal(pinControlRevision({}), null);
+  assert.equal(pinControlRevision(null), null);
+  assert.equal(pinControlRevision({ control_revision: '4' }), null);
+});
