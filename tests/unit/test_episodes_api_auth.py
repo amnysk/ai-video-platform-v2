@@ -20,8 +20,20 @@ from infrastructure.config import Settings
 
 READ_TOKEN = "episodes-read-token-0001"
 RESUME_TOKEN = "episodes-resume-token-0001"
+AI_TOKEN = "episodes-ai-token-0001"
+AGENT_TOKEN = "episodes-agent-token-0001"
 PRINCIPALS = json.dumps(
     {
+        token_sha256(AI_TOKEN): {
+            "actor_type": "ai_assistant",
+            "actor_id": "assistant",
+            "scopes": [Scope.READ.value, Scope.RESUME.value],
+        },
+        token_sha256(AGENT_TOKEN): {
+            "actor_type": "agent",
+            "actor_id": "agent",
+            "scopes": [Scope.READ.value, Scope.RESUME.value],
+        },
         token_sha256(READ_TOKEN): {
             "actor_type": "human",
             "actor_id": "reader",
@@ -210,3 +222,76 @@ async def test_required_reads_the_same_intervention_principals_setting(
         ok = await client.get(f"/episodes/{uuid.uuid4()}", headers=_bearer(READ_TOKEN))
         no = await client.get(f"/episodes/{uuid.uuid4()}")
     assert ok.status_code == 404 and no.status_code == 401
+
+
+async def test_required_ai_principals_with_resume_cannot_post_but_can_read(required) -> None:
+    """P1-1: scope だけでは足りない。有料生成・投稿に繋がる POST は人限定（ADR-0045 §4）。"""
+    app, client = required
+    for token in (AI_TOKEN, AGENT_TOKEN):
+        for method, path in _routes(app):
+            r = await client.request(
+                method,
+                _concrete(path),
+                headers=_bearer(token),
+                json={} if method == "POST" else None,
+            )
+            if method == "POST":
+                assert r.status_code == 403, (method, path, r.text)
+                detail = r.json()["detail"]
+                assert detail["error"] == "forbidden"
+                assert detail["reason"] == "human_only"
+            else:
+                assert r.status_code not in (401, 403, 503), (method, path, r.text)
+
+
+async def test_required_ai_principal_cannot_reach_paid_routes_even_with_valid_bodies(
+    required,
+) -> None:
+    _, client = required
+    r = await client.post("/episodes", json={"topic": "x"}, headers=_bearer(AI_TOKEN))
+    assert r.status_code == 403 and r.json()["detail"]["reason"] == "human_only"
+    for suffix in ("production", "render", "upload", "resume"):
+        r = await client.post(
+            f"/episodes/{uuid.uuid4()}/{suffix}", json={}, headers=_bearer(AGENT_TOKEN)
+        )
+        assert r.status_code == 403, (suffix, r.text)
+
+
+async def test_required_human_check_comes_after_scope_check(required) -> None:
+    """read のみの AI は missing_scope（従来の理由を保つ）。"""
+    _, client = required
+    # READ_TOKEN は human。AI で resume を持たない主体は PRINCIPALS に無いので human で確認
+    r = await client.post("/episodes", json={}, headers=_bearer(READ_TOKEN))
+    assert r.json()["detail"]["error"] == "missing_scope"
+
+
+async def test_every_episodes_and_research_route_of_the_full_app_is_guarded(required) -> None:
+    """P1-1: 2 router ではなく create_app() 全体の route 表（OpenAPI）から列挙する。
+
+    FastAPI の内部構造（_IncludedRouter 等）に依存せず、公開された route 表と振る舞いで確かめる:
+    token なし → 401、AI の POST → 403 human_only。依存の付け忘れ・別 router の追加で落ちる。
+    """
+    app, client = required
+    paths = app.openapi()["paths"]
+    targets = [
+        (method.upper(), path)
+        for path, ops in paths.items()
+        if path.startswith(("/episodes", "/research"))
+        for method in ops
+    ]
+    assert len(targets) >= 10
+    for method, path in targets:
+        body = {} if method == "POST" else None
+        anon = await client.request(method, _concrete(path), json=body)
+        assert anon.status_code == 401, (method, path, anon.text)
+        if method == "POST":
+            ai = await client.request(method, _concrete(path), json=body, headers=_bearer(AI_TOKEN))
+            assert ai.status_code == 403, (method, path, ai.text)
+            assert ai.json()["detail"]["reason"] == "human_only"
+
+
+async def test_docs_openapi_and_healthz_stay_unauthenticated_when_required(required) -> None:
+    """ADR-0045 に既知・受容として記載。変えるなら ADR を先に。"""
+    _, client = required
+    for path in ("/healthz", "/openapi.json", "/docs", "/redoc"):
+        assert (await client.get(path)).status_code == 200, path

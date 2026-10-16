@@ -55,3 +55,13 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
   - `EPISODES_API_AUTH_REQUIRED` を false のままにすると残リスク 1 は残る（既定の互換維持と引き換え）。
   - 素材アップロード・`terminal_failed` job の画面からの復旧は未実装。
   - 追記: read model の `CommandView` に `reason`（`payload.reason` が str のときだけ、1000 文字まで。payload 全体は出さない）と `correlation_id` を足した。監査画面はこれを表示し、無ければ「未記録」。`trace_id` は引き続き `result`/`refs` に実在する場合だけ。
+
+## Review fixes（独立レビュー後の追記）
+
+- **`/episodes/*`・`/research/*` の POST は人限定**（§4 の修正）: ON のとき scope だけでなく
+  `actor_type=human` も要求する。`ai_assistant`/`agent` は `resume` を持っていても 403
+  `forbidden`（`reason=human_only`。ApplicationService と同じ code・文言の形）。GET は `read` のみ（AI 可）。
+  OFF は従来と同一。`create_app()` の route 表（OpenAPI）から全 `/episodes*`・`/research*` を列挙するテストで、
+  依存の付け忘れを検出する。
+- **既知・受容**: `/docs`・`/redoc`・`/openapi.json`・`/healthz` は ON でも認証しない（スキーマと生死確認のみで、
+  業務データ・副作用を持たない）。公開したくない環境では reverse proxy 側で絞る。テストで現状を固定した。
