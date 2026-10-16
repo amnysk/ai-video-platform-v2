@@ -199,3 +199,20 @@ async def test_unnormalised_dot_dot_paths_reach_the_handler_and_are_refused(
 async def test_unnormalised_dot_dot_is_feature_disabled_when_off(static_root: Path) -> None:
     status, body = await _raw_get(_app(static_root, flag=False), "/ui/../secret.txt")
     assert status == 404 and b"feature_disabled" in body
+
+
+async def test_on_ui_without_trailing_slash_redirects_to_ui_slash(on) -> None:
+    # 相対 URL（./app.css, ./js/main.js）は末尾スラッシュが無いと /app.css に解決されて壊れる
+    r = await on.get("/ui", follow_redirects=False)
+    assert r.status_code in (307, 308)
+    assert r.headers["location"].endswith("/ui/")
+    _assert_secure(r)
+    followed = await on.get("/ui", follow_redirects=True)
+    assert followed.status_code == 200
+    assert followed.text == "<h1>home</h1>"
+
+
+async def test_off_ui_without_trailing_slash_is_404_feature_disabled_not_a_redirect(off) -> None:
+    r = await off.get("/ui", follow_redirects=False)
+    assert r.status_code == 404
+    assert r.json()["detail"]["error"] == "feature_disabled"

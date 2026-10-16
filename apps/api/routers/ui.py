@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
 from apps.api.routers.application import require_application_api
 
@@ -69,6 +69,11 @@ def _resolve(root: Path, relative: str) -> Path | None:
 
 
 @router.get("")
+async def redirect_to_slash() -> Response:
+    """``/ui`` → ``/ui/``。index.html の相対 URL（``./js/main.js``）が ``/ui/`` を基準にするため。"""
+    return RedirectResponse("/ui/", status_code=308, headers=SECURITY_HEADERS)
+
+
 @router.get("/{path:path}")
 async def serve_ui(root: Annotated[Path, Depends(get_ui_static_dir)], path: str = "") -> Response:
     if any(part == ".." for part in path.replace("\\", "/").split("/")):
