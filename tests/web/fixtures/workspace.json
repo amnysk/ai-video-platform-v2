@@ -25,7 +25,7 @@
     ],
     "change_sets": [{"change_set_id": "cs1", "kind": "scene.override_visual", "status": "applied", "base_revision_id": "r-sb0", "applied_revision_id": "r-sb", "base_manifest_id": "m0", "applied_manifest_id": "m1", "rationale": null, "proposed_by_command_id": "cmd1", "decided_by_command_id": "cmd2", "actor_type": "ai_assistant", "actor_id": "bot", "created_at": "2026-10-01T03:00:00+00:00"}],
     "commands": [
-      {"command_id": "cmd1", "type": "propose_change", "status": "applied", "done": true, "actor_type": "ai_assistant", "actor_id": "bot", "granted_scope": "propose", "reject_reason": null, "result": {"outcome": "ok", "secret_like": "must-not-be-printed"}, "received_at": "2026-10-01T02:59:00+00:00", "finished_at": "2026-10-01T02:59:01+00:00"},
+      {"command_id": "cmd1", "type": "propose_change", "status": "applied", "done": true, "actor_type": "ai_assistant", "actor_id": "bot", "granted_scope": "propose", "reject_reason": null, "result": {"outcome": "ok", "secret_like": "must-not-be-printed"}, "received_at": "2026-10-01T02:59:00+00:00", "finished_at": "2026-10-01T02:59:01+00:00", "reason": "確認のため", "correlation_id": "corr-cmd1"},
       {"command_id": "cmd3", "type": "resume", "status": "received", "done": false, "actor_type": "human", "actor_id": "u", "granted_scope": "resume", "reject_reason": null, "result": null, "received_at": "2026-10-01T04:00:00+00:00", "finished_at": null}
     ],
     "reservations": {"in_flight": [], "unknown_outcome": [{"reservation_id": "res1", "provider": "fal", "status": "reserved", "scene_id": "sb1", "round": 1, "dispatched_at": null, "provider_job_ref_present": false, "estimated_cost_usd": null}], "undispatched": []},

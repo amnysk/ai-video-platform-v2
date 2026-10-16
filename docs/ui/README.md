@@ -48,7 +48,7 @@
 - **UI-D 監査・履歴**: `episode_events` / `intervention_commands` / `decision_records` / `change_sets` を
   時系列に併合。主体（人 / AI / Agent / システム）とステージで絞り込み。command は型・状態・主体・
   reject_reason・時刻・revision 参照だけで、payload/result の全文は出さない。trace id と correlation id は
-  そのフィールドが実在する場合だけ表示する。
+  そのフィールドが実在する場合だけ表示する（command の reason / correlation_id は `CommandView` から）。
 
 ## トークンの扱い
 
@@ -63,8 +63,8 @@ DOM・ログには出さない（`console.*` は使わない）。401 を受け�
 - 費用の見積りが `null` のときは「未見積り（0 円ではありません）」。
 - `rationale_kind = none` は「理由の記録なし」。
 - 読み取り時に導出された判断（`derived`）は保存された記録ではないと明示する。
-- 現在の read model に無いもの（command の `reason` / `correlation_id`、event の `trace_id` 等）は、
-  `result` / `refs` に実際に入っていない限り `未記録`。
+- command の `reason`（hold の理由のみ）と `correlation_id` は read model の `CommandView` の項目。無ければ `未記録`。
+  event の `trace_id` 等は `result` / `refs` に実際に入っていない限り `未記録`。
 
 ## 縮退
 

@@ -25,6 +25,15 @@ test('command は型・状態・actor・reject_reason を出し、payload/result
   assert.match(field(pending, 'status'), /完了ではありません/);
 });
 
+test('command の reason / correlation_id は read model の項目から。無ければ未記録', () => {
+  const c1 = entries.find((e) => e.kind === 'command' && field(e, 'command_id') === 'cmd1');
+  assert.equal(field(c1, 'reason'), '確認のため');
+  assert.equal(field(c1, 'correlation_id'), 'corr-cmd1');
+  const c3 = entries.find((e) => e.kind === 'command' && field(e, 'command_id') === 'cmd3');
+  assert.equal(field(c3, 'reason'), '未記録');
+  assert.equal(field(c3, 'correlation_id'), '未記録');
+});
+
 test('trace_id / correlation_id は、フィールドがあるときだけ。無ければ未記録', () => {
   const ev1 = entries.find((e) => e.kind === 'event' && field(e, 'seq') === '1');
   assert.equal(field(ev1, 'trace_id'), 't-1');

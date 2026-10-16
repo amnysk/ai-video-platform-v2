@@ -512,3 +512,44 @@ async def test_compare_storyboards_per_scene_and_others_generically(
     generic = await model.compare_revisions(a.id, b.id)
     assert generic.kind == "generic"
     assert [(c.path, c.before, c.after) for c in generic.changes] == [("x[1]", 2, 3)]
+
+
+async def test_command_view_exposes_reason_and_correlation_id_but_never_the_payload(
+    session_factory, artifact_store
+) -> None:
+    """ADR-0045: UI の監査に reason / correlation_id を出す。payload 全体は出さない。"""
+    episode_id, _s1, _sb = await _setup(session_factory, artifact_store)
+    cases = {
+        "cmd-hold-1": (CommandType.REQUEST_HOLD, {"reason": "確認のため", "secret": "x"}, "corr-1"),
+        "cmd-hold-2": (CommandType.REQUEST_HOLD, {"reason": None}, None),
+        "cmd-hold-3": (CommandType.REQUEST_HOLD, {"reason": 123}, None),
+        "cmd-hold-4": (CommandType.REQUEST_HOLD, {"reason": "あ" * 1500}, None),
+        "cmd-comment-1": (CommandType.COMMENT, {"body": "x"}, "corr-2"),
+    }
+    async with session_factory() as session:
+        store = InterventionStore(session)
+        for command_id, (ctype, payload, corr) in cases.items():
+            await store.insert_command(
+                command_id=command_id,
+                episode_id=episode_id,
+                type=ctype,
+                actor=HUMAN,
+                granted_scope=Scope.COMMENT,
+                expected_control_revision=None,
+                expected_target_revision=None,
+                payload=payload,
+                payload_sha256=command_id,
+                correlation_id=corr,
+            )
+        await session.commit()
+    view = await _load(session_factory, artifact_store, episode_id)
+    by_id = {c.command_id: c for c in view.commands}
+    assert by_id["cmd-hold-1"].reason == "確認のため"
+    assert by_id["cmd-hold-1"].correlation_id == "corr-1"
+    assert by_id["cmd-hold-2"].reason is None and by_id["cmd-hold-2"].correlation_id is None
+    assert by_id["cmd-hold-3"].reason is None  # str 以外は出さない
+    assert by_id["cmd-hold-4"].reason == "あ" * 1000  # 切り詰め
+    assert by_id["cmd-comment-1"].reason is None  # payload に reason が無い型は None
+    assert by_id["cmd-comment-1"].correlation_id == "corr-2"
+    dumped = json.dumps([c.model_dump() for c in view.commands], ensure_ascii=False)
+    assert "secret" not in dumped  # payload 全体は露出しない

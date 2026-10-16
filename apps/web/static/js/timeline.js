@@ -80,10 +80,10 @@ export function buildAuditEntries(rm) {
       fields: [
         ['command_id', c.command_id],
         ['status', `${c.status}${c.done ? '' : '（完了ではありません）'}`],
-        ['reason', lookup(c.result, 'reason') ?? MISSING],
+        ['reason', typeof c.reason === 'string' && c.reason !== '' ? c.reason : MISSING],
         ['result', summarizeResult(c.result)],
         ['reject_reason', c.reject_reason ?? MISSING],
-        ['correlation_id', correlationIdOf(c.result)],
+        ['correlation_id', typeof c.correlation_id === 'string' && c.correlation_id !== '' ? c.correlation_id : MISSING],
         ['trace_id', traceIdOf(c.result)],
         ['received_at', c.received_at ?? MISSING],
         ['finished_at', c.finished_at ?? MISSING],

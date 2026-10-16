@@ -54,3 +54,4 @@ ADR-0044 は 13 操作を `/v1/intervention` に出したが、人が使う画�
   - トークンを人が貼る方式。ログイン/セッション管理は未実装（単一運用者の想定）。
   - `EPISODES_API_AUTH_REQUIRED` を false のままにすると残リスク 1 は残る（既定の互換維持と引き換え）。
   - 素材アップロード・`terminal_failed` job の画面からの復旧は未実装。
+  - 追記: read model の `CommandView` に `reason`（`payload.reason` が str のときだけ、1000 文字まで。payload 全体は出さない）と `correlation_id` を足した。監査画面はこれを表示し、無ければ「未記録」。`trace_id` は引き続き `result`/`refs` に実在する場合だけ。

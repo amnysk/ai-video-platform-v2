@@ -53,3 +53,11 @@ route は `episodes.router` と `research.router` の route 表から列挙し�
   キー集合も固定（カタログに無い「費用が発生しうるか」等を推測して足さない）。
 - `fields_come_from_the_request_models`: 必須/任意/null 可/enum が pydantic model 由来で、path parameter が path から取れる。
 - `catalog_version_is_stable_and_changes_with_the_content`: 版は決定的で、内容が変われば変わる。
+
+## 5. command の reason / correlation_id（tests/unit/test_intervention_read_model.py）
+
+- `test_command_view_exposes_reason_and_correlation_id_but_never_the_payload`: UI の監査が「未記録」だらけに
+  ならないよう `CommandView` に 2 項目を足した。`reason` は `payload.reason` が **str のときだけ**
+  （None・数値・reason の無い型は None）、1000 文字で切り詰め、payload の他のキーは JSON に現れない
+  （全文露出の回帰を防ぐ）。
+- `tests/web/timeline.test.mjs`: 値があれば表示、無ければ `未記録`（捏造しない）。
