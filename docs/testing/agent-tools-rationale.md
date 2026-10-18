@@ -257,3 +257,23 @@ SQLite + インメモリ ArtifactStore。PostgreSQL 固有の挙動は integrati
 | plan schema は ToolDef から導出 | 手書きしない（INV-62）。許可外の tool は schema にも出ない。`$ref` が全て解決する |
 | 修復は 1 回 | plan 1 + 合成 1 + 修復 1 = 3 で `max_llm_calls` に収まる。2 度目の違反は Rejected で 4 回目を呼ばない |
 | 修復 prompt は違反の場所だけ | LLM が出した値を再掲しない |
+
+追加（入力方針・引用の検査）: `plan_and_execute` の `policy`（実行前の決定論の入力検査）と `tool_refs`（handler の範囲外の
+tool は外部を呼ばずに拒否）。方針が「この動画の分析以外は読まない」等を LLM の出力に関わらず強制する。
+
+### tests/unit/test_agent_handlers_tools_strategy.py（strategy@1.1）
+
+| テスト | 守るもの |
+|---|---|
+| tool 往復で brief が出る・引用に実行した `tool_call:<id>` が全て入る | 証拠の連結（`StrategyBrief.citations` は既存欄で足りる: 46 字 ≤ 200 字 / 20 件）。判断記録の `evidence_refs` にも同じ ID と tool 由来の参照 |
+| 合成 prompt の結果は `<data>` の中だけ | 外部由来の文字列が指示にならない（INV-60）。plan prompt に出る tool は「spec が許し executor がある」ものだけ |
+| 空の plan | tool 無しでも brief が出る（行 0、LLM 2 回） |
+| 実在しない `tool_call:` の引用 | 引用列・候補の rationale・判断の rationale から決定論で除き、除いた事実を uncertainties に残す。実在する引用は残る |
+| analytics が `permission_denied` | brief は出て `audience_basis=assumed`・uncertainties に tool 名と状態。値を作らない（INV-58）。失敗した呼び出しも citations で辿れる |
+| `pending` / fake provider | 注意文として uncertainties に出る（fake を実調査と呼ばない） |
+| `audience_basis` | LLM の自己申告でも trend の仮説でも変わらない。analytics の実測（十分な動画数）だけで `measured` |
+| tool 結果の注入文 | 呼び出し数・LLM 回数・推薦候補・`audience_basis` が変わらない。区切りを閉じられない |
+| 許可外・存在しない・上限超過の plan | 外部を呼ばずに切り詰め、拒否の事実が uncertainties に出る |
+| 合成の違反 | 修復 1 回で合計 3 回、2 回目の違反は Rejected（4 回目を呼ばない） |
+| runtime 無し | LLM を呼ぶ前に `ToolNotAllowedError`（課金ゼロ） |
+| 1.0 spec | tool を計画せず LLM 1 回・prompt に tool の語が無い（既存挙動の不変） |

@@ -351,3 +351,41 @@ async def test_the_repair_prompt_carries_error_locations_not_the_bad_values() ->
     gateway, _, _ = _gateway(llm)
     await ask_with_repair(gateway, "p", _Resp)
     assert "SECRET-BAD-VALUE" not in llm.prompts[1]
+
+
+# --------------------------------------------------------------------------- 入力方針・絞り込み
+
+
+async def test_an_input_policy_can_refuse_or_rewrite_before_any_external_call() -> None:
+    llm = ScriptedLlm(
+        {
+            "requests": [
+                _req("search_trends@1", "forbidden"),
+                _req("get_video_analytics@1", "rewrite-me"),
+            ]
+        }
+    )
+    gateway, executors, _ = _gateway(llm)
+
+    def policy(ref: str, tool_input: dict[str, Any]) -> dict[str, Any] | str:
+        if tool_input["q"] == "forbidden":
+            return "input_not_grounded"
+        return {"q": "rewritten"}
+
+    result = await plan_and_execute(gateway, task="t", data={}, policy=policy)
+    assert [r.reason for r in result.refused] == ["input_not_grounded"]
+    assert not executors[ToolId.SEARCH_TRENDS].calls
+    assert result.executed_inputs == ({"q": "rewritten"},)
+    assert executors[ToolId.GET_VIDEO_ANALYTICS].calls[0][1].q == "rewritten"  # type: ignore[attr-defined]
+
+
+async def test_the_catalog_can_be_narrowed_and_the_rest_is_refused() -> None:
+    llm = ScriptedLlm({"requests": [_req("get_video_analytics@1"), _req("search_trends@1")]})
+    gateway, executors, _ = _gateway(llm)
+    result = await plan_and_execute(gateway, task="t", data={}, tool_refs={"search_trends@1"})
+    assert "get_video_analytics" not in json.dumps(llm.schemas[0])
+    assert "get_video_analytics" not in llm.prompts[0]
+    assert "search_trends@1" in llm.prompts[0]
+    assert not executors[ToolId.GET_VIDEO_ANALYTICS].calls  # 範囲外は外部を呼ばない
+    assert [r.reason for r in result.refused] == ["tool_not_allowed"]
+    assert len(result.envelopes) == 1
