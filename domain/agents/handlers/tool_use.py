@@ -83,6 +83,10 @@ def scrub_citations(text: str, valid_ids: Collection[str]) -> tuple[str, int]:
     return _CITATION.sub(replace, text), dropped
 
 
+def cited_ids(text: str) -> set[str]:
+    return {m.removeprefix(CITATION_PREFIX) for m in _CITATION.findall(text)}
+
+
 def filter_citations(items: Sequence[str], valid_ids: Collection[str]) -> tuple[list[str], int]:
     """引用の列から、この run に無い ``tool_call:`` を捨てる（それ以外の引用は触らない）。"""
     kept: list[str] = []

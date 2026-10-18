@@ -277,3 +277,18 @@ tool は外部を呼ばずに拒否）。方針が「この動画の分析以外
 | 合成の違反 | 修復 1 回で合計 3 回、2 回目の違反は Rejected（4 回目を呼ばない） |
 | runtime 無し | LLM を呼ぶ前に `ToolNotAllowedError`（課金ゼロ） |
 | 1.0 spec | tool を計画せず LLM 1 回・prompt に tool の語が無い（既存挙動の不変） |
+
+### tests/unit/test_agent_handlers_tools_learning.py（learning@1.1、Review の役）
+
+`Lesson` 1.0 は `citations` 欄を持たない。引用は `observations` / `hypotheses` の本文中の `tool_call:<id>` と、
+判断記録の `evidence_refs` で持つ（スキーマは変えない）。
+
+| テスト | 守るもの |
+|---|---|
+| tool 往復で Lesson(proposed) | 仮説が実在する `tool_call:<id>` を引く。判断記録に同じ ID と tool 由来の参照。測定窓・比較の基準は決定論のまま |
+| 実在しない引用・引用の無い仮説 | 実在しない ID は除き、ok の tool 結果があるのに引用の無い仮説は捨てて `sample_note` に残す（根拠の無い改善仮説を出さない） |
+| ok の tool 結果が無い | 仮説は残すが「tool の根拠が無い」と注記し、失敗理由が uncertainties に出る。測定を作らない（INV-58） |
+| private・欠測 | LLM も tool も呼ばない・予約も要らない（INV-57 を 1.1 でも保つ） |
+| 別の動画を読ませない | 分析・維持率は receipt の動画だけ、比較は receipt の動画を含むときだけ。LLM が出した別の ID は外部を呼ばずに拒否 |
+| 別形式の baseline | Shorts と長尺を混ぜない規則が 1.1 でも効く |
+| runtime 無し / 修復 | LLM を呼ぶ前に拒否。合成の違反は修復 1 回 |

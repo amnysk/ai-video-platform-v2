@@ -10,14 +10,41 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from contracts.agent_tools import ToolId, ToolStatus, tool_ref
 from contracts.agentic import Lesson, LessonStatus, MeasurementWindow
 from contracts.intervention import DecisionCandidate, DecisionRecordPayload, RationaleKind
-from domain.agents.handlers._support import ask, build_prompt, derive_model, document, validated
+from domain.agents.handlers._support import (
+    ask,
+    build_prompt,
+    clip,
+    derive_model,
+    document,
+    validated,
+)
+from domain.agents.handlers.tool_use import (
+    CITATION_PREFIX,
+    REASON_UNGROUNDED,
+    InputPolicy,
+    ToolRound,
+    cited_ids,
+    plan_and_execute,
+    scrub_citations,
+    synthesize,
+)
 from domain.agents.runtime import AgentInput, AgentOutput
 from domain.agents.tool_gateway import ToolGateway
 
 #: この views 未満の測定は小標本として注記する（断定しない）
 SMALL_SAMPLE_VIEWS = 100
+
+#: tool 版（spec 1.1）の合成 prompt に足す指示。1.0 の prompt は変えない
+TOOL_SYNTHESIS_TASK = (
+    " Tool results are given as DATA blocks named tool:<name>, each with a tool_call_id. Every "
+    "hypothesis must cite the tool result it rests on as tool_call:<tool_call_id>, using only ids "
+    "that appear there; never invent ids. A result whose status is not ok contains no data: do "
+    "not guess its content, and never call a video low-performing from missing or non-public data."
+)
+MAX_NOTE_CHARS = 500
 
 MISSING_REASON_DEFAULT = "metrics were not available when the window was fetched"
 
@@ -112,6 +139,68 @@ def learning_needs_llm(documents: Mapping[str, Mapping[str, Any]]) -> bool:
     return note is None
 
 
+def _video_policy(video_id: Any) -> InputPolicy:
+    """tool が読む動画を、この Lesson の動画に限る（LLM が別の動画を読ませない）。"""
+    own = video_id if isinstance(video_id, str) and video_id else None
+    single = {
+        tool_ref(ToolId.GET_VIDEO_ANALYTICS, 1),
+        tool_ref(ToolId.GET_AUDIENCE_RETENTION, 1),
+    }
+    compare = tool_ref(ToolId.COMPARE_VIDEO_PERFORMANCE, 1)
+
+    def policy(ref: str, tool_input: dict[str, Any]) -> dict[str, Any] | str:
+        if own is None:
+            return REASON_UNGROUNDED
+        if ref in single:
+            return tool_input if tool_input.get("video_id") == own else REASON_UNGROUNDED
+        if ref == compare:
+            ids = tool_input.get("video_ids")
+            return tool_input if isinstance(ids, list) and own in ids else REASON_UNGROUNDED
+        return REASON_UNGROUNDED
+
+    return policy
+
+
+def _grounded(response: Any, tool_round: ToolRound) -> tuple[dict[str, tuple[str, ...]], list[str]]:
+    """LLM の文章の引用を決定論で検査する。(整えた 4 欄, sample_note に足す文)。
+
+    - この run に無い ``tool_call:`` は目印に置き換える
+    - ok の tool 結果があるのに有効な引用が無い仮説は捨てる（根拠の無い仮説を残さない）
+    - ok の結果が無いときは、根拠が tool に無いことを注記する
+    """
+    valid = set(tool_round.tool_call_ids)
+    removed = 0
+    fields: dict[str, tuple[str, ...]] = {}
+    for name in ("observations", "hypotheses", "alternative_explanations", "proposed_experiments"):
+        texts: list[str] = []
+        for text in getattr(response, name):
+            cleaned, n = scrub_citations(text, valid)
+            removed += n
+            texts.append(clip(cleaned, 500))
+        fields[name] = tuple(texts)
+    notes: list[str] = []
+    if removed:
+        notes.append(
+            f"{removed} citation(s) of tool calls that do not exist in this run were removed."
+        )
+    has_evidence = any(e.status is ToolStatus.OK for e in tool_round.envelopes)
+    if has_evidence:
+        cited = tuple(h for h in fields["hypotheses"] if cited_ids(h) & valid)
+        dropped = len(fields["hypotheses"]) - len(cited)
+        fields["hypotheses"] = cited
+        if dropped:
+            notes.append(
+                f"{dropped} hypothesis(es) without a valid {CITATION_PREFIX}<id> citation were "
+                "dropped."
+            )
+    else:
+        notes.append(
+            "Tool data was not available for this lesson; the hypotheses are not grounded in tool "
+            "evidence."
+        )
+    return fields, notes
+
+
 async def learning_agent_v1(agent_input: AgentInput, gateway: ToolGateway) -> AgentOutput:
     receipt = dict(document(agent_input, "upload_receipt"))
     measurements = dict(document(agent_input, "measurements"))
@@ -132,21 +221,49 @@ async def learning_agent_v1(agent_input: AgentInput, gateway: ToolGateway) -> Ag
             "differences are likely noise."
         )
 
-    prompt = build_prompt(
+    task = (
         "Write observations (what the numbers show), hypotheses (possible causes, never stated as "
         "fact), alternative explanations and proposed experiments for this video. Do not claim "
-        "causation. Missing metrics are unknown, not zero.",
-        {
-            "upload_receipt": receipt,
-            "measurements": {
-                **measurements,
-                "windows": [w.model_dump(mode="json") for w in windows],
-            },
-            "baseline": baseline,
-            "comparison_basis": basis,
-        },
+        "causation. Missing metrics are unknown, not zero."
     )
-    response = await ask(gateway, prompt, _Response)
+    data = {
+        "upload_receipt": receipt,
+        "measurements": {
+            **measurements,
+            "windows": [w.model_dump(mode="json") for w in windows],
+        },
+        "baseline": baseline,
+        "comparison_basis": basis,
+    }
+    tool_round: ToolRound | None = None
+    extra_uncertainties: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    if agent_input.spec.allowed_tool_ids:
+        # spec 1.1: plan -> tool 実行 -> 合成（1 往復）。公開済み・測定ありのときだけここへ来る
+        tool_round = await plan_and_execute(
+            gateway, task=task, data=data, policy=_video_policy(receipt.get("video_id"))
+        )
+        response = await synthesize(
+            gateway,
+            task=task + TOOL_SYNTHESIS_TASK,
+            data=data,
+            tool_round=tool_round,
+            model=_Response,
+        )
+        texts, tool_notes = _grounded(response, tool_round)
+        sample_note = (
+            clip(" ".join(filter(None, [sample_note, *tool_notes])), MAX_NOTE_CHARS) or None
+        )
+        extra_uncertainties = tool_round.notes
+        evidence = tuple(dict.fromkeys([*tool_round.citations, *tool_round.evidence_refs]))
+    else:
+        response = await ask(gateway, build_prompt(task, data), _Response)
+        texts = {
+            "observations": response.observations,
+            "hypotheses": response.hypotheses,
+            "alternative_explanations": response.alternative_explanations,
+            "proposed_experiments": response.proposed_experiments,
+        }
     lesson = validated(
         Lesson,
         {
@@ -155,10 +272,7 @@ async def learning_agent_v1(agent_input: AgentInput, gateway: ToolGateway) -> Ag
             "manifest_id": receipt.get("manifest_id"),
             "published_at": measurements.get("published_at"),
             "measurement_windows": [w.model_dump() for w in windows],
-            "observations": response.observations,
-            "hypotheses": response.hypotheses,
-            "alternative_explanations": response.alternative_explanations,
-            "proposed_experiments": response.proposed_experiments,
+            **texts,
             "scope": scope,
             "status": LessonStatus.PROPOSED,
             "comparison_basis": basis,
@@ -179,6 +293,7 @@ async def learning_agent_v1(agent_input: AgentInput, gateway: ToolGateway) -> Ag
         selected_candidate="lesson_proposed",
         rationale_kind=RationaleKind.REPORTED,
         rationale=basis,
-        uncertainties=(sample_note,) if sample_note else (),
+        evidence_refs=evidence,
+        uncertainties=(*((sample_note,) if sample_note else ()), *extra_uncertainties),
     )
     return AgentOutput(artifact=lesson, decision=decision, outcome="produced")
