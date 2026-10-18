@@ -227,3 +227,17 @@ INV-55 のため `workers/planning` が読む agentic の語彙は `CreativeBrie
 （同じ Episode の再起動は `started=false`。**駐機（hold・待機）後の再開は介入 command が従来の
 `EpisodePipelineWorkflow` を start する**ので、agentic の stage（quality 等）は再開の経路では走らない。P2 で設計する）。
 
+## Agent Tool（ADR-0047）
+
+- tool は `ToolGateway.call_tool(tool_ref, input)`（`run_agent_stage` の中）だけが実行する。workflow は tool を知らない。
+- 検査の順: `allowed_tool_ids` → 登録（`TOOL_DEFS`）→ 供給（`JPMAS2_ENABLED_TOOLS`）→ 入力 schema → `max_calls_per_run`。
+  どれに落ちても外部は呼ばず `refused` を記録する。通れば `tool_call_id` を払い出し、`agent_tool_calls` を引く。
+- 保存済みの結果は executor を呼ばずに返す。`started` のままの行は `youtube_quota` なら再送せず `failed`
+  （`ambiguous_prior_attempt`）、`research_ledger` なら同じ冪等キーで再実行する。
+- 結果は `ToolEnvelope`（untrusted）。prompt へは `render_untrusted`（`<data>` 区切り）で渡す。
+- 保存: 行 = 状態・入力・参照・時間（`agent_tool_calls`、migration 0020）、本体 = MinIO
+  `agent-runs/{episode_id}/tool-calls/{tool_call_id}.json`。`agent_runs.tool_invocations` には ID・状態・順序だけ。
+- 観測: `ToolObserver` port（既定 no-op）。実装 `LoggingToolObserver` が `agent.tool.completed` / `agent.tool.refused`
+  を構造化ログに出す。
+- `JPMAS2_AGENT_TOOLS` が無効なら `AgentActivities` は `tool_support=None` で gateway は従来どおり（`agent_tool_calls` は書かれない）。
+

@@ -112,3 +112,13 @@ SQLite + インメモリ ArtifactStore。PostgreSQL 固有の挙動は integrati
 | logging observer | ID・状態・時間・属性だけ。入力・結果の秘密文字列が LogRecord に無い。実 stage でも同じ |
 | log 故障 | observer の発行が壊れても業務に伝播しない（INV-38） |
 | compose の pass-through | agent-worker が既定 OFF で flag を受け取る |
+
+## tests/architecture/test_agent_tools_boundaries.py と test_agentic_default_off.py
+
+| テスト | 守るもの |
+|---|---|
+| tool 識別子の literal 禁止（INV-62） | `"search_trends"` 等を別モジュールが書き直して集合が食い違うのを止める（AGENTS.md §8）。`ToolId` を import させる |
+| literal 検査自体の検査 | 検査が空振りして何も見つけない状態を防ぐ |
+| 書き込み scope・POST/PUT/DELETE/PATCH の禁止（INV-61） | `infrastructure/agents/tools/` に投稿・更新・収益の経路が入らない。既存の Planner 用 adapter は対象外と明記 |
+| 契約・port の純粋さ | tool の契約と domain の port/gateway が infrastructure を import しない（層の逆流） |
+| default-off（既存テストの強化） | `AGENTIC_MODULES` に tool の契約・`infrastructure.agents` を**足した**だけ（日次経路が tool を参照しない）。緩めていない |

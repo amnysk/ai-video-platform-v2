@@ -21,6 +21,10 @@ AGENTIC_MODULES = (
     "contracts.agents",
     "contracts.workflow_templates",
     "contracts.agentic",
+    # ADR-0047: Agent Tool の契約・実装も日次経路から参照しない（flag OFF の保証）
+    "contracts.agent_tools",
+    "contracts.agent_tool_registry",
+    "infrastructure.agents",
     "domain.agents",
     "domain.workflow_templates",
     "application",
