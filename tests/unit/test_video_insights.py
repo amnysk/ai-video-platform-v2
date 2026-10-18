@@ -119,7 +119,7 @@ VIDEO_METRICS = (
 @pytest.mark.asyncio
 async def test_video_analytics_sends_exact_query_and_maps_values() -> None:
     net = Net(
-        lambda _r: report(VIDEO_METRICS.split(","), [[100, 80, 50.5, 21.0, 7, 3, 2]]),
+        lambda _r: report(list[str](VIDEO_METRICS.split(",")), [[100, 80, 50.5, 21.0, 7, 3, 2]]),
         videos_handler(video_item(VID, "2026-09-01T10:00:00Z")),
     )
     res = await make(net).video_analytics(VID, None, None, None)
@@ -189,7 +189,7 @@ async def test_impressions_and_ctr_are_not_available_and_never_fabricated(metric
 
 @pytest.mark.asyncio
 async def test_empty_rows_is_no_data_not_zero() -> None:
-    net = Net(lambda _r: report(VIDEO_METRICS.split(","), []))
+    net = Net(lambda _r: report(list[str](VIDEO_METRICS.split(",")), []))
     res = await make(net).video_analytics(VID, date(2026, 9, 1), date(2026, 9, 2), None)
     assert res.status is ToolStatus.NO_DATA and res.data is None
 

@@ -95,13 +95,13 @@ def _docs(**over: Any) -> dict[str, dict[str, Any]]:
 
 
 def _executors(**over: Any):
-    base = {
+    base: dict[ToolId, Any] = {
         ToolId.SEARCH_TRENDS: ok(
             trends_output(), "research_request:r1", limitations=("provider=fake",)
         ),
         ToolId.GET_CHANNEL_PERFORMANCE: ok(channel_output(), "analytics_query:abc"),
     }
-    base.update(over)
+    base.update(over)  # type: ignore[call-overload]  # key は ToolId.value の文字列
     return base
 
 

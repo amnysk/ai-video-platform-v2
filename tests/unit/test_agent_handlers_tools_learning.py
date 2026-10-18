@@ -62,11 +62,11 @@ def _answer(**over: Any) -> dict[str, Any]:
 
 
 def _executors(**over: Any):
-    base = {
+    base: dict[ToolId, Any] = {
         ToolId.GET_VIDEO_ANALYTICS: ok(video_output(), "analytics_query:v1"),
         ToolId.GET_AUDIENCE_RETENTION: status_only(ToolStatus.NO_DATA),
     }
-    base.update(over)
+    base.update(over)  # type: ignore[call-overload]  # key は ToolId.value の文字列
     return base
 
 

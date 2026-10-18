@@ -485,7 +485,7 @@ class YouTubeVideoInsightProvider(YouTubeAnalyticsProvider):
             retrieved_at=self._now().isoformat(),
         )
 
-    async def _guard[T](
+    async def _guard[T: BaseModel](
         self, run: Callable[[_Call], Awaitable[InsightResult[T]]]
     ) -> InsightResult[T]:
         call = _Call()

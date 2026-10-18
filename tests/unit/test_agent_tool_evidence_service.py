@@ -70,7 +70,7 @@ def service(evidence: Evidence | None, observer: Observer) -> ApplicationService
         starter=_Unused(),  # type: ignore[arg-type]
         agentic_enabled=True,
         observer=observer,
-        tool_evidence=evidence,
+        tool_evidence=evidence,  # type: ignore[arg-type]
     )
 
 

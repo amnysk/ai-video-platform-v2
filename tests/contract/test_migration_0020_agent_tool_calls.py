@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
+import sqlalchemy.exc
 from alembic import command
 from alembic.config import Config
 
@@ -227,7 +228,7 @@ def test_status_check_rejects_an_unknown_status(tmp_path: Path) -> None:
     with engine.begin() as conn:
         episode_id = uuid.uuid4()
         _insert(conn, "episodes", id=episode_id, topic="t", status="planned")
-        with pytest.raises(sa.exc.IntegrityError):
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
             _insert(
                 conn,
                 "agent_tool_calls",
