@@ -162,6 +162,21 @@ LEARNING = RoleSpec(
     may_create_revisions=False,
 )
 
+HISTORIAN = RoleSpec(
+    role=AgentRole.HISTORIAN,
+    implemented_by=("domain.agents.handlers (historian_agent_v1, ADR-0047。handler は後続)",),
+    inputs=("script", "strategy_brief"),
+    outputs=("fact_check_report", "agent_tool_calls", "agent_runs"),
+    allowed_tools=(_LLM, _READ),
+    max_llm_calls_per_run=3,
+    termination=(
+        "契約を通った FactCheckReport を保存した",
+        "根拠が取得できない claim は insufficient のまま報告した（架空の根拠で埋めない）",
+    ),
+    #: 台本への反映は提案だけ（自動反映しない）
+    may_create_revisions=False,
+)
+
 ROLE_SPECS: dict[AgentRole, RoleSpec] = {
     spec.role: spec
     for spec in (
@@ -172,5 +187,6 @@ ROLE_SPECS: dict[AgentRole, RoleSpec] = {
         CREATIVE_DIRECTOR,
         QUALITY_REVIEWER,
         LEARNING,
+        HISTORIAN,
     )
 }

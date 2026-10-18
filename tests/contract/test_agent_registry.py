@@ -47,6 +47,9 @@ PINNED_HASHES = {
         "1.0",
     ): "4ada80c5ef4419f782c2280f84821bd5573b9886ddefe8d97e24255ca006eb69",
     (AgentRole.LEARNING, "1.0"): "d55555ef38631ca6065d38a68e4aa1d6b59dfab2413946d8461ea3dbcf11984e",
+    # ADR-0047: tool を持つ新 spec_version（1.0 の値は上のまま）
+    (AgentRole.STRATEGY, "1.1"): "729a0b4157f88fd038fa8204846be6bf201f5b3db4887ca32c3dca8d72cf9be6",
+    (AgentRole.LEARNING, "1.1"): "24e878c64453e4c48961bc6ff612682ac9e0955023be86b0fd3af7a50f119223",
 }
 
 

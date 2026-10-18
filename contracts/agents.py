@@ -84,9 +84,12 @@ class AgentSpec:
     retry_max_attempts: int
     termination: tuple[str, ...]
     may_create_revisions: bool
+    #: ADR-0047: 呼んでよい Agent Tool（``"search_trends@1"`` の形）。空 = tool 無し。
+    #: ``canonical()`` は空のとき**キーを出さない**（1.0 spec の manifest_hash を変えない。INV-51）
+    allowed_tool_ids: tuple[str, ...] = ()
 
     def canonical(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "role": self.role.value,
             "spec_version": self.spec_version,
             "input_schema_ref": self.input_schema_ref,
@@ -103,6 +106,9 @@ class AgentSpec:
             "termination": list(self.termination),
             "may_create_revisions": self.may_create_revisions,
         }
+        if self.allowed_tool_ids:
+            out["allowed_tool_ids"] = list(self.allowed_tool_ids)
+        return out
 
     @property
     def manifest_hash(self) -> str:
@@ -126,10 +132,12 @@ def _spec(
     prompt_version: str,
     termination: tuple[str, ...],
     may_create_revisions: bool,
+    spec_version: str = "1.0",
+    tool_ids: tuple[str, ...] = (),
 ) -> AgentSpec:
     return AgentSpec(
         role=role,
-        spec_version="1.0",
+        spec_version=spec_version,
         input_schema_ref=input_ref,
         output_schema_ref=output_ref,
         handler_ref=handler,
@@ -143,6 +151,7 @@ def _spec(
         retry_max_attempts=3,
         termination=termination,
         may_create_revisions=may_create_revisions,
+        allowed_tool_ids=tool_ids,
     )
 
 
@@ -217,7 +226,60 @@ _SPECS = (
     ),
 )
 
-AGENT_SPECS: dict[tuple[AgentRole, str], AgentSpec] = {(s.role, s.spec_version): s for s in _SPECS}
+# --- ADR-0047: Agent Tool を持つ新 spec_version（1.0 は凍結のまま残す） -------------------
+#: tool は 1 stage 1 往復（plan -> execute -> synthesize）なので LLM は 3 回以下
+TOOL_STAGE_MAX_LLM_CALLS = 3
+
+STRATEGY_TOOL_REFS: tuple[str, ...] = (
+    "search_trends@1",
+    "get_video_analytics@1",
+    "compare_video_performance@1",
+    "get_audience_demographics@1",
+    "get_channel_performance@1",
+)
+LEARNING_TOOL_REFS: tuple[str, ...] = (
+    "get_video_analytics@1",
+    "get_audience_retention@1",
+    "compare_video_performance@1",
+)
+#: historian@1.0 の許可 tool。handler（claim 抽出 -> 根拠収集 -> fact_check_report）が入るまで
+#: spec は登録しない（handler_ref の無い spec は作れない。docs/decisions/0047 の実装メモ参照）
+HISTORIAN_TOOL_REFS: tuple[str, ...] = ("search_historical_facts@1", "fetch_sources@1")
+
+_TOOL_SPECS = (
+    _spec(
+        AgentRole.STRATEGY,
+        "user_brief@1.0",
+        "strategy_brief@1.0",
+        AgentHandlerRef.STRATEGY_AGENT_V1,
+        (_T.LLM_GENERATE_JSON, _T.ARTIFACT_READ, _T.ANALYTICS_READ),
+        TOOL_STAGE_MAX_LLM_CALLS,
+        "0.05",
+        "strategy-v1",
+        TERMINATION[AgentRole.STRATEGY],
+        True,
+        spec_version="1.1",
+        tool_ids=STRATEGY_TOOL_REFS,
+    ),
+    _spec(
+        AgentRole.LEARNING,
+        "upload_receipt",
+        "lesson@1.0",
+        AgentHandlerRef.LEARNING_AGENT_V1,
+        (_T.LLM_GENERATE_JSON, _T.ARTIFACT_READ, _T.ANALYTICS_READ),
+        TOOL_STAGE_MAX_LLM_CALLS,
+        "0.03",
+        "learning-v1",
+        TERMINATION[AgentRole.LEARNING],
+        False,
+        spec_version="1.1",
+        tool_ids=LEARNING_TOOL_REFS,
+    ),
+)
+
+AGENT_SPECS: dict[tuple[AgentRole, str], AgentSpec] = {
+    (s.role, s.spec_version): s for s in (*_SPECS, *_TOOL_SPECS)
+}
 
 
 def resolve_agent_spec(

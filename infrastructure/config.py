@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from contracts.agent_tools import ToolId
 from contracts.intervention import (
     DEFAULT_EPISODE_BUDGET_JPY,
     DEFAULT_MONTHLY_BUDGET_JPY,
@@ -235,6 +236,12 @@ class Settings(BaseSettings):
     jpmas2_enabled_agents: str = ""
     #: ``JPMAS2_AGENT_LLM``。agent が使う LLM。``fake`` は隔離試験スタック専用の決定的な偽物
     jpmas2_agent_llm: Literal["codex", "fake"] = "codex"
+    #: ``JPMAS2_AGENT_TOOLS``（ADR-0047 §9）。Agent Tool Registry の組み立て。既定 false
+    #: （無効なら ``ToolGateway`` は従来どおりで ``agent_tool_calls`` は書かれない / INV-55 の延長）
+    jpmas2_agent_tools: bool = False
+    #: ``JPMAS2_ENABLED_TOOLS``。有効な tool_id（``ToolId`` の値のカンマ区切り）。
+    #: 空 = 何も有効でない。未知の名前は起動時に失敗する。読み取りは ``enabled_tool_ids``
+    jpmas2_enabled_tools: str = ""
 
     #: ``API_CORS_ORIGINS``。UI の origin のカンマ区切り（ADR-0044 §4）。
     #: 空 = CORS middleware を付けない。
@@ -267,6 +274,12 @@ class Settings(BaseSettings):
     @classmethod
     def _known_enabled_agents(cls, v: str) -> str:
         _parse_enabled_agents(v)
+        return v
+
+    @field_validator("jpmas2_enabled_tools")
+    @classmethod
+    def _known_enabled_tools(cls, v: str) -> str:
+        _parse_enabled_tools(v)
         return v
 
     @field_validator("research_provider", mode="before")
@@ -317,6 +330,21 @@ def _parse_enabled_agents(raw: str) -> frozenset[AgentRole]:
     return frozenset(roles)
 
 
+def _parse_enabled_tools(raw: str) -> frozenset[ToolId]:
+    tools: set[ToolId] = set()
+    for name in (part.strip() for part in raw.split(",")):
+        if not name:
+            continue
+        try:
+            tools.add(ToolId(name))
+        except ValueError:
+            known = ", ".join(sorted(t.value for t in ToolId))
+            raise ValueError(
+                f"unknown tool id {name!r} in JPMAS2_ENABLED_TOOLS; known: {known}"
+            ) from None
+    return frozenset(tools)
+
+
 def cors_origins(settings: Settings) -> tuple[str, ...]:
     """``API_CORS_ORIGINS`` の origin（空白・空要素は捨てる）。``*`` は設定の誤りとして拒否する。"""
     origins = tuple(o.strip() for o in settings.api_cors_origins.split(",") if o.strip())
@@ -328,3 +356,8 @@ def cors_origins(settings: Settings) -> tuple[str, ...]:
 def enabled_agent_roles(settings: Settings) -> frozenset[AgentRole]:
     """``JPMAS2_ENABLED_AGENTS`` で有効にした role。空なら何も有効でない。"""
     return _parse_enabled_agents(settings.jpmas2_enabled_agents)
+
+
+def enabled_tool_ids(settings: Settings) -> frozenset[ToolId]:
+    """``JPMAS2_ENABLED_TOOLS`` で有効にした tool。空なら何も有効でない。"""
+    return _parse_enabled_tools(settings.jpmas2_enabled_tools)

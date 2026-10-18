@@ -269,6 +269,7 @@ Collector が行から作る `@timestamp`（Docker の時刻）・`message`（�
 | `render.validation.passed` / `render.validation.failed` | Render の尺・音声検証 |
 | `upload.started` / `upload.succeeded` / `upload.reused_existing` / `upload.skipped` / `upload.failed` | Upload |
 | `research.request.started` / `research.request.finished` | Research |
+| `agent.tool.completed` / `agent.tool.refused` | Agent Tool の呼び出し（ADR-0047 §8）。`episode_id`・`tool_name`（= tool_id）・`duration_ms`・`error_code`（完了の診断コード / 拒否の理由コード）・`attributes.{tool_call_id, tool_version, agent_role, status, cost_class, cache_hit, reason}`。`episode_id` → `agent_run_key` → `tool_call_id` で辿れる。**引数・結果の本文・token・個人情報は出さない**。`refused` は外部を呼ばずに拒否した（許可外・未登録・未供給・入力 schema 違反・上限超過） |
 | `anomaly.recorded` | 運用異常の記録 |
 | `decision.recorded` / `agent.run.recorded` | 判断記録・役割実行の記録（ADR-0041）。以下この節の行は全て `episode_events` の投影（§10） |
 | `intervention.command.received` / `intervention.command.finished` | 介入 command の受付・終端（`outcome` に command の状態） |

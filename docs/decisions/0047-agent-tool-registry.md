@@ -215,3 +215,22 @@ OFF のとき: 既存 spec 1.0・Template・workflow・日次経路は変更な�
 - `strategy@1.1` / `learning@1.1` の追加で spec が増える。1.0 を使う Template は残り、当面は並存する。
 - Historian は最小の handler（claim 抽出 → 根拠収集 → `fact_check_report`）で、台本への自動反映はしない（提案のみ）。
 - 運用 UI は後続（API と永続化のみ）。
+
+## 実装メモ（core 実装時の差分。2026-10-18）
+
+ADR の決定は変えない。実装で確定した点だけを残す。
+
+- `historian@1.0` の **spec は未登録**。`AgentSpec` は `handler_ref` を必須とし、`HANDLERS` / `AGENT_INPUT_NAMES` /
+  `AgentHandlerRef` の一致を既存テストが強制するため、handler の無い spec は作れない。`AgentRole.HISTORIAN`・RoleSpec・
+  `fact_check_report`（`FactCheckReport` 1.0）・migration 0020 の語彙・許可 tool（`HISTORIAN_TOOL_REFS`）は入れた。
+  handler を足すコミットで `AgentHandlerRef.HISTORIAN_AGENT_V1` と spec を同時に登録し、`PINNED_HASHES` に足す。
+- `strategy@1.1` / `learning@1.1` は 1.0 と同じ `handler_ref` を使う（tool を呼ぶ handler の改修は別の変更）。
+  差分は `spec_version`・`max_llm_calls`（3）・`allowed_tool_ids` のみ（`test_v1_1_differs_from_v1_0_only_in_version_budget_and_tools`）。
+- `call_tool` の拒否（許可外・未登録・入力違反・上限超過）は例外（`ToolNotAllowedError` とその派生 2 つ）。結果の状態は
+  `ToolEnvelope`。拒否の理由は `tool_invocations` と `agent.tool.refused` の `reason` に残る。
+- `agent_tool_calls.agent_run_key` は FK にしない（`agent_runs` は stage の保存後に書かれ、tool は stage の途中で走る）。
+- ログ: `tool_id` は既存の top-level `tool_name` に、その他（`tool_call_id` / `tool_version` / `agent_role` / `status` /
+  `cost_class` / `cache_hit`）は `attributes` に入れた。専用の top-level フィールドは足していない（mapping の変更を避けるため）。
+  OpenSearch で `status` 等を集計する需要が出たらフィールド化する（log-contract と mapping を同時に更新）。
+- executor の登録は `infrastructure/agents/tools/__init__.py` の `_research_executors` / `_analytics_executors`
+  の本文だけを書き換える（並行開発で merge が衝突しない形）。

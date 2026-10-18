@@ -11,6 +11,8 @@
 | `JPMAS2_AGENTIC_WORKFLOWS` | `false` | agentic workflow / agent activity の登録と `StartAgenticProduction`（読み手は P1） |
 | `JPMAS2_ENABLED_AGENTS` | 空 | 有効な agent role（`AgentRole` の値のカンマ区切り。例 `strategy,creative_director`）。空は全て無効 |
 | `JPMAS2_AGENT_LLM` | `codex` | agent の LLM。`codex` / `fake` のみ。`fake` は隔離試験スタック専用の決定的な偽物 |
+| `JPMAS2_AGENT_TOOLS` | `false` | Agent Tool Registry（ADR-0047）。無効なら `ToolGateway` は従来どおりで、`agent_tool_calls` は書かれない。有効でも実行できるのは次の `JPMAS2_ENABLED_TOOLS` にある tool だけ |
+| `JPMAS2_ENABLED_TOOLS` | 空 | 有効な tool_id（`ToolId` の値のカンマ区切り）。空は何も有効でない |
 
 - `JPMAS2_ENABLED_AGENTS` の未知の名前は**起動時に失敗**する（誤記で黙って何も有効にならない状態を作らない）。
   読み取りは `enabled_agent_roles(settings)`。無効な role の stage は P1 で `agent_disabled` として止まる。

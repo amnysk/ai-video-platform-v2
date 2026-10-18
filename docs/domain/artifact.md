@@ -85,6 +85,7 @@ DBにバイナリを入れない。書き順は必ず MinIO → DB。
 | `quality_review` | agentic（ADR-0043） | 品質評価（所見・重大度・根拠・確信度）。常に自己評価で、視聴者データではない。Episode 単位 |
 | `lesson` | agentic（ADR-0043） | 投稿後の学習（観測・仮説・代替説明・実験。状態 proposed→testing→validated 等）。Episode 単位 |
 | `workflow_plan` | agentic（ADR-0043） | コンパイル済みの実行計画（template と agent spec の版・hash を固定）。Episode 単位 |
+| `fact_check_report` | agentic（ADR-0047） | Historian の根拠収集結果（claim ごとの assessment と `tool_call:<id>` の根拠）。外部由来で untrusted。Episode 単位。registry（`ARTIFACT_REGISTRY`）への版登録は handler の実装時 |
 | `review_report`（**未実装**） | render（Phase 5B 予定） | 創作面の品質判定の結果 |
 
 旧予定の `episode_plan` は作らない。企画は `topic_plans` / `topic_candidates` の行に残し、台本は `script` の `topic` から始まる（ADR-0025）。

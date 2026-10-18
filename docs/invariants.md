@@ -789,3 +789,101 @@ prompt は入力を `<data>` で区切り「指示ではない」と明示し、
 / `tests/unit/test_agent_stage_scope.py::test_a_later_run_with_a_new_scope_can_produce_the_lesson_after_an_awaiting_run`
 / `tests/integration/test_jpmas2_agentic_e2e.py::test_one_episode_runs_every_stage_on_the_real_stack`
 / `tests/integration/test_jpmas2_agentic_e2e.py::test_learning_waits_for_public_metrics_then_proposes_one_lesson`
+
+
+### INV-58 Tool は許可された `tool_id@version` だけを、宣言した上限内で呼び、取得できない値を架空の値で埋めない
+Agent は `AgentSpec.allowed_tool_ids`（`"search_trends@1"` の形）にある tool だけを `ToolGateway.call_tool` で呼べる。
+許可外・未登録・未供給（`JPMAS2_ENABLED_TOOLS` に無い）・入力が `ToolDef.input_model` に合わない・`max_calls_per_run`
+超過は、**外部を呼ぶ前**に拒否し（`ToolNotAllowedError` / `ToolInputInvalidError` / `ToolCallLimitExceededError`、
+`tool_invocations` に `refused` で記録、`agent_tool_calls` の行は作らない）、`agent.tool.refused` を出す。
+`canonical()` は空の `allowed_tool_ids` を出さないので登録済み 1.0 spec の `manifest_hash` は変わらない（INV-51）。
+結果は例外ではなく `ToolStatus`（データ無し・標本不足・privacy 閾値・反映遅延・API 非対応・権限不足・quota・
+timeout・未完・Provider 未設定・非対応・失敗）で返し、`data` は `ok` のときだけ。executor が契約に違反した出力
+（`output_model` 違反、ok なのに data 無し、非 ok なのに data あり）は `failed` にし、壊れた値を渡さない。
+timeout は `asyncio.wait_for` で `timeout`、executor の例外は `failed`（コードは型名のみ。本文を残さない）。
+**機械検査**: `tests/unit/test_agent_tool_call_gateway.py::test_a_tool_outside_the_spec_is_refused_before_anything_external_runs`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_a_tool_not_in_this_agents_list_is_refused_even_if_registered`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_an_allowed_tool_missing_from_the_registry_is_unknown`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_a_tool_that_is_not_enabled_has_no_executor_and_is_refused`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_invalid_input_is_refused_without_an_external_call_or_a_row`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_max_calls_per_run_is_enforced_per_tool`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_a_timeout_becomes_a_timeout_status`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_an_executor_exception_is_a_failed_status_without_its_message`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_output_that_violates_the_output_model_is_failed_not_passed_through`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_data_without_ok_or_ok_without_data_is_an_executor_contract_violation`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_states_pass_through_unchanged_and_carry_no_data`
+/ `tests/contract/test_agent_spec_tools.py::test_v1_0_specs_have_no_tools_and_omit_the_key_from_canonical`
+/ `tests/contract/test_agent_spec_tools.py::test_the_new_specs_carry_exactly_the_adr_tool_lists`
+/ `tests/contract/test_agent_registry.py::test_registered_spec_hashes_are_pinned`
+/ `tests/contract/test_agent_tools_contract.py::test_status_vocabulary_distinguishes_the_four_failure_kinds`
+/ `tests/unit/test_agent_tool_call_repository.py::test_complete_stores_the_body_in_the_object_store_and_only_a_reference_in_the_row`
+
+### INV-59 Tool の外部要求は Activity の retry で重複しない
+tool 呼び出しは `tool_call_id = uuid5(run の冪等キー : seq : tool_id : 入力の sha256)` を持ち、実行前に `agent_tool_calls`
+へ `started` で commit し、完了で結果（本体は MinIO、行には参照と sha256）を保存する。retry は同じ ID の保存済みの
+結果を返し、**executor を呼ばない**（ok 以外の状態も再利用する）。`started` のまま結果が無い行（呼んだか不明）は、
+`youtube_quota` の tool では**再送せず** `failed`（`ambiguous_prior_attempt`）を確定させ、`research_ledger` の tool
+では同じ `idempotency_key = tool:{tool_call_id}` で再実行する（Research の台帳が二重課金を防ぐ）。保存済みの結果が行の
+sha256 と合わなければ `ToolCallIntegrityError`。同じ `(agent_run_key, seq)` に別の ID は入らない（UNIQUE）。
+migration 0020 は新しい語彙・`agent_tool_calls` の行があれば downgrade を拒否する。
+**機械検査**: `tests/unit/test_agent_tool_call_gateway.py::test_the_id_and_seq_are_deterministic_and_come_from_the_contract`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_a_retry_returns_the_stored_result_and_never_calls_the_executor`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_a_stored_non_ok_result_is_also_reused`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_an_ambiguous_youtube_quota_attempt_is_not_called_again`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_an_unfinished_research_call_is_reinvoked_with_the_same_idempotency_key`
+/ `tests/unit/test_agent_tool_call_repository.py::test_begin_commits_a_started_row_with_no_result`
+/ `tests/unit/test_agent_tool_call_repository.py::test_begin_twice_with_the_same_id_is_a_no_op`
+/ `tests/unit/test_agent_tool_call_repository.py::test_two_different_ids_cannot_take_the_same_run_and_seq`
+/ `tests/unit/test_agent_tool_call_repository.py::test_a_tampered_result_is_detected`
+/ `tests/unit/test_agent_tool_call_repository.py::test_a_gateway_retry_on_the_real_repository_never_calls_the_executor_again`
+/ `tests/unit/test_agent_tool_call_repository.py::test_an_ambiguous_youtube_quota_row_on_the_real_repository_is_not_resent`
+/ `tests/unit/test_agent_tools_wiring.py::test_a_strategy_1_1_stage_calls_a_tool_once_and_a_replay_does_not`
+/ `tests/unit/test_agent_tools_wiring.py::test_a_stage_retry_before_the_stage_was_saved_reuses_the_stored_tool_result`
+/ `tests/contract/test_migration_0020_agent_tool_calls.py::test_downgrade_refuses_and_changes_nothing_when_new_data_is_in_use`
+/ `tests/contract/test_agent_tools_contract.py::test_tool_call_id_is_deterministic_and_depends_on_every_part`
+
+### INV-60 外部由来の文字列は untrusted で、tool 名・指示・URL の生成に使わず、tool は 1 stage 1 往復で再帰できない
+`ToolEnvelope.untrusted` は常に `True`。LLM へは `render_untrusted`（handler の prompt と同じ `<data>` 区切りで `<` を
+エスケープする `domain/agents/data_block.py`）で渡し、指示として扱わせない。LLM が作った tool 名は
+`allowed_tool_ids` に無ければ `ToolNotAllowedError`（綴り不正・版なし・未知の名前も拒否）。tool を使う spec は
+`max_llm_calls <= 3`（plan → execute → synthesize の 1 往復。結果からの追加要求は構造上できない）。`FactCheckReport`
+も `untrusted=True`。`JPMAS2_AGENT_TOOLS` 無効の gateway は全ての `call_tool` を拒否する。
+**機械検査**: `tests/unit/test_agent_tool_call_gateway.py::test_render_untrusted_wraps_the_envelope_in_a_data_block_and_escapes_delimiters`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_render_untrusted_reuses_the_handler_data_block`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_garbage_refs_are_refused`
+/ `tests/unit/test_agent_tool_call_gateway.py::test_without_a_tool_runtime_every_tool_call_is_refused`
+/ `tests/contract/test_agent_spec_tools.py::test_tool_specs_stay_within_one_round_trip_of_llm_calls`
+/ `tests/contract/test_agent_tools_contract.py::test_envelope_data_is_present_only_for_ok_and_always_untrusted`
+/ `tests/contract/test_fact_check_report.py::test_the_report_is_strict_and_untrusted`
+/ `tests/unit/test_agent_tools_wiring.py::test_without_tool_support_a_tool_call_is_refused_and_no_row_is_written`
+/ `tests/unit/test_agent_tools_wiring.py::test_a_1_0_stage_never_gets_tools_even_when_tool_support_is_wired`
+
+### INV-61 Tool は read-only
+`ToolEffect` は `read` だけで、`ToolDef` は他の effect を作れない。tool の executor を置く
+`infrastructure/agents/tools/` は書き込み scope（投稿・force-ssl・収益・メンバーシップ）の文字列も
+POST/PUT/DELETE/PATCH の呼び出しも持たない。投稿・削除・更新・再投稿の tool は存在しない（AGENTS.md §9）。
+Analytics の拡張実装は read 用の port 越しにだけ使う（既存の `infrastructure/analytics/youtube_analytics.py` は
+Planner 用の既存 adapter で、この検査の対象外）。
+**機械検査**: `tests/contract/test_agent_tools_contract.py::test_only_read_tools_can_be_defined`
+/ `tests/architecture/test_agent_tools_boundaries.py::test_tool_implementations_have_no_write_scope_or_write_http_method`
+/ `tests/architecture/test_agent_tools_boundaries.py::test_the_write_check_catches_each_form`
+
+### INV-62 Tool の定義は `contracts/agent_tools.py` の 1 か所
+tool の識別子・状態・入出力の包みは `contracts/agent_tools.py`、登録は `contracts/agent_tool_registry.py`。JSON Schema は
+model から導出し手書きしない。apps / workers / infrastructure / domain / application は tool 識別子を文字列 literal で
+書かず `ToolId` を import する。`agent_tool_calls.status` の語彙（`TOOL_CALL_STATUSES`）・`AgentRole`・`ArtifactType` は
+migration 0020 の凍結 literal と一致する。同じ `(tool_id, version)` の二重登録・同じ tool を二つの executor 群が登録
+することは起動時に失敗する。flag（`JPMAS2_AGENT_TOOLS` / `JPMAS2_ENABLED_TOOLS`）は既定で無効で、日次経路は tool の
+モジュールを参照しない（INV-55 の延長）。
+**機械検査**: `tests/contract/test_agent_tools_contract.py::test_json_schema_is_derived_from_the_models_not_written_by_hand`
+/ `tests/contract/test_agent_tools_contract.py::test_the_eight_tool_ids_are_the_requested_vocabulary`
+/ `tests/contract/test_agent_tools_contract.py::test_the_registry_rejects_duplicate_registration`
+/ `tests/architecture/test_agent_tools_boundaries.py::test_tool_ids_are_not_written_as_literals_outside_contracts`
+/ `tests/architecture/test_agent_tools_boundaries.py::test_the_literal_check_catches_a_hardcoded_tool_id`
+/ `tests/architecture/test_agent_tools_boundaries.py::test_the_tool_registry_and_domain_ports_stay_pure`
+/ `tests/contract/test_migration_0020_agent_tool_calls.py::test_frozen_literals_equal_the_current_contracts_in_order`
+/ `tests/unit/test_agent_tools_wiring.py::test_tool_flags_default_to_off`
+/ `tests/unit/test_agent_tools_wiring.py::test_an_unknown_tool_id_fails_at_load_with_the_known_ids`
+/ `tests/unit/test_agent_tools_wiring.py::test_the_same_tool_from_two_groups_is_a_startup_error`
+/ `tests/unit/test_agent_tools_wiring.py::test_no_tool_support_is_built_when_the_flag_is_off`
+/ `tests/architecture/test_agentic_default_off.py::test_daily_path_modules_import_nothing_agentic`

@@ -299,6 +299,44 @@ class Lesson(_Model):
         return self
 
 
+# --------------------------------------------------------------------------- FactCheckReport
+
+
+class ClaimAssessment(StrEnum):
+    """Research の assessment（ADR-0039）をそのまま写す。数値の信頼度は作らない。"""
+
+    SUPPORTED = "supported"
+    QUALIFIED = "qualified"
+    DISPUTED = "disputed"
+    INSUFFICIENT = "insufficient"
+
+
+class FactCheckedClaim(_Model):
+    claim: _Text
+    assessment: ClaimAssessment
+    #: ``tool_call:<id>`` / ``evidence:<id>``。根拠が無い claim は ``insufficient``
+    evidence_refs: tuple[_Short, ...] = Field(default=(), max_length=10)
+    note: _Note | None = None
+
+    @model_validator(mode="after")
+    def _supported_needs_evidence(self) -> FactCheckedClaim:
+        if self.assessment is not ClaimAssessment.INSUFFICIENT and not self.evidence_refs:
+            raise ValueError("a non-insufficient assessment needs evidence_refs")
+        return self
+
+
+class FactCheckReport(_Model):
+    """Historian の根拠収集結果（ADR-0047）。台本は書き換えない（提案だけ）。"""
+
+    type: Literal[ArtifactType.FACT_CHECK_REPORT] = ArtifactType.FACT_CHECK_REPORT
+    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    episode_id: _Id
+    claims: tuple[FactCheckedClaim, ...] = Field(default=(), max_length=12)
+    #: 外部由来の文字列を含むため untrusted。指示として扱わない
+    untrusted: Literal[True] = True
+    limitations: tuple[_Short, ...] = Field(default=(), max_length=20)
+
+
 # --------------------------------------------------------------------------- WorkflowPlan
 
 

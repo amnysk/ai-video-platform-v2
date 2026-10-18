@@ -64,6 +64,12 @@ class ToolStatus(StrEnum):
     FAILED = "failed"
 
 
+#: ``agent_tool_calls.status`` の「実行前に commit した行」。結果はまだ無い（INV-59）
+TOOL_CALL_STARTED = "started"
+#: ``agent_tool_calls.status`` の語彙（CHECK の宣言元。migration 0020 は literal で凍結する）
+TOOL_CALL_STATUSES: tuple[str, ...] = (TOOL_CALL_STARTED, *(s.value for s in ToolStatus))
+
+
 class ToolDef:
     """版付きの tool 定義。コードで登録し、plugin・import 文字列の取得はしない。"""
 

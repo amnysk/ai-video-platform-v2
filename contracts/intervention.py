@@ -209,6 +209,8 @@ class AgentRole(StrEnum):
     CREATIVE_DIRECTOR = "creative_director"
     QUALITY_REVIEWER = "quality_reviewer"
     LEARNING = "learning"
+    #: ADR-0047: 史実の根拠収集（read-only tool のみ。台本への反映は提案だけ）
+    HISTORIAN = "historian"
 
 
 class AgentRunOutcome(StrEnum):
