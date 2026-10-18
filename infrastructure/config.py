@@ -6,7 +6,7 @@ import logging
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from contracts.intervention import (
@@ -240,6 +240,11 @@ class Settings(BaseSettings):
     #: 空 = CORS middleware を付けない。
     #: 読み取りは ``cors_origins``（``*`` は拒否する）
     api_cors_origins: str = ""
+
+    # --- Agent Tool: YouTube Analytics（ADR-0047 §3） ---
+    #: ``AGENT_TOOLS_DAILY_ANALYTICS_CALLS``。Analytics tool の 1 日あたりの呼び出し回数の上限。
+    #: quota 単価は公式に見つからないため、単価を仮定せず回数で制限する（quota 使用量は unknown）
+    agent_tools_daily_analytics_calls: int = Field(default=50, ge=1)
 
     # --- JP-MAS-001 判断記録の捕捉（ADR-0041、担当A） ---
     #: Topic Planner（producer）の実行記録（ContextSnapshot・agent_run）と choose_topic の
