@@ -223,9 +223,9 @@ def wrong_artifact_handler() -> AgentHandler:
 
 
 def stage_request(
-    role: AgentRole, episode_id: str, *, stage_id: str | None = None
+    role: AgentRole, episode_id: str, *, stage_id: str | None = None, version: str = "1.0"
 ) -> tuple[RunAgentStageRequest, AgentSpec]:
-    spec = resolve_agent_spec(role, "1.0")
+    spec = resolve_agent_spec(role, version)
     stage = PlannedStage(
         stage_id=stage_id or role.value,
         handler=spec.handler_ref.value,
@@ -265,6 +265,7 @@ class World:
         enabled: frozenset[AgentRole] | None = None,
         agentic_enabled: bool = True,
         rate: Decimal | None = RATE,
+        tool_support: Any = None,
         **budget: Any,
     ) -> AgentActivities:
         return AgentActivities(
@@ -277,6 +278,7 @@ class World:
             llm_factory=lambda _e, _s, _p: self.llm,
             command_port=SessionCommandPort(self.session_factory, self.starter),
             handlers=handlers,
+            tool_support=tool_support,
         )
 
 

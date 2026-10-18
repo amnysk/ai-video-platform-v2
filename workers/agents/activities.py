@@ -64,7 +64,7 @@ from contracts.states import ReservationStatus
 from domain.agents.handlers import HANDLERS, needs_llm
 from domain.agents.ports import AgentLlm
 from domain.agents.runtime import AgentHandler, AgentInput, AgentOutput, AgentOutputRejected
-from domain.agents.tool_gateway import ToolFn, ToolGateway
+from domain.agents.tool_gateway import ToolFn, ToolGateway, ToolSupport
 from domain.errors import (
     AgentBudgetRefusedError,
     EpisodeHeldError,
@@ -145,6 +145,7 @@ class AgentActivities:
         command_port: CommandPort,
         metrics: PublicMetricsPort | None = None,
         handlers: Mapping[AgentHandlerRef, AgentHandler] | None = None,
+        tool_support: ToolSupport | None = None,
         clock: Callable[[], datetime] = _utcnow,
     ) -> None:
         self._sf = session_factory
@@ -157,6 +158,8 @@ class AgentActivities:
         self._port = command_port
         self._metrics = metrics
         self._handlers = HANDLERS if handlers is None else handlers
+        #: ``JPMAS2_AGENT_TOOLS`` 有効のときだけ渡される（None なら gateway は従来どおり。ADR-0047）
+        self._tool_support = tool_support
         self._clock = clock
 
     def activities(self) -> Sequence[Callable[..., object]]:
@@ -257,7 +260,15 @@ class AgentActivities:
         recording = RecordingLlm(llm)
         queued: list[dict[str, Any]] = []
         gateway = ToolGateway(
-            spec, policy, recording, self._tools(request.episode_id, spec, queued)
+            spec,
+            policy,
+            recording,
+            self._tools(request.episode_id, spec, queued),
+            None
+            if self._tool_support is None
+            else self._tool_support.runtime(
+                episode_id=request.episode_id, run_key=key, clock=self._clock
+            ),
         )
         output: AgentOutput | None = None
         rejected: str | None = None

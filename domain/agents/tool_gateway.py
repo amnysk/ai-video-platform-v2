@@ -86,6 +86,29 @@ class ToolRuntime:
     clock: Callable[[], datetime] = _utcnow
 
 
+@dataclass(frozen=True)
+class ToolSupport:
+    """run に依らない tool の供給（worker が 1 度組み立てる）。flag 無効なら作らない。"""
+
+    defs: Mapping[str, ToolDef]
+    executors: Mapping[ToolId, ToolExecutor]
+    store: ToolCallStore
+    observer: ToolObserver = field(default_factory=NoopToolObserver)
+
+    def runtime(
+        self, *, episode_id: str, run_key: str, clock: Callable[[], datetime] = _utcnow
+    ) -> ToolRuntime:
+        return ToolRuntime(
+            defs=self.defs,
+            executors=self.executors,
+            store=self.store,
+            episode_id=episode_id,
+            run_key=run_key,
+            observer=self.observer,
+            clock=clock,
+        )
+
+
 class ToolGateway:
     def __init__(
         self,

@@ -85,7 +85,7 @@ class AgentSpec:
     termination: tuple[str, ...]
     may_create_revisions: bool
     #: ADR-0047: 呼んでよい Agent Tool（``"search_trends@1"`` の形）。空 = tool 無し。
-    #: ``canonical()`` は空のとき**キーを出さない**（登録済み 1.0 spec の manifest_hash を変えない。INV-51）
+    #: ``canonical()`` は空のとき**キーを出さない**（1.0 spec の manifest_hash を変えない。INV-51）
     allowed_tool_ids: tuple[str, ...] = ()
 
     def canonical(self) -> dict[str, object]:
@@ -277,7 +277,9 @@ _TOOL_SPECS = (
     ),
 )
 
-AGENT_SPECS: dict[tuple[AgentRole, str], AgentSpec] = {(s.role, s.spec_version): s for s in (*_SPECS, *_TOOL_SPECS)}
+AGENT_SPECS: dict[tuple[AgentRole, str], AgentSpec] = {
+    (s.role, s.spec_version): s for s in (*_SPECS, *_TOOL_SPECS)
+}
 
 
 def resolve_agent_spec(

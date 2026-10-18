@@ -94,3 +94,21 @@ SQLite + インメモリ ArtifactStore。PostgreSQL 固有の挙動は integrati
 | started が無い complete | 行が無い完了を許さない |
 | gateway + 実 repository の retry | executor 0 回・行 1 件（INV-59 を永続化込みで確認） |
 | ambiguous youtube_quota | started 行が残っていれば再送せず failed を確定し、行にも `ambiguous_prior_attempt` が残る |
+
+## tests/unit/test_agent_tools_wiring.py（flag・配線・観測）
+
+| テスト | 守るもの |
+|---|---|
+| 既定は全て OFF | `JPMAS2_AGENT_TOOLS=false`・`JPMAS2_ENABLED_TOOLS` 空（INV-55 の延長。`test_agentic_flags.py` と同形） |
+| カンマ区切り・未知の ID は起動時に失敗 | 誤記で黙って何も有効にならない（`JPMAS2_ENABLED_AGENTS` と同じ扱い） |
+| flag OFF なら support を作らない | OFF で executor・store・observer を組み立てない。有効な tool が設定されていても |
+| flag ON は DB store と logging observer | 本番の組み合わせが配線される。実 tool が無いうちは executor は空 |
+| 有効な tool だけ executor を持つ | `JPMAS2_ENABLED_TOOLS` に無い tool は gateway が `tool_not_provided` で拒否できる |
+| 二つの tool 群が同じ tool を登録 | 起動時に失敗（並行開発の取り違えを黙って上書きしない） |
+| strategy@1.1 の stage が tool を 1 回呼ぶ・replay は 0 回 | Activity 配線込みで INV-59。行は `ok / seq=1 / strategy / 1.1`、本文は行に無い |
+| stage の保存前に落ちた retry | 同じ run_key・同じ入力で同じ `tool_call_id` になり、保存済みの結果を使って外部を呼ばない |
+| support 無し（flag OFF）の worker | tool 呼び出しは `ToolNotAllowedError`（非再試行）、`agent_tool_calls` は 0 行 |
+| 1.0 の stage | tool support があっても tool を持たない（既存 spec の挙動は不変） |
+| logging observer | ID・状態・時間・属性だけ。入力・結果の秘密文字列が LogRecord に無い。実 stage でも同じ |
+| log 故障 | observer の発行が壊れても業務に伝播しない（INV-38） |
+| compose の pass-through | agent-worker が既定 OFF で flag を受け取る |

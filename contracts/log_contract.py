@@ -400,6 +400,9 @@ class EventName(StrEnum):
     # Research
     RESEARCH_REQUEST_STARTED = "research.request.started"
     RESEARCH_REQUEST_FINISHED = "research.request.finished"
+    # Agent Tool（ADR-0047 §8）。引数・結果の本文・token は出さない（ID と状態と時間だけ）
+    AGENT_TOOL_COMPLETED = "agent.tool.completed"
+    AGENT_TOOL_REFUSED = "agent.tool.refused"
     # 運用異常（既存 operational_anomalies の記録）
     ANOMALY_RECORDED = "anomaly.recorded"
     # 判断記録と介入（ADR-0041）。``contracts.intervention.InterventionEvent`` と

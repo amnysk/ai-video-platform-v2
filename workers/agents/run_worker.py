@@ -24,6 +24,7 @@ from contracts.agents import AgentSpec, ModelPolicy
 from domain.agents.ports import AgentLlm
 from infrastructure.agents.codex_llm import CodexAgentLlm
 from infrastructure.agents.fake_llm import FakeAgentLlm
+from infrastructure.agents.tools import build_tool_support
 from infrastructure.config import Settings, enabled_agent_roles
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.intervention.budget import budget_policy_from_settings
@@ -114,6 +115,10 @@ async def main() -> None:
         llm_factory=llm_factory_for(settings),
         command_port=SessionCommandPort(
             session_factory, TemporalCommandStarter(client, session_factory)
+        ),
+        # JPMAS2_AGENT_TOOLS が無効なら None（gateway は従来どおり。ADR-0047）
+        tool_support=build_tool_support(
+            settings, session_factory=session_factory, store=store, bucket=settings.minio_bucket
         ),
     )
     worker = build_worker(client, activities)
