@@ -80,7 +80,7 @@ def _executors(**over: Any):
         ),
         ToolId.FETCH_SOURCES: status_only(ToolStatus.NO_DATA),
     }
-    base.update(over)
+    base.update(over)  # type: ignore[arg-type]
     return base
 
 
