@@ -304,6 +304,26 @@ class ToolGateway:
         self._finish_tool(definition, envelope, seq, t0, cache_hit=cache_hit, error_code=error_code)
         return envelope
 
+    @property
+    def has_tool_runtime(self) -> bool:
+        """``JPMAS2_AGENT_TOOLS`` が有効で tool を実行できる gateway か（無効は全て拒否）。"""
+        return self._runtime is not None
+
+    def available_tools(self) -> tuple[ToolDef, ...]:
+        """この run で実際に呼べる tool（spec が許可・登録済み・executor が供給済み）。
+
+        handler が plan の候補を作るための参照で、実行の可否は ``call_tool`` が改めて検査する。
+        """
+        runtime = self._runtime
+        if runtime is None:
+            return ()
+        found: list[ToolDef] = []
+        for ref in self._spec.allowed_tool_ids:
+            definition = runtime.defs.get(ref)
+            if definition is not None and definition.tool_id in runtime.executors:
+                found.append(definition)
+        return tuple(found)
+
     def _admit_tool(self, tool_ref: str) -> ToolDef:
         """許可・定義・供給を検査する。外部は呼ばない。"""
         runtime = self._runtime

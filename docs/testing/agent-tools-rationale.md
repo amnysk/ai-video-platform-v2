@@ -237,3 +237,23 @@ SQLite + インメモリ ArtifactStore。PostgreSQL 固有の挙動は integrati
 | 日次上限は当日の analytics 行だけを数える | research や別の日の呼び出しで analytics が止まらない。gateway が先に begin するので今回分を含めて比べる |
 | adapter 未注入なら executor を持たない | 組めない adapter を偽物で埋めず、gateway の拒否に任せる（INV-58） |
 | extras は組めないものを入れない | OAuth 設定が無いのに provider を作らない・秘密を出さない |
+
+## Agent 統合: 共通の tool 往復 helper（`domain/agents/handlers/tool_use.py`）
+
+### tests/unit/test_agent_tool_use.py
+
+| テスト | 守るもの |
+|---|---|
+| runtime 無し（flag OFF）は LLM を呼ぶ前に拒否 | OFF の worker で tool 版 spec が走って課金だけ発生しない（INV-55 の延長） |
+| 空の plan | tool 無しでも成立し、LLM は plan の 1 回だけ。外部も DB も触れない |
+| 逐次・計画順 | 並列・並べ替えで `seq`（= `tool_call_id`）が retry で変わらない（INV-59 の前提） |
+| 未知・許可外・版違い・型違いは捨てる | LLM が作った tool 名・入力が外部を呼ばない（INV-58/60）。理由だけが残る |
+| 入力違反 | 行も外部呼び出しも作らない |
+| 上限（tool ごと + 絶対上限 6）・重複 | 計画の水増しで外部呼び出しが増えない。同じ要求を 2 回呼ばない |
+| 壊れた plan | 例外にせず「tool 無し」で続ける（plan は助言であって契約ではない） |
+| 呼べる tool が無い | plan の LLM を呼ばない（呼ぶ意味のない課金枠を取らない） |
+| 結果に「もう一度呼べ」とあっても | 追加の呼び出しも LLM も増えない（INV-60）。結果は区切りを閉じられない `<data>` |
+| 失敗・未完・権限不足 | 例外でなく注意文（機械可読の状態名）。data は無いまま（INV-58） |
+| plan schema は ToolDef から導出 | 手書きしない（INV-62）。許可外の tool は schema にも出ない。`$ref` が全て解決する |
+| 修復は 1 回 | plan 1 + 合成 1 + 修復 1 = 3 で `max_llm_calls` に収まる。2 度目の違反は Rejected で 4 回目を呼ばない |
+| 修復 prompt は違反の場所だけ | LLM が出した値を再掲しない |
