@@ -186,5 +186,6 @@ async def get_application_service(
         ),
         starter=loop_starter(settings),
         agentic_enabled=settings.jpmas2_agentic_workflows,
+        agent_tools_enabled=settings.jpmas2_agent_tools,
         observer=LoggingOperationObserver(),
     )

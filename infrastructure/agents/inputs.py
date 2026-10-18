@@ -97,6 +97,8 @@ REQUIRED_INPUTS: dict[AgentHandlerRef, tuple[str, ...]] = {
     AgentHandlerRef.CREATIVE_DIRECTOR_V1: ("user_brief", "strategy_brief", "producer_decision"),
     AgentHandlerRef.QUALITY_REVIEWER_V1: (),
     AgentHandlerRef.LEARNING_AGENT_V1: (),
+    #: 台本が無いときは handler が blocked_missing_input の report を作る（quality と同じ）
+    AgentHandlerRef.HISTORIAN_AGENT_V1: (),
 }
 
 

@@ -35,7 +35,7 @@
 
 ## 3. Artifact Registry（tests/contract/test_artifact_registry.py）
 
-- `test_the_registry_holds_the_seven_adr_0043_entries`: 登録の過不足と、本番 upcaster が空であること。
+- `test_the_registry_holds_the_adr_0043_entries_and_the_adr_0047_fact_check_report`: 登録の過不足と、本番 upcaster が空であること。
 - `test_a_stored_storyboard_v1_is_readable_through_the_registry`: 旧 storyboard v1.0 を読める（INV-54）。
 - `test_a_new_artifact_round_trips`: 新型が registry 経由で読める。
 - `test_an_unknown_schema_version_is_rejected_not_reinterpreted` / `test_a_missing_or_non_string_version_is_rejected` /
@@ -46,7 +46,7 @@
 ## 4. Template の契約とコンパイラ（tests/contract/test_workflow_templates.py、tests/unit/test_workflow_template_compiler.py）
 
 - `test_no_template_or_plan_field_can_express_visibility_budget_or_schedule`: Template から公開設定・予算を拡張できない。
-- `test_the_registered_templates_are_exactly_the_three_adr_templates` / `test_shorts_agentic_has_exactly_the_adr_stage_sequence` /
+- `test_the_registered_templates_are_exactly_the_adr_templates` / `test_shorts_agentic_has_exactly_the_adr_stage_sequence` /
   `test_shorts_reviewed_reviews_before_the_private_upload` / `test_template_handlers_come_from_the_two_registered_vocabularies` /
   `test_template_hash_is_stable_and_sensitive`: ADR §3 の登録内容と hash。
 - `test_every_registered_template_is_structurally_valid_and_compiles_iff_runnable`: 全 Template が構造検査を通り、

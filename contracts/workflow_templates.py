@@ -171,6 +171,44 @@ SHORTS_REVIEWED_1 = WorkflowTemplate(
     max_qa_repair_cycles=2,
 )
 
+# ADR-0047: Agent Tool を使う版。``shorts_agentic@1`` は変えない（pin 済みの計画に影響しない）。
+# strategy / learning は 1.1 の spec、Historian は台本ができた後（入力が script）に置く。
+# 起動は ``JPMAS2_AGENT_TOOLS`` が有効なときだけ（``plan_requires_agent_tools``）。
+_LESSON_TOOLS = TemplateStage(
+    "lesson",
+    AgentHandlerRef.LEARNING_AGENT_V1.value,
+    (),
+    agent_ref="learning@1.1",
+    trigger="public_metrics_available",
+)
+
+SHORTS_AGENTIC_TOOLS_1 = WorkflowTemplate(
+    template_id="shorts_agentic_tools",
+    version="1",
+    format_profile="shorts_en",
+    execution="agentic",
+    runnable=True,
+    stages=(
+        _agent("strategy", AgentHandlerRef.STRATEGY_AGENT_V1, "strategy@1.1"),
+        _existing("producer", _E.PRODUCER_ADOPT, "strategy"),
+        _agent(
+            "creative", AgentHandlerRef.CREATIVE_DIRECTOR_V1, "creative_director@1.0", "producer"
+        ),
+        _existing("script", _E.SCRIPT, "creative"),
+        _agent("historian", AgentHandlerRef.HISTORIAN_AGENT_V1, "historian@1.0", "script"),
+        _existing("storyboard", _E.STORYBOARD, "historian"),
+        _existing("production", _E.PRODUCTION, "storyboard"),
+        _existing("render", _E.RENDER, "production"),
+        _existing("private_upload", _E.PRIVATE_UPLOAD, "render"),
+        TemplateStage(
+            _QUALITY.id, _QUALITY.handler, ("private_upload",), agent_ref=_QUALITY.agent_ref
+        ),
+    ),
+    post_publish=(_LESSON_TOOLS,),
+    max_qa_repair_cycles=0,
+)
+
 TEMPLATES: dict[tuple[str, str], WorkflowTemplate] = {
-    (t.template_id, t.version): t for t in (DAILY_LEGACY_1, SHORTS_AGENTIC_1, SHORTS_REVIEWED_1)
+    (t.template_id, t.version): t
+    for t in (DAILY_LEGACY_1, SHORTS_AGENTIC_1, SHORTS_REVIEWED_1, SHORTS_AGENTIC_TOOLS_1)
 }

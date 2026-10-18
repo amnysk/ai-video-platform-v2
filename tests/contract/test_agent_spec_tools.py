@@ -34,10 +34,17 @@ EXPECTED = {
 
 
 def test_v1_0_specs_have_no_tools_and_omit_the_key_from_canonical() -> None:
+    # historian@1.0 は ADR-0047 §2 で最初から tool を持つ新しい役。凍結するのは既存 4 役の 1.0
     for (role, version), spec in AGENT_SPECS.items():
-        if version == "1.0":
+        if version == "1.0" and role is not AgentRole.HISTORIAN:
             assert spec.allowed_tool_ids == ()
             assert "allowed_tool_ids" not in spec.canonical(), role
+
+
+def test_the_historian_spec_carries_exactly_the_adr_tool_list() -> None:
+    spec = AGENT_SPECS[(AgentRole.HISTORIAN, "1.0")]
+    assert set(spec.allowed_tool_ids) == {"search_historical_facts@1", "fetch_sources@1"}
+    assert spec.canonical()["allowed_tool_ids"] == list(HISTORIAN_TOOL_REFS)
 
 
 def test_the_new_specs_carry_exactly_the_adr_tool_lists() -> None:

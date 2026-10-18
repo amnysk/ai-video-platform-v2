@@ -91,6 +91,7 @@ class ApplicationService:
         starter: AgenticWorkflowStarter,
         agentic_enabled: bool,
         observer: OperationObserver | None = None,
+        agent_tools_enabled: bool = False,
     ) -> None:
         self._commands = commands
         self._reads = reads
@@ -98,7 +99,9 @@ class ApplicationService:
         self._agentic_enabled = agentic_enabled
         self._observer = observer
         self._create_draft = CreateEpisodeDraft(drafts)
-        self._start_production = StartAgenticProduction(drafts, starter, enabled=agentic_enabled)
+        self._start_production = StartAgenticProduction(
+            drafts, starter, enabled=agentic_enabled, agent_tools_enabled=agent_tools_enabled
+        )
         self._propose = ProposeStoryboardChange(commands)
 
     # ------------------------------------------------------------------ 共通（権限・観測）

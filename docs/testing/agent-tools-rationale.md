@@ -237,3 +237,123 @@ SQLite + インメモリ ArtifactStore。PostgreSQL 固有の挙動は integrati
 | 日次上限は当日の analytics 行だけを数える | research や別の日の呼び出しで analytics が止まらない。gateway が先に begin するので今回分を含めて比べる |
 | adapter 未注入なら executor を持たない | 組めない adapter を偽物で埋めず、gateway の拒否に任せる（INV-58） |
 | extras は組めないものを入れない | OAuth 設定が無いのに provider を作らない・秘密を出さない |
+
+## Agent 統合: 共通の tool 往復 helper（`domain/agents/handlers/tool_use.py`）
+
+### tests/unit/test_agent_tool_use.py
+
+| テスト | 守るもの |
+|---|---|
+| runtime 無し（flag OFF）は LLM を呼ぶ前に拒否 | OFF の worker で tool 版 spec が走って課金だけ発生しない（INV-55 の延長） |
+| 空の plan | tool 無しでも成立し、LLM は plan の 1 回だけ。外部も DB も触れない |
+| 逐次・計画順 | 並列・並べ替えで `seq`（= `tool_call_id`）が retry で変わらない（INV-59 の前提） |
+| 未知・許可外・版違い・型違いは捨てる | LLM が作った tool 名・入力が外部を呼ばない（INV-58/60）。理由だけが残る |
+| 入力違反 | 行も外部呼び出しも作らない |
+| 上限（tool ごと + 絶対上限 6）・重複 | 計画の水増しで外部呼び出しが増えない。同じ要求を 2 回呼ばない |
+| 壊れた plan | 例外にせず「tool 無し」で続ける（plan は助言であって契約ではない） |
+| 呼べる tool が無い | plan の LLM を呼ばない（呼ぶ意味のない課金枠を取らない） |
+| 結果に「もう一度呼べ」とあっても | 追加の呼び出しも LLM も増えない（INV-60）。結果は区切りを閉じられない `<data>` |
+| 失敗・未完・権限不足 | 例外でなく注意文（機械可読の状態名）。data は無いまま（INV-58） |
+| plan schema は ToolDef から導出 | 手書きしない（INV-62）。許可外の tool は schema にも出ない。`$ref` が全て解決する |
+| 修復は 1 回 | plan 1 + 合成 1 + 修復 1 = 3 で `max_llm_calls` に収まる。2 度目の違反は Rejected で 4 回目を呼ばない |
+| 修復 prompt は違反の場所だけ | LLM が出した値を再掲しない |
+
+追加（入力方針・引用の検査）: `plan_and_execute` の `policy`（実行前の決定論の入力検査）と `tool_refs`（handler の範囲外の
+tool は外部を呼ばずに拒否）。方針が「この動画の分析以外は読まない」等を LLM の出力に関わらず強制する。
+
+### tests/unit/test_agent_handlers_tools_strategy.py（strategy@1.1）
+
+| テスト | 守るもの |
+|---|---|
+| tool 往復で brief が出る・引用に実行した `tool_call:<id>` が全て入る | 証拠の連結（`StrategyBrief.citations` は既存欄で足りる: 46 字 ≤ 200 字 / 20 件）。判断記録の `evidence_refs` にも同じ ID と tool 由来の参照 |
+| 合成 prompt の結果は `<data>` の中だけ | 外部由来の文字列が指示にならない（INV-60）。plan prompt に出る tool は「spec が許し executor がある」ものだけ |
+| 空の plan | tool 無しでも brief が出る（行 0、LLM 2 回） |
+| 実在しない `tool_call:` の引用 | 引用列・候補の rationale・判断の rationale から決定論で除き、除いた事実を uncertainties に残す。実在する引用は残る |
+| analytics が `permission_denied` | brief は出て `audience_basis=assumed`・uncertainties に tool 名と状態。値を作らない（INV-58）。失敗した呼び出しも citations で辿れる |
+| `pending` / fake provider | 注意文として uncertainties に出る（fake を実調査と呼ばない） |
+| `audience_basis` | LLM の自己申告でも trend の仮説でも変わらない。analytics の実測（十分な動画数）だけで `measured` |
+| tool 結果の注入文 | 呼び出し数・LLM 回数・推薦候補・`audience_basis` が変わらない。区切りを閉じられない |
+| 許可外・存在しない・上限超過の plan | 外部を呼ばずに切り詰め、拒否の事実が uncertainties に出る |
+| 合成の違反 | 修復 1 回で合計 3 回、2 回目の違反は Rejected（4 回目を呼ばない） |
+| runtime 無し | LLM を呼ぶ前に `ToolNotAllowedError`（課金ゼロ） |
+| 1.0 spec | tool を計画せず LLM 1 回・prompt に tool の語が無い（既存挙動の不変） |
+
+### tests/unit/test_agent_handlers_tools_learning.py（learning@1.1、Review の役）
+
+`Lesson` 1.0 は `citations` 欄を持たない。引用は `observations` / `hypotheses` の本文中の `tool_call:<id>` と、
+判断記録の `evidence_refs` で持つ（スキーマは変えない）。
+
+| テスト | 守るもの |
+|---|---|
+| tool 往復で Lesson(proposed) | 仮説が実在する `tool_call:<id>` を引く。判断記録に同じ ID と tool 由来の参照。測定窓・比較の基準は決定論のまま |
+| 実在しない引用・引用の無い仮説 | 実在しない ID は除き、ok の tool 結果があるのに引用の無い仮説は捨てて `sample_note` に残す（根拠の無い改善仮説を出さない） |
+| ok の tool 結果が無い | 仮説は残すが「tool の根拠が無い」と注記し、失敗理由が uncertainties に出る。測定を作らない（INV-58） |
+| private・欠測 | LLM も tool も呼ばない・予約も要らない（INV-57 を 1.1 でも保つ） |
+| 別の動画を読ませない | 分析・維持率は receipt の動画だけ、比較は receipt の動画を含むときだけ。LLM が出した別の ID は外部を呼ばずに拒否 |
+| 別形式の baseline | Shorts と長尺を混ぜない規則が 1.1 でも効く |
+| runtime 無し / 修復 | LLM を呼ぶ前に拒否。合成の違反は修復 1 回 |
+
+### tests/unit/test_agent_handlers_tools_historian.py（historian@1.0）
+
+| テスト | 守るもの |
+|---|---|
+| 登録 | spec の tool が `HISTORIAN_TOOL_REFS`、成果物が `fact_check_report@1.0`、revision を作らない、入力が `script` / `user_brief` |
+| 評価の素通し | tool の assessment・資料 ID をそのまま写し、`tool_call:<id>` / `evidence:<source_id>` を引く。LLM は 1 回（合成しない）。台本は書き換えず提案も出さない。`check_output_contract` を通る（INV-58） |
+| insufficient | 資料を作らず、根拠は tool_call だけ |
+| 知らない評価語 | 推測で supported 等に写さず insufficient + 注記 |
+| 未完・未設定・失敗・timeout | 挙げた主張を全て insufficient（状態名つき）で報告。架空の判定を出さない |
+| tool が返さなかった主張 | 落とさず insufficient で残す |
+| claim の絞り込み | ≤12 件・不正と重複を除く・余分な欄（`assessment` 等）は転送しない。落とした数は limitations に残る。有効な claim が無ければ tool を呼ばない |
+| `fetch_sources` | 資料一覧には依頼 ID が要るが結果にしか無く、結果から次の要求を作ると 1 往復の規則に反する。要求されても外部を呼ばない |
+| 注入 | 台本・tool 結果の命令文は呼び出し数・出力を変えない（INV-60）。report は untrusted のまま、台本の本文を持たない |
+| 台本が無い | LLM も tool も呼ばず `blocked_missing_input` の report（予約も取らない） |
+| runtime 無し | LLM を呼ぶ前に拒否 |
+
+契約の変更: `fact_check_report@1.0` を Artifact Registry に登録（8 件目。Historian の成果物を保存するのに必要）、
+`test_agent_spec_tools` の「1.0 は tool 無し」は既存 4 役の 1.0 に限定（historian@1.0 は最初から tool を持つ）。
+
+## Template `shorts_agentic_tools@1` と起動の flag
+
+### tests/contract/test_workflow_template_agent_tools.py
+
+| テスト | 守るもの |
+|---|---|
+| 既存 Template の hash と `shorts_agentic@1` の `plan_hash`（literal） | tool 版を足しても pin 済みの計画・履歴・replay が変わらない（INV-51/53）。literal は足す前の commit で同じ値になることを確認済み |
+| 工程の並び | strategy@1.1 → producer → creative → script → **historian** → storyboard …、post_publish は learning@1.1。Historian の入力は script なので script の後（creative と script の間では台本が無く常に blocked になる） |
+| 検証とコンパイル | 必須工程の順（INV-53）を満たし、plan が 1.1 / historian の spec 版と hash を固定する。決定的 |
+| tool flag の判定 | tool 版だけが `plan_requires_agent_tools`。既存 Template は要らない |
+| 必須工程を外せない | Historian を足しても storyboard 等は省略できない |
+
+### tests/unit/test_agent_tools_start_gate.py
+
+| テスト | 守るもの |
+|---|---|
+| tool flag OFF で tool 版を起動 | `feature_disabled`（メッセージに `JPMAS2_AGENT_TOOLS`）。starter を呼ばない |
+| 両 flag ON | 起動する |
+| agentic flag OFF | 先にそちらで断る（既存の順序を変えない） |
+| 既存 Template | tool flag が無くても従来どおり起動（INV-55） |
+| CLI | `scripts/agentic.py start` が flag を渡す |
+
+既存テストの変更: `test_workflow_templates` の「登録された Template は 3 つ」を 4 つにした（ADR-0047 の追加。名前と
+参照も更新）。
+
+## 統合: tests/unit/test_agent_tools_strategy_e2e.py（非 Docker）
+
+本物の handler・`AgentActivities._run`・Research executor（provider=fake）・Analytics executor
+（`YouTubeVideoInsightProvider` + `httpx.MockTransport`）・`AgentToolCallRepository`・SQLite・InMemory store。
+LLM だけが台本どおりの fake。Docker の integration は実行していない。
+
+| テスト | 守るもの |
+|---|---|
+| strategy@1.1 の通し | brief が出る。`agent_tool_calls` に research と analytics の行（入力・状態・evidence_refs・research_request_id）。brief の citations と判断の `evidence_refs` に両方の `tool_call:<id>` |
+| 同じ Activity の再実行 | 外部（YouTube・Research 依頼・台帳）も LLM も増えず、行も増えない（INV-59） |
+| tool の後・保存の前に落ちた retry | 同じ `tool_call_id` で保存済みの結果を使う。LLM は再生。外部は増えない |
+| flag OFF | 1.1 は LLM を呼ぶ前に非再試行で拒否、行ゼロ。1.0 は従来どおり（tool support があっても tool を持たない） |
+| 空の plan | tool 無しでも brief |
+| 外部資料のタイトルに注入文 | 呼び出し 2 件・LLM 2 回のまま。DATA の外に出ず、`audience_basis` 等が変わらない（INV-60） |
+| 許可外・上限超過の plan | 外部を呼ばずに切り詰め、拒否が uncertainties に残る |
+| 「もう一度呼べ」を含む結果 | 追加の呼び出しなし（再帰しない） |
+| analytics が `permission_denied` | brief は出て uncertainties に状態、`audience_basis=assumed`、失敗した呼び出しも citations で辿れる |
+| historian の通し | `fact_check_report` が保存され claim の根拠に `tool_call:<id>`、actor は historian、再実行で Research の台帳が増えない |
+
+analytics 側の注入は、Analytics の出力に外部由来のタイトルが無い（数値と日付だけ）ため Research の資料タイトルで検査した。

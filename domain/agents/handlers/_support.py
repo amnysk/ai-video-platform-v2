@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
@@ -53,8 +53,9 @@ def document(agent_input: AgentInput, name: str) -> Mapping[str, Any]:
     return value if value is not None else {}
 
 
-def build_prompt(task: str, data: Mapping[str, Any]) -> str:
-    blocks = "\n".join(_data_block(name, value) for name, value in data.items())
+def build_prompt(task: str, data: Mapping[str, Any], extra_blocks: Sequence[str] = ()) -> str:
+    """``extra_blocks`` は区切り済みの ``<data>`` ブロック（``render_untrusted`` の結果）。"""
+    blocks = "\n".join([*(_data_block(name, value) for name, value in data.items()), *extra_blocks])
     return f"{PROMPT_RULES}\n\nTask: {task}\n\n{blocks}\n"
 
 

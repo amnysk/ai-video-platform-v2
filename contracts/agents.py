@@ -33,6 +33,7 @@ class AgentHandlerRef(StrEnum):
     CREATIVE_DIRECTOR_V1 = "creative_director_v1"
     QUALITY_REVIEWER_V1 = "quality_reviewer_v1"
     LEARNING_AGENT_V1 = "learning_agent_v1"
+    HISTORIAN_AGENT_V1 = "historian_agent_v1"
 
 
 class UnknownAgentSpecError(LookupError):
@@ -173,6 +174,10 @@ TERMINATION: dict[AgentRole, tuple[str, ...]] = {
         "測定が揃い Lesson(status=proposed) を保存した",
         "private のまま・測定欠測・小標本なら awaiting_public_metrics で Lesson を作らず終了した",
     ),
+    AgentRole.HISTORIAN: (
+        "契約を通った FactCheckReport を保存した",
+        "根拠が取得できない claim は insufficient のまま報告した（架空の根拠で埋めない）",
+    ),
 }
 
 _SPECS = (
@@ -242,8 +247,7 @@ LEARNING_TOOL_REFS: tuple[str, ...] = (
     "get_audience_retention@1",
     "compare_video_performance@1",
 )
-#: historian@1.0 の許可 tool。handler（claim 抽出 -> 根拠収集 -> fact_check_report）が入るまで
-#: spec は登録しない（handler_ref の無い spec は作れない。docs/decisions/0047 の実装メモ参照）
+#: historian@1.0 の許可 tool（claim 抽出 -> 根拠収集 -> fact_check_report。ADR-0047 §2）
 HISTORIAN_TOOL_REFS: tuple[str, ...] = ("search_historical_facts@1", "fetch_sources@1")
 
 _TOOL_SPECS = (
@@ -274,6 +278,20 @@ _TOOL_SPECS = (
         False,
         spec_version="1.1",
         tool_ids=LEARNING_TOOL_REFS,
+    ),
+    _spec(
+        AgentRole.HISTORIAN,
+        # 主入力の script は登録 schema を持たない生の成果物なので、登録済みの user_brief を参照する
+        "user_brief@1.0",
+        "fact_check_report@1.0",
+        AgentHandlerRef.HISTORIAN_AGENT_V1,
+        (_T.LLM_GENERATE_JSON, _T.ARTIFACT_READ),
+        TOOL_STAGE_MAX_LLM_CALLS,
+        "0.05",
+        "historian-v1",
+        TERMINATION[AgentRole.HISTORIAN],
+        False,
+        tool_ids=HISTORIAN_TOOL_REFS,
     ),
 )
 

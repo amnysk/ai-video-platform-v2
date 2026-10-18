@@ -30,6 +30,8 @@ AGENT_INPUT_NAMES: dict[AgentHandlerRef, tuple[str, ...]] = {
         "manifest",
     ),
     AgentHandlerRef.LEARNING_AGENT_V1: ("upload_receipt", "measurements", "baseline"),
+    #: ADR-0047: claim の出どころは台本。user_brief は題材の文脈だけ
+    AgentHandlerRef.HISTORIAN_AGENT_V1: ("script", "user_brief"),
 }
 
 AgentOutcome = Literal["produced", "awaiting_public_metrics", "rejected_output"]

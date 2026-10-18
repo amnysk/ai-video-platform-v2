@@ -74,6 +74,8 @@ class Deps:
     store: ArtifactStore
     #: ``Settings.jpmas2_agentic_workflows``
     agentic_enabled: bool
+    #: ``Settings.jpmas2_agent_tools``（ADR-0047。tool 版の template の起動に要る）
+    agent_tools_enabled: bool = False
 
 
 DepsFactory = Callable[[], Awaitable[Deps]]
@@ -101,6 +103,7 @@ async def _default_deps() -> Deps:
         session_factory=session_factory,
         store=store,
         agentic_enabled=settings.jpmas2_agentic_workflows,
+        agent_tools_enabled=settings.jpmas2_agent_tools,
     )
 
 
@@ -206,7 +209,10 @@ async def _start(args: argparse.Namespace, make_deps: DepsFactory, out: TextIO, 
         return 2
     deps = await make_deps()
     result = await StartAgenticProduction(
-        deps.drafts, deps.starter, enabled=deps.agentic_enabled
+        deps.drafts,
+        deps.starter,
+        enabled=deps.agentic_enabled,
+        agent_tools_enabled=deps.agent_tools_enabled,
     ).execute(StartAgenticProductionRequest(episode_id=episode_id))
     _emit(out, result.model_dump(mode="json"))
     return 0

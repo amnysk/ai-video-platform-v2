@@ -28,6 +28,8 @@ _REGISTERED: tuple[ArtifactType, ...] = (
     ArtifactType.QUALITY_REVIEW,
     ArtifactType.LESSON,
     ArtifactType.WORKFLOW_PLAN,
+    #: ADR-0047: Historian の成果物
+    ArtifactType.FACT_CHECK_REPORT,
 )
 
 ARTIFACT_REGISTRY: dict[RegistryKey, type[BaseModel]] = {
