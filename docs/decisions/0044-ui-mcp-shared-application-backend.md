@@ -41,7 +41,10 @@ P0 なし。次の残リスクを承知の上で Accepted とする（いずれ�
 （名前・効果・必要 scope・人限定・入出力 model・HTTP method/path）宣言し、`application/` の Application
 Service が既存の介入 command と読み取りモデルへ委譲し、HTTP route はその薄い adapter にする。**
 
-### 1. 操作カタログ（13 操作）
+### 1. 操作カタログ（13 操作 + ADR-0047 の read 3 操作）
+
+> ADR-0047 §7 が `list_tool_calls` / `get_tool_call` / `get_improvement_trace`（read・scope `read`・`JPMAS2_AGENT_TOOLS`
+> が要る）を足した。下の表は 0044 の決定時の 13 操作で、現在のカタログは `OPERATIONS` が唯一の宣言元。
 
 | 操作 | 効果 | scope | 人限定 | 委譲先 |
 |---|---|---|---|---|

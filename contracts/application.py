@@ -9,13 +9,15 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from contracts.agent_tools import ToolId
 from contracts.agentic import UserBrief
-from contracts.intervention import CommandStatus, SceneOverrideVisual
+from contracts.intervention import AgentRole, CommandStatus, SceneOverrideVisual
 
 
 class OperationErrorCode(StrEnum):
@@ -41,6 +43,10 @@ class OperationErrorCode(StrEnum):
     CHANGE_SET_NOT_FOUND = "change_set_not_found"
     #: 見積りの無い変更は適用しない（未計測を 0 円として扱わない）
     COST_NOT_ESTIMATED = "cost_not_estimated"
+    # ADR-0047 §7（Agent の tool 呼び出しの可視化）で新設
+    TOOL_CALL_NOT_FOUND = "tool_call_not_found"
+    #: 保存された結果が記録した sha256 と合わない。黙って返さず明示的に失敗させる
+    INTEGRITY_ERROR = "integrity_error"
 
 
 class OperationError(Exception):
@@ -204,3 +210,23 @@ class StartAgenticProductionResult(_Frozen):
     started: bool
     #: ADR-0044 §3。worker の確認結果（``started`` は「投入した」であって「実行中」ではない）
     worker_check: WorkerCheck = WorkerCheck.UNKNOWN
+
+
+# ----------------------------------------------------------------------- Agent tool（ADR-0047 §7）
+
+
+class ListToolCallsRequest(_Frozen):
+    """``GET .../tool-calls`` の query。新しい順の keyset ページ。"""
+
+    agent_role: AgentRole | None = None
+    tool_id: ToolId | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    #: keyset cursor（``started_at`` と ``tool_call_id`` の対。``list_episodes`` と同じ形）
+    before: datetime | None = None
+    before_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+    @model_validator(mode="after")
+    def _cursor_is_a_pair(self) -> ListToolCallsRequest:
+        if (self.before is None) != (self.before_id is None):
+            raise ValueError("before and before_id are a pair; send both or neither")
+        return self

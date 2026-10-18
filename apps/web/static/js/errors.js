@@ -85,6 +85,15 @@ export const ERROR_INFO = {
     action: '最新の状態を読み込み直しました。一覧から選び直してください。',
     reload: true,
   },
+  tool_call_not_found: {
+    reason: 'この tool 呼び出しが見つかりません。',
+    action: '一覧から選び直してください。',
+    reload: true,
+  },
+  integrity_error: {
+    reason: '保存された tool の結果が記録と一致しません（改ざんまたは欠落の可能性）。',
+    action: 'この結果は信頼せず、運用担当に知らせてください。',
+  },
   cost_not_estimated: {
     reason: '費用が見積もられていない変更は適用できません（未計測を 0 円として扱いません）。',
     action: '見積りが付くまで適用しないでください。',

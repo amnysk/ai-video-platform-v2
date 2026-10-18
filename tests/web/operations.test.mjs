@@ -9,7 +9,7 @@ const fixture = JSON.parse(readFileSync(repoPath('apps/web/static/operations.jso
 
 test('実カタログを正規化する（path は prefix 込みのまま）', () => {
   const cat = normalizeOperations(fixture);
-  assert.equal(cat.byName.size, 13);
+  assert.equal(cat.byName.size, 16);
   assert.equal(cat.byName.get('resume_production').path, '/v1/intervention/episodes/{episode_id}/resume');
   assert.equal(cat.byName.get('start_agentic_production').humanOnly, true);
   assert.equal(cat.byName.get('apply_approved_change').scope, 'apply');

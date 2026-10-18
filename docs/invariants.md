@@ -899,3 +899,20 @@ command は無い**（`docs/decisions/0047-agent-tool-registry.md` の「Open: h
 / `tests/unit/test_intervention_tool_evidence_target.py::test_a_flag_on_an_unknown_or_foreign_tool_call_is_rejected_and_writes_nothing`
 / `tests/unit/test_intervention_tool_evidence_target.py::test_resending_the_same_flag_command_makes_one_logical_change`
 / `tests/unit/test_intervention_tool_evidence_target.py::test_a_flag_needs_a_matching_target_and_a_review_finding`
+
+### INV-64 tool 呼び出しの可視化は read-only で、検証できない結果を黙って返さず、欠けた鎖を省略しない
+`list_tool_calls` / `get_tool_call` / `get_improvement_trace` は scope `read`・`JPMAS2_AGENT_TOOLS` 有効時のみ（無効なら
+`404 feature_disabled`）で、DB・MinIO に何も書かない。結果の本文は `get_tool_call` だけが MinIO から読み戻し、行の
+`result_sha256` と照合する: 不一致・オブジェクト欠落は `integrity_error`（明示的な失敗）で、`untrusted` の印は保つ。
+入力の秘密らしいキーは `[redacted]`。改善トレースは保存済みの記録だけから決定的に組み、値が無い鎖は `null`/空 + 理由
+（`missing`。モデルの検証が「空の鎖 = 理由あり」を強制する）で示す。測っていない結果を作らない（`result.status`）。
+引用されたが行の無い `tool_call:<id>` は `unresolved_citations` に出す。1 操作 = `application.operation.completed`
+1 行（入力・結果の本文は載せない）。
+**機械検査**: `tests/unit/test_agent_tool_evidence_reader.py::test_none_of_the_reads_writes_anything`
+/ `tests/unit/test_agent_tool_evidence_reader.py::test_a_sha256_mismatch_is_an_explicit_integrity_error`
+/ `tests/unit/test_agent_tool_evidence_reader.py::test_an_empty_episode_names_every_missing_link_with_a_reason`
+/ `tests/unit/test_agent_tool_evidence_reader.py::test_each_missing_link_is_explicit_and_the_rest_stay`
+/ `tests/unit/test_agent_tool_evidence_reader.py::test_no_secret_or_result_body_leaks_into_list_or_trace`
+/ `tests/unit/test_agent_tool_evidence_service.py::test_with_the_flag_off_every_route_is_404_feature_disabled_before_auth`
+/ `tests/unit/test_agent_tool_evidence_service.py::test_an_ai_caller_with_read_may_read_and_one_observation_is_recorded`
+

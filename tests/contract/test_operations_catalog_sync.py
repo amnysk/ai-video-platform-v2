@@ -33,11 +33,11 @@ def test_the_committed_catalog_equals_a_fresh_generation() -> None:
     )
 
 
-def test_the_13_names_match_operations_exactly() -> None:
+def test_the_names_match_operations_exactly() -> None:
     document = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
     names = [o["name"] for o in document["operations"]]
     assert names == [o.name.value for o in OPERATIONS]
-    assert len(names) == len(set(names)) == 13
+    assert len(names) == len(set(names)) == 16
 
 
 def test_each_entry_carries_the_catalog_facts_and_nothing_invented() -> None:

@@ -19,6 +19,7 @@ from tests.support.application_http import (
     BODIES,
     CHANGE_SET,
     EPISODE,
+    TOOL_CALL,
     FakeApplicationService,
     build_app,
     results,
@@ -41,12 +42,18 @@ class FakeMcpAdapter:
             args.append(EPISODE)
         if "{change_set_id}" in spec.http_path:
             args.append(CHANGE_SET)
+        if "{tool_call_id}" in spec.http_path:
+            args.append(TOOL_CALL)
         if spec.request_model is not None:
             args.append(spec.request_model.model_validate(BODIES[spec.name]))
         elif spec.name.value == "list_episodes":
             from contracts.application_operations import ListEpisodesRequest
 
             args.append(ListEpisodesRequest())
+        elif spec.name.value == "list_tool_calls":
+            from contracts.application_operations import ListToolCallsRequest
+
+            args.append(ListToolCallsRequest())
         try:
             result = await getattr(self._service, spec.name.value)(self._caller, *args)
         except OperationError as exc:

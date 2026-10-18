@@ -23,6 +23,7 @@ from contracts.agentic_pipeline import PipelineKind
 from contracts.application import (
     CreateEpisodeDraftRequest,
     EpisodeDraftResult,
+    ListToolCallsRequest,
     ProposeStoryboardChangeRequest,
     StartAgenticProductionResult,
     StoryboardProposalResult,
@@ -201,6 +202,224 @@ class WorkflowProgress(_Frozen):
     failure: FailureInfo | None
 
 
+# ----------------------------------------------------------------------- Agent tool（ADR-0047 §7）
+
+
+class ToolCallSummary(_Frozen):
+    """Agent の tool 呼び出し 1 回。入力は検証済みの tool 入力（外部由来の本文ではない）。"""
+
+    tool_call_id: str
+    #: ``tool_id@version``
+    tool_ref: str
+    #: ``role@spec_version``
+    agent_ref: str
+    agent_role: str
+    agent_spec_version: str
+    #: ``agent_runs.idempotency_key``
+    agent_run_key: str
+    seq: int
+    #: ``started``（結果が無い。呼んだか不明）か ``ToolStatus`` の値
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    duration_ms: int | None
+    evidence_refs: tuple[str, ...]
+    research_request_id: str | None
+    error_code: str | None
+    #: 検証済みの tool 入力。token・秘密らしい項目は ``[redacted]`` に置き換える
+    input: dict[str, Any]
+    #: この tool 呼び出しを指す人の注記（``AnnotationView`` の形。INV-63）
+    annotations: tuple[dict[str, Any], ...] = ()
+
+
+class ToolCallList(_Frozen):
+    episode_id: uuid.UUID
+    calls: tuple[ToolCallSummary, ...]
+    next_before: datetime | None
+    next_before_id: str | None = None
+
+
+class ToolCallDetail(ToolCallSummary):
+    """要約 + MinIO から読み戻した結果の包み（sha256 を行と照合済み）。"""
+
+    episode_id: uuid.UUID
+    #: ``ToolEnvelope`` の JSON。結果が無い（``started`` / 保存前）なら None
+    result: dict[str, Any] | None
+    #: 外部由来の文字列を含みうる。指示として扱わない（INV-60）
+    result_untrusted: Literal[True] = True
+    result_sha256: str | None
+    #: ``verified`` = 行の sha256と一致。``no_result`` = 結果なし（``result_missing_reason``）
+    integrity: Literal["verified", "no_result"]
+    result_missing_reason: str | None = None
+
+
+# ----------------------------------------------------------------------- 改善トレース（ADR-0047）
+
+#: トレースの鎖。値が無い（None / 空）ものは ``ImprovementTrace.missing`` に理由を持つ（省略しない）
+TRACE_LINKS: tuple[str, ...] = (
+    "tool_calls",
+    "topic_selection",
+    "intended_improvement",
+    "reflected_in_video",
+    "quality_review",
+    "publication",
+    "next_proposal",
+)
+
+#: ``result.status``。測っていないものを測ったことにしない
+TraceResultStatus = Literal["not_published", "awaiting_measurement", "measured"]
+
+
+class TraceArtifact(_Frozen):
+    """成果物の 1 revision（``artifact_metadata`` の 1 行）。"""
+
+    artifact_id: str
+    artifact_type: str
+    version: int
+    schema_version: str
+    sha256: str
+    created_at: datetime | None
+    #: ``revision_links(derived_from)`` の上流 revision（この revision を作る入力にした版）
+    derived_from: tuple[str, ...] = ()
+    is_current: bool = True
+
+
+class TraceToolCall(ToolCallSummary):
+    #: この呼び出しを引用している記録（``decision:<id>`` / ``strategy_brief:<id>`` 等）
+    cited_by: tuple[str, ...] = ()
+
+
+class TraceDecision(_Frozen):
+    """判断記録の要約。理由は ``rationale_kind`` つきで、モデルの自己申告を事実にしない。"""
+
+    decision_id: str | None
+    decision_type: str
+    actor_type: str
+    actor_id: str
+    agent_run_id: str | None
+    question: str
+    selected_candidate: str | None
+    #: ``{id, summary, rejected_reason}``（候補の本文は要約だけ）
+    candidates: tuple[dict[str, Any], ...]
+    rationale_kind: str
+    rationale: str | None
+    evidence_check: str
+    uncertainties: tuple[str, ...]
+    #: 引用した ``tool_call:<id>`` の id（実在するかは ``TraceToolCall`` の有無で分かる）
+    cited_tool_call_ids: tuple[str, ...]
+    result_revision_id: str | None
+    created_at: str | None
+    #: この判断を指す人の注記（差し戻し等。INV-63）
+    annotations: tuple[dict[str, Any], ...] = ()
+
+
+class TraceTopicSelection(_Frozen):
+    """なぜこの題材か: 判断 + 引用した tool 呼び出し + 戦略案。"""
+
+    decisions: tuple[TraceDecision, ...]
+    strategy_brief: TraceArtifact | None
+    audience_hypothesis: str | None
+    #: ``measured`` / ``assumed``（仮定を実測と言わない）
+    audience_basis: str | None
+    recommended_candidate: dict[str, Any] | None
+    citations: tuple[str, ...]
+
+
+class TraceIntendedImprovement(_Frozen):
+    """何を良くするつもりだったか（戦略・演出の宣言。実績ではない）。"""
+
+    success_criteria: tuple[str, ...]
+    retention_hypotheses: tuple[str, ...]
+    #: ``LessonUse`` の形（どの Lesson を、検証済みの参考か仮説として使ったか）
+    lessons_used: tuple[dict[str, Any], ...]
+
+
+class TraceReflection(_Frozen):
+    """動画に何が反映されたか: 演出指針 + 下流の成果物（台本・絵コンテの版）。"""
+
+    creative_brief: TraceArtifact | None
+    adopted_candidate_id: str | None
+    topic: str | None
+    hook: str | None
+    visual_style_notes: tuple[str, ...]
+    user_constraints_applied: tuple[str, ...]
+    #: 戦略案・演出指針から ``derived_from`` で辿れる成果物
+    derived_artifacts: tuple[TraceArtifact, ...]
+    #: storyboard の全 revision（古い順）。修正の履歴
+    storyboard_revisions: tuple[TraceArtifact, ...]
+    script_revisions: tuple[TraceArtifact, ...]
+
+
+class TraceQualityReview(_Frozen):
+    artifact: TraceArtifact
+    overall: str
+    findings_by_severity: dict[str, int]
+    inputs_missing: tuple[str, ...]
+    #: 自己評価。視聴者データではない
+    assessment_kind: str
+
+
+class TracePublication(_Frozen):
+    receipt: TraceArtifact
+    video_id: str
+    privacy_status: str
+
+
+class TraceResult(_Frozen):
+    """結果。常にある（未測定は ``status`` と ``reason`` で明示する）。"""
+
+    status: TraceResultStatus
+    reason: str
+    lesson: TraceArtifact | None = None
+    lesson_status: str | None = None
+    #: ``MeasurementWindow`` の形。測れなかった項目は None のまま
+    measurement_windows: tuple[dict[str, Any], ...] = ()
+    observations: tuple[str, ...] = ()
+
+
+class TraceNextProposal(_Frozen):
+    """次に提案された変更。Lesson の状態（proposed = 仮説）を伴う。"""
+
+    lesson_status: str
+    hypotheses: tuple[str, ...]
+    alternative_explanations: tuple[str, ...]
+    proposed_experiments: tuple[str, ...]
+    scope: str
+
+
+class ImprovementTrace(_Frozen):
+    """Episode の改善サイクルの機械可読な鎖（保存済みの記録だけから決定的に組む）。"""
+
+    episode_id: uuid.UUID
+    topic: str | None
+    tool_calls: tuple[TraceToolCall, ...]
+    #: 引用されているが ``agent_tool_calls`` に無い ``tool_call:<id>``（実在しない根拠を隠さない）
+    unresolved_citations: tuple[str, ...]
+    topic_selection: TraceTopicSelection | None
+    intended_improvement: TraceIntendedImprovement | None
+    reflected_in_video: TraceReflection | None
+    quality_review: TraceQualityReview | None
+    publication: TracePublication | None
+    result: TraceResult
+    next_proposal: TraceNextProposal | None
+    #: tool 呼び出し・判断を指す人の注記（全件。各要素にも載る）
+    human_annotations: tuple[dict[str, Any], ...]
+    #: 値が無い鎖（``TRACE_LINKS``）の名前 -> 理由。値があるものは含まれない
+    missing: dict[str, str]
+
+    @model_validator(mode="after")
+    def _missing_is_explicit(self) -> ImprovementTrace:
+        absent = {name for name in TRACE_LINKS if not getattr(self, name)}
+        if set(self.missing) != absent:
+            raise ValueError(
+                f"missing must name exactly the empty links: {sorted(absent)} != "
+                f"{sorted(self.missing)}"
+            )
+        if any(not reason.strip() for reason in self.missing.values()):
+            raise ValueError("every missing link needs a reason")
+        return self
+
+
 # --------------------------------------------------------------------------- 書き込み（command）
 
 
@@ -257,6 +476,10 @@ class OperationName(StrEnum):
     GET_AGENT_DECISIONS = "get_agent_decisions"
     GET_QUALITY_REVIEW = "get_quality_review"
     GET_WORKFLOW_PROGRESS = "get_workflow_progress"
+    # ADR-0047 §7: Agent の tool 呼び出しの可視化（read のみ。``JPMAS2_AGENT_TOOLS`` が要る）
+    LIST_TOOL_CALLS = "list_tool_calls"
+    GET_TOOL_CALL = "get_tool_call"
+    GET_IMPROVEMENT_TRACE = "get_improvement_trace"
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,9 +500,13 @@ class OperationSpec:
     #: 有料の外部生成を伴いうる（UI の警告・確認の唯一の根拠。ADR-0045 review fixes）。
     #: 既定 False は「読み取り・提案・hold」。増減は ``tests/contract`` が固定した集合と突き合わせる
     paid: bool = False
+    #: 要る ``Settings`` の項目名（None = application API の flag だけ）。無効なら 404
+    feature_flag: str | None = None
 
 
 _EP = "/episodes/{episode_id}"
+#: ADR-0047 の操作が要る flag（``infrastructure.config.Settings`` の項目名）
+AGENT_TOOLS_FLAG = "jpmas2_agent_tools"
 
 OPERATIONS: tuple[OperationSpec, ...] = (
     OperationSpec(
@@ -415,6 +642,40 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         WorkflowProgress,
         "GET",
         f"{_EP}/progress",
+    ),
+    OperationSpec(
+        OperationName.LIST_TOOL_CALLS,
+        ToolEffect.READ,
+        Scope.READ,
+        False,
+        None,
+        ToolCallList,
+        "GET",
+        f"{_EP}/tool-calls",
+        ListToolCallsRequest,
+        feature_flag=AGENT_TOOLS_FLAG,
+    ),
+    OperationSpec(
+        OperationName.GET_TOOL_CALL,
+        ToolEffect.READ,
+        Scope.READ,
+        False,
+        None,
+        ToolCallDetail,
+        "GET",
+        f"{_EP}/tool-calls/{{tool_call_id}}",
+        feature_flag=AGENT_TOOLS_FLAG,
+    ),
+    OperationSpec(
+        OperationName.GET_IMPROVEMENT_TRACE,
+        ToolEffect.READ,
+        Scope.READ,
+        False,
+        None,
+        ImprovementTrace,
+        "GET",
+        f"{_EP}/improvement-trace",
+        feature_flag=AGENT_TOOLS_FLAG,
     ),
 )
 

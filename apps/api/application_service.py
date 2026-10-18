@@ -37,17 +37,21 @@ from contracts.application_operations import (
     GetAgentDecisionsResult,
     GetQualityReviewResult,
     GetStoryboardResult,
+    ImprovementTrace,
     ListEpisodesRequest,
+    ListToolCallsRequest,
     RequestHoldRequest,
     ResumeAccepted,
     ResumeProductionRequest,
+    ToolCallDetail,
+    ToolCallList,
     WorkflowProgress,
 )
 from infrastructure.config import Settings
 
 
 class ApplicationServicePort(Protocol):
-    """``application.service.ApplicationService`` の公開面（13 操作）。"""
+    """``application.service.ApplicationService`` の公開面（16 操作）。"""
 
     async def create_episode_draft(
         self, caller: Caller, request: CreateEpisodeDraftRequest
@@ -102,6 +106,18 @@ class ApplicationServicePort(Protocol):
     async def get_workflow_progress(
         self, caller: Caller, episode_id: uuid.UUID
     ) -> WorkflowProgress: ...
+
+    async def list_tool_calls(
+        self, caller: Caller, episode_id: uuid.UUID, request: ListToolCallsRequest
+    ) -> ToolCallList: ...
+
+    async def get_tool_call(
+        self, caller: Caller, episode_id: uuid.UUID, tool_call_id: str
+    ) -> ToolCallDetail: ...
+
+    async def get_improvement_trace(
+        self, caller: Caller, episode_id: uuid.UUID
+    ) -> ImprovementTrace: ...
 
 
 class LazyAgenticStarter:
@@ -175,6 +191,7 @@ async def get_application_service(
     from application.service import ApplicationService
     from infrastructure.agents.draft_port import DbEpisodeDraftPort
     from infrastructure.application.episode_reader import StoreBackedEpisodeReader
+    from infrastructure.application.tool_evidence import StoreBackedToolEvidenceReader
 
     session_factory = get_session_factory()
     store_factory = get_artifact_store_factory()
@@ -187,4 +204,9 @@ async def get_application_service(
         starter=loop_starter(settings),
         agentic_enabled=settings.jpmas2_agentic_workflows,
         observer=LoggingOperationObserver(),
+        tool_evidence=(
+            StoreBackedToolEvidenceReader(session_factory, store_factory)
+            if settings.jpmas2_agent_tools
+            else None
+        ),
     )

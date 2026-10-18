@@ -302,7 +302,8 @@ class StoreBackedEpisodeReader:
             findings=tuple(
                 a.model_dump(mode="json")
                 for a in view.annotations
-                if a.kind == AnnotationKind.REVIEW_FINDING.value
+                # tool 呼び出し・判断への指摘（target_ref）は動画の品質の指摘ではない（INV-63）
+                if a.kind == AnnotationKind.REVIEW_FINDING.value and "target_ref" not in a.anchor
             ),
         )
 

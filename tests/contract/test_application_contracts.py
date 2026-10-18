@@ -35,6 +35,8 @@ def test_adr_error_vocabulary_is_exact() -> None:
         "unknown_agent_spec", "template_not_runnable",
         # ADR-0044 §1（P2-A）
         "invalid_state", "change_set_not_found", "cost_not_estimated",
+        # ADR-0047 §7（tool 呼び出しの可視化）
+        "tool_call_not_found", "integrity_error",
     }  # fmt: skip
 
 
