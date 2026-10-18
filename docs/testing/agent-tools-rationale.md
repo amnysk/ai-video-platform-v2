@@ -79,3 +79,18 @@ fake の tool 定義・executor・store（`tests/support/agent_tools.py`）だ�
 | observer の故障 | 観測の失敗で業務の結果が変わらない（INV-38） |
 | runtime 無し（flag OFF） | `call_tool` は全て拒否。既存の `llm_json` の記録の形は不変（INV-55 の延長） |
 | `render_untrusted` | `<data>` 区切りで、本文中の `</data>` を閉じ文字として残さない。handler と同じ実装（`data_block`）を使う |
+
+## tests/unit/test_agent_tool_call_repository.py（AgentToolCallRepository）
+
+SQLite + インメモリ ArtifactStore。PostgreSQL 固有の挙動は integration（Docker が要るためここでは走らせない）。
+
+| テスト | 守るもの |
+|---|---|
+| begin は started を commit | 実行前に「呼ぶ予定」が残る。落ちたあとの retry が ambiguous を判定できる前提（INV-59） |
+| begin の二重 | 同じ ID の再 begin は no-op（retry で行が増えない） |
+| 同じ (run, seq) に別 ID | handler が決定論でない場合は握りつぶさず失敗（UNIQUE が効く） |
+| complete は本文を MinIO、行に参照と sha256 | 外部由来の本文を DB に置かない。行・状態・evidence_refs・研究依頼 ID が残る |
+| 改ざん検出 | 読み戻した sha256 が行と違えば `ToolCallIntegrityError`（壊れた結果を再利用しない） |
+| started が無い complete | 行が無い完了を許さない |
+| gateway + 実 repository の retry | executor 0 回・行 1 件（INV-59 を永続化込みで確認） |
+| ambiguous youtube_quota | started 行が残っていれば再送せず failed を確定し、行にも `ambiguous_prior_attempt` が残る |
