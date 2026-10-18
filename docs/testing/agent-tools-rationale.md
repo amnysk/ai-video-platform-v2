@@ -56,7 +56,7 @@
 | 根拠が要る | insufficient 以外の assessment は `evidence_refs` が必須。根拠が無ければ insufficient のまま（INV-58） |
 | strict・untrusted | 余分な項目・`untrusted=False`・claim 13 件以上を拒否 |
 
-## tests/unit/test_agent_tool_gateway.py（ToolGateway.call_tool）
+## tests/unit/test_agent_tool_call_gateway.py（ToolGateway.call_tool）
 
 fake の tool 定義・executor・store（`tests/support/agent_tools.py`）だけを使う。実際の Research / Analytics は呼ばない。
 
