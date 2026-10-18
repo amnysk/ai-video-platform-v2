@@ -46,7 +46,7 @@
 ## 4. Template の契約とコンパイラ（tests/contract/test_workflow_templates.py、tests/unit/test_workflow_template_compiler.py）
 
 - `test_no_template_or_plan_field_can_express_visibility_budget_or_schedule`: Template から公開設定・予算を拡張できない。
-- `test_the_registered_templates_are_exactly_the_three_adr_templates` / `test_shorts_agentic_has_exactly_the_adr_stage_sequence` /
+- `test_the_registered_templates_are_exactly_the_adr_templates` / `test_shorts_agentic_has_exactly_the_adr_stage_sequence` /
   `test_shorts_reviewed_reviews_before_the_private_upload` / `test_template_handlers_come_from_the_two_registered_vocabularies` /
   `test_template_hash_is_stable_and_sensitive`: ADR §3 の登録内容と hash。
 - `test_every_registered_template_is_structurally_valid_and_compiles_iff_runnable`: 全 Template が構造検査を通り、

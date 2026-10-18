@@ -31,11 +31,13 @@ def test_no_template_or_plan_field_can_express_visibility_budget_or_schedule() -
             assert not any(w in name for w in FORBIDDEN_WORDS), (cls.__name__, name)
 
 
-def test_the_registered_templates_are_exactly_the_three_adr_templates() -> None:
+def test_the_registered_templates_are_exactly_the_adr_templates() -> None:
+    # ADR-0043 の 3 つ + ADR-0047 の shorts_agentic_tools@1（tool 版。内容は別テストが固定する）
     assert set(TEMPLATES) == {
         ("daily_legacy", "1"),
         ("shorts_agentic", "1"),
         ("shorts_reviewed", "1"),
+        ("shorts_agentic_tools", "1"),
     }
     assert TEMPLATES[("daily_legacy", "1")].execution == "legacy_pipeline"
     assert TEMPLATES[("shorts_agentic", "1")].runnable is True

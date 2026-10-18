@@ -226,6 +226,25 @@ def compile_template(
     return WorkflowPlan.model_validate({**fields, "plan_hash": compute_plan_hash(fields)})
 
 
+def plan_requires_agent_tools(
+    plan: WorkflowPlan,
+    *,
+    agent_specs: Mapping[tuple[AgentRole, str], AgentSpec] | None = None,
+) -> bool:
+    """計画のどれかの agent stage が Agent Tool を使う spec を固定しているか。
+
+    ``True`` の計画は ``JPMAS2_AGENT_TOOLS`` が有効なときだけ起動できる（ADR-0047 §2 / §9）。
+    """
+    specs = AGENT_SPECS if agent_specs is None else agent_specs
+    for stage in (*plan.stages, *plan.post_publish):
+        if stage.kind != "agent" or stage.agent_role is None or stage.agent_spec_version is None:
+            continue
+        spec = specs.get((stage.agent_role, stage.agent_spec_version))
+        if spec is not None and spec.allowed_tool_ids:
+            return True
+    return False
+
+
 #: コンパイルの失敗 code -> 操作の失敗 code。ここに無い code は定義の誤り（``invalid_payload``）
 _OPERATION_CODES: dict[str, OperationErrorCode] = {
     "unknown_template": OperationErrorCode.UNKNOWN_TEMPLATE,

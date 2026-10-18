@@ -311,3 +311,28 @@ tool は外部を呼ばずに拒否）。方針が「この動画の分析以外
 
 契約の変更: `fact_check_report@1.0` を Artifact Registry に登録（8 件目。Historian の成果物を保存するのに必要）、
 `test_agent_spec_tools` の「1.0 は tool 無し」は既存 4 役の 1.0 に限定（historian@1.0 は最初から tool を持つ）。
+
+## Template `shorts_agentic_tools@1` と起動の flag
+
+### tests/contract/test_workflow_template_agent_tools.py
+
+| テスト | 守るもの |
+|---|---|
+| 既存 Template の hash と `shorts_agentic@1` の `plan_hash`（literal） | tool 版を足しても pin 済みの計画・履歴・replay が変わらない（INV-51/53）。literal は足す前の commit で同じ値になることを確認済み |
+| 工程の並び | strategy@1.1 → producer → creative → script → **historian** → storyboard …、post_publish は learning@1.1。Historian の入力は script なので script の後（creative と script の間では台本が無く常に blocked になる） |
+| 検証とコンパイル | 必須工程の順（INV-53）を満たし、plan が 1.1 / historian の spec 版と hash を固定する。決定的 |
+| tool flag の判定 | tool 版だけが `plan_requires_agent_tools`。既存 Template は要らない |
+| 必須工程を外せない | Historian を足しても storyboard 等は省略できない |
+
+### tests/unit/test_agent_tools_start_gate.py
+
+| テスト | 守るもの |
+|---|---|
+| tool flag OFF で tool 版を起動 | `feature_disabled`（メッセージに `JPMAS2_AGENT_TOOLS`）。starter を呼ばない |
+| 両 flag ON | 起動する |
+| agentic flag OFF | 先にそちらで断る（既存の順序を変えない） |
+| 既存 Template | tool flag が無くても従来どおり起動（INV-55） |
+| CLI | `scripts/agentic.py start` が flag を渡す |
+
+既存テストの変更: `test_workflow_templates` の「登録された Template は 3 つ」を 4 つにした（ADR-0047 の追加。名前と
+参照も更新）。

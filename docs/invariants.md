@@ -670,6 +670,12 @@ Template・Plan の契約に公開設定・予算上限・Schedule を表す項�
 / `tests/contract/test_workflow_templates.py::test_shorts_agentic_has_exactly_the_adr_stage_sequence`
 / `tests/contract/test_agentic_contracts.py::test_user_brief_has_no_budget_visibility_or_schedule_field`
 
+**tool 版 Template（ADR-0047）**: `shorts_agentic_tools@1` は strategy/learning を 1.1、Historian を台本の後・storyboard の前に
+置く。他の Template の hash と `shorts_agentic@1` の `plan_hash` は literal で固定され、変わらない。
+**機械検査**: `tests/contract/test_workflow_template_agent_tools.py::test_existing_templates_and_the_old_plan_hash_are_unchanged`
+/ `tests/contract/test_workflow_template_agent_tools.py::test_the_tool_template_has_exactly_the_adr_stage_sequence`
+/ `tests/contract/test_workflow_template_agent_tools.py::test_the_tool_template_is_valid_and_compiles_to_a_plan_pinning_the_tool_specs`
+
 ### INV-54 保存の互換: 未知の schema 版は読まず、旧 Storyboard v1.0 は読め、migration 0019 は制約の張り替えだけ
 `contracts/artifact_registry.py` の `(artifact_type, schema_version)` に無い版は `UnsupportedArtifactSchemaError`
 （黙って別の版として読まない）。版をまたぐ読み替えは明示登録した upcaster だけで、本番の `UPCASTERS` は空。
@@ -712,6 +718,8 @@ contracts を import しない）。downgrade は新語彙の行があれば何�
 / `tests/unit/test_script_creative_brief.py::test_an_episode_with_a_plan_keeps_the_plan_brief_even_with_a_creative_brief`
 / `tests/unit/test_agentic_use_cases.py::test_start_is_refused_when_the_flag_is_off`
 / `tests/unit/test_agentic_cli.py::test_start_is_refused_when_the_flag_is_off`
+/ `tests/unit/test_agent_tools_start_gate.py::test_the_tool_template_is_refused_with_feature_disabled_when_tools_are_off`
+/ `tests/unit/test_agent_tools_start_gate.py::test_the_existing_template_does_not_need_the_tools_flag`
 / `tests/integration/test_jpmas2_agentic_e2e.py::test_the_default_pipeline_worker_is_unchanged_and_a_legacy_run_writes_nothing_agentic`
 
 ### INV-56 Agent は Tool Gateway が許した tool だけを上限内で呼び、LLM 費用の欠測を 0 にせず、予約・予算 gate を通ってから呼ぶ

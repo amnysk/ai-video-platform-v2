@@ -24,6 +24,7 @@ from domain.workflow_templates.compiler import (
     TemplateCompileError,
     compile_agentic_template,
     operation_code_for,
+    plan_requires_agent_tools,
 )
 
 
@@ -65,11 +66,18 @@ class CreateEpisodeDraft:
 
 class StartAgenticProduction:
     def __init__(
-        self, drafts: EpisodeDraftPort, starter: AgenticWorkflowStarter, *, enabled: bool
+        self,
+        drafts: EpisodeDraftPort,
+        starter: AgenticWorkflowStarter,
+        *,
+        enabled: bool,
+        agent_tools_enabled: bool = False,
     ) -> None:
         self._drafts = drafts
         self._starter = starter
         self._enabled = enabled
+        #: ``JPMAS2_AGENT_TOOLS``（ADR-0047）。Agent Tool を使う計画は、これが無いと起動しない
+        self._agent_tools_enabled = agent_tools_enabled
 
     async def execute(self, request: StartAgenticProductionRequest) -> StartAgenticProductionResult:
         if not self._enabled:
@@ -83,7 +91,14 @@ class StartAgenticProduction:
                 OperationErrorCode.EPISODE_NOT_FOUND,
                 f"episode {request.episode_id} has no draft (UserBrief)",
             )
-        compile_for_agentic_run(brief)
+        plan = compile_for_agentic_run(brief)
+        if plan_requires_agent_tools(plan) and not self._agent_tools_enabled:
+            raise OperationError(
+                OperationErrorCode.FEATURE_DISABLED,
+                f"template {brief.template_id}@{brief.template_version} uses agent tools, which "
+                "are disabled (JPMAS2_AGENT_TOOLS=false)",
+                {"template_id": brief.template_id, "template_version": brief.template_version},
+            )
         started = await self._starter.start(
             episode_id=request.episode_id,
             template_id=brief.template_id,
