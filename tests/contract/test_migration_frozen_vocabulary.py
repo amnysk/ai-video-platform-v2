@@ -308,6 +308,7 @@ _AGENTIC_0019_ARTIFACT_TYPES = {
     "quality_review",
     "lesson",
     "workflow_plan",
+    "fact_check_report",  # 0020（ADR-0047）
 }
 
 

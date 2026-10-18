@@ -33,6 +33,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from contracts.agent_tools import TOOL_CALL_STATUSES
 from contracts.intervention import (
     ActorType,
     AgentRole,
@@ -1153,3 +1154,46 @@ class EpisodeEventRow(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentToolCallRow(Base):
+    """Agent Tool の呼び出し 1 回（ADR-0047 §6、INV-59）。
+
+    実行前に ``started`` で commit し、完了で結果を保存する。retry は ``tool_call_id`` で
+    保存済みの結果を返し、外部を呼ばない。結果本体は MinIO（``result_object_key``）。
+    入力は JSON で持つ（外部由来の本文ではなく、検証済みの tool 入力）。
+    ``agent_run_key`` は ``agent_runs.idempotency_key``（agent_runs は stage の後に書かれるので
+    FK にしない）。
+    """
+
+    __tablename__ = "agent_tool_calls"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN (" + ", ".join(f"'{v}'" for v in TOOL_CALL_STATUSES) + ")",
+            name="ck_agent_tool_calls_status",
+        ),
+        UniqueConstraint("agent_run_key", "seq", name="uq_agent_tool_calls_run_seq"),
+        Index("ix_agent_tool_calls_episode", "episode_id", "started_at"),
+    )
+
+    tool_call_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    agent_run_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    agent_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    agent_spec_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    tool_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    input: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_object_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    result_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    research_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)

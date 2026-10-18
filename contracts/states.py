@@ -124,6 +124,8 @@ class ArtifactType(StrEnum):
     QUALITY_REVIEW = "quality_review"
     LESSON = "lesson"
     WORKFLOW_PLAN = "workflow_plan"
+    #: ADR-0047: Historian の根拠収集結果（Episode 単位。scene_id は NULL）
+    FACT_CHECK_REPORT = "fact_check_report"
 
 
 class Pipeline(StrEnum):

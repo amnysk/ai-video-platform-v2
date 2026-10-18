@@ -71,7 +71,9 @@ def test_frozen_vocabulary_matches_the_contracts(constant: str, enum_cls) -> Non
     # test_migration_0017_resolve_annotation.py が検査する
     # 0019 (ADR-0043): strategy / creative_director / quality_reviewer / learning は
     # test_migration_0019_agentic_vocabulary.py が検査する
+    # 0020 (ADR-0047): historian は test_migration_0020_agent_tool_calls.py が検査する
     later = {
+        AgentRole.HISTORIAN,
         CommandType.RESOLVE_ANNOTATION,
         AgentRole.STRATEGY,
         AgentRole.CREATIVE_DIRECTOR,

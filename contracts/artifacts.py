@@ -20,6 +20,7 @@ from pydantic import (
 
 from contracts.agentic import (
     CreativeBrief,
+    FactCheckReport,
     Lesson,
     QualityReview,
     StrategyBrief,
@@ -765,6 +766,8 @@ ARTIFACT_MODELS: dict[ArtifactType, type[BaseModel]] = {
     ArtifactType.QUALITY_REVIEW: QualityReview,
     ArtifactType.LESSON: Lesson,
     ArtifactType.WORKFLOW_PLAN: WorkflowPlan,
+    # ADR-0047
+    ArtifactType.FACT_CHECK_REPORT: FactCheckReport,
 }
 
 

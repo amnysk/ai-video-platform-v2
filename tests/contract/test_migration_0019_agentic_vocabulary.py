@@ -69,9 +69,12 @@ def test_pre_0019_literals_are_the_values_at_9440302() -> None:
 
 def test_frozen_literals_equal_the_current_enums_in_order() -> None:
     m = _load()
-    assert list(m.ARTIFACT_TYPES) == [t.value for t in ArtifactType]
+    # 0020（ADR-0047）が足した語彙は test_migration_0020_agent_tool_calls.py が検査する
+    assert list(m.ARTIFACT_TYPES) == [
+        t.value for t in ArtifactType if t.value not in {"fact_check_report"}
+    ]
     assert list(m.PROVIDER_CALLS) == [p.value for p in ProviderCall]
-    assert list(m.AGENT_ROLES) == [r.value for r in AgentRole]
+    assert list(m.AGENT_ROLES) == [r.value for r in AgentRole if r.value not in {"historian"}]
 
 
 def test_0019_adds_exactly_the_adr_0043_values() -> None:
