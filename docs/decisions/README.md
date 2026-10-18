@@ -70,3 +70,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0044](./0044-ui-mcp-shared-application-backend.md) | UI・MCP 共通のバックエンド（操作カタログ・Application Service・/v1 API / JP-MAS-002 P2-A） | Accepted |
 | [0045](./0045-operator-ui-and-episodes-api-auth.md) | 運用者 UI（P2-B）と `/episodes/*` の opt-in 認証 | Accepted |
 | [0046](./0046-ci-minio-image.md) | CI の MinIO image を Chainguard（digest 固定）に差し替える | Accepted |
+| [0047](./0047-agent-tool-registry.md) | Agent Tool Registry（Research / YouTube Analytics を Agent の tool として統合） | Proposed |
