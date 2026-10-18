@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 from contracts.agent_tools import ToolDef, ToolId, parse_tool_ref, tool_ref
+from contracts.agent_tools_research import RESEARCH_TOOL_DEFS
 
-_DEFS: tuple[ToolDef, ...] = ()
+_DEFS: tuple[ToolDef, ...] = (*RESEARCH_TOOL_DEFS,)
 
 
 def _index(defs: tuple[ToolDef, ...]) -> dict[str, ToolDef]:
