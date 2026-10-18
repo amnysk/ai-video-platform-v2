@@ -623,7 +623,7 @@ def build(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     heartbeat: Callable[[], None] | None = None,
 ) -> dict[ToolId, ToolExecutor]:
-    """Research の 3 tool の executor。``EXECUTOR_BUILDERS`` に登録するのは core の責務。"""
+    """Research の 3 tool の executor。組み立ては ``tools._research_executors``。"""
     return ResearchTools(
         gateway=gateway,
         starter=starter,

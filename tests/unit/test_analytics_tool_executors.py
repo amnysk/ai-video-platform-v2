@@ -20,7 +20,6 @@ from contracts.agent_tools_analytics import (
 )
 from domain.agents.tools.ports import ToolContext
 from domain.analytics.ports import InsightResult
-from infrastructure.agents.tools import EXECUTOR_BUILDERS
 from infrastructure.agents.tools.analytics import build
 from infrastructure.config import Settings
 
@@ -93,7 +92,6 @@ def test_build_returns_exactly_the_five_registered_analytics_tools() -> None:
     ex = build(FakeProvider(), FakeBudget(), daily_cap=5)  # type: ignore[arg-type]
     assert set(ex) == {d.tool_id for d in ANALYTICS_TOOL_DEFS} == set(INPUTS)
     assert all(d.ref in TOOL_DEFS for d in ANALYTICS_TOOL_DEFS)
-    assert build in EXECUTOR_BUILDERS
 
 
 @pytest.mark.asyncio

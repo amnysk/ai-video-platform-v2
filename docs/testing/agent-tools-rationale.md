@@ -116,7 +116,7 @@
 
 | テスト | 守るもの |
 |---|---|
-| build が 5 tool を返す・EXECUTOR_BUILDERS に載る | Registry と executor の不一致（INV-62） |
+| build が Registry と同じ 5 tool を返す（配線は test_agent_tools_wiring_executors が検査） | Registry と executor の不一致（INV-62） |
 | tool ごとに対応する provider メソッドへ | 取り違え。`quota_units=unknown`（0 でない）を記録 |
 | 日次上限 | 上限超過は外部を呼ばず `quota_exceeded(daily_tool_call_cap)`。翌日に戻る。tool 間で共有 |
 | 入力 model の取り違え | 黙って別 tool を呼ばない |
