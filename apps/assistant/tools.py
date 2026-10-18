@@ -280,7 +280,12 @@ def build_command_payload(tool: str, args: dict[str, Any]) -> dict[str, Any]:
             )
         case ToolName.ADD_COMMENT:
             return _drop_none(
-                {"anchor": args["anchor"], "body": args["body"], "kind": args.get("kind")}
+                {
+                    "anchor": args["anchor"],
+                    "body": args["body"],
+                    "kind": args.get("kind"),
+                    "flag": args.get("flag"),
+                }
             )
         case ToolName.REQUEST_HOLD:
             return _drop_none({"reason": args.get("reason")})

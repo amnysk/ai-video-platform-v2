@@ -158,7 +158,7 @@ def test_comment_schema_matches_the_anchor_model_and_design_section_8() -> None:
     # 設計 §8 のアンカー
     assert {"segment_id", "scene_id", "asset_id", "time_range", "manifest_id"} <= set(anchor)
     assert set(anchor["time_range"]["properties"]) == set(TimeRange.model_fields)
-    assert set(props) <= {"episode_id", "anchor", "body", "kind"}
+    assert set(props) <= {"episode_id", "anchor", "body", "kind", "flag"}
 
 
 def test_apply_change_requires_the_acknowledged_cost_which_may_be_null() -> None:

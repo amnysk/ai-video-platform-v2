@@ -237,3 +237,16 @@ SQLite + インメモリ ArtifactStore。PostgreSQL 固有の挙動は integrati
 | 日次上限は当日の analytics 行だけを数える | research や別の日の呼び出しで analytics が止まらない。gateway が先に begin するので今回分を含めて比べる |
 | adapter 未注入なら executor を持たない | 組めない adapter を偽物で埋めず、gateway の拒否に任せる（INV-58） |
 | extras は組めないものを入れない | OAuth 設定が無いのに provider を作らない・秘密を出さない |
+
+## tests/unit/test_intervention_tool_evidence_target.py（人の指摘。INV-63）
+
+| テスト | 守るもの |
+|---|---|
+| 新しい command 型は不要 | tool 呼び出しの指摘が `comment` の payload で表せ、`CommandType` が増えていない（ADR-0047 §7 の「新 command を作らない」） |
+| `target_ref` は tool_call / decision + UUID だけ | 任意文字列・他の種類・注入文字を anchor に保存しない |
+| flag は種類の合う target と review_finding を要する | `wrong_evidence` が decision を指す、target 無しの flag、単なる comment への flag を受けて一覧を壊さない |
+| tool 呼び出しを `wrong_evidence` で指摘できる | 人の指摘が `annotations` に `anchor.target_ref` + `payload.flag` で残る |
+| 不明・他 Episode の対象は拒否し何も書かない | 他 Episode の根拠への指摘の混入、存在しない対象の指摘 |
+| 同じ command の再送は 1 行・1 event | INV-42。指摘の二重登録で未解決件数が増えない |
+| 同じ command_id で内容違いは拒否 | 別の対象への指摘を黙って同じ指摘として扱わない |
+| 判断を `wrong_decision` で差し戻せる | 承認 command が無い現状（Open）で出来ること |

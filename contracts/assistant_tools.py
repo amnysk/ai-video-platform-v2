@@ -18,7 +18,14 @@ from enum import StrEnum
 from typing import Any
 
 from contracts.application import StoryboardPatchProposal
-from contracts.intervention import REQUIRED_SCOPE, AgentRole, CommandType, Scope
+from contracts.intervention import (
+    REQUIRED_SCOPE,
+    TARGET_REF_PATTERN,
+    AgentRole,
+    AnnotationFlag,
+    CommandType,
+    Scope,
+)
 
 #: tool 呼び出しから command_id を決める namespace（INV-49）。変えると再試行の冪等性が切れる
 ASSISTANT_NAMESPACE = uuid.UUID("6f1d5c0e-3a52-5b0b-9d0e-0a5d7d9f8c11")
@@ -161,6 +168,12 @@ _ANCHOR = _object(
         "time_range": _TIME_RANGE,
         "manifest_id": {"type": "string"},
         "revision_id": {"type": "string", "description": "The revision the comment is about."},
+        "target_ref": {
+            "type": "string",
+            "pattern": TARGET_REF_PATTERN,
+            "description": "An agent tool call or decision of this episode: tool_call:<id> or "
+            "decision:<id> (ADR-0047).",
+        },
     },
     minProperties=1,
     description="What the comment is about. Keeps pointing at that revision even if newer "
@@ -334,6 +347,12 @@ TOOLS: tuple[ToolSpec, ...] = (
                 "anchor": _ANCHOR,
                 "body": {"type": "string", "minLength": 1, "maxLength": 4000},
                 "kind": {"enum": ["comment", "review_finding"]},
+                "flag": {
+                    "enum": [f.value for f in AnnotationFlag],
+                    "description": "Structured finding about anchor.target_ref (needs "
+                    "kind=review_finding): wrong_evidence for a tool_call, wrong_decision for a "
+                    "decision.",
+                },
             },
             ["episode_id", "anchor", "body"],
         ),

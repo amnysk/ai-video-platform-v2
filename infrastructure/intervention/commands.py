@@ -50,14 +50,16 @@ from contracts.intervention import (
     ResumePayload,
     Scope,
     SetModePayload,
+    TargetRefKind,
     UserConstraintPayload,
+    parse_target_ref,
     payload_sha256,
 )
 from contracts.pipeline import STAGE_REVIEW_POINT, PipelineStage
 from contracts.states import ArtifactType, EpisodeStatus, ProviderCall, ReservationStatus
 from domain.errors import TransientError
 from domain.pipeline.resume_plan import determine_target_stage
-from infrastructure.db.models import ArtifactMetadataRow
+from infrastructure.db.models import AgentToolCallRow, ArtifactMetadataRow, DecisionRecordRow
 from infrastructure.db.repositories import EpisodeRepository, ProviderReservationRepository
 from infrastructure.intervention.budget import BudgetPolicy
 from infrastructure.intervention.gate import REVIEWING_MODES
@@ -607,6 +609,16 @@ async def _revision_of_episode(ctx: ApplyContext, revision_id: str) -> bool:
     return meta is not None and meta.episode_id == ctx.episode_id
 
 
+async def _target_of_episode(ctx: ApplyContext, target_ref: str) -> bool:
+    """``tool_call:<id>`` / ``decision:<id>`` が**この Episode の**行を指すか（ADR-0047 §7）。"""
+    kind, ident = parse_target_ref(target_ref)
+    if kind is TargetRefKind.TOOL_CALL:
+        row = await ctx.session.get(AgentToolCallRow, ident)
+        return row is not None and str(row.episode_id) == str(ctx.episode_id)
+    row = await ctx.session.get(DecisionRecordRow, uuid.UUID(ident))
+    return row is not None and str(row.episode_id) == str(ctx.episode_id)
+
+
 async def _comment(ctx: ApplyContext) -> Decision:
     payload = CommentPayload.model_validate(ctx.command.payload)
     anchor = payload.anchor
@@ -616,12 +628,15 @@ async def _comment(ctx: ApplyContext) -> Decision:
         manifest = await ctx.store.get_manifest(anchor.manifest_id)
         if manifest is None or manifest.episode_id != ctx.episode_id:
             return Decision.rejected(RejectReason.NOT_FOUND, detail="anchor manifest not found")
+    if anchor.target_ref is not None and not await _target_of_episode(ctx, anchor.target_ref):
+        return Decision.rejected(RejectReason.NOT_FOUND, detail="anchor target not found")
     annotation = await ctx.store.insert_annotation(
         episode_id=ctx.episode_id,
         kind=AnnotationKind(payload.kind),
         anchor=anchor.model_dump(mode="json", exclude_none=True),
         body=payload.body,
         actor=ctx.actor,
+        payload=None if payload.flag is None else {"flag": payload.flag.value},
         manifest_id=anchor.manifest_id,
         command_id=ctx.command.command_id,
     )

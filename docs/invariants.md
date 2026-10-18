@@ -887,3 +887,15 @@ migration 0020 の凍結 literal と一致する。同じ `(tool_id, version)` �
 / `tests/unit/test_agent_tools_wiring.py::test_the_same_tool_from_two_groups_is_a_startup_error`
 / `tests/unit/test_agent_tools_wiring.py::test_no_tool_support_is_built_when_the_flag_is_off`
 / `tests/architecture/test_agentic_default_off.py::test_daily_path_modules_import_nothing_agentic`
+
+### INV-63 人は既存の `comment` command で tool 呼び出し・Agent の判断を指摘でき、新しい command 型は作らない
+`Anchor.target_ref`（`tool_call:<uuid>` / `decision:<uuid>`）は**同じ Episode の実在する行**だけを指せる（他 Episode・
+存在しない対象は `not_found` で拒否され、何も書かれない）。構造化された指摘 `CommentPayload.flag`
+（`wrong_evidence` = tool 呼び出しの根拠が誤り、`wrong_decision` = 判断の差し戻し）は `kind=review_finding` と、種類の
+合う `target_ref` を必須とする。指摘は `annotations` の追記行（`anchor.target_ref`・`payload.flag`）で、解決は既存の
+`resolve_annotation`。command_id の冪等性（INV-42）・scope（`comment`）・hold はそのまま。**判断の「承認」を表す
+command は無い**（`docs/decisions/0047-agent-tool-registry.md` の「Open: human correction of tool evidence」）。
+**機械検査**: `tests/unit/test_intervention_tool_evidence_target.py::test_no_new_command_type_is_needed`
+/ `tests/unit/test_intervention_tool_evidence_target.py::test_a_flag_on_an_unknown_or_foreign_tool_call_is_rejected_and_writes_nothing`
+/ `tests/unit/test_intervention_tool_evidence_target.py::test_resending_the_same_flag_command_makes_one_logical_change`
+/ `tests/unit/test_intervention_tool_evidence_target.py::test_a_flag_needs_a_matching_target_and_a_review_finding`

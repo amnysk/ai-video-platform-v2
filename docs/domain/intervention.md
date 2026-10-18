@@ -151,6 +151,16 @@ scope `comment`（AI も `comment` を持てば可。追加の権限は無い）
 `not_found`、対象が comment / review_finding でない = `invalid_payload`、解決済み = `invalid_state`。
 read model の `status=resolved` と ReviewPacket の「未解決コメント」（`open_comments`）は、この行を読む。
 
+### tool 呼び出し・判断への指摘（ADR-0047 §7、INV-63）
+新しい command 型は作らず、既存の `comment`（scope `comment`）の payload を広げる。`anchor.target_ref` に
+`tool_call:<id>`（`agent_tool_calls.tool_call_id`）または `decision:<id>`（`decision_records.id`）を渡すと、同じ Episode の
+実在する行だけを指せる（無ければ `not_found`）。`flag`（`wrong_evidence` / `wrong_decision`）は `kind=review_finding` と
+種類の合う `target_ref` が要る。注記は `annotations.anchor.target_ref` と `payload.flag` に残り、`resolve_annotation` で
+解決できる。tool 呼び出し・改善トレースの読み取り（`list_tool_calls` / `get_tool_call` / `get_improvement_trace`）は
+この注記を対象の横に出す。品質レビューの `findings` には、`target_ref` を持つ注記（動画の品質ではない）を含めない。
+**判断の承認を表す command は無い**: 差し戻しは `wrong_decision` + 必要なら `request_hold`、承認の記録は
+`release_checkpoint`（manifest への承認）だけである。
+
 ### クラッシュ・重複の境界
 | 落ちる地点 | DB に残るもの | 復旧 |
 |---|---|---|

@@ -12,7 +12,7 @@ import json
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 INTERVENTION_SCHEMA_VERSION = "1.0"
 
@@ -317,6 +317,39 @@ class TimeRange(_Frozen):
     end_ms: int = Field(ge=0)
 
 
+#: ``Anchor.target_ref`` の形。Agent の tool 呼び出し・判断記録を指す（ADR-0047 §7）。
+#: 種類の語彙の宣言元はここ（``TargetRefKind``）。id は UUID（tool_call_id は uuid5、判断は uuid4）
+TARGET_REF_PATTERN = (
+    r"^(tool_call|decision):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+class TargetRefKind(StrEnum):
+    TOOL_CALL = "tool_call"
+    DECISION = "decision"
+
+
+def parse_target_ref(ref: str) -> tuple[TargetRefKind, str]:
+    kind, _, ident = ref.partition(":")
+    return TargetRefKind(kind), ident
+
+
+class AnnotationFlag(StrEnum):
+    """人の指摘の種類（``review_finding`` に付ける。ADR-0047 §7）。"""
+
+    #: Agent の tool 呼び出し（根拠）が誤り・不適切
+    WRONG_EVIDENCE = "wrong_evidence"
+    #: Agent の判断を差し戻す
+    WRONG_DECISION = "wrong_decision"
+
+
+#: flag が指せる対象の種類
+FLAG_TARGET_KIND: dict[AnnotationFlag, TargetRefKind] = {
+    AnnotationFlag.WRONG_EVIDENCE: TargetRefKind.TOOL_CALL,
+    AnnotationFlag.WRONG_DECISION: TargetRefKind.DECISION,
+}
+
+
 class Anchor(_Frozen):
     """コメントの対象（設計 §8）。版が変わっても元の対象を保持し、自動で移動しない。"""
 
@@ -326,12 +359,28 @@ class Anchor(_Frozen):
     scene_id: str | None = None  # storyboard のシーン id
     asset_id: str | None = None
     time_range: TimeRange | None = None
+    #: ``tool_call:<id>`` / ``decision:<id>``（ADR-0047 §7）。同じ Episode の実在する行だけ
+    target_ref: str | None = Field(default=None, pattern=TARGET_REF_PATTERN)
 
 
 class CommentPayload(_Frozen):
     anchor: Anchor
     body: str = Field(min_length=1, max_length=4000)
     kind: Literal[AnnotationKind.COMMENT, AnnotationKind.REVIEW_FINDING] = AnnotationKind.COMMENT
+    #: tool 呼び出し・判断への構造化された指摘。``review_finding`` と対応する target_ref が要る
+    flag: AnnotationFlag | None = None
+
+    @model_validator(mode="after")
+    def _flag_needs_a_matching_target(self) -> CommentPayload:
+        if self.flag is None:
+            return self
+        if self.kind is not AnnotationKind.REVIEW_FINDING:
+            raise ValueError("a flag is only for kind=review_finding")
+        if self.anchor.target_ref is None:
+            raise ValueError("a flag needs anchor.target_ref")
+        if parse_target_ref(self.anchor.target_ref)[0] is not FLAG_TARGET_KIND[self.flag]:
+            raise ValueError(f"flag {self.flag.value} does not match the kind of target_ref")
+        return self
 
 
 class AnnotationResolution(StrEnum):
