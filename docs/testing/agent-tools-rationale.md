@@ -14,3 +14,16 @@
 | tool_call_id | retry で同じ ID になる（INV-59 の前提）。run・順序・tool・入力のどれが違っても別 ID |
 | 状態の語彙（INV-58） | 非対応・データ不足・権限不足・反映遅延・閾値を区別して返せる |
 | envelope | `data` は ok のときだけ。外部由来は常に `untrusted` |
+
+## tests/contract/test_agent_spec_tools.py（AgentSpec.allowed_tool_ids）
+
+| テスト | 守るもの |
+|---|---|
+| 1.0 は tool 無し・canonical にキーが出ない | 登録済み spec の `manifest_hash` が変わらない（INV-51）。空のときキーを出さないことが互換の要 |
+| ADR の許可表（literal） | strategy@1.1 / learning@1.1 の tool が ADR-0047 §2 と一致。実装定数から導出せず、許可を黙って広げる変更を検出する（INV-58） |
+| ref が ToolId に解決 | `"search_trends@1"` の綴り間違いを起動前（テスト時）に検出 |
+| LLM 回数 <= 3 | tool は 1 往復（plan -> synthesize）。再帰の余地を spec の予算で潰す（INV-60） |
+| tool 一覧の変更で hash が変わる | 許可の変更は新 spec_version を要求する（pin の意味） |
+| 1.1 と 1.0 の差分 | 新版が version・LLM 回数・tool 以外を勝手に変えない |
+
+`tests/contract/test_agent_registry.py` の `PINNED_HASHES` には 1.1 の 2 件を**足しただけ**（既存の値は不変）。
