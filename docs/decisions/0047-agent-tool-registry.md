@@ -272,3 +272,18 @@ ADR の決定は変えない。実装で確定した点だけを残す。
 `approved` / `rejected` の追記行を作る。`rejected` は次の Agent run の入力に載せ（`set_user_constraint` の拡張ではなく
 Agent の input document として）、同じ判断を黙って繰り返させない。これを足すときは INV-47（予算・公開設定を変える型を
 作らない）に反しないことと、`REQUIRED_SCOPE` / assistant tool の同期テストを同じ PR で足す。
+
+## 独立レビューの記録（2026-10-18、Sonnet 1 回、P0/P1 なし）
+
+P0/P1 は無し。以下は P2 以下で、今回は直さず後続の課題として残す。
+
+- `search_trends` の `as_of=ctx.now` は retry で変わる。UTC 日付をまたぐ retry は `idempotency_conflict`（FAILED）になりうる。二重課金はしない。
+- sha256 不一致の `ToolCallIntegrityError` が non-retryable と明示されていない。
+- `store.complete` が失敗すると、次の retry で `youtube_quota` の tool は `ambiguous_prior_attempt` になる（設計どおり。その分のデータは失う）。
+- strategy@1.1 の tool 最悪合計が spec の `timeout_seconds`（300 秒）を超えうる。timeout 後は記録済み LLM の replay で回復するが遅れる。
+- `fetch_sources` の `research_request_id` は episode に紐付けない（Evidence 共有の設計と整合。明記が要る）。
+- `target_ref=decision:<id>` は `JPMAS2_AGENT_TOOLS=false` でも受理される（flag-off の挙動が少し広い）。
+- 動画単位の `_aggregate` は Shorts と通常動画が混在する場合、views 最大の型に丸める（型をまたぐ順位付けはしない）。
+- `provider=fake` の結果でも historian の assessment が supported になりうる（limitations に注記は残る）。
+
+未実施: Docker の integration テスト、実 Research Provider の配線、判断の「承認」command（ADR-0047 の Open 項目）。
