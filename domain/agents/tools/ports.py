@@ -1,7 +1,9 @@
-"""Tool executor の port（ADR-0047 §3）。実体（Research / Analytics adapter）は infrastructure が注入する。
+"""Tool executor の port（ADR-0047 §3）。
+実体（Research / Analytics adapter）は infrastructure が注入する。
 
 executor は ``ToolOutcome`` を返す。**状態で返し、例外にしない**ものは ``ToolStatus`` に写す
-（quota 超過・権限不足・データ無し等）。想定外の障害だけ例外にしてよい（gateway が ``failed`` にする）。
+（quota 超過・権限不足・データ無し等）。
+想定外の障害だけ例外にしてよい（gateway が ``failed`` にする）。
 ``ToolGateway`` が tool_call_id の払い出し・保存済み結果の再利用（外部を再び呼ばない）・
 timeout・記録・ログを担当し、executor は**外部呼び出しだけ**を担当する。
 """
