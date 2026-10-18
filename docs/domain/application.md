@@ -53,6 +53,16 @@
 `JPMAS2_APPLICATION_API`（`Settings.jpmas2_application_api`、既定 `false`）。false の間は route が `404 feature_disabled`
 （認証・本文の検査より先）。flag のあるものは HTTP route だけで、内部 port・CLI・tool は route を経由する／use case を呼ぶだけ。
 
+## 5b. Agent tool の可視化 3 操作（ADR-0047 §7）
+
+`list_tool_calls` / `get_tool_call` / `get_improvement_trace`。`application/ports.py::AgentToolEvidencePort` を
+`infrastructure/application/tool_evidence.py::StoreBackedToolEvidenceReader` が実装する。flag は
+`OperationSpec.feature_flag`（`jpmas2_agent_tools`）で、HTTP は route の依存、`ApplicationService` は port を受け取らない
+（`tool_evidence=None`）ことで `feature_disabled` にする。**何も書かない**（INV-64）。モデルは
+`contracts/application_operations.py`（`ToolCallSummary` / `ToolCallDetail` / `ImprovementTrace`）、`ListToolCallsRequest` は
+`contracts/application.py`（アシスタント tool の入力 schema がここから導出される / INV-52）。組み立ての規則は
+`infrastructure/application/improvement_trace.py`。
+
 ## 6. grep の記録（AGENTS.md §8、変更前）
 
 `grep -rn "jpmas2_application_api\|JPMAS2_APPLICATION_API" apps/ workers/ domain/ infrastructure/ contracts/ docs/`: 変更前は

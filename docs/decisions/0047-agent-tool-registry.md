@@ -247,3 +247,28 @@ ADR の決定は変えない。実装で確定した点だけを残す。
   1 往復の規則に反する。資料 ID は検索結果の `source_ids` から `evidence:<id>` として引く。
 - `shorts_agentic_tools@1`: Historian は台本の後・storyboard の前（入力が script のため、creative と script の間では
   常に入力欠測になる）。起動は `JPMAS2_AGENT_TOOLS` が必要で、無ければ `feature_disabled`。
+
+## 実装メモ（人の可視化・介入。2026-10-18）
+
+- §7 の「`target = tool_call:<id>` を参照できるようにするだけ」は、`Anchor.target_ref`（任意・後方互換の追加項目。
+  既存の保存済み anchor・payload 指紋は変わらない）と `CommentPayload.flag`（任意）で実装した。`CommandType` と
+  `ChangeKind` は増やしていない。存在確認は `infrastructure/intervention/commands.py::_target_of_episode`（同じ Episode の
+  `agent_tool_calls` / `decision_records` の行だけ）。不変条件は INV-63。
+- 読み取り API（`list_tool_calls` / `get_tool_call` / `get_improvement_trace`）は ADR-0044 の操作カタログに足した。
+  Application Service → `AgentToolEvidencePort`（infrastructure が実装）の一本道で、HTTP・アシスタント tool は同じ model から導く。
+
+### Open: human correction of tool evidence
+
+現行の command で**できないこと**（新しい ChangeKind / command 型が要るので実装していない）:
+
+1. **判断の承認**: `decision_records` を「承認済み」にする command が無い。`apply_change` / `reject_change` は ChangeSet
+   （`script.edit_scenes` / `scene.override_visual`）専用で、題材選定・戦略判断は ChangeSet ではない。`release_checkpoint` は
+   manifest への承認で、判断記録への承認ではない。現状は `wrong_decision` の指摘（差し戻し）と `request_hold` だけ。
+2. **誤った根拠を使った判断の再実行**: 指摘は記録されるが、Strategy を指摘を入力にして再実行する経路が無い
+   （`set_user_constraint` は台本・storyboard の保持規則のみ）。
+3. **tool 結果そのものの無効化**: 指摘は注記であり、`agent_tool_calls` の行・MinIO の結果は変えない（追記型の原則）。
+
+提案する ADR-0047 の改訂（別承認）: `CommandType.RECORD_DECISION_REVIEW`（scope `apply`）で `decision:<id>` に
+`approved` / `rejected` の追記行を作る。`rejected` は次の Agent run の入力に載せ（`set_user_constraint` の拡張ではなく
+Agent の input document として）、同じ判断を黙って繰り返させない。これを足すときは INV-47（予算・公開設定を変える型を
+作らない）に反しないことと、`REQUIRED_SCOPE` / assistant tool の同期テストを同じ PR で足す。

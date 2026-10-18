@@ -357,3 +357,86 @@ LLM だけが台本どおりの fake。Docker の integration は実行してい
 | historian の通し | `fact_check_report` が保存され claim の根拠に `tool_call:<id>`、actor は historian、再実行で Research の台帳が増えない |
 
 analytics 側の注入は、Analytics の出力に外部由来のタイトルが無い（数値と日付だけ）ため Research の資料タイトルで検査した。
+
+## tests/unit/test_intervention_tool_evidence_target.py（人の指摘。INV-63）
+
+| テスト | 守るもの |
+|---|---|
+| 新しい command 型は不要 | tool 呼び出しの指摘が `comment` の payload で表せ、`CommandType` が増えていない（ADR-0047 §7 の「新 command を作らない」） |
+| `target_ref` は tool_call / decision + UUID だけ | 任意文字列・他の種類・注入文字を anchor に保存しない |
+| flag は種類の合う target と review_finding を要する | `wrong_evidence` が decision を指す、target 無しの flag、単なる comment への flag を受けて一覧を壊さない |
+| tool 呼び出しを `wrong_evidence` で指摘できる | 人の指摘が `annotations` に `anchor.target_ref` + `payload.flag` で残る |
+| 不明・他 Episode の対象は拒否し何も書かない | 他 Episode の根拠への指摘の混入、存在しない対象の指摘 |
+| 同じ command の再送は 1 行・1 event | INV-42。指摘の二重登録で未解決件数が増えない |
+| 同じ command_id で内容違いは拒否 | 別の対象への指摘を黙って同じ指摘として扱わない |
+| 判断を `wrong_decision` で差し戻せる | 承認 command が無い現状（Open）で出来ること |
+
+## tests/unit/test_agent_tool_evidence_reader.py（読み取りと改善トレース。INV-64）
+
+| テスト | 守るもの |
+|---|---|
+| 一覧は新しい順・要約のみ | 人が全体を見渡せる。結果の本文（外部由来）を一覧に出さない |
+| role / tool で絞る | 「Strategy の根拠だけ」「Analytics だけ」を見られる |
+| 複合 cursor・同時刻 5 件を 2 件ずつ | `(started_at, tool_call_id)` で同時刻の行を落とさない・重複させない（`list_episodes` と同じ規律） |
+| cursor は対 | `before` だけの半端な cursor を黙って無視しない（422） |
+| 別 Episode の行は見えない・未知の Episode は 404 | Episode を跨いだ漏れ |
+| 秘密らしい入力キーは `[redacted]` | 検証済み入力でも token が画面・ログに出る事故の最後の防波堤 |
+| 人の指摘が tool 呼び出しの横に出る | 誤った根拠が見えたまま次の判断に使われない（open/resolved も） |
+| 詳細は読み戻して sha256 照合・`untrusted` を保つ | 改ざん・欠落した結果を信頼しない。外部由来を指示にしない（INV-60） |
+| sha256 不一致・オブジェクト欠落は `integrity_error` | 黙って空/古い結果を返さない。中身（改ざん後の本文）は返さない |
+| `started` の行は結果なし + 理由 | 呼んだか不明な行を「失敗」「成功」のどちらにもしない |
+| 他 Episode の tool_call_id は 404 | URL の id 差し替えによる漏れ |
+| 全ての鎖がある Episode | 「なぜこの題材か（判断 + 引用した tool）・何を良くするか・何を反映したか・結果・次の提案」が 1 本の機械可読な形で答えられる。仮定の audience を実測と言わず、Lesson は `proposed` のまま |
+| 同じ入力で 2 回 | 決定的・JSON の往復で同じ（機械処理の前提） |
+| 空の Episode は全ての鎖が理由つきで欠落 | 省略ではなく明示（`missing` の集合 = 空の鎖の集合。モデルの検証が強制） |
+| 鎖を 1 本ずつ外す（5 通り） | 外した鎖だけが理由つきで欠け、残りは残る。受領が無くても Lesson の測定は出る |
+| 測定項目が無い Lesson は `awaiting_measurement` | 0 や架空の値で埋めない。`missing_reason` を残す |
+| 受領だけで Lesson 無しは `awaiting_measurement` | 公開済み = 測定済みと誤認させない |
+| 行の無い引用は `unresolved_citations` | 実在しない根拠を引用した判断を隠さない |
+| 指摘が呼び出し・判断・`human_annotations` に出る | 人の差し戻しが判断の横に見える |
+| tool への指摘は品質レビューの findings に混ざらない | 動画の品質指摘の件数・画面が汚れない |
+| 3 読み取りは全表の行数も MinIO の書き込み回数も変えない | read-only の保証 |
+| 秘密・結果本文が一覧/トレースに出ない | 漏えいの最後の確認 |
+
+## tests/unit/test_agent_tool_evidence_service.py（Application Service と HTTP）
+
+| テスト | 守るもの |
+|---|---|
+| 3 操作は read・scope `read`・flag 付き | カタログの宣言と実装の食い違い（書く操作を足さない） |
+| scope が無ければ port に触れない | 権限検査が読み取りの前にある |
+| port 無し = `feature_disabled` | flag OFF で service 単体（内部 Agent・CLI）も開かない |
+| AI も `read` があれば読め、観測は 1 件 | 既存の `application.operation.completed` の経路を通る（新しい event 名なし）。入力全文は載らない |
+| port の失敗は `rejected` + code で記録 | 完全性エラーが観測に残る |
+| flag OFF の route は認証より先に 404 | 無効な機能の存在を認証前に漏らさない（`require_application_api` と同じ順序） |
+| application API 自体が OFF でも 404 | 2 つの flag の AND |
+| flag ON でも認証は必須 | 401 |
+| `tool_call_not_found`=404・`integrity_error`=500 | 422 に丸めず、サーバ側の問題を 4xx にしない |
+| query が request model で届く・未知の tool_id/半端な cursor は 422 | HTTP の入力が model そのもの |
+
+## tests/unit/test_agent_tool_evidence_slice.py（縦断）
+
+| テスト | 守るもの |
+|---|---|
+| HTTP とアシスタント tool が同じ結果 | 入口によらず単一の経路（ADR-0044 / INV-52）。tool のフィルタ・422 も同じ route を通る |
+| 改ざん結果は HTTP 500 / tool の error | 完全性エラーが入口の違いで消えない |
+| 既存の command route で人が指摘 → 根拠の横に出る | ADR-0047 §7 の人の介入の実経路。同じ command_id の再送で注記は 1 件、別内容は 409 |
+| HTTP で読んでも何も書かれない | read-only を HTTP 層でも確認 |
+
+## contract-sync（test_application_contract_sync.py の追加）
+
+| テスト | 守るもの |
+|---|---|
+| `list_tool_calls` tool の schema = `ListToolCallsRequest` | 手書きの schema と HTTP の query の食い違い（INV-52） |
+| route の query parameter = model の項目 | OpenAPI と model の食い違い |
+| 3 tool は同名の read 操作と 1 対 1 | tool が書く経路を持たない |
+
+## 既存テストの変更（理由）
+
+- `tests/contract/test_assistant_tools_contract.py`: `EXPECTED_TOOLS` に read の 3 tool を**足した**、`add_comment` の許容
+  property に `flag` を**足した**（ADR-0047 §7）。既存 16 tool の名前・順序・schema は不変。
+- `tests/contract/test_operations_catalog_sync.py`: 操作数 13 → 16（カタログ追加）。
+- `tests/contract/test_application_operations_http.py` / `tests/unit/test_application_http_mcp_parity.py`: 新操作の引数
+  （`tool_call_id`・query model）を並べる分岐を足した。既存の操作の検査は変えていない。
+- `apps/web/static/operations.json` / `docs/api/openapi.application.json`: 生成物の再生成（UI の TS client / カタログ
+  JSON の再生成が要る。UI の実装はこのタスクの範囲外）。
+

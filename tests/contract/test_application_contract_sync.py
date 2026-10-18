@@ -13,6 +13,7 @@ from typing import Any
 
 from apps.api.main import create_app
 from contracts.application import (
+    ListToolCallsRequest,
     ProposeStoryboardChangeRequest,
     StoryboardPatchProposal,
     StoryboardProposalResult,
@@ -104,3 +105,32 @@ def test_the_fragment_has_only_the_application_paths_and_the_referenced_schemas(
     names = set(document["components"]["schemas"])
     assert {"ProposeStoryboardChangeRequest", "StoryboardProposalResult"} <= names
     assert "CommandView" not in names  # 介入 API の他の route の型は含めない
+
+
+def test_the_list_tool_calls_tool_schema_is_derived_from_the_query_model() -> None:
+    """ADR-0047 §7: アシスタント tool と HTTP の query は同じ model（INV-52）。"""
+    tool = _resolve(TOOLS_BY_NAME["list_tool_calls"].input_schema, {})
+    query = _model_schema(ListToolCallsRequest)
+    assert set(tool["properties"]) == set(query["properties"]) | {"episode_id"}
+    for name, schema in query["properties"].items():
+        assert tool["properties"][name] == schema, name
+    assert tool["required"] == ["episode_id"]
+    assert tool["additionalProperties"] is False
+
+
+def test_the_list_tool_calls_route_query_parameters_are_the_model_fields() -> None:
+    document = create_app().openapi()
+    path = "/v1/intervention/episodes/{episode_id}/tool-calls"
+    names = {p["name"] for p in document["paths"][path]["get"]["parameters"] if p["in"] == "query"}
+    assert names == set(ListToolCallsRequest.model_fields)
+
+
+def test_every_tool_visibility_tool_is_read_only_and_matches_an_operation() -> None:
+    """アシスタントの 3 tool は同名の read 操作と 1 対 1（書く tool を足さない）。"""
+    from contracts.application_operations import OPERATIONS_BY_NAME, OperationName
+
+    for name in ("list_tool_calls", "get_tool_call", "get_improvement_trace"):
+        tool = TOOLS_BY_NAME[name]
+        spec = OPERATIONS_BY_NAME[OperationName(name)]
+        assert tool.command_type is None and tool.effect.value == spec.effect.value == "read"
+        assert tool.required_scope is spec.required_scope

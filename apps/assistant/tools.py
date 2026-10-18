@@ -225,6 +225,20 @@ def _preview_change_impact(call: ToolCall, args: dict[str, Any]) -> dict[str, An
     )
 
 
+def _list_tool_calls(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
+    params = {k: v for k, v in args.items() if k != "episode_id" and v is not None}
+    return _result(call.request("GET", _episode_path(args) + "/tool-calls", params=params))
+
+
+def _get_tool_call(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
+    tool_call_id = _uuid(args["tool_call_id"], "tool_call_id")
+    return _result(call.request("GET", f"{_episode_path(args)}/tool-calls/{tool_call_id}"))
+
+
+def _get_improvement_trace(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
+    return _result(call.request("GET", _episode_path(args) + "/improvement-trace"))
+
+
 def _get_command_status(call: ToolCall, args: dict[str, Any]) -> dict[str, Any]:
     command_id = str(args["command_id"])
     if not _COMMAND_ID.match(command_id):
@@ -280,7 +294,12 @@ def build_command_payload(tool: str, args: dict[str, Any]) -> dict[str, Any]:
             )
         case ToolName.ADD_COMMENT:
             return _drop_none(
-                {"anchor": args["anchor"], "body": args["body"], "kind": args.get("kind")}
+                {
+                    "anchor": args["anchor"],
+                    "body": args["body"],
+                    "kind": args.get("kind"),
+                    "flag": args.get("flag"),
+                }
             )
         case ToolName.REQUEST_HOLD:
             return _drop_none({"reason": args.get("reason")})
@@ -563,6 +582,9 @@ HANDLERS: dict[ToolName, Handler] = {
     ToolName.APPLY_CHANGE: _apply_change,
     ToolName.RESUME_EPISODE: _send,
     ToolName.PROPOSE_STORYBOARD_PATCH: _propose_storyboard_patch,
+    ToolName.LIST_TOOL_CALLS: _list_tool_calls,
+    ToolName.GET_TOOL_CALL: _get_tool_call,
+    ToolName.GET_IMPROVEMENT_TRACE: _get_improvement_trace,
 }
 
 

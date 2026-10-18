@@ -919,3 +919,32 @@ migration 0020 の凍結 literal と一致する。同じ `(tool_id, version)` �
 / `tests/unit/test_agent_tools_wiring.py::test_the_same_tool_from_two_groups_is_a_startup_error`
 / `tests/unit/test_agent_tools_wiring.py::test_no_tool_support_is_built_when_the_flag_is_off`
 / `tests/architecture/test_agentic_default_off.py::test_daily_path_modules_import_nothing_agentic`
+
+### INV-63 人は既存の `comment` command で tool 呼び出し・Agent の判断を指摘でき、新しい command 型は作らない
+`Anchor.target_ref`（`tool_call:<uuid>` / `decision:<uuid>`）は**同じ Episode の実在する行**だけを指せる（他 Episode・
+存在しない対象は `not_found` で拒否され、何も書かれない）。構造化された指摘 `CommentPayload.flag`
+（`wrong_evidence` = tool 呼び出しの根拠が誤り、`wrong_decision` = 判断の差し戻し）は `kind=review_finding` と、種類の
+合う `target_ref` を必須とする。指摘は `annotations` の追記行（`anchor.target_ref`・`payload.flag`）で、解決は既存の
+`resolve_annotation`。command_id の冪等性（INV-42）・scope（`comment`）・hold はそのまま。**判断の「承認」を表す
+command は無い**（`docs/decisions/0047-agent-tool-registry.md` の「Open: human correction of tool evidence」）。
+**機械検査**: `tests/unit/test_intervention_tool_evidence_target.py::test_no_new_command_type_is_needed`
+/ `tests/unit/test_intervention_tool_evidence_target.py::test_a_flag_on_an_unknown_or_foreign_tool_call_is_rejected_and_writes_nothing`
+/ `tests/unit/test_intervention_tool_evidence_target.py::test_resending_the_same_flag_command_makes_one_logical_change`
+/ `tests/unit/test_intervention_tool_evidence_target.py::test_a_flag_needs_a_matching_target_and_a_review_finding`
+
+### INV-64 tool 呼び出しの可視化は read-only で、検証できない結果を黙って返さず、欠けた鎖を省略しない
+`list_tool_calls` / `get_tool_call` / `get_improvement_trace` は scope `read`・`JPMAS2_AGENT_TOOLS` 有効時のみ（無効なら
+`404 feature_disabled`）で、DB・MinIO に何も書かない。結果の本文は `get_tool_call` だけが MinIO から読み戻し、行の
+`result_sha256` と照合する: 不一致・オブジェクト欠落は `integrity_error`（明示的な失敗）で、`untrusted` の印は保つ。
+入力の秘密らしいキーは `[redacted]`。改善トレースは保存済みの記録だけから決定的に組み、値が無い鎖は `null`/空 + 理由
+（`missing`。モデルの検証が「空の鎖 = 理由あり」を強制する）で示す。測っていない結果を作らない（`result.status`）。
+引用されたが行の無い `tool_call:<id>` は `unresolved_citations` に出す。1 操作 = `application.operation.completed`
+1 行（入力・結果の本文は載せない）。
+**機械検査**: `tests/unit/test_agent_tool_evidence_reader.py::test_none_of_the_reads_writes_anything`
+/ `tests/unit/test_agent_tool_evidence_reader.py::test_a_sha256_mismatch_is_an_explicit_integrity_error`
+/ `tests/unit/test_agent_tool_evidence_reader.py::test_an_empty_episode_names_every_missing_link_with_a_reason`
+/ `tests/unit/test_agent_tool_evidence_reader.py::test_each_missing_link_is_explicit_and_the_rest_stay`
+/ `tests/unit/test_agent_tool_evidence_reader.py::test_no_secret_or_result_body_leaks_into_list_or_trace`
+/ `tests/unit/test_agent_tool_evidence_service.py::test_with_the_flag_off_every_route_is_404_feature_disabled_before_auth`
+/ `tests/unit/test_agent_tool_evidence_service.py::test_an_ai_caller_with_read_may_read_and_one_observation_is_recorded`
+

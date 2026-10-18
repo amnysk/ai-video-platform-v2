@@ -52,6 +52,9 @@ ERROR_STATUS: dict[OperationErrorCode, int] = {
     OperationErrorCode.CHANGE_SET_NOT_FOUND: status.HTTP_404_NOT_FOUND,
     OperationErrorCode.INVALID_STATE: status.HTTP_409_CONFLICT,
     OperationErrorCode.FEATURE_DISABLED: status.HTTP_404_NOT_FOUND,
+    OperationErrorCode.TOOL_CALL_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    #: 保存された結果が記録と合わない。クライアントの誤りではない（黙って返さず 500）
+    OperationErrorCode.INTEGRITY_ERROR: status.HTTP_500_INTERNAL_SERVER_ERROR,
 }
 _DEFAULT_ERROR_STATUS = status.HTTP_422_UNPROCESSABLE_CONTENT
 
@@ -71,6 +74,21 @@ def require_application_api(settings: Annotated[Settings, Depends(get_settings)]
                 "the application API is disabled (JPMAS2_APPLICATION_API)",
             )
         )
+
+
+def _require_flag(flag: str) -> Callable[..., None]:
+    """``OperationSpec.feature_flag`` の ``Settings`` 項目が無効なら 404 feature_disabled。"""
+
+    def check(settings: Annotated[Settings, Depends(get_settings)]) -> None:
+        if not getattr(settings, flag):
+            raise operation_error_to_http(
+                OperationError(
+                    OperationErrorCode.FEATURE_DISABLED,
+                    f"this operation is disabled ({flag.upper()})",
+                )
+            )
+
+    return check
 
 
 router = APIRouter(
@@ -101,13 +119,16 @@ def _endpoint(spec: OperationSpec) -> Callable[..., Awaitable[Any]]:
     """カタログの 1 操作の handler。引数は path・body・query で決まる（signature を組み立てる）。"""
     has_episode = "{episode_id}" in spec.http_path
     has_change_set = "{change_set_id}" in spec.http_path
+    has_tool_call = "{tool_call_id}" in spec.http_path
     posts = spec.http_method == "POST"
     method_name = spec.name.value
 
     async def endpoint(**kw: Any) -> Any:
         service: ApplicationServicePort = kw["service"]
         caller = caller_from_principal(kw["principal"], _correlation_id(kw["correlation"]))
-        args: list[Any] = [kw[n] for n in ("episode_id", "change_set_id", "payload") if n in kw]
+        args: list[Any] = [
+            kw[n] for n in ("episode_id", "change_set_id", "tool_call_id", "payload") if n in kw
+        ]
         try:
             result = await getattr(service, method_name)(caller, *args)
         except OperationError as exc:
@@ -138,6 +159,8 @@ def _endpoint(spec: OperationSpec) -> Callable[..., Awaitable[Any]]:
         params.append(inspect.Parameter("episode_id", k, annotation=uuid.UUID))
     if has_change_set:
         params.append(inspect.Parameter("change_set_id", k, annotation=str))
+    if has_tool_call:
+        params.append(inspect.Parameter("tool_call_id", k, annotation=str))
     if spec.query_model is not None:
         params.append(
             inspect.Parameter("payload", k, annotation=Annotated[spec.query_model, Query()])
@@ -169,6 +192,9 @@ def _register(spec: OperationSpec) -> None:
             else status.HTTP_200_OK
         ),
         responses=responses or None,
+        dependencies=(
+            None if spec.feature_flag is None else [Depends(_require_flag(spec.feature_flag))]
+        ),
         operation_id=spec.name.value,
         summary=spec.name.value,
     )

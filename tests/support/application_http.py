@@ -34,17 +34,22 @@ from contracts.application_operations import (
     GetAgentDecisionsResult,
     GetQualityReviewResult,
     GetStoryboardResult,
+    ImprovementTrace,
     OperationName,
     OperationSpec,
     RequestHoldRequest,
     ResumeAccepted,
     ResumeProductionRequest,
+    ToolCallDetail,
+    ToolCallList,
+    TraceResult,
     WorkflowProgress,
 )
 from contracts.intervention import CommandStatus, Scope
 
 EPISODE = uuid.UUID("11111111-1111-4111-8111-111111111111")
 CHANGE_SET = "cs-0001"
+TOOL_CALL = "5b0e2f4c-8a3d-5c1e-9f70-2a6d4e8b1c33"
 TOKEN = "p2a-owner-token-0001"
 NOW = datetime(2026, 10, 15, 9, 0, tzinfo=UTC)
 
@@ -167,6 +172,57 @@ def results(created: bool = True) -> dict[OperationName, BaseModel]:
         OperationName.GET_QUALITY_REVIEW: GetQualityReviewResult(
             episode_id=EPISODE, status="not_reviewed", review=None, artifact_id=None, findings=()
         ),
+        OperationName.LIST_TOOL_CALLS: ToolCallList(
+            episode_id=EPISODE, calls=(), next_before=None, next_before_id=None
+        ),
+        OperationName.GET_TOOL_CALL: ToolCallDetail(
+            tool_call_id=TOOL_CALL,
+            tool_ref="search_trends@1",
+            agent_ref="strategy@1.1",
+            agent_role="strategy",
+            agent_spec_version="1.1",
+            agent_run_key="run-1",
+            seq=1,
+            status="ok",
+            started_at=NOW,
+            finished_at=NOW,
+            duration_ms=5,
+            evidence_refs=(),
+            research_request_id=None,
+            error_code=None,
+            input={},
+            episode_id=EPISODE,
+            result=None,
+            result_sha256=None,
+            integrity="no_result",
+            result_missing_reason="no_result_stored",
+        ),
+        OperationName.GET_IMPROVEMENT_TRACE: ImprovementTrace(
+            episode_id=EPISODE,
+            topic=None,
+            tool_calls=(),
+            unresolved_citations=(),
+            topic_selection=None,
+            intended_improvement=None,
+            reflected_in_video=None,
+            quality_review=None,
+            publication=None,
+            result=TraceResult(status="not_published", reason="no upload receipt"),
+            next_proposal=None,
+            human_annotations=(),
+            missing={
+                k: "none recorded"
+                for k in (
+                    "tool_calls",
+                    "topic_selection",
+                    "intended_improvement",
+                    "reflected_in_video",
+                    "quality_review",
+                    "publication",
+                    "next_proposal",
+                )
+            },
+        ),
         OperationName.GET_WORKFLOW_PROGRESS: WorkflowProgress(
             episode_id=EPISODE,
             episode_status="draft",
@@ -180,7 +236,9 @@ def results(created: bool = True) -> dict[OperationName, BaseModel]:
 
 
 def url(spec: OperationSpec) -> str:
-    return "/v1/intervention" + spec.http_path.format(episode_id=EPISODE, change_set_id=CHANGE_SET)
+    return "/v1/intervention" + spec.http_path.format(
+        episode_id=EPISODE, change_set_id=CHANGE_SET, tool_call_id=TOOL_CALL
+    )
 
 
 @dataclass
@@ -254,9 +312,22 @@ class FakeApplicationService:
     async def get_workflow_progress(self, caller: Caller, episode_id: uuid.UUID) -> Any:
         return await self._do(OperationName.GET_WORKFLOW_PROGRESS, caller, episode_id)
 
+    async def list_tool_calls(self, caller: Caller, episode_id: uuid.UUID, request: Any) -> Any:
+        return await self._do(OperationName.LIST_TOOL_CALLS, caller, episode_id, request)
+
+    async def get_tool_call(self, caller: Caller, episode_id: uuid.UUID, tool_call_id: str) -> Any:
+        return await self._do(OperationName.GET_TOOL_CALL, caller, episode_id, tool_call_id)
+
+    async def get_improvement_trace(self, caller: Caller, episode_id: uuid.UUID) -> Any:
+        return await self._do(OperationName.GET_IMPROVEMENT_TRACE, caller, episode_id)
+
 
 def build_app(
-    service: FakeApplicationService | None, *, flag: bool = True, auth: bool = True
+    service: FakeApplicationService | None,
+    *,
+    flag: bool = True,
+    auth: bool = True,
+    agent_tools: bool = True,
 ) -> Any:
     """本物の FastAPI に fake service を差す。``auth=False`` は principal 未設定（503）。"""
     from apps.api.application_service import get_application_service
@@ -266,7 +337,9 @@ def build_app(
     from infrastructure.config import Settings
 
     app = create_app()
-    app.dependency_overrides[get_settings] = lambda: Settings(jpmas2_application_api=flag)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        jpmas2_application_api=flag, jpmas2_agent_tools=agent_tools
+    )
     app.dependency_overrides[intervention.get_principal_registry] = lambda: (
         registry() if auth else None
     )
@@ -280,6 +353,7 @@ __all__ = [
     "BODIES",
     "CHANGE_SET",
     "EPISODE",
+    "TOOL_CALL",
     "OPERATIONS_BY_NAME",
     "FakeApplicationService",
     "build_app",

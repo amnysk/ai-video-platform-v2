@@ -1,11 +1,12 @@
-"""Application Service（ADR-0044 §2）。UI・MCP・CLI・内部 Agent が使う13操作の唯一の入口。
+"""Application Service（ADR-0044 §2）。UI・MCP・CLI・内部 Agent が使う16操作の唯一の入口。
 
 - 権限（scope・人限定）は ``OPERATIONS_BY_NAME`` から引き、``_authorize`` の1か所で検査する。
 - 観測（``OperationRecord``）は ``_observed`` の1か所で、1操作につきちょうど1件記録する。
   入力の全文・秘密は載せない（id・code・時間だけ）。
 - 書き込みは既存の介入 command（``CommandPort.receive`` → ``start``）。適用ロジックは持たない
   （INV-50）。
-- 読み取りは ``EpisodeReadPort``。
+- 読み取りは ``EpisodeReadPort``。Agent tool の可視化 3 操作は ``AgentToolEvidencePort``
+  （``JPMAS2_AGENT_TOOLS`` が無効なら port を渡さず ``feature_disabled``）。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import TypeVar
 from application.errors import OperationError, OperationErrorCode
 from application.ports import (
     AgenticWorkflowStarter,
+    AgentToolEvidencePort,
     Caller,
     CommandPort,
     EpisodeDraftPort,
@@ -50,11 +52,15 @@ from contracts.application_operations import (
     GetAgentDecisionsResult,
     GetQualityReviewResult,
     GetStoryboardResult,
+    ImprovementTrace,
     ListEpisodesRequest,
+    ListToolCallsRequest,
     OperationName,
     RequestHoldRequest,
     ResumeAccepted,
     ResumeProductionRequest,
+    ToolCallDetail,
+    ToolCallList,
     WorkflowProgress,
 )
 from contracts.intervention import (
@@ -92,12 +98,15 @@ class ApplicationService:
         agentic_enabled: bool,
         observer: OperationObserver | None = None,
         agent_tools_enabled: bool = False,
+        tool_evidence: AgentToolEvidencePort | None = None,
     ) -> None:
         self._commands = commands
         self._reads = reads
         self._starter = starter
         self._agentic_enabled = agentic_enabled
         self._observer = observer
+        #: ``JPMAS2_AGENT_TOOLS`` が有効なときだけ渡す。None なら feature_disabled
+        self._tool_evidence = tool_evidence
         self._create_draft = CreateEpisodeDraft(drafts)
         self._start_production = StartAgenticProduction(
             drafts, starter, enabled=agentic_enabled, agent_tools_enabled=agent_tools_enabled
@@ -265,6 +274,40 @@ class ApplicationService:
             return result
 
         return await self._observed(OperationName.GET_WORKFLOW_PROGRESS, caller, episode_id, body)
+
+    # ------------------------------------------------------------------ Agent tool の可視化（read）
+
+    def _evidence(self) -> AgentToolEvidencePort:
+        if self._tool_evidence is None:
+            raise OperationError(
+                OperationErrorCode.FEATURE_DISABLED,
+                "agent tool evidence views are disabled (JPMAS2_AGENT_TOOLS=false)",
+            )
+        return self._tool_evidence
+
+    async def list_tool_calls(
+        self, caller: Caller, episode_id: uuid.UUID, request: ListToolCallsRequest
+    ) -> ToolCallList:
+        async def body(_: _Context) -> ToolCallList:
+            return await self._evidence().list_tool_calls(episode_id, request)
+
+        return await self._observed(OperationName.LIST_TOOL_CALLS, caller, episode_id, body)
+
+    async def get_tool_call(
+        self, caller: Caller, episode_id: uuid.UUID, tool_call_id: str
+    ) -> ToolCallDetail:
+        async def body(_: _Context) -> ToolCallDetail:
+            return await self._evidence().get_tool_call(episode_id, tool_call_id)
+
+        return await self._observed(OperationName.GET_TOOL_CALL, caller, episode_id, body)
+
+    async def get_improvement_trace(
+        self, caller: Caller, episode_id: uuid.UUID
+    ) -> ImprovementTrace:
+        async def body(_: _Context) -> ImprovementTrace:
+            return await self._evidence().improvement_trace(episode_id)
+
+        return await self._observed(OperationName.GET_IMPROVEMENT_TRACE, caller, episode_id, body)
 
     # ------------------------------------------------------------------ 書き込み（介入 command）
 

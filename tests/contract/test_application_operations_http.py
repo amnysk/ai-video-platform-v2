@@ -17,6 +17,7 @@ from application.errors import OperationError, OperationErrorCode
 from contracts.application_operations import (
     OPERATIONS,
     ListEpisodesRequest,
+    ListToolCallsRequest,
     OperationName,
     OperationSpec,
 )
@@ -29,6 +30,7 @@ from tests.support.application_http import (
     BODIES,
     CHANGE_SET,
     EPISODE,
+    TOOL_CALL,
     FakeApplicationService,
     build_app,
     results,
@@ -121,6 +123,10 @@ async def test_the_route_forwards_caller_path_and_body_and_returns_the_result_un
         assert rest == (ListEpisodesRequest(),)
     elif spec.name is OperationName.CREATE_EPISODE_DRAFT:
         assert rest == ()
+    elif spec.name is OperationName.LIST_TOOL_CALLS:
+        assert rest == (EPISODE, ListToolCallsRequest())
+    elif "{tool_call_id}" in spec.http_path:
+        assert rest == (EPISODE, TOOL_CALL)
     elif "{change_set_id}" in spec.http_path:
         assert rest == (EPISODE, CHANGE_SET)
     else:

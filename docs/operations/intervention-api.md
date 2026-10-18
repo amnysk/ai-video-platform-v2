@@ -185,12 +185,28 @@ scope・人限定の検査は Application Service が行う。`X-Correlation-ID`
 | `get_agent_decisions` | `GET /episodes/{id}/agent-decisions` | `200` |
 | `get_quality_review` | `GET /episodes/{id}/quality-review` | `200` |
 | `get_workflow_progress` | `GET /episodes/{id}/progress` | `200` |
+| `list_tool_calls`（`JPMAS2_AGENT_TOOLS`） | `GET /episodes/{id}/tool-calls?agent_role=&tool_id=&limit=&before=&before_id=` | `200` |
+| `get_tool_call`（同上） | `GET /episodes/{id}/tool-calls/{tool_call_id}` | `200` |
+| `get_improvement_trace`（同上） | `GET /episodes/{id}/improvement-trace` | `200` |
+
+**Agent tool の可視化（ADR-0047 §7、INV-64）**: 上の最後の 3 行は read のみ（scope `read`）で、`JPMAS2_AGENT_TOOLS=false`
+（既定）なら `404 feature_disabled`（認証より先）。何も書かない。`list_tool_calls` は新しい順の keyset ページ
+（`next_before` / `next_before_id` を次の `before` / `before_id` に）。要約は tool_ref・agent_ref・seq・status・開始/終了・
+所要・`evidence_refs`・`research_request_id`・`error_code`・検証済みの入力（`token`/`secret` 等のキーは `[redacted]`）と、
+その tool 呼び出しを指す人の注記（`annotations`、`anchor.target_ref=tool_call:<id>`）。結果の本文は載せない。
+`get_tool_call` は MinIO の結果の包み（`untrusted: true` のまま）を読み戻し、行の `result_sha256` と照合する。
+**合わなければ・オブジェクトが無ければ `500 integrity_error`**（黙って返さない。`detail.reason`）。結果が無い行
+（`started`）は `integrity=no_result` と理由を返す。`get_improvement_trace` は tool 呼び出し → 判断記録 → 戦略案・
+演出指針・品質レビュー → 絵コンテ/台本の版 → 投稿受領（video id）→ Lesson の鎖を、保存済みの記録だけから決定的に
+組む。値が無い鎖は `null`/空 + `missing[<鎖>]` に理由（省略しない）。結果は `result.status` ∈ `not_published` /
+`awaiting_measurement` / `measured`（測っていないものを作らない）。引用されたが行の無い `tool_call:<id>` は
+`unresolved_citations`。人の指摘（`comment` + `flag`、INV-63）は対象の横と `human_annotations` に出る。
 
 `list_episodes` の cursor は `(created_at, id)` の複合（ADR-0045 §5）: 応答の `next_before` と `next_before_id` を次の `before` / `before_id` に渡す（同時刻の Episode を落とさない）。`before_id` を付けない旧 client は従来の `created_at` のみ。`status` は `EpisodeStatus`、`q` は topic の部分一致（大文字小文字無視、1〜200 文字、`%` `_` は文字）。
 
 失敗は `{"detail": {"error": <OperationErrorCode>, "message", ...}}`。status: `409`（`command_id_reused`・
 `stale_*`・`invalid_state`）、`403`（`missing_scope`・`forbidden`）、`404`（`episode_not_found`・
-`change_set_not_found`・`feature_disabled`）、他は `422`。UI の origin は `API_CORS_ORIGINS`（カンマ区切り、
+`change_set_not_found`・`tool_call_not_found`・`feature_disabled`）、`500`（`integrity_error`）、他は `422`。UI の origin は `API_CORS_ORIGINS`（カンマ区切り、
 既定は空 = CORS 無し、`*` は起動時に拒否）。1 操作 = `application.operation.completed` のログ 1 行。
 
 ## 5. 典型的な流れ（curl）

@@ -48,10 +48,13 @@ python scripts/assistant.py tools --tool-use    # name / description / input_sch
 | `list_change_sets` | read | read | 変更案の一覧（見積りの `null` は未見積り） |
 | `preview_change_impact` | read | read | 変更案の差分・影響範囲・見積り費用 |
 | `get_command_status` | read | read | command の状態（`applied` 以外は未適用） |
-| `add_comment` | annotate | comment | アンカー付きコメント（segment_id / scene_id / asset_id / time_range / manifest_id / revision_id） |
+| `add_comment` | annotate | comment | アンカー付きコメント（segment_id / scene_id / asset_id / time_range / manifest_id / revision_id / `target_ref`）。`flag`（`wrong_evidence` / `wrong_decision`）は `kind=review_finding` + `target_ref=tool_call:<id>` / `decision:<id>`（ADR-0047 §7、INV-63） |
 | `propose_script_edit` | propose | propose | 台本の修正案（`script.edit_scenes`）。ChangeSet を作るだけ |
 | `propose_scene_visual_override` | propose | propose | シーンの映像の修正案（`scene.override_visual`）。ChangeSet を作るだけ |
 | `propose_storyboard_patch` | propose | propose | 絵コンテの映像文を複数シーン分まとめて提案（edit ごとに `scene.override_visual`。ADR-0043。`JPMAS2_APPLICATION_API=true` が必要。framing 等は `unsupported_change`） |
+| `list_tool_calls` | read | read | Agent の tool 呼び出し一覧（新しい順。人の指摘つき。入力 schema は `ListToolCallsRequest` から導出。`JPMAS2_APPLICATION_API` と `JPMAS2_AGENT_TOOLS` が必要） |
+| `get_tool_call` | read | read | tool 呼び出し 1 件と保存済みの結果（sha256 照合済み・`untrusted`。不一致は `integrity_error`） |
+| `get_improvement_trace` | read | read | 改善トレース（tool → 判断 → 戦略/演出/絵コンテ → 投稿 → Lesson。欠けた鎖は理由つき） |
 | `request_hold` | control | hold | 停止の依頼（送信済みの provider job は完了・課金されうる） |
 | `resume_episode` | control | resume | 再開 |
 | `apply_change` | apply | apply | ChangeSet の適用（§4） |

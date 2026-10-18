@@ -1,6 +1,6 @@
 {
   "api_prefix": "/v1/intervention",
-  "catalog_version": "edb5af2f2d6c7782",
+  "catalog_version": "2bdcda4ab675a923",
   "operations": [
     {
       "body_fields": [
@@ -313,6 +313,100 @@
       "name": "get_workflow_progress",
       "paid": false,
       "path": "/v1/intervention/episodes/{episode_id}/progress",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [],
+      "required_scope": "read"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "list_tool_calls",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/tool-calls",
+      "path_params": [
+        "episode_id"
+      ],
+      "query_fields": [
+        {
+          "enum": [
+            "producer",
+            "writer_director",
+            "reviewer",
+            "strategy",
+            "creative_director",
+            "quality_reviewer",
+            "learning",
+            "historian"
+          ],
+          "name": "agent_role",
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        {
+          "enum": [
+            "search_trends",
+            "search_historical_facts",
+            "fetch_sources",
+            "get_video_analytics",
+            "get_audience_retention",
+            "compare_video_performance",
+            "get_audience_demographics",
+            "get_channel_performance"
+          ],
+          "name": "tool_id",
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "nullable": false,
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "before",
+          "nullable": true,
+          "required": false,
+          "type": "string:date-time"
+        },
+        {
+          "name": "before_id",
+          "nullable": true,
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "required_scope": "read"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "get_tool_call",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/tool-calls/{tool_call_id}",
+      "path_params": [
+        "episode_id",
+        "tool_call_id"
+      ],
+      "query_fields": [],
+      "required_scope": "read"
+    },
+    {
+      "body_fields": [],
+      "effect": "read",
+      "human_only": false,
+      "method": "GET",
+      "name": "get_improvement_trace",
+      "paid": false,
+      "path": "/v1/intervention/episodes/{episode_id}/improvement-trace",
       "path_params": [
         "episode_id"
       ],

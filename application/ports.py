@@ -21,7 +21,11 @@ from contracts.application_operations import (
     GetAgentDecisionsResult,
     GetQualityReviewResult,
     GetStoryboardResult,
+    ImprovementTrace,
+    ListToolCallsRequest,
     OperationName,
+    ToolCallDetail,
+    ToolCallList,
     WorkflowProgress,
 )
 from contracts.intervention import ActorType, CommandEnvelope, CommandStatus, Scope
@@ -117,6 +121,23 @@ class EpisodeReadPort(Protocol):
     async def quality_review(self, episode_id: uuid.UUID) -> GetQualityReviewResult: ...
 
     async def progress(self, episode_id: uuid.UUID) -> WorkflowProgress: ...
+
+
+class AgentToolEvidencePort(Protocol):
+    """Agent の tool 呼び出しと改善トレースの読み取り（ADR-0047 §7）。**何も書かない。**
+
+    PostgreSQL（``agent_tool_calls`` ほか）と MinIO の結果だけを読む。Episode が無ければ
+    ``OperationError(episode_not_found)``、tool 呼び出しが無い・別 Episode のものなら
+    ``tool_call_not_found``、保存された結果が記録した sha256 と合わなければ ``integrity_error``。
+    """
+
+    async def list_tool_calls(
+        self, episode_id: uuid.UUID, request: ListToolCallsRequest
+    ) -> ToolCallList: ...
+
+    async def get_tool_call(self, episode_id: uuid.UUID, tool_call_id: str) -> ToolCallDetail: ...
+
+    async def improvement_trace(self, episode_id: uuid.UUID) -> ImprovementTrace: ...
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,21 @@
 {
   "components": {
     "schemas": {
+      "AgentRole": {
+        "description": "実行役の語彙の唯一の宣言元（設計 §3）。``contracts/roles.py`` の RoleSpec と1対1。\n\n初期の3役（producer / writer_director / reviewer）に、ADR-0043 が自律改善型制作の4役\n（strategy / creative_director / quality_reviewer / learning）を足した。版付きの定義は\n``contracts/agents.py``（Agent Registry）が持つ。",
+        "enum": [
+          "producer",
+          "writer_director",
+          "reviewer",
+          "strategy",
+          "creative_director",
+          "quality_reviewer",
+          "learning",
+          "historian"
+        ],
+        "title": "AgentRole",
+        "type": "string"
+      },
       "ApplyApprovedChangeRequest": {
         "additionalProperties": false,
         "properties": {
@@ -631,6 +646,137 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ImprovementTrace": {
+        "additionalProperties": false,
+        "description": "Episode の改善サイクルの機械可読な鎖（保存済みの記録だけから決定的に組む）。",
+        "properties": {
+          "episode_id": {
+            "format": "uuid",
+            "title": "Episode Id",
+            "type": "string"
+          },
+          "human_annotations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Human Annotations",
+            "type": "array"
+          },
+          "intended_improvement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceIntendedImprovement"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "missing": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "object"
+          },
+          "next_proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceNextProposal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publication": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TracePublication"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quality_review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceQualityReview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reflected_in_video": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceReflection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "$ref": "#/components/schemas/TraceResult"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/TraceToolCall"
+            },
+            "title": "Tool Calls",
+            "type": "array"
+          },
+          "topic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic"
+          },
+          "topic_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceTopicSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unresolved_citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unresolved Citations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "episode_id",
+          "topic",
+          "tool_calls",
+          "unresolved_citations",
+          "topic_selection",
+          "intended_improvement",
+          "reflected_in_video",
+          "quality_review",
+          "publication",
+          "result",
+          "next_proposal",
+          "human_annotations",
+          "missing"
+        ],
+        "title": "ImprovementTrace",
         "type": "object"
       },
       "JobProgress": {
@@ -1452,6 +1598,1097 @@
           "end_ms"
         ],
         "title": "TimeRange",
+        "type": "object"
+      },
+      "ToolCallDetail": {
+        "additionalProperties": false,
+        "description": "要約 + MinIO から読み戻した結果の包み（sha256 を行と照合済み）。",
+        "properties": {
+          "agent_ref": {
+            "title": "Agent Ref",
+            "type": "string"
+          },
+          "agent_role": {
+            "title": "Agent Role",
+            "type": "string"
+          },
+          "agent_run_key": {
+            "title": "Agent Run Key",
+            "type": "string"
+          },
+          "agent_spec_version": {
+            "title": "Agent Spec Version",
+            "type": "string"
+          },
+          "annotations": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Annotations",
+            "type": "array"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "episode_id": {
+            "format": "uuid",
+            "title": "Episode Id",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "input": {
+            "additionalProperties": true,
+            "title": "Input",
+            "type": "object"
+          },
+          "integrity": {
+            "enum": [
+              "verified",
+              "no_result"
+            ],
+            "title": "Integrity",
+            "type": "string"
+          },
+          "research_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Request Id"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "result_missing_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Missing Reason"
+          },
+          "result_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Sha256"
+          },
+          "result_untrusted": {
+            "const": true,
+            "default": true,
+            "title": "Result Untrusted",
+            "type": "boolean"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "tool_ref": {
+            "title": "Tool Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_call_id",
+          "tool_ref",
+          "agent_ref",
+          "agent_role",
+          "agent_spec_version",
+          "agent_run_key",
+          "seq",
+          "status",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "evidence_refs",
+          "research_request_id",
+          "error_code",
+          "input",
+          "episode_id",
+          "result",
+          "result_sha256",
+          "integrity"
+        ],
+        "title": "ToolCallDetail",
+        "type": "object"
+      },
+      "ToolCallList": {
+        "additionalProperties": false,
+        "properties": {
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/ToolCallSummary"
+            },
+            "title": "Calls",
+            "type": "array"
+          },
+          "episode_id": {
+            "format": "uuid",
+            "title": "Episode Id",
+            "type": "string"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before"
+          },
+          "next_before_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before Id"
+          }
+        },
+        "required": [
+          "episode_id",
+          "calls",
+          "next_before"
+        ],
+        "title": "ToolCallList",
+        "type": "object"
+      },
+      "ToolCallSummary": {
+        "additionalProperties": false,
+        "description": "Agent の tool 呼び出し 1 回。入力は検証済みの tool 入力（外部由来の本文ではない）。",
+        "properties": {
+          "agent_ref": {
+            "title": "Agent Ref",
+            "type": "string"
+          },
+          "agent_role": {
+            "title": "Agent Role",
+            "type": "string"
+          },
+          "agent_run_key": {
+            "title": "Agent Run Key",
+            "type": "string"
+          },
+          "agent_spec_version": {
+            "title": "Agent Spec Version",
+            "type": "string"
+          },
+          "annotations": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Annotations",
+            "type": "array"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "input": {
+            "additionalProperties": true,
+            "title": "Input",
+            "type": "object"
+          },
+          "research_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Request Id"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "tool_ref": {
+            "title": "Tool Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_call_id",
+          "tool_ref",
+          "agent_ref",
+          "agent_role",
+          "agent_spec_version",
+          "agent_run_key",
+          "seq",
+          "status",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "evidence_refs",
+          "research_request_id",
+          "error_code",
+          "input"
+        ],
+        "title": "ToolCallSummary",
+        "type": "object"
+      },
+      "ToolId": {
+        "enum": [
+          "search_trends",
+          "search_historical_facts",
+          "fetch_sources",
+          "get_video_analytics",
+          "get_audience_retention",
+          "compare_video_performance",
+          "get_audience_demographics",
+          "get_channel_performance"
+        ],
+        "title": "ToolId",
+        "type": "string"
+      },
+      "TraceArtifact": {
+        "additionalProperties": false,
+        "description": "成果物の 1 revision（``artifact_metadata`` の 1 行）。",
+        "properties": {
+          "artifact_id": {
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "artifact_type": {
+            "title": "Artifact Type",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "derived_from": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Derived From",
+            "type": "array"
+          },
+          "is_current": {
+            "default": true,
+            "title": "Is Current",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "version",
+          "schema_version",
+          "sha256",
+          "created_at"
+        ],
+        "title": "TraceArtifact",
+        "type": "object"
+      },
+      "TraceDecision": {
+        "additionalProperties": false,
+        "description": "判断記録の要約。理由は ``rationale_kind`` つきで、モデルの自己申告を事実にしない。",
+        "properties": {
+          "actor_id": {
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "actor_type": {
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "agent_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Run Id"
+          },
+          "annotations": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Annotations",
+            "type": "array"
+          },
+          "candidates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "cited_tool_call_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cited Tool Call Ids",
+            "type": "array"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id"
+          },
+          "decision_type": {
+            "title": "Decision Type",
+            "type": "string"
+          },
+          "evidence_check": {
+            "title": "Evidence Check",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "rationale_kind": {
+            "title": "Rationale Kind",
+            "type": "string"
+          },
+          "result_revision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Revision Id"
+          },
+          "selected_candidate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Candidate"
+          },
+          "uncertainties": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Uncertainties",
+            "type": "array"
+          }
+        },
+        "required": [
+          "decision_id",
+          "decision_type",
+          "actor_type",
+          "actor_id",
+          "agent_run_id",
+          "question",
+          "selected_candidate",
+          "candidates",
+          "rationale_kind",
+          "rationale",
+          "evidence_check",
+          "uncertainties",
+          "cited_tool_call_ids",
+          "result_revision_id",
+          "created_at"
+        ],
+        "title": "TraceDecision",
+        "type": "object"
+      },
+      "TraceIntendedImprovement": {
+        "additionalProperties": false,
+        "description": "何を良くするつもりだったか（戦略・演出の宣言。実績ではない）。",
+        "properties": {
+          "lessons_used": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Lessons Used",
+            "type": "array"
+          },
+          "retention_hypotheses": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Retention Hypotheses",
+            "type": "array"
+          },
+          "success_criteria": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Success Criteria",
+            "type": "array"
+          }
+        },
+        "required": [
+          "success_criteria",
+          "retention_hypotheses",
+          "lessons_used"
+        ],
+        "title": "TraceIntendedImprovement",
+        "type": "object"
+      },
+      "TraceNextProposal": {
+        "additionalProperties": false,
+        "description": "次に提案された変更。Lesson の状態（proposed = 仮説）を伴う。",
+        "properties": {
+          "alternative_explanations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Alternative Explanations",
+            "type": "array"
+          },
+          "hypotheses": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Hypotheses",
+            "type": "array"
+          },
+          "lesson_status": {
+            "title": "Lesson Status",
+            "type": "string"
+          },
+          "proposed_experiments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Proposed Experiments",
+            "type": "array"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lesson_status",
+          "hypotheses",
+          "alternative_explanations",
+          "proposed_experiments",
+          "scope"
+        ],
+        "title": "TraceNextProposal",
+        "type": "object"
+      },
+      "TracePublication": {
+        "additionalProperties": false,
+        "properties": {
+          "privacy_status": {
+            "title": "Privacy Status",
+            "type": "string"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/TraceArtifact"
+          },
+          "video_id": {
+            "title": "Video Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "receipt",
+          "video_id",
+          "privacy_status"
+        ],
+        "title": "TracePublication",
+        "type": "object"
+      },
+      "TraceQualityReview": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/TraceArtifact"
+          },
+          "assessment_kind": {
+            "title": "Assessment Kind",
+            "type": "string"
+          },
+          "findings_by_severity": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Findings By Severity",
+            "type": "object"
+          },
+          "inputs_missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Inputs Missing",
+            "type": "array"
+          },
+          "overall": {
+            "title": "Overall",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact",
+          "overall",
+          "findings_by_severity",
+          "inputs_missing",
+          "assessment_kind"
+        ],
+        "title": "TraceQualityReview",
+        "type": "object"
+      },
+      "TraceReflection": {
+        "additionalProperties": false,
+        "description": "動画に何が反映されたか: 演出指針 + 下流の成果物（台本・絵コンテの版）。",
+        "properties": {
+          "adopted_candidate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adopted Candidate Id"
+          },
+          "creative_brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceArtifact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "derived_artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/TraceArtifact"
+            },
+            "title": "Derived Artifacts",
+            "type": "array"
+          },
+          "hook": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hook"
+          },
+          "script_revisions": {
+            "items": {
+              "$ref": "#/components/schemas/TraceArtifact"
+            },
+            "title": "Script Revisions",
+            "type": "array"
+          },
+          "storyboard_revisions": {
+            "items": {
+              "$ref": "#/components/schemas/TraceArtifact"
+            },
+            "title": "Storyboard Revisions",
+            "type": "array"
+          },
+          "topic": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic"
+          },
+          "user_constraints_applied": {
+            "items": {
+              "type": "string"
+            },
+            "title": "User Constraints Applied",
+            "type": "array"
+          },
+          "visual_style_notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Visual Style Notes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "creative_brief",
+          "adopted_candidate_id",
+          "topic",
+          "hook",
+          "visual_style_notes",
+          "user_constraints_applied",
+          "derived_artifacts",
+          "storyboard_revisions",
+          "script_revisions"
+        ],
+        "title": "TraceReflection",
+        "type": "object"
+      },
+      "TraceResult": {
+        "additionalProperties": false,
+        "description": "結果。常にある（未測定は ``status`` と ``reason`` で明示する）。",
+        "properties": {
+          "lesson": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceArtifact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lesson_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lesson Status"
+          },
+          "measurement_windows": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Measurement Windows",
+            "type": "array"
+          },
+          "observations": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Observations",
+            "type": "array"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "not_published",
+              "awaiting_measurement",
+              "measured"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "title": "TraceResult",
+        "type": "object"
+      },
+      "TraceToolCall": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_ref": {
+            "title": "Agent Ref",
+            "type": "string"
+          },
+          "agent_role": {
+            "title": "Agent Role",
+            "type": "string"
+          },
+          "agent_run_key": {
+            "title": "Agent Run Key",
+            "type": "string"
+          },
+          "agent_spec_version": {
+            "title": "Agent Spec Version",
+            "type": "string"
+          },
+          "annotations": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Annotations",
+            "type": "array"
+          },
+          "cited_by": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Cited By",
+            "type": "array"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "evidence_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "input": {
+            "additionalProperties": true,
+            "title": "Input",
+            "type": "object"
+          },
+          "research_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Research Request Id"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "tool_ref": {
+            "title": "Tool Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_call_id",
+          "tool_ref",
+          "agent_ref",
+          "agent_role",
+          "agent_spec_version",
+          "agent_run_key",
+          "seq",
+          "status",
+          "started_at",
+          "finished_at",
+          "duration_ms",
+          "evidence_refs",
+          "research_request_id",
+          "error_code",
+          "input"
+        ],
+        "title": "TraceToolCall",
+        "type": "object"
+      },
+      "TraceTopicSelection": {
+        "additionalProperties": false,
+        "description": "なぜこの題材か: 判断 + 引用した tool 呼び出し + 戦略案。",
+        "properties": {
+          "audience_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience Basis"
+          },
+          "audience_hypothesis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience Hypothesis"
+          },
+          "citations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/TraceDecision"
+            },
+            "title": "Decisions",
+            "type": "array"
+          },
+          "recommended_candidate": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Candidate"
+          },
+          "strategy_brief": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TraceArtifact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "decisions",
+          "strategy_brief",
+          "audience_hypothesis",
+          "audience_basis",
+          "recommended_candidate",
+          "citations"
+        ],
+        "title": "TraceTopicSelection",
         "type": "object"
       },
       "UserBrief": {
@@ -2280,6 +3517,81 @@
         ]
       }
     },
+    "/v1/intervention/episodes/{episode_id}/improvement-trace": {
+      "get": {
+        "operationId": "get_improvement_trace",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "episode_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Episode Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Correlation-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Correlation-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImprovementTrace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "get_improvement_trace",
+        "tags": [
+          "application"
+        ]
+      }
+    },
     "/v1/intervention/episodes/{episode_id}/production": {
       "post": {
         "operationId": "start_agentic_production",
@@ -2754,6 +4066,244 @@
           }
         },
         "summary": "propose_storyboard_change",
+        "tags": [
+          "application"
+        ]
+      }
+    },
+    "/v1/intervention/episodes/{episode_id}/tool-calls": {
+      "get": {
+        "operationId": "list_tool_calls",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "episode_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Episode Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent_role",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentRole"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent Role"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tool_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ToolId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tool Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 36,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Correlation-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Correlation-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolCallList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "list_tool_calls",
+        "tags": [
+          "application"
+        ]
+      }
+    },
+    "/v1/intervention/episodes/{episode_id}/tool-calls/{tool_call_id}": {
+      "get": {
+        "operationId": "get_tool_call",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "episode_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Episode Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tool_call_id",
+            "required": true,
+            "schema": {
+              "title": "Tool Call Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Correlation-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Correlation-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolCallDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "get_tool_call",
         "tags": [
           "application"
         ]

@@ -53,6 +53,10 @@ EXPECTED_TOOLS = {
     "apply_change",
     "resume_episode",
     "propose_storyboard_patch",  # ADR-0043 §1 で追加（16個目）
+    # ADR-0047 §7 で追加（read のみ。既存 16 個の名前・順序は不変）
+    "list_tool_calls",
+    "get_tool_call",
+    "get_improvement_trace",
 }
 #: 対話 AI に許す command 型。予算・Schedule・公開設定・モード・取消・制約・checkpoint は含めない
 ALLOWED_COMMAND_TYPES = {
@@ -158,7 +162,7 @@ def test_comment_schema_matches_the_anchor_model_and_design_section_8() -> None:
     # 設計 §8 のアンカー
     assert {"segment_id", "scene_id", "asset_id", "time_range", "manifest_id"} <= set(anchor)
     assert set(anchor["time_range"]["properties"]) == set(TimeRange.model_fields)
-    assert set(props) <= {"episode_id", "anchor", "body", "kind"}
+    assert set(props) <= {"episode_id", "anchor", "body", "kind", "flag"}
 
 
 def test_apply_change_requires_the_acknowledged_cost_which_may_be_null() -> None:
