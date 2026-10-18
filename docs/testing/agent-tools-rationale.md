@@ -55,3 +55,27 @@
 | ARTIFACT_MODELS 登録 | `ArtifactType` を足したら model を登録する既存の完全性（`set(ARTIFACT_MODELS) == set(ArtifactType)`）を満たす |
 | 根拠が要る | insufficient 以外の assessment は `evidence_refs` が必須。根拠が無ければ insufficient のまま（INV-58） |
 | strict・untrusted | 余分な項目・`untrusted=False`・claim 13 件以上を拒否 |
+
+## tests/unit/test_agent_tool_gateway.py（ToolGateway.call_tool）
+
+fake の tool 定義・executor・store（`tests/support/agent_tools.py`）だけを使う。実際の Research / Analytics は呼ばない。
+
+| テスト | 守るもの |
+|---|---|
+| 許可外・未登録・綴り不正・未供給は executor を呼ぶ前に拒否 | INV-58。拒否は `refused` として記録し、store に行も作らない（外部への副作用ゼロ） |
+| 入力 schema 違反 | LLM が作った入力で外部を呼ばない。記録にも入力本文を残さない |
+| `max_calls_per_run` | tool ごとの上限。超過は呼ぶ前に拒否 |
+| ID・seq は契約の関数から | `tool_call_id` が retry で変わらない（INV-59 の前提）。executor には `tool:{id}` の冪等キーが渡る |
+| 成功は untrusted envelope | データは output_model で検証した上で dict 化。入力は検証済みのものを store に残す |
+| retry は保存済みを返し executor 0 回 | INV-59 の本体。ok 以外の状態（quota 超過）も再利用する |
+| started のまま = youtube_quota は再送しない | 呼んだか不明な行を再送して quota を二重に使わない。ambiguous を確定させ、次の retry も呼ばない |
+| started のまま = research_ledger は同じ冪等キーで再実行 | Research の台帳が二重課金を防ぐので、結果を得るために再び呼ぶ（行は作り直さない） |
+| timeout | `asyncio.wait_for` で状態 `timeout`。例外にしない |
+| executor の例外 | 状態 `failed`、コードは型名だけ（例外メッセージに混ざる token・本文を残さない） |
+| 出力が output_model に違反 | `failed`。壊れた値を ok として渡さない（INV-58） |
+| ok 以外に data がある / ok に data が無い | executor の契約違反を `failed` にする。架空の値で埋めない |
+| 状態の素通し | 欠測・遅延・権限不足などが区別されたまま Agent に届く |
+| invocations / observer に本文なし | 入力・結果の秘密文字列が `agent_runs.tool_invocations` と観測イベントに出ない |
+| observer の故障 | 観測の失敗で業務の結果が変わらない（INV-38） |
+| runtime 無し（flag OFF） | `call_tool` は全て拒否。既存の `llm_json` の記録の形は不変（INV-55 の延長） |
+| `render_untrusted` | `<data>` 区切りで、本文中の `</data>` を閉じ文字として残さない。handler と同じ実装（`data_block`）を使う |

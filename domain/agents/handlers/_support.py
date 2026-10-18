@@ -7,12 +7,12 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
+from domain.agents.data_block import data_block as _data_block
 from domain.agents.runtime import AGENT_INPUT_NAMES, AgentInput, AgentOutputRejected
 from domain.agents.tool_gateway import ToolGateway
 
@@ -51,12 +51,6 @@ def document(agent_input: AgentInput, name: str) -> Mapping[str, Any]:
         raise AssertionError(f"{name!r} is not an input of {agent_input.spec.handler_ref.value}")
     value = agent_input.documents.get(name)
     return value if value is not None else {}
-
-
-def _data_block(name: str, value: Any) -> str:
-    # "<" をエスケープして、DATA が区切りを閉じて指示を装えないようにする（JSON として有効なまま）
-    text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-    return f'<data name="{name}">\n{text.replace("<", "\\u003c")}\n</data>'
 
 
 def build_prompt(task: str, data: Mapping[str, Any]) -> str:

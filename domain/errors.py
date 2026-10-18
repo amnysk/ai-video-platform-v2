@@ -57,6 +57,14 @@ class ToolNotAllowedError(PermanentError):
     """
 
 
+class ToolInputInvalidError(ToolNotAllowedError):
+    """tool の入力が ``ToolDef.input_model`` に合わない（ADR-0047、INV-58）。外部は呼ばない。"""
+
+
+class ToolCallLimitExceededError(ToolNotAllowedError):
+    """1 run あたりの tool 呼び出し上限（``max_calls_per_run``）を超えた（ADR-0047、INV-58）。"""
+
+
 class AgentBudgetExceededError(PermanentError):
     """Agent の LLM 呼び出し回数が ``spec.max_llm_calls`` を超えた（INV-56）。"""
 
