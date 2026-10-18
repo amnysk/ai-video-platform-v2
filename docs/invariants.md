@@ -818,6 +818,9 @@ private・欠測なら LLM も tool も呼ばず、Historian の `assessment` �
 / `tests/unit/test_agent_handlers_tools_historian.py::test_assessments_are_passed_through_as_is_with_evidence_links`
 / `tests/unit/test_agent_handlers_tools_historian.py::test_an_unknown_assessment_is_insufficient_not_mapped_to_a_guess`
 / `tests/unit/test_agent_handlers_tools_historian.py::test_a_missing_script_blocks_without_llm_or_tools`
+/ `tests/unit/test_agent_tools_strategy_e2e.py::test_strategy_1_1_runs_end_to_end_with_real_tools_and_links_the_evidence`
+/ `tests/unit/test_agent_tools_strategy_e2e.py::test_a_crash_after_the_tools_but_before_the_save_reuses_the_stored_results`
+/ `tests/unit/test_agent_tools_strategy_e2e.py::test_injection_in_a_research_source_changes_neither_the_plan_nor_the_output`
 
 
 ### INV-58 Tool は許可された `tool_id@version` だけを、宣言した上限内で呼び、取得できない値を架空の値で埋めない

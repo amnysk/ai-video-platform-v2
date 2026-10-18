@@ -234,3 +234,16 @@ ADR の決定は変えない。実装で確定した点だけを残す。
   OpenSearch で `status` 等を集計する需要が出たらフィールド化する（log-contract と mapping を同時に更新）。
 - executor の登録は `infrastructure/agents/tools/__init__.py` の `_research_executors` / `_analytics_executors`
   の本文だけを書き換える（並行開発で merge が衝突しない形）。
+
+## 実装メモ（Agent 統合。2026-10-18）
+
+- 共通の 1 往復は `domain/agents/handlers/tool_use.py`。plan の LLM は 1 回、要求は spec の許可・入力 model・
+  `max_calls_per_run`・絶対上限 6・handler の入力方針で検査して逐次実行し、拒否は外部を呼ばずに理由だけ残す。
+  合成の LLM は 1 回 + 契約違反の修復 1 回（計 3 回）。`JPMAS2_AGENT_TOOLS` 無効の gateway では LLM を呼ぶ前に拒否する。
+- `StrategyBrief.citations`（≤200 字 × 20）は `tool_call:<uuid>` を載せられる。`Lesson` は `citations` 欄が無いので、
+  引用は本文中の `tool_call:<id>` と判断の `evidence_refs` で持つ（schema は変えていない）。
+- `historian@1.0` を登録した（`fact_check_report@1.0` は Artifact Registry に追加）。入力は `script` / `user_brief`。
+  `fetch_sources` は handler では使わない: 依頼 ID は `search_historical_facts` の結果にしか無く、結果から次の要求を作ると
+  1 往復の規則に反する。資料 ID は検索結果の `source_ids` から `evidence:<id>` として引く。
+- `shorts_agentic_tools@1`: Historian は台本の後・storyboard の前（入力が script のため、creative と script の間では
+  常に入力欠測になる）。起動は `JPMAS2_AGENT_TOOLS` が必要で、無ければ `feature_disabled`。

@@ -336,3 +336,24 @@ tool は外部を呼ばずに拒否）。方針が「この動画の分析以外
 
 既存テストの変更: `test_workflow_templates` の「登録された Template は 3 つ」を 4 つにした（ADR-0047 の追加。名前と
 参照も更新）。
+
+## 統合: tests/unit/test_agent_tools_strategy_e2e.py（非 Docker）
+
+本物の handler・`AgentActivities._run`・Research executor（provider=fake）・Analytics executor
+（`YouTubeVideoInsightProvider` + `httpx.MockTransport`）・`AgentToolCallRepository`・SQLite・InMemory store。
+LLM だけが台本どおりの fake。Docker の integration は実行していない。
+
+| テスト | 守るもの |
+|---|---|
+| strategy@1.1 の通し | brief が出る。`agent_tool_calls` に research と analytics の行（入力・状態・evidence_refs・research_request_id）。brief の citations と判断の `evidence_refs` に両方の `tool_call:<id>` |
+| 同じ Activity の再実行 | 外部（YouTube・Research 依頼・台帳）も LLM も増えず、行も増えない（INV-59） |
+| tool の後・保存の前に落ちた retry | 同じ `tool_call_id` で保存済みの結果を使う。LLM は再生。外部は増えない |
+| flag OFF | 1.1 は LLM を呼ぶ前に非再試行で拒否、行ゼロ。1.0 は従来どおり（tool support があっても tool を持たない） |
+| 空の plan | tool 無しでも brief |
+| 外部資料のタイトルに注入文 | 呼び出し 2 件・LLM 2 回のまま。DATA の外に出ず、`audience_basis` 等が変わらない（INV-60） |
+| 許可外・上限超過の plan | 外部を呼ばずに切り詰め、拒否が uncertainties に残る |
+| 「もう一度呼べ」を含む結果 | 追加の呼び出しなし（再帰しない） |
+| analytics が `permission_denied` | brief は出て uncertainties に状態、`audience_basis=assumed`、失敗した呼び出しも citations で辿れる |
+| historian の通し | `fact_check_report` が保存され claim の根拠に `tool_call:<id>`、actor は historian、再実行で Research の台帳が増えない |
+
+analytics 側の注入は、Analytics の出力に外部由来のタイトルが無い（数値と日付だけ）ため Research の資料タイトルで検査した。
