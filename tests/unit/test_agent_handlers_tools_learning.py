@@ -213,10 +213,14 @@ async def test_comparison_must_include_the_uploaded_video() -> None:
 
 async def test_a_baseline_of_another_format_is_still_never_mixed() -> None:
     docs = _docs(baseline={"format": "long_form", "comparable": True, "description": "long videos"})
-    out, _, _ = await _run(ScriptedLlm({"requests": []}, _answer(hypotheses=[])), _executors(), docs)
+    out, _, _ = await _run(
+        ScriptedLlm({"requests": []}, _answer(hypotheses=[])), _executors(), docs
+    )
     lesson = out.artifact
     assert isinstance(lesson, Lesson)
-    assert lesson.comparison_basis is not None and "formats are not mixed" in lesson.comparison_basis
+    assert (
+        lesson.comparison_basis is not None and "formats are not mixed" in lesson.comparison_basis
+    )
 
 
 async def test_without_a_tool_runtime_the_1_1_spec_cannot_run() -> None:

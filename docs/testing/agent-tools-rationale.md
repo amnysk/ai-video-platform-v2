@@ -292,3 +292,22 @@ tool は外部を呼ばずに拒否）。方針が「この動画の分析以外
 | 別の動画を読ませない | 分析・維持率は receipt の動画だけ、比較は receipt の動画を含むときだけ。LLM が出した別の ID は外部を呼ばずに拒否 |
 | 別形式の baseline | Shorts と長尺を混ぜない規則が 1.1 でも効く |
 | runtime 無し / 修復 | LLM を呼ぶ前に拒否。合成の違反は修復 1 回 |
+
+### tests/unit/test_agent_handlers_tools_historian.py（historian@1.0）
+
+| テスト | 守るもの |
+|---|---|
+| 登録 | spec の tool が `HISTORIAN_TOOL_REFS`、成果物が `fact_check_report@1.0`、revision を作らない、入力が `script` / `user_brief` |
+| 評価の素通し | tool の assessment・資料 ID をそのまま写し、`tool_call:<id>` / `evidence:<source_id>` を引く。LLM は 1 回（合成しない）。台本は書き換えず提案も出さない。`check_output_contract` を通る（INV-58） |
+| insufficient | 資料を作らず、根拠は tool_call だけ |
+| 知らない評価語 | 推測で supported 等に写さず insufficient + 注記 |
+| 未完・未設定・失敗・timeout | 挙げた主張を全て insufficient（状態名つき）で報告。架空の判定を出さない |
+| tool が返さなかった主張 | 落とさず insufficient で残す |
+| claim の絞り込み | ≤12 件・不正と重複を除く・余分な欄（`assessment` 等）は転送しない。落とした数は limitations に残る。有効な claim が無ければ tool を呼ばない |
+| `fetch_sources` | 資料一覧には依頼 ID が要るが結果にしか無く、結果から次の要求を作ると 1 往復の規則に反する。要求されても外部を呼ばない |
+| 注入 | 台本・tool 結果の命令文は呼び出し数・出力を変えない（INV-60）。report は untrusted のまま、台本の本文を持たない |
+| 台本が無い | LLM も tool も呼ばず `blocked_missing_input` の report（予約も取らない） |
+| runtime 無し | LLM を呼ぶ前に拒否 |
+
+契約の変更: `fact_check_report@1.0` を Artifact Registry に登録（8 件目。Historian の成果物を保存するのに必要）、
+`test_agent_spec_tools` の「1.0 は tool 無し」は既存 4 役の 1.0 に限定（historian@1.0 は最初から tool を持つ）。

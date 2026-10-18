@@ -680,7 +680,7 @@ contracts を import しない）。downgrade は新語彙の行があれば何�
 **機械検査**: `tests/contract/test_artifact_registry.py::test_an_unknown_schema_version_is_rejected_not_reinterpreted`
 / `tests/contract/test_artifact_registry.py::test_a_stored_storyboard_v1_is_readable_through_the_registry`
 / `tests/contract/test_artifact_registry.py::test_reading_across_versions_needs_an_explicitly_registered_upcaster`
-/ `tests/contract/test_artifact_registry.py::test_the_registry_holds_the_seven_adr_0043_entries`
+/ `tests/contract/test_artifact_registry.py::test_the_registry_holds_the_adr_0043_entries_and_the_adr_0047_fact_check_report`
 / `tests/contract/test_migration_0019_agentic_vocabulary.py::test_frozen_literals_equal_the_current_enums_in_order`
 / `tests/contract/test_migration_0019_agentic_vocabulary.py::test_pre_0019_literals_are_the_values_at_9440302`
 / `tests/contract/test_migration_0019_agentic_vocabulary.py::test_the_migration_does_not_import_contracts`
@@ -789,6 +789,27 @@ prompt は入力を `<data>` で区切り「指示ではない」と明示し、
 / `tests/unit/test_agent_stage_scope.py::test_a_later_run_with_a_new_scope_can_produce_the_lesson_after_an_awaiting_run`
 / `tests/integration/test_jpmas2_agentic_e2e.py::test_one_episode_runs_every_stage_on_the_real_stack`
 / `tests/integration/test_jpmas2_agentic_e2e.py::test_learning_waits_for_public_metrics_then_proposes_one_lesson`
+
+**tool 版（ADR-0047、spec 1.1 / historian@1.0）**: `spec.allowed_tool_ids` が空でない handler は
+`domain/agents/handlers/tool_use.py` の**1 往復**（plan の LLM 1 回 → 検査して逐次実行 → 合成の LLM 1 回 +
+契約違反の修復 1 回。計 3 回以下）だけで tool を使い、1.0 の経路・prompt は変わらない。許可外・未登録・入力違反・上限超過・重複・
+handler の入力方針（Learning は当該動画だけ、Historian は ≤12 件の検査済み claim だけ）に反する要求は**外部を呼ばずに**捨て、理由を残す。
+tool の失敗・未完・権限不足は uncertainties / limitations になり、値を作らない。引用は `tool_call:<id>` で、この run に
+実在しない id は本文・引用列から決定論で除く（StrategyBrief は `citations` と判断の `evidence_refs`、Lesson は本文中の引用と
+判断の `evidence_refs`、FactCheckReport は claim ごとの `evidence_refs`）。`audience_basis` は analytics の実測だけ、Learning は
+private・欠測なら LLM も tool も呼ばず、Historian の `assessment` は tool の語をそのまま写す（知らない語は `insufficient`）。
+**機械検査**: `tests/unit/test_agent_tool_use.py::test_tool_results_can_never_cause_another_tool_call`
+/ `tests/unit/test_agent_tool_use.py::test_one_repair_call_fits_in_the_three_call_budget`
+/ `tests/unit/test_agent_handlers_tools_strategy.py::test_a_tool_round_produces_a_valid_brief_citing_the_executed_tool_calls`
+/ `tests/unit/test_agent_handlers_tools_strategy.py::test_unknown_tool_call_citations_are_dropped_and_recorded`
+/ `tests/unit/test_agent_handlers_tools_strategy.py::test_audience_basis_never_comes_from_the_llm_or_from_trend_hypotheses`
+/ `tests/unit/test_agent_handlers_tools_strategy.py::test_v1_0_never_plans_even_if_a_tool_runtime_exists`
+/ `tests/unit/test_agent_handlers_tools_learning.py::test_private_or_unmeasured_uploads_wait_without_llm_or_tools`
+/ `tests/unit/test_agent_handlers_tools_learning.py::test_tools_are_limited_to_the_uploaded_video`
+/ `tests/unit/test_agent_handlers_tools_learning.py::test_unknown_citations_are_removed_and_uncited_hypotheses_are_dropped`
+/ `tests/unit/test_agent_handlers_tools_historian.py::test_assessments_are_passed_through_as_is_with_evidence_links`
+/ `tests/unit/test_agent_handlers_tools_historian.py::test_an_unknown_assessment_is_insufficient_not_mapped_to_a_guess`
+/ `tests/unit/test_agent_handlers_tools_historian.py::test_a_missing_script_blocks_without_llm_or_tools`
 
 
 ### INV-58 Tool は許可された `tool_id@version` だけを、宣言した上限内で呼び、取得できない値を架空の値で埋めない

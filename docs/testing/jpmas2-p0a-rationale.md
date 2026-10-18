@@ -35,7 +35,7 @@
 
 ## 3. Artifact Registry（tests/contract/test_artifact_registry.py）
 
-- `test_the_registry_holds_the_seven_adr_0043_entries`: 登録の過不足と、本番 upcaster が空であること。
+- `test_the_registry_holds_the_adr_0043_entries_and_the_adr_0047_fact_check_report`: 登録の過不足と、本番 upcaster が空であること。
 - `test_a_stored_storyboard_v1_is_readable_through_the_registry`: 旧 storyboard v1.0 を読める（INV-54）。
 - `test_a_new_artifact_round_trips`: 新型が registry 経由で読める。
 - `test_an_unknown_schema_version_is_rejected_not_reinterpreted` / `test_a_missing_or_non_string_version_is_rejected` /

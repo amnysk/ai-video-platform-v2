@@ -53,7 +53,7 @@ def _brief() -> dict[str, Any]:
     return UserBrief(theme="x", template_id="t", template_version="1").model_dump(mode="json")
 
 
-def test_the_registry_holds_the_seven_adr_0043_entries() -> None:
+def test_the_registry_holds_the_adr_0043_entries_and_the_adr_0047_fact_check_report() -> None:
     assert set(ARTIFACT_REGISTRY) == {
         ("storyboard", "1.0"),
         ("user_brief", "1.0"),
@@ -62,6 +62,7 @@ def test_the_registry_holds_the_seven_adr_0043_entries() -> None:
         ("quality_review", "1.0"),
         ("lesson", "1.0"),
         ("workflow_plan", "1.0"),
+        ("fact_check_report", "1.0"),  # ADR-0047（Historian の成果物）
     }
     assert UPCASTERS == {}
 

@@ -50,6 +50,11 @@ PINNED_HASHES = {
     # ADR-0047: tool を持つ新 spec_version（1.0 の値は上のまま）
     (AgentRole.STRATEGY, "1.1"): "729a0b4157f88fd038fa8204846be6bf201f5b3db4887ca32c3dca8d72cf9be6",
     (AgentRole.LEARNING, "1.1"): "24e878c64453e4c48961bc6ff612682ac9e0955023be86b0fd3af7a50f119223",
+    # ADR-0047: Historian（新規。既存の値は変えない）
+    (
+        AgentRole.HISTORIAN,
+        "1.0",
+    ): "5c3d6b4c8dea11ecc01a544ec87e9a6d7d9ea049164c7b9f12f380d195fbf243",
 }
 
 
