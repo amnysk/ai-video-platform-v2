@@ -208,7 +208,7 @@ class BackupService:
                     raise BackupFailed(f"pg_dump {name}: dump is unreadable: {toc.stderr[:200]}")
                 after = pg.row_counts(name)
                 rel = f"pg/{name}.dump"
-                dump.chmod(0o600)
+                dump.chmod(0o400)
                 files[rel] = {"sha256": res.sha256, "bytes": res.size, "root": "db"}
                 databases[name] = {
                     "file": rel,
@@ -225,7 +225,7 @@ class BackupService:
             res = pg.dump_globals(gl)
             if res.returncode != 0 or res.size == 0:
                 raise BackupFailed(f"pg_dumpall --globals-only failed: rc={res.returncode}")
-            gl.chmod(0o600)
+            gl.chmod(0o400)
             files["pg/globals.sql"] = {"sha256": res.sha256, "bytes": res.size, "root": "db"}
             alembic_after = pg.alembic_revision(APP_DATABASE)
         except CommandFailed as exc:
@@ -275,7 +275,7 @@ class BackupService:
                     entry = {"sha256": got.sha256, "bytes": got.size}
                 else:
                     reused += 1
-                dest.chmod(0o600)
+                dest.chmod(0o400)
                 files[rel] = {**entry, "etag": obj.etag, "root": "objects"}
                 count += 1
                 size_sum += obj.size

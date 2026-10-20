@@ -13,7 +13,7 @@ from contracts.backup import EXIT_FAILED, EXIT_OK, EXIT_REFUSED
 from infrastructure.backup import catalog
 from infrastructure.backup.cli import main
 from infrastructure.backup.runner import CmdResult, FileResult
-from tests.unit.backup.fakes import T0, Clock, make_backup
+from tests.unit.backup.fakes import T0, Clock, make_backup, overwrite
 
 
 class Refusing:
@@ -108,9 +108,9 @@ def test_verify_finds_bit_rot_and_extra_files(tmp_path: Path) -> None:
     r = Refusing()
     argv = ["verify", "--backup-id", m["backup_id"]]
     assert main(argv, env_for(tmp_path), runner=r) == EXIT_OK  # type: ignore[arg-type]
-    (tmp_path / "obj" / m["backup_id"] / "minio/artifacts/a/one.json").write_bytes(b"rot")
+    overwrite((tmp_path / "obj" / m["backup_id"] / "minio/artifacts/a/one.json"), b"rot")
     assert main(argv, env_for(tmp_path), runner=r) == EXIT_FAILED  # type: ignore[arg-type]
-    (tmp_path / "obj" / m["backup_id"] / "minio/artifacts/a/one.json").write_bytes(b'{"a":1}')
+    overwrite((tmp_path / "obj" / m["backup_id"] / "minio/artifacts/a/one.json"), b'{"a":1}')
     (tmp_path / "obj" / m["backup_id"] / "stray.bin").write_bytes(b"x")
     assert main(argv, env_for(tmp_path), runner=r) == EXIT_FAILED  # type: ignore[arg-type]
 

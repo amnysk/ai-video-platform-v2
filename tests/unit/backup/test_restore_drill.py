@@ -14,7 +14,7 @@ from domain.backup.manifest import validate_manifest
 from infrastructure.backup import catalog
 from infrastructure.backup.audit import AuditLog
 from infrastructure.backup.restore import DrillAborted, DrillDeps, RestoreDrill
-from tests.unit.backup.fakes import Clock, Harness, Notes, RestoreRunner, make_backup
+from tests.unit.backup.fakes import Clock, Harness, Notes, RestoreRunner, make_backup, overwrite
 
 
 def rows_for(h: Harness) -> list[tuple[str, str, str]]:
@@ -95,7 +95,7 @@ def test_the_drill_waits_for_postgres_to_become_ready(tmp_path: Path) -> None:
 def test_a_corrupted_backup_file_is_detected_and_nothing_is_restored(tmp_path: Path) -> None:
     h, m = _make(tmp_path)
     victim = h.object_root / m["backup_id"] / "minio/artifacts/a/one.json"
-    victim.write_bytes(b'{"a":9}')  # bit-rot / 改ざん（長さは同じ）
+    overwrite(victim, b'{"a":9}')  # bit-rot / 改ざん（長さは同じ）
     runner = RestoreRunner(artifact_rows=rows_for(h))
     drill, notes, lines = drill_for(h, tmp_path, runner)
     out = drill.run(m["backup_id"])
@@ -118,7 +118,7 @@ def test_a_failed_drill_revokes_a_previous_verification(tmp_path: Path) -> None:
     h, m = _make(tmp_path)
     runner = RestoreRunner(artifact_rows=rows_for(h))
     assert drill_for(h, tmp_path, runner)[0].run(m["backup_id"])["restore_verified"] is True
-    (h.db_root / m["backup_id"] / "pg" / "avp.dump").write_bytes(b"rotten")
+    overwrite(h.db_root / m["backup_id"] / "pg" / "avp.dump", b"rotten")
     out = drill_for(h, tmp_path, RestoreRunner())[0].run(m["backup_id"])
     assert out["restore_verified"] is False
     assert read(h, m["backup_id"])["restore_verified"] is False

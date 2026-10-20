@@ -254,3 +254,9 @@ class RestoreRunner:
 
     def run_to_file(self, argv: Sequence[str], dest: Path, *, timeout: float = 0) -> FileResult:
         raise AssertionError("the drill never dumps")
+
+
+def overwrite(path: Path, data: bytes) -> None:
+    """backup の写し（0400）を壊す。bit-rot・誤操作の再現。"""
+    path.chmod(0o600)
+    path.write_bytes(data)

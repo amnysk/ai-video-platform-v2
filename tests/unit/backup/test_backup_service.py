@@ -68,6 +68,11 @@ def test_files_are_private_to_the_owner(tmp_path: Path) -> None:
     d = h.db_root / m["backup_id"]
     assert (d / "pg" / "avp.dump").stat().st_mode & 0o077 == 0
     assert (d / "pg" / "globals.sql").stat().st_mode & 0o077 == 0
+    # 書き込み不可: 前回と共有する hardlink の本体を誤って書き換えると全世代が壊れる
+    assert (d / "pg" / "avp.dump").stat().st_mode & 0o222 == 0
+    assert (
+        h.object_root / m["backup_id"] / "minio/artifacts/a/one.json"
+    ).stat().st_mode & 0o222 == 0
     assert d.stat().st_mode & 0o077 == 0
 
 
