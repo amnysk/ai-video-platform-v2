@@ -21,7 +21,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from domain.release_preflight import (  # noqa: E402
     DEFAULT_BACKUP_MAX_AGE_HOURS,
+    DEFAULT_EVIDENCE_MAX_AGE_HOURS,
+    EXIT_CODES,
+    MAX_EVIDENCE_MAX_AGE_HOURS,
     Collectors,
+    Overall,
     Request,
     exit_code,
     render_text,
@@ -30,6 +34,8 @@ from domain.release_preflight import (  # noqa: E402
 )
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
+#: 使い方の誤り・想定外の失敗。READY(0) ではなく UNKNOWN と同じ 3（BLOCKED=2 とは区別する）
+EXIT_USAGE = EXIT_CODES[Overall.UNKNOWN]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -44,6 +50,21 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--backup-max-age-hours", type=float, default=DEFAULT_BACKUP_MAX_AGE_HOURS)
     p.add_argument("--replay-evidence", help="既定 release/evidence/<sha>-replay.json")
     p.add_argument("--approval-file", help="既定 release/approvals/<sha>.json")
+    p.add_argument(
+        "--approved-report",
+        help="owner が承認した preflight の --json 出力。承認ファイルの report_sha256 と照合する",
+    )
+    p.add_argument(
+        "--evidence-max-age-hours",
+        type=float,
+        default=DEFAULT_EVIDENCE_MAX_AGE_HOURS,
+        help=f"承認・replay 証跡の最大の古さ（既定 72、上限 {MAX_EVIDENCE_MAX_AGE_HOURS:g}）",
+    )
+    p.add_argument(
+        "--rollback",
+        action="store_true",
+        help="前の SHA へ戻す preflight / 事後検証（DB が先でも expand-only なら判定する）",
+    )
     p.add_argument("--verify-post-deploy", action="store_true")
     p.add_argument(
         "--pre-report", help="--verify-post-deploy: deploy 前の preflight の --json 出力"
@@ -53,7 +74,19 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None, collectors: Collectors | None = None) -> int:
-    args = _parser().parse_args(argv)
+    try:
+        args = _parser().parse_args(argv)
+    except SystemExit as exc:
+        # argparse の既定の終了コード 2 は BLOCKED と同じ。使い方の誤りは UNKNOWN(3)（--help は 0）
+        return 0 if exc.code in (0, None) else EXIT_USAGE
+    try:
+        return _run(args, collectors)
+    except Exception as exc:  # 想定外でも READY(0) や素のトレースバックにしない。詳細は出さない
+        print(f"release preflight failed: {type(exc).__name__}", file=sys.stderr)
+        return EXIT_USAGE
+
+
+def _run(args: argparse.Namespace, collectors: Collectors | None) -> int:
     if collectors is None:
         from infrastructure.release.collectors import RealCollectors
 
@@ -67,6 +100,9 @@ def main(argv: list[str] | None = None, collectors: Collectors | None = None) ->
         approval_file=args.approval_file,
         verify_post_deploy=args.verify_post_deploy,
         pre_report=args.pre_report,
+        approved_report=args.approved_report,
+        evidence_max_age_hours=args.evidence_max_age_hours,
+        rollback=args.rollback,
     )
     report = run_preflight(request, collectors, datetime.now(UTC))
     print(report_json(report) if args.json else render_text(report))

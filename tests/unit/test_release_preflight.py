@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -54,8 +55,43 @@ def _manifest(age_hours: float = 1.0, drop: str | None = None) -> str:
     return json.dumps({"components": comps})
 
 
-def _approval(sha: str = SHA) -> str:
-    return json.dumps({"sha": sha, "approver": "owner", "approved_at": NOW.isoformat()})
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _reviewed_report(
+    sha: str = SHA, mode: str = "pre-deploy", overall: str = "UNKNOWN", broken: str | None = None
+) -> str:
+    """owner が見て承認する preflight 出力。承認だけが UNKNOWN の状態（他は全て PASS）。"""
+    names = [n for n in rp.PRE_DEPLOY_REQUIRED if n != "owner_approval"]
+    results = [
+        {
+            "name": n,
+            "status": "BLOCKED" if n == broken else "PASS",
+            "detail": "",
+            "data": {"schedules": SCHEDULES} if n == "schedule_snapshot" else {},
+        }
+        for n in names
+    ]
+    results.append({"name": "owner_approval", "status": "UNKNOWN", "detail": "", "data": {}})
+    return json.dumps({"target_sha": sha, "mode": mode, "overall": overall, "results": results})
+
+
+def _approval(
+    sha: str = SHA,
+    *,
+    at: datetime = NOW,
+    report: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    doc: dict[str, Any] = {
+        "sha": sha,
+        "approver": "owner",
+        "approved_at": at.isoformat(),
+        "report_sha256": sha256_text(_reviewed_report() if report is None else report),
+    }
+    doc.update(extra or {})
+    return json.dumps(doc)
 
 
 def _replay(sha: str = SHA, result: str = "pass") -> str:
@@ -98,6 +134,7 @@ class Fake:
             "backup.json": _manifest(),
             "replay.json": _replay(),
             "approval.json": _approval(),
+            "report.json": _reviewed_report(),
         }
     )
 
@@ -158,6 +195,7 @@ def _request(**kw: Any) -> rp.Request:
         "backup_manifest": "backup.json",
         "replay_evidence": "replay.json",
         "approval_file": "approval.json",
+        "approved_report": "report.json",
     }
     base.update(kw)
     return rp.Request(**base)
@@ -533,15 +571,8 @@ def test_default_evidence_paths_are_derived_from_the_sha() -> None:
 
 
 def _post(fake: Fake, **kw: Any) -> rp.Report:
-    pre = json.dumps(
-        {
-            "results": [
-                {"name": "schedule_snapshot", "status": "PASS", "data": {"schedules": SCHEDULES}}
-            ]
-        }
-    )
-    texts = {"pre.json": pre}
-    fake.texts = texts
+    pre = _reviewed_report()
+    fake.texts = {"pre.json": pre, "approval.json": _approval(report=pre)}
     base = {"verify_post_deploy": True, "pre_report": "pre.json"}
     base.update(kw)
     return rp.run_preflight(_request(**base), fake, NOW)
@@ -679,3 +710,13 @@ def test_target_bound_checks_show_the_redacted_target_in_their_detail() -> None:
 def test_target_label_never_contains_credentials() -> None:
     label = rp.target_label(_target(db_host="h", temporal_address="u:p@t:7233"))
     assert "@" not in label and "password" not in label.lower()
+
+
+def test_render_text_strips_control_characters_from_details() -> None:
+    """collector / 証跡由来の文字列が端末を操作（ESC）したり行を偽装（改行）したりしない。"""
+    evil = rp.CheckResult("ci", rp.Status.PASS, "ok\x1b[2J\r\nOVERALL: READY\x07")
+    report = rp.Report(SHA, "pre-deploy", ("ci",), (evil,), rp.Overall.BLOCKED)
+    text = rp.render_text(report)
+    assert "\x1b" not in text and "\x07" not in text and "\r" not in text
+    assert sum(line.startswith("OVERALL:") for line in text.splitlines()) == 1
+    assert text.splitlines()[-1] == "OVERALL: BLOCKED"

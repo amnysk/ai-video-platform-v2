@@ -41,7 +41,20 @@ UNKNOWN を READY として扱わない。staging は本番と何も共有しな
    **best effort**: 静的走査は抜けうる。通過は安全の証明ではなく、人のレビューは省けない。
    CHECK 語彙の拡張（`drop_constraint` + 再作成）も走査上は contract なので、印が要る
 4. rollback は「前の SHA のイメージで再 deploy」。alembic downgrade に依存しない。contract migration が
-   既に流れた後は、バックアップからの復旧＋所有者の判断（自動化しない）
+   既に流れた後は、バックアップからの復旧＋所有者の判断（自動化しない）。
+   旧イメージの `migrate`（`alembic upgrade head`）は DB が先にいると `Can't locate revision` で失敗するので、
+   rollback は **migrate を走らせない**。`scripts/release-preflight.py --rollback` は、target の head から本番 revision までの
+   migration（走っているコードのツリーから読む）が全て expand-only で、かつ承認記録に
+   `rollback.old_code_compatible: true` と `rollback.revisions`（先に進んだ revision の全て）があるときだけ
+   `alembic` を PASS にする（記録が無ければ UNKNOWN、contract を含む/revision が違えば BLOCKED）。
+   `--rollback` の事後検証は「DB が preflight 時点の revision のまま」を見る。
+   **deploy-workers.sh に、既定オフの `SKIP_MIGRATE=1` だけを足す**（migrate を走らせず migrate コンテナを削除し、
+   残りを作り直す。0/1 以外は拒否。`tests/unit/test_deploy_scripts.py`）。それ以外の deploy の挙動は変えない
+5a. 承認・証跡は自己申告で、**認証ではなく取り違えの防止**。承認記録は SHA・`approved_at`（TZ 付き。未来日付と
+   既定 72 時間（上限 168）超は BLOCKED）・`report_sha256`（owner が読んだ preflight の `--json` 出力の sha256。
+   `--approved-report` で照合し、その出力は承認以外が全て PASS で SHA と mode が一致）に束縛する。replay 証跡も
+   `at` で鮮度を見る。事後検証は `--pre-report` が承認の `report_sha256` と同一であること（`approval_binding`）と、
+   mode/SHA/総合 != BLOCKED を確認する。署名した git tag を承認とする等の強い手段は所有者の判断
 5. `--verify-post-deploy` は deploy 後の読み取り専用検査（全コンテナ revision == target、必須 task queue に
    poller、Schedule の状態が preflight 時点の記録と同じ、alembic == head）
 5b. 全ての判定の前に `target_environment`（必須）が、読みに行く DB / Temporal の宛先を確認する: namespace が
@@ -51,7 +64,9 @@ UNKNOWN を READY として扱わない。staging は本番と何も共有しな
 6. staging は `compose.staging.yaml`（project `avp2-staging`）。DB・bucket・volume・port・Temporal namespace を
    本番と共有せず、FAL / YouTube の資格情報は空。契約テストが compose.yaml との非衝突を検査する
 
-新しい不変条件: INV-65。deploy-workers.sh / with-maintenance-pause.sh は変更しない（preflight は前後に足すだけ）。
+新しい不変条件: INV-65。preflight は deploy を包まず前後に足すだけ。deploy-workers.sh の変更は rollback 用の既定オフの
+`SKIP_MIGRATE=1` のみ（上の 4）。with-maintenance-pause.sh は変更しない。使い方の誤り・想定外の失敗は終了コード 3
+（argparse の既定 2 は BLOCKED と衝突するため）。
 
 ## Alternatives
 

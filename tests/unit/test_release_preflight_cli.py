@@ -34,6 +34,8 @@ ARGS = [
     "replay.json",
     "--approval-file",
     "approval.json",
+    "--approved-report",
+    "report.json",
 ]
 
 
@@ -58,3 +60,46 @@ def test_required_queues_come_from_the_compose_healthchecks() -> None:
     assert {"pipeline", "render", "upload", "script", "episode-skeleton"} <= set(queues)
     assert queues["production-image"] == 2700.0
     assert queues["render"] == 120.0
+
+
+def test_argparse_errors_exit_3_not_2(capsys: pytest.CaptureFixture[str]) -> None:
+    """argparse 既定の終了コード 2 は BLOCKED と同じ。使い方の誤りは UNKNOWN(3) に寄せる。"""
+    assert _cli().main([], collectors=Fake()) == 3
+    assert _cli().main(ARGS + ["--no-such-flag"], collectors=Fake()) == 3
+    assert _cli().main(ARGS + ["--evidence-max-age-hours", "abc"], collectors=Fake()) == 3
+    capsys.readouterr()
+
+
+def test_help_exits_0(capsys: pytest.CaptureFixture[str]) -> None:
+    assert _cli().main(["--help"], collectors=Fake()) == 0
+    capsys.readouterr()
+
+
+def test_unexpected_exception_exits_3_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli = _cli()
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("secret detail")
+
+    monkeypatch.setattr(cli, "run_preflight", boom)
+    assert cli.main(ARGS, collectors=Fake()) == 3
+    captured = capsys.readouterr()
+    assert "RuntimeError" in captured.err
+    assert "secret detail" not in captured.err and "Traceback" not in captured.err
+
+
+def test_new_flags_reach_the_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cli = _cli()
+    seen: list[rp.Request] = []
+
+    def spy(req: rp.Request, c: object, now: object) -> rp.Report:
+        seen.append(req)
+        return rp.Report(req.target_sha, "pre-deploy", (), (), rp.Overall.READY)
+
+    monkeypatch.setattr(cli, "run_preflight", spy)
+    extra = ["--rollback", "--approved-report", "r.json", "--evidence-max-age-hours", "10"]
+    assert cli.main(ARGS + extra, collectors=Fake()) == 0
+    req = seen[0]
+    assert req.rollback and req.approved_report == "r.json" and req.evidence_max_age_hours == 10

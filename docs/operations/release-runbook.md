@@ -11,9 +11,14 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
 - 対象は 1 つの **40 桁 SHA**（`git rev-parse <ref>` で確定させ、ブランチ名・短縮形は使わない）
 - deploy は専用 worktree（`.worktrees/<agent>-release-<tag>`）で、その SHA を checkout した状態で行う
   （`deploy-workers.sh` は `HEAD` から build する）
-- 証跡は `release/` 配下の**コミットしないファイル**として置く（`release/` は `.gitignore` 済みなので、`deploy-workers.sh` の `git status --porcelain` の dirty 判定にも掛からない。
+- 証跡は `release/` 配下の**コミットしないファイル**として置く（`release/` は `.gitignore` 済みなので、
+  `deploy-workers.sh` の `git status --porcelain` の dirty 判定にも掛からない。
   `tests/contract/test_release_evidence_ignored.py` が検査）:
-  `release/approvals/<sha>.json` / `release/evidence/<sha>-replay.json` / バックアップ manifest
+  `release/approvals/<sha>.json` / `release/evidence/<sha>-replay.json` / `release/records/<tag>-preflight.json` /
+  バックアップ manifest
+- **承認・証跡は自己申告であって、認証ではない。** preflight が守るのは「古い承認・別 SHA の承認・
+  承認後に差し替えた preflight 出力の流用」という**取り違え**だけで、悪意ある偽造は防げない。
+  より強い手段（所有者の鍵で署名した git tag を承認とする等）は所有者の判断事項（§8）
 - **バックアップを取る自動手順はこの repo に無い**（未実装。§8）。manifest は所有者が取ったバックアップの記録
 
 ## 1. deploy 前（全て `[R]`）
@@ -22,26 +27,41 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
    migration に `# contract-migration: approved ADR-NNNN` を付け、所有者の承認を取る
 2. CI が green（`gh run list --commit <sha>`）。preflight は check run `CI gate`（`contracts/ci.py`）が success かだけを見る
 3. Temporal の replay 証跡を作る（staging の手順 `docs/operations/staging.md` §5）。結果を
-   `release/evidence/<sha>-replay.json`: `{"sha": "<sha>", "result": "pass", "at": "<ISO8601>"}`
-4. バックアップ manifest（DB dump / MinIO / Temporal 各 24h 以内）:
+   `release/evidence/<sha>-replay.json`: `{"sha": "<sha>", "result": "pass", "at": "<ISO8601 with TZ>"}`
+   （`at` が未来、または 72 時間より古いと BLOCKED。上限は `--evidence-max-age-hours`、最大 168）
+4. バックアップ manifest（DB dump / MinIO / Temporal 各 24h 以内。`--backup-max-age-hours` は最大 720）:
    `{"components": {"db_dump": {"created_at": "<ISO8601 with TZ>"}, "minio": {...}, "temporal": {...}}}`
-5. 所有者の承認記録 `release/approvals/<sha>.json`: `{"sha": "<sha>", "approver": "<name>", "approved_at": "<ISO8601>"}`
-   （**承認は SHA 単位**。別 SHA の承認は BLOCKED になる）
-6. preflight を実行し、出力を保存する（deploy 後の比較に使う）:
+5. **承認は二段階**（承認が preflight 出力に束縛される）:
 
    ```bash
+   # (a) 承認以外が全て揃った状態で preflight を走らせ、出力を保存する。承認が無いので総合は UNKNOWN(3) が正常
    python scripts/release-preflight.py --target-sha <sha> --backup-manifest <path> --json \
      | tee release/records/<tag>-preflight.json ; echo "exit=${PIPESTATUS[0]}"
+   # (b) 所有者がその出力（承認以外が全て PASS であること）を読み、承認記録を書く
+   sha256sum release/records/<tag>-preflight.json     # -> report_sha256
+   ```
+
+   `release/approvals/<sha>.json`:
+   `{"sha": "<sha>", "approver": "<name>", "approved_at": "<ISO8601 with TZ>", "report_sha256": "<上の値>"}`
+   （**承認は SHA 単位**。別 SHA・未来日付・72 時間超・出力の差し替えは BLOCKED。`report_sha256` が無いと UNKNOWN）
+6. 承認を付けて再実行する。これが deploy の可否の判定:
+
+   ```bash
+   python scripts/release-preflight.py --target-sha <sha> --backup-manifest <path> \
+     --approved-report release/records/<tag>-preflight.json --json \
+     | tee release/records/<tag>-preflight-ready.json ; echo "exit=${PIPESTATUS[0]}"
    ```
 
    | 総合 | 終了コード | 意味 | 次 |
    |---|---|---|---|
    | READY | 0 | 必須が全て PASS | 所有者に報告 → deploy の承認を得る |
    | BLOCKED | 2 | 確認できて、止めるべき事実がある | 原因を直す。**押し通さない** |
-   | UNKNOWN | 3 | 確認できなかった項目がある（READY ではない） | 証跡を揃える／届かない先を直して再実行 |
+   | UNKNOWN | 3 | 確認できなかった項目、または使い方の誤り・想定外の失敗 | 証跡を揃える／届かない先を直して再実行 |
 
-   `--allow-non-ff` は rollback など「本番より古い SHA」に出すときだけ。BLOCKED の `provider_reservations`
-   は再送（二重課金）の恐れ: 予約を照合（ADR-0013）して 0 にしてから出す。
+   各チェックの detail に、読みに行った DB・Temporal namespace が出る。staging / `_test` DB / `avp-staging` を
+   指していれば `target_environment` が BLOCKED（設定は repo root の `.env`）。
+   `--allow-non-ff` は分岐した SHA に出すときだけ（前の SHA へ戻すのは §4 の `--rollback`）。
+   BLOCKED の `provider_reservations` は再送（二重課金）の恐れ: 予約を照合（ADR-0013）して 0 にしてから出す。
 
 ## 2. deploy 中（`[W]`。承認後）
 
@@ -68,6 +88,9 @@ python scripts/release-preflight.py --verify-post-deploy --target-sha <sha> \
   --pre-report release/records/<tag>-preflight.json
 ```
 
+`--pre-report` は §1.5(a) の出力（承認の `report_sha256` と同じもの）。target SHA・mode が違う、または総合が
+BLOCKED の出力は受け付けない。承認が別の出力に束縛されていれば `approval_binding` が BLOCKED。
+
 全コンテナの revision == target / 必須 task queue（compose の healthcheck の `--queue` 一覧）に poller /
 Schedule の状態が preflight 時点の記録と同じ / alembic == head。READY(0) 以外は成功と報告しない。
 UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedule-guard.py status`、
@@ -77,12 +100,27 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
 
 **alembic downgrade に頼らない。** 戻すのは「前の SHA のイメージ」。
 
+旧イメージの `migrate`（`alembic upgrade head`）は、DB が旧コードの知らない revision にいると
+`Can't locate revision` で失敗する。そのため rollback では **migrate を走らせない**
+（`SKIP_MIGRATE=1`、既定オフ。migrate コンテナは削除され、残りのサービスだけを作り直す）。
+
 1. 前の SHA を `release/records/` と `deploy-state/` から確定する
-2. 前の SHA の worktree で §1 の preflight（`--allow-non-ff`）→ 所有者の承認 → `make deploy-workers`
-3. 旧コードが新スキーマで動くことが前提。これが **expand/contract ルール**（§6）が守る性質
-4. §3 の事後検証。ただし alembic は head より先にいるので `alembic_at_head` は BLOCKED になる。
-   rollback の事後検証では「alembic が旧コードの知る revision の先にある」ことを所有者が記録して受け入れる
-   （expand-only の間は、旧コードが新しい列を無視するだけで安全）
+2. 前の SHA の worktree で §1 と同じ二段階を `--rollback` 付きで行う（`--allow-non-ff` は不要。分岐していれば付ける）。
+   `--rollback` では DB が target より先にいても `alembic` を判定する: target の head から本番の revision までの
+   migration が**全て expand-only**（静的走査で contract が 0 件）であること、かつ承認記録に所有者が
+   **旧コード互換**を書いていること。書いていなければ UNKNOWN、contract が含まれていれば BLOCKED（§5 へ）:
+
+   ```json
+   {"sha": "<sha>", "approver": "...", "approved_at": "...", "report_sha256": "...",
+    "rollback": {"old_code_compatible": true, "revisions": ["<本番が先に進んでいる revision を全て>"]}}
+   ```
+
+   `revisions` が preflight の `rollback_ahead` と一致しないと BLOCKED（承認が別の migration を指している）
+3. 所有者の承認 → `SKIP_MIGRATE=1 make deploy-workers`
+4. 事後検証 `--verify-post-deploy --rollback --target-sha <sha> --pre-report <§1.5(a) の出力>`。
+   alembic は「preflight 時点の revision のまま（migrate も downgrade も走っていない）」を確認する。
+   これ以降、`docker compose up`（`migrate` が `service_completed_successfully` の依存）を素で実行しない
+   （旧イメージの migrate は失敗する）。前進するときは新しい SHA を通常の手順で出す
 
 ## 5. contract migration が既に流れてしまった場合
 
@@ -130,4 +168,5 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
 
 - バックアップを取る/検証する自動手順（manifest は手書き）
 - replay 証跡の自動生成（staging.md §5 は手順のみ）
+- **承認の認証**: 承認ファイルは自己申告（取り違えの防止であって認証ではない）。署名した git tag を承認とする等の強い手段は所有者の判断
 - `docs/operations/daily-schedule-guard.md` §2 の表が `with-maintenance-pause.sh` の現挙動と食い違う（別 PR で直す）

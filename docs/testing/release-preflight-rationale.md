@@ -31,3 +31,10 @@
 | `test_release_evidence_ignored.py` | `release/` の証跡が未追跡ファイルとして `deploy-workers.sh` の dirty 判定を落とす |
 | `test_staging_or_test_targets_are_blocked` / `test_target_*` | cwd の `.env` が staging / `_test` DB を指したまま「本番の判定」が READY になる。宛先を detail に出して取り違えに気づく（資格情報は出さない） |
 | `test_target_info_reads_the_repo_root_dotenv_not_the_cwd` | 実行した場所の `.env` で別の DB を読む |
+| `test_approval_*` / `test_evidence_max_age_is_bounded` / `test_backup_max_age_is_bounded` | 未来日付・古い承認、無限/0 の許容年齢で承認・証跡の鮮度検査が無効になる |
+| `test_report_changed_after_approval_is_blocked` / `test_approved_report_*` | 承認後に preflight 出力を差し替える、別 SHA・別 mode・BLOCKED・UNKNOWN 入りの出力を承認として流用する |
+| `test_post_deploy_*approval*` / `test_post_deploy_pre_report_*` | 事後検証が別 deploy の pre-report（別 SHA/mode/BLOCKED）で READY になる |
+| `test_rollback_*` | DB が先の rollback が永遠に BLOCKED、または contract が流れた後・revision 不一致・owner 記録なしで通る |
+| `test_skip_migrate_*` | 旧イメージの migrate が rollback を落とす／SKIP_MIGRATE が既定で有効・曖昧な値で有効になる／migrate コンテナが混在 revision を作る |
+| `test_argparse_errors_exit_3_not_2` / `test_unexpected_exception_*` | 使い方の誤りが BLOCKED(2) と区別できない、想定外の例外で素のトレースバック |
+| `test_render_text_strips_control_characters_*` | 証跡由来の文字列が端末を操作する／`OVERALL:` 行を偽装する |

@@ -28,6 +28,7 @@ case "$*" in
     exit 0 ;;
   *"compose"*" build "*) exit "$(cat "$SHIM_DIR/build_rc" 2>/dev/null || echo 0)" ;;
   *"compose"*" up "*)    exit "$(cat "$SHIM_DIR/up_rc" 2>/dev/null || echo 0)" ;;
+  *"compose"*" rm "*)    exit 0 ;;
   "image inspect"*) cat "$SHIM_DIR/tag_$(basename "${@: -1}" | tr ':' '_')" ;;
   "inspect"*)
     cid="${@: -1}"
@@ -236,6 +237,42 @@ def test_deploy_success_runs_hooks_in_order_and_recreates_everything(shim: Shim)
     first_build = min(i for i, c in enumerate(calls) if " build " in c)
     first_up = min(i for i, c in enumerate(calls) if " up " in c)
     assert first_build < first_up
+
+
+def test_skip_migrate_is_off_by_default() -> None:
+    assert "SKIP_MIGRATE" in DEPLOY.read_text(encoding="utf-8")
+
+
+def test_default_deploy_never_removes_the_migrate_container(shim: Shim) -> None:
+    _healthy_stack(shim)
+    assert _deploy(shim).returncode == 0
+    assert not any(" rm " in c for c in shim.docker_calls)
+
+
+def test_skip_migrate_runs_no_migration_and_ignores_the_old_migrate_container(
+    shim: Shim,
+) -> None:
+    """rollback: 旧イメージの `alembic upgrade head` は DB が先にいると失敗する（ADR-0050）。"""
+    _healthy_stack(shim)
+    shim.state("m1", "migrate", "exited", "", 1, "no")  # 待っていたら deploy が落ちる
+    result = _deploy(shim, env={"SKIP_MIGRATE": "1"})
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = shim.docker_calls
+    up = [c for c in calls if " up " in c]
+    assert len(up) == 1 and "migrate" not in up[0]
+    assert all(s in up[0] for s in APP if s != "migrate")
+    # 新しい revision の migrate コンテナを残すと、版の揃い検査が混在と見なす
+    assert any(" rm " in c and c.rstrip().endswith("migrate") for c in calls)
+    assert "SKIPPED" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["yes", "true", "2", " 1"])
+def test_skip_migrate_accepts_only_0_or_1(shim: Shim, value: str) -> None:
+    _healthy_stack(shim)
+    result = _deploy(shim, env={"SKIP_MIGRATE": value})
+    assert result.returncode != 0
+    assert "SKIP_MIGRATE" in result.stderr
+    assert not any(" build " in c or " up " in c or " rm " in c for c in shim.docker_calls)
 
 
 def test_deploy_refuses_dirty_tree_before_touching_anything(shim: Shim) -> None:

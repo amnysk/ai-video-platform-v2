@@ -62,6 +62,12 @@ APP_IMAGES = ("avp2-app:local", "avp2-worker:local")
 COMPOSE_PROJECT = "avp2"
 BACKUP_COMPONENTS = ("db_dump", "minio", "temporal")
 DEFAULT_BACKUP_MAX_AGE_HOURS = 24.0
+MAX_BACKUP_MAX_AGE_HOURS = 720.0
+#: 承認・replay 証跡の最大の古さ。設定できるが上限で縛る（古い承認の流用を防ぐ）
+DEFAULT_EVIDENCE_MAX_AGE_HOURS = 72.0
+MAX_EVIDENCE_MAX_AGE_HOURS = 168.0
+#: 時計のずれとして許す未来の幅
+CLOCK_SKEW = timedelta(minutes=5)
 
 CHECK_TARGET_SHA = "target_sha"
 CHECK_TARGET_ENV = "target_environment"
@@ -82,6 +88,7 @@ CHECK_AT_TARGET = "containers_at_target"
 CHECK_POLLERS = "worker_pollers"
 CHECK_SCHEDULES_SAME = "schedules_unchanged"
 CHECK_ALEMBIC_HEAD = "alembic_at_head"
+CHECK_APPROVAL_BINDING = "approval_binding"
 
 PRE_DEPLOY_REQUIRED: tuple[str, ...] = (
     CHECK_TARGET_SHA,
@@ -106,6 +113,7 @@ POST_DEPLOY_REQUIRED: tuple[str, ...] = (
     CHECK_POLLERS,
     CHECK_SCHEDULES_SAME,
     CHECK_ALEMBIC_HEAD,
+    CHECK_APPROVAL_BINDING,
 )
 
 #: 本番の DB / Temporal を読んで判定するチェック。対象の取り違えに気づけるよう detail に宛先を出す
@@ -166,6 +174,11 @@ class Request:
     approval_file: str | None = None
     verify_post_deploy: bool = False
     pre_report: str | None = None
+    #: owner が承認した preflight の ``--json`` 出力。承認の ``report_sha256`` と照合する
+    approved_report: str | None = None
+    evidence_max_age_hours: float = DEFAULT_EVIDENCE_MAX_AGE_HOURS
+    #: 前の SHA へ戻す preflight / 事後検証（DB が target より先に進んでいることを明示的に判定する）
+    rollback: bool = False
 
 
 @dataclass(frozen=True)
@@ -252,6 +265,12 @@ def common_revision(revisions: Mapping[str, str | None]) -> str | None:
     return only if only is not None and _SHA.match(only) else None
 
 
+def report_mode(req: Request) -> str:
+    """出力の ``mode``。pre-report / approved-report の取り違え検査（#11）はこの値で照合する。"""
+    base = "post-deploy" if req.verify_post_deploy else "pre-deploy"
+    return f"rollback-{base}" if req.rollback else base
+
+
 def run_preflight(req: Request, c: Collectors, now: datetime) -> Report:
     sha_result = _check_target_sha(req.target_sha, c)
     target_box: list[TargetInfo | None] = [None]
@@ -268,25 +287,24 @@ def run_preflight(req: Request, c: Collectors, now: datetime) -> Report:
         dependent(CHECK_AT_TARGET, lambda: _check_at_target(req.target_sha, c))
         dependent(CHECK_POLLERS, lambda: _check_pollers(c))
         dependent(CHECK_SCHEDULES_SAME, lambda: _check_schedules_same(req, c))
-        dependent(CHECK_ALEMBIC_HEAD, lambda: _check_alembic_head(req.target_sha, c))
+        dependent(CHECK_ALEMBIC_HEAD, lambda: _check_alembic_head(req, c))
+        dependent(CHECK_APPROVAL_BINDING, lambda: _check_approval_binding(req, c))
         required = POST_DEPLOY_REQUIRED
-        mode = "post-deploy"
     else:
         deployed_box: list[str | None] = [None]
         dependent(CHECK_WORKTREE, lambda: _check_worktree(req.target_sha, c))
         dependent(CHECK_CI, lambda: _check_ci(req.target_sha, c))
         dependent(CHECK_CONTAINERS, lambda: _check_containers(c, deployed_box))
         dependent(CHECK_ANCESTRY, lambda: _check_ancestry(req, c, deployed_box[0]))
-        dependent(CHECK_ALEMBIC, lambda: _check_alembic(req.target_sha, c))
-        dependent(CHECK_MIGRATION, lambda: _check_migration(req.target_sha, c, deployed_box[0]))
+        dependent(CHECK_ALEMBIC, lambda: _check_alembic(req, c, deployed_box[0]))
+        dependent(CHECK_MIGRATION, lambda: _check_migration(req, c, deployed_box[0]))
         results.append(_guard(CHECK_RUNNING, lambda: _check_running(c)))
         results.append(_guard(CHECK_RESERVATIONS, lambda: _check_reservations(c)))
         results.append(_guard(CHECK_SCHEDULES, lambda: _check_schedule_snapshot(c)))
         results.append(_guard(CHECK_BACKUP, lambda: _check_backup(req, c, now)))
-        dependent(CHECK_REPLAY, lambda: _check_replay(req, c))
-        dependent(CHECK_APPROVAL, lambda: _check_approval(req, c))
+        dependent(CHECK_REPLAY, lambda: _check_replay(req, c, now))
+        dependent(CHECK_APPROVAL, lambda: _check_approval(req, c, now))
         required = PRE_DEPLOY_REQUIRED
-        mode = "pre-deploy"
     if target_box[0] is not None:
         label = f" [{target_label(target_box[0])}]"
         results = [
@@ -295,7 +313,9 @@ def run_preflight(req: Request, c: Collectors, now: datetime) -> Report:
         ]
     order = {name: i for i, name in enumerate(required)}
     results.sort(key=lambda r: order.get(r.name, len(order)))
-    return Report(req.target_sha, mode, required, tuple(results), aggregate(results, required))
+    return Report(
+        req.target_sha, report_mode(req), required, tuple(results), aggregate(results, required)
+    )
 
 
 # ------------------------------------------------------------------ 個別のチェック
@@ -384,6 +404,10 @@ def _check_ancestry(req: Request, c: Collectors, deployed: str | None) -> CheckR
     relation = c.ancestry(deployed, req.target_sha)
     if relation in (Relation.SAME, Relation.FAST_FORWARD):
         return CheckResult(CHECK_ANCESTRY, Status.PASS, f"{relation.value} from {deployed[:12]}")
+    if req.rollback and relation is Relation.BEHIND:
+        return CheckResult(
+            CHECK_ANCESTRY, Status.PASS, f"rollback to an ancestor of production {deployed[:12]}"
+        )
     if relation is Relation.UNKNOWN_COMMIT:
         return _unknown(CHECK_ANCESTRY, f"deployed {deployed[:12]} is not in the local repository")
     if req.allow_non_ff:
@@ -447,19 +471,31 @@ def _chain(graph: Mapping[str, str | None], head: str) -> set[str]:
     return seen
 
 
-def _check_alembic(sha: str, c: Collectors) -> CheckResult:
+def _revision_texts(files: Mapping[str, str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for text in files.values():
+        rev = _REV.search(text)
+        if rev:
+            out[rev.group(1)] = text
+    return out
+
+
+def _check_alembic(req: Request, c: Collectors, deployed: str | None) -> CheckResult:
     prod = c.db_alembic_version()
     if not prod:
         return _unknown(CHECK_ALEMBIC, "alembic_version is not readable")
-    files = c.migration_files(sha)
+    files = c.migration_files(req.target_sha)
     head = alembic_head(files)
     if head is None:
         return _unknown(CHECK_ALEMBIC, "target alembic head is not determined")
     if prod not in _chain(alembic_graph(files), head):
+        if req.rollback:
+            return _check_db_ahead(req, c, deployed, prod, head)
         return CheckResult(
             CHECK_ALEMBIC,
             Status.BLOCKED,
-            f"production {prod} is not on the target chain (head {head})",
+            f"production {prod} is not on the target chain (head {head}); "
+            "if this is a rollback use --rollback",
         )
     pending = prod != head
     return CheckResult(
@@ -467,6 +503,84 @@ def _check_alembic(sha: str, c: Collectors) -> CheckResult:
         Status.PASS,
         f"production {prod}, target head {head}" + (" (migrations will run)" if pending else ""),
         {"production": prod, "head": head},
+    )
+
+
+def _check_db_ahead(
+    req: Request, c: Collectors, deployed: str | None, prod: str, head: str
+) -> CheckResult:
+    """rollback: DB が target より先。expand-only かつ owner が旧コード互換と承認したときだけ PASS。
+
+    旧イメージの ``alembic upgrade head`` は DB が先にいると失敗する
+    （``Can't locate revision``）ので、この PASS は deploy-workers.sh を ``SKIP_MIGRATE=1`` で
+    走らせることが前提（release-runbook §4）。
+    """
+    if deployed is None:
+        return _unknown(CHECK_ALEMBIC, "deployed revision is not determined")
+    running = c.migration_files(deployed)
+    graph = alembic_graph(running)
+    if prod not in graph:
+        return CheckResult(
+            CHECK_ALEMBIC,
+            Status.BLOCKED,
+            f"production {prod} is unknown to the running code ({deployed[:12]}) as well",
+        )
+    steps: list[str] = []
+    cur: str | None = prod
+    while cur is not None and cur != head and cur in graph and cur not in steps:
+        steps.append(cur)
+        cur = graph[cur]
+    if cur != head:
+        return CheckResult(
+            CHECK_ALEMBIC,
+            Status.BLOCKED,
+            f"target head {head} is not an ancestor of production {prod} (diverged history)",
+        )
+    texts = _revision_texts(running)
+    contract: list[str] = []
+    for rev in steps:
+        text = texts.get(rev)
+        try:
+            found = (
+                scan_migration(text) if text is not None else [Finding("unscannable", "no file")]
+            )
+        except SyntaxError:
+            return _unknown(CHECK_ALEMBIC, f"migration {rev} cannot be parsed")
+        if found:
+            contract.append(f"{rev}: {'; '.join(f.text for f in found)}")
+    if contract:
+        return CheckResult(
+            CHECK_ALEMBIC,
+            Status.BLOCKED,
+            "migrations ahead of the target are not expand-only (release-runbook §5): "
+            + " | ".join(contract),
+        )
+    ahead = sorted(steps)
+    path = req.approval_file or default_approval_path(req.target_sha)
+    doc = _load_json(c.read_text(path))
+    if doc is None:
+        return _unknown(CHECK_ALEMBIC, f"approval record absent or not JSON ({path})")
+    if doc.get("sha") != req.target_sha:
+        return CheckResult(CHECK_ALEMBIC, Status.BLOCKED, "approval is for a different SHA")
+    flag = doc.get("rollback")
+    if not isinstance(flag, dict) or "old_code_compatible" not in flag:
+        return _unknown(
+            CHECK_ALEMBIC,
+            f"DB is ahead by {', '.join(ahead)}; the owner has not recorded "
+            "rollback.old_code_compatible in the approval file",
+        )
+    if flag.get("old_code_compatible") is not True or sorted(flag.get("revisions") or []) != ahead:
+        return CheckResult(
+            CHECK_ALEMBIC,
+            Status.BLOCKED,
+            f"approval does not accept old-code compatibility for exactly {', '.join(ahead)}",
+        )
+    return CheckResult(
+        CHECK_ALEMBIC,
+        Status.PASS,
+        f"rollback: production {prod} is {len(ahead)} expand-only migration(s) ahead of target "
+        f"head {head} ({', '.join(ahead)}), accepted by the owner; deploy with SKIP_MIGRATE=1",
+        {"production": prod, "head": head, "rollback_ahead": ahead},
     )
 
 
@@ -653,14 +767,17 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _check_migration(sha: str, c: Collectors, deployed: str | None) -> CheckResult:
+def _check_migration(req: Request, c: Collectors, deployed: str | None) -> CheckResult:
+    sha = req.target_sha
     if deployed is None:
         return _unknown(CHECK_MIGRATION, "deployed revision is not determined")
     base = c.migration_files(deployed)
     target = c.migration_files(sha)
     # 本番に入った migration は不変。書き換え・削除は、過去の revision に破壊的変更を忍ばせる
     edited = sorted(n for n in base if n in target and _sha256(base[n]) != _sha256(target[n]))
-    removed = sorted(n for n in base if n not in target)
+    # rollback では、target が知らない（先に進んだ）migration が消えて見えるのが正しい。
+    # それは alembic チェック（_check_db_ahead）が expand-only かどうかを判定する
+    removed = [] if req.rollback else sorted(n for n in base if n not in target)
     if edited or removed:
         parts = [f"edited in place: {', '.join(edited)}"] if edited else []
         parts += [f"removed: {', '.join(removed)}"] if removed else []
@@ -772,9 +889,26 @@ def _parse_time(value: object) -> datetime | None:
         return None
 
 
+def _bounded(hours: object, upper: float) -> bool:
+    return isinstance(hours, int | float) and 0 < hours <= upper  # NaN は比較が偽になり弾かれる
+
+
+def _staleness(at: datetime, now: datetime, max_hours: float) -> str | None:
+    """``at`` が未来、または古すぎれば理由。承認・証跡は自己申告なので日付で縛る。"""
+    if at - now > CLOCK_SKEW:
+        return "dated in the future"
+    if now - at > timedelta(hours=max_hours):
+        return f"older than {max_hours:g}h"
+    return None
+
+
 def _check_backup(req: Request, c: Collectors, now: datetime) -> CheckResult:
     if req.backup_manifest is None:
         return _unknown(CHECK_BACKUP, "no backup manifest given (--backup-manifest)")
+    if not _bounded(req.backup_max_age_hours, MAX_BACKUP_MAX_AGE_HOURS):
+        return _unknown(
+            CHECK_BACKUP, f"--backup-max-age-hours must be in (0, {MAX_BACKUP_MAX_AGE_HOURS:g}]"
+        )
     manifest = _load_json(c.read_text(req.backup_manifest))
     if manifest is None:
         return _unknown(CHECK_BACKUP, "backup manifest absent or not JSON")
@@ -805,29 +939,117 @@ def _check_backup(req: Request, c: Collectors, now: datetime) -> CheckResult:
     )
 
 
-def _check_replay(req: Request, c: Collectors) -> CheckResult:
+def _check_replay(req: Request, c: Collectors, now: datetime) -> CheckResult:
     path = req.replay_evidence or default_replay_path(req.target_sha)
     doc = _load_json(c.read_text(path))
     if doc is None:
         return _unknown(CHECK_REPLAY, f"replay evidence absent or not JSON ({path})")
     if doc.get("sha") != req.target_sha:
         return CheckResult(CHECK_REPLAY, Status.BLOCKED, "replay evidence is for a different SHA")
-    if doc.get("result") == "pass":
-        return CheckResult(CHECK_REPLAY, Status.PASS, "replay passed for the SHA")
+    if not _bounded(req.evidence_max_age_hours, MAX_EVIDENCE_MAX_AGE_HOURS):
+        return _unknown(
+            CHECK_REPLAY, f"--evidence-max-age-hours must be in (0, {MAX_EVIDENCE_MAX_AGE_HOURS:g}]"
+        )
     if doc.get("result") == "fail":
         return CheckResult(CHECK_REPLAY, Status.BLOCKED, "replay failed")
-    return _unknown(CHECK_REPLAY, "replay evidence has no result")
+    if doc.get("result") != "pass":
+        return _unknown(CHECK_REPLAY, "replay evidence has no result")
+    at = _parse_time(doc.get("at"))
+    if at is None or at.tzinfo is None:
+        return _unknown(CHECK_REPLAY, "replay evidence has no timezone-aware 'at'")
+    problem = _staleness(at, now, req.evidence_max_age_hours)
+    if problem:
+        return CheckResult(CHECK_REPLAY, Status.BLOCKED, f"replay evidence is {problem}")
+    return CheckResult(CHECK_REPLAY, Status.PASS, "replay passed for the SHA")
 
 
-def _check_approval(req: Request, c: Collectors) -> CheckResult:
+def _report_problem(text: str, req: Request, expected_mode: str) -> CheckResult | None:
+    """preflight 出力が「この deploy のもの」か。違えば CheckResult（名前は呼び出し側で付ける）。"""
+    doc = _load_json(text)
+    if doc is None:
+        return CheckResult("", Status.UNKNOWN, "report is not JSON")
+    if doc.get("target_sha") != req.target_sha:
+        return CheckResult("", Status.BLOCKED, "report is for a different SHA")
+    if doc.get("mode") != expected_mode:
+        return CheckResult(
+            "", Status.BLOCKED, f"report mode is {doc.get('mode')!r}, expected {expected_mode!r}"
+        )
+    if doc.get("overall") == Overall.BLOCKED.value:
+        return CheckResult("", Status.BLOCKED, "report verdict is BLOCKED")
+    return None
+
+
+def _named(name: str, problem: CheckResult) -> CheckResult:
+    return CheckResult(name, problem.status, problem.detail)
+
+
+def _approved_report_problem(text: str, req: Request) -> CheckResult | None:
+    """承認された出力は「承認以外が全て PASS」でなければならない（UNKNOWN を承認しない）。"""
+    problem = _report_problem(text, req, report_mode(req))
+    if problem is not None:
+        return problem
+    doc = _load_json(text) or {}
+    results = doc.get("results")
+    by_name = (
+        {r.get("name"): r.get("status") for r in results if isinstance(r, dict)}
+        if isinstance(results, list)
+        else {}
+    )
+    not_pass = [
+        n
+        for n in PRE_DEPLOY_REQUIRED
+        if n != CHECK_APPROVAL and by_name.get(n) != Status.PASS.value
+    ]
+    if not_pass:
+        return CheckResult(
+            "",
+            Status.BLOCKED,
+            f"approved report has checks that are not PASS: {', '.join(not_pass)}",
+        )
+    return None
+
+
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _check_approval(req: Request, c: Collectors, now: datetime) -> CheckResult:
+    """承認は SHA・日付・preflight 出力に束縛する。自己申告で、認証ではない（取り違えの防止）。"""
     path = req.approval_file or default_approval_path(req.target_sha)
     doc = _load_json(c.read_text(path))
     if doc is None:
         return _unknown(CHECK_APPROVAL, f"approval record absent or not JSON ({path})")
     if doc.get("sha") != req.target_sha:
         return CheckResult(CHECK_APPROVAL, Status.BLOCKED, "approval is for a different SHA")
-    if not doc.get("approver") or _parse_time(doc.get("approved_at")) is None:
-        return _unknown(CHECK_APPROVAL, "approval record lacks approver or approved_at")
+    at = _parse_time(doc.get("approved_at"))
+    if not doc.get("approver") or at is None or at.tzinfo is None:
+        return _unknown(
+            CHECK_APPROVAL, "approval record lacks approver or a timezone-aware approved_at"
+        )
+    if not _bounded(req.evidence_max_age_hours, MAX_EVIDENCE_MAX_AGE_HOURS):
+        return _unknown(
+            CHECK_APPROVAL,
+            f"--evidence-max-age-hours must be in (0, {MAX_EVIDENCE_MAX_AGE_HOURS:g}]",
+        )
+    stale = _staleness(at, now, req.evidence_max_age_hours)
+    if stale:
+        return CheckResult(CHECK_APPROVAL, Status.BLOCKED, f"approval is {stale}")
+    bound = doc.get("report_sha256")
+    if not isinstance(bound, str) or not _HEX64.match(bound):
+        return _unknown(
+            CHECK_APPROVAL, "approval lacks report_sha256 (bind it to the reviewed report)"
+        )
+    if req.approved_report is None:
+        return _unknown(CHECK_APPROVAL, "no --approved-report given to verify report_sha256")
+    text = c.read_text(req.approved_report)
+    if text is None:
+        return _unknown(CHECK_APPROVAL, f"approved report absent ({req.approved_report})")
+    if _sha256(text) != bound:
+        return CheckResult(
+            CHECK_APPROVAL, Status.BLOCKED, "approved report differs from the one that was approved"
+        )
+    problem = _approved_report_problem(text, req)
+    if problem is not None:
+        return _named(CHECK_APPROVAL, problem)
     return CheckResult(CHECK_APPROVAL, Status.PASS, f"approved by {doc['approver']}")
 
 
@@ -854,8 +1076,26 @@ def _check_pollers(c: Collectors) -> CheckResult:
     return CheckResult(CHECK_POLLERS, Status.PASS, f"pollers present on {len(queues)} queues")
 
 
+def _pre_report_mode(req: Request) -> str:
+    return "rollback-pre-deploy" if req.rollback else "pre-deploy"
+
+
+def _read_pre_report(req: Request, c: Collectors) -> str | CheckResult:
+    """--pre-report の本文。読めなければ UNKNOWN、この deploy のものでなければ BLOCKED/UNKNOWN。"""
+    if not req.pre_report:
+        return _unknown("", "no pre-deploy report (--pre-report)")
+    text = c.read_text(req.pre_report)
+    if text is None:
+        return _unknown("", f"pre-deploy report absent ({req.pre_report})")
+    problem = _report_problem(text, req, _pre_report_mode(req))
+    return text if problem is None else problem
+
+
 def _check_schedules_same(req: Request, c: Collectors) -> CheckResult:
-    before = schedule_snapshot_from_report(c.read_text(req.pre_report) if req.pre_report else None)
+    pre = _read_pre_report(req, c)
+    if isinstance(pre, CheckResult):
+        return _named(CHECK_SCHEDULES_SAME, pre)
+    before = schedule_snapshot_from_report(pre)
     if before is None:
         return _unknown(CHECK_SCHEDULES_SAME, "no pre-deploy schedule snapshot (--pre-report)")
     after = {k: dict(v) for k, v in c.schedule_states().items()}
@@ -869,14 +1109,71 @@ def _check_schedules_same(req: Request, c: Collectors) -> CheckResult:
     return CheckResult(CHECK_SCHEDULES_SAME, Status.PASS, "equal to the pre-deploy snapshot")
 
 
-def _check_alembic_head(sha: str, c: Collectors) -> CheckResult:
+def _check_data_from_report(text: str, name: str) -> dict[str, Any] | None:
+    doc = _load_json(text) or {}
+    for r in doc.get("results") or []:
+        if isinstance(r, dict) and r.get("name") == name and r.get("status") == Status.PASS.value:
+            data = r.get("data")
+            return dict(data) if isinstance(data, dict) else None
+    return None
+
+
+def _check_alembic_head(req: Request, c: Collectors) -> CheckResult:
     prod = c.db_alembic_version()
-    head = alembic_head(c.migration_files(sha))
+    if req.rollback:
+        return _check_alembic_unchanged(req, c, prod)
+    head = alembic_head(c.migration_files(req.target_sha))
     if not prod or head is None:
         return _unknown(CHECK_ALEMBIC_HEAD, "alembic_version or target head is not determined")
     if prod != head:
         return CheckResult(CHECK_ALEMBIC_HEAD, Status.BLOCKED, f"production {prod} != head {head}")
     return CheckResult(CHECK_ALEMBIC_HEAD, Status.PASS, f"at head {head}")
+
+
+def _check_alembic_unchanged(req: Request, c: Collectors, prod: str | None) -> CheckResult:
+    """rollback の事後: migrate も downgrade も走っていない（DB は preflight 時点のまま）。"""
+    pre = _read_pre_report(req, c)
+    if isinstance(pre, CheckResult):
+        return _named(CHECK_ALEMBIC_HEAD, pre)
+    before = _check_data_from_report(pre, CHECK_ALEMBIC)
+    if not prod or before is None or not before.get("production"):
+        return _unknown(CHECK_ALEMBIC_HEAD, "alembic_version or its pre-deploy record is unknown")
+    if prod != before["production"]:
+        return CheckResult(
+            CHECK_ALEMBIC_HEAD,
+            Status.BLOCKED,
+            f"production {prod} != {before['production']} recorded before the rollback "
+            "(migrate/downgrade must not run in a rollback)",
+        )
+    return CheckResult(
+        CHECK_ALEMBIC_HEAD,
+        Status.PASS,
+        f"unchanged at {prod} (ahead of the rolled-back code, accepted at preflight)",
+    )
+
+
+def _check_approval_binding(req: Request, c: Collectors) -> CheckResult:
+    """deploy した preflight 出力が、承認されたものと同一（承認の ``report_sha256``）。"""
+    path = req.approval_file or default_approval_path(req.target_sha)
+    doc = _load_json(c.read_text(path))
+    if doc is None:
+        return _unknown(CHECK_APPROVAL_BINDING, f"approval record absent or not JSON ({path})")
+    if doc.get("sha") != req.target_sha:
+        return CheckResult(
+            CHECK_APPROVAL_BINDING, Status.BLOCKED, "approval is for a different SHA"
+        )
+    pre = _read_pre_report(req, c)
+    if isinstance(pre, CheckResult):
+        return _named(CHECK_APPROVAL_BINDING, pre)
+    if doc.get("report_sha256") != _sha256(pre):
+        return CheckResult(
+            CHECK_APPROVAL_BINDING,
+            Status.BLOCKED,
+            "the pre-deploy report is not the one the approval was bound to",
+        )
+    return CheckResult(
+        CHECK_APPROVAL_BINDING, Status.PASS, "pre-deploy report matches the approval"
+    )
 
 
 # ------------------------------------------------------------------ 出力
@@ -900,11 +1197,19 @@ def report_json(report: Report) -> str:
     )
 
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _printable(value: str) -> str:
+    """制御文字（ESC・改行・CR 等）を ``?`` にする。端末の操作と OVERALL 行の偽装を防ぐ。"""
+    return _CONTROL.sub("?", value)
+
+
 def render_text(report: Report) -> str:
-    lines = [f"release preflight ({report.mode}) target={report.target_sha or '-'}"]
+    lines = [f"release preflight ({report.mode}) target={_printable(report.target_sha) or '-'}"]
     have = {r.name for r in report.results}
     for r in report.results:
-        lines.append(f"[{r.status.value:^7}] {r.name}: {r.detail}")
+        lines.append(f"[{r.status.value:^7}] {_printable(r.name)}: {_printable(r.detail)}")
     for name in report.required:
         if name not in have:
             lines.append(f"[UNKNOWN] {name}: not evaluated")
