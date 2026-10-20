@@ -38,3 +38,5 @@
 | `test_skip_migrate_*` | 旧イメージの migrate が rollback を落とす／SKIP_MIGRATE が既定で有効・曖昧な値で有効になる／migrate コンテナが混在 revision を作る |
 | `test_argparse_errors_exit_3_not_2` / `test_unexpected_exception_*` | 使い方の誤りが BLOCKED(2) と区別できない、想定外の例外で素のトレースバック |
 | `test_render_text_strips_control_characters_*` | 証跡由来の文字列が端末を操作する／`OVERALL:` 行を偽装する |
+| `test_a_missing_app_service_is_blocked_*` / `test_release_app_services.py` | 稼働中の worker だけが同じ revision で揃っていて、落ちている worker があっても「全部 target」と判定される（一覧は deploy-workers.sh / compose.yaml から導く） |
+| `test_staging_doc_commands_pin_project_env_file_and_compose_file` | staging の手順が `-p`・`--env-file /dev/null` を欠き、cwd の `.env`（本番の値）や別 project に当たる |

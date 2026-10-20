@@ -50,6 +50,9 @@ UNKNOWN を READY として扱わない。staging は本番と何も共有しな
    `--rollback` の事後検証は「DB が preflight 時点の revision のまま」を見る。
    **deploy-workers.sh に、既定オフの `SKIP_MIGRATE=1` だけを足す**（migrate を走らせず migrate コンテナを削除し、
    残りを作り直す。0/1 以外は拒否。`tests/unit/test_deploy_scripts.py`）。それ以外の deploy の挙動は変えない
+5b. `container_revisions` / `containers_at_target` は、`deploy-workers.sh` の `APP_SERVICES`（one-shot の migrate を除く。
+   `compose.yaml` の `restart: "no"`）が全て走っていることも見る（欠けていれば BLOCKED、一覧が空/読めなければ UNKNOWN）。
+   定義は `infrastructure/release/app_services.py` が既存のものから導く
 5a. 承認・証跡は自己申告で、**認証ではなく取り違えの防止**。承認記録は SHA・`approved_at`（TZ 付き。未来日付と
    既定 72 時間（上限 168）超は BLOCKED）・`report_sha256`（owner が読んだ preflight の `--json` 出力の sha256。
    `--approved-report` で照合し、その出力は承認以外が全て PASS で SHA と mode が一致）に束縛する。replay 証跡も

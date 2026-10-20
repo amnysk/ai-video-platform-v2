@@ -170,3 +170,15 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
 - replay 証跡の自動生成（staging.md §5 は手順のみ）
 - **承認の認証**: 承認ファイルは自己申告（取り違えの防止であって認証ではない）。署名した git tag を承認とする等の強い手段は所有者の判断
 - `docs/operations/daily-schedule-guard.md` §2 の表が `with-maintenance-pause.sh` の現挙動と食い違う（別 PR で直す）
+- `RealCollectors` は実環境で一度も実行していない（fake のみ）。初回の本番 preflight は所有者の立ち会いで行い、結果を記録する
+- replay 証跡のカバレッジは INV-40 系のみ（Upload / Production / Render の履歴は無い）
+
+### 独立レビューの残件（P2/P3。所有者の判断待ち。この PR では直さない）
+
+| # | 内容 | 扱い・判断メモ |
+|---|---|---|
+| 14 | CI の外部 action（`actions/checkout@v4` 等）・コンテナ image が**タグ参照**で、commit SHA / digest に固定されていない（供給網リスク） | **意図的に未対応**。SHA 固定は更新運用（Dependabot 等）とセットで所有者が決める |
+| 9 / 16 / 17 | レビューの P2/P3 の番号のみが修正依頼に含まれ、**本文が修正担当に渡っていない**ため内容を記載できない | レビュー原文から転記が必要（推測で書かない）。転記するまで未対応として扱う |
+
+`--pre-report` / 承認の検証、migration 走査、承認の束縛は「取り違えの防止」であり、悪意ある偽造や走査をすり抜ける
+書き方を完全には防げない（best effort）。最終判断は人。

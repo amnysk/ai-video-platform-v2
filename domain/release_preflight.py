@@ -208,6 +208,7 @@ class Collectors(Protocol):
     def schedule_states(self) -> Mapping[str, Mapping[str, object]]: ...
     def required_queues(self) -> Sequence[str]: ...
     def queues_without_poller(self, queues: Sequence[str]) -> Sequence[str]: ...
+    def expected_services(self) -> Sequence[str]: ...
     def target_info(self) -> TargetInfo: ...
     def read_text(self, path: str) -> str | None: ...
 
@@ -371,10 +372,26 @@ def _check_worktree(sha: str, c: Collectors) -> CheckResult:
     return CheckResult(CHECK_WORKTREE, Status.PASS, "clean at the target SHA")
 
 
+def _missing_services(
+    name: str, c: Collectors, revisions: Mapping[str, str | None]
+) -> CheckResult | None:
+    """常駐しているべきアプリサービス（deploy-workers.sh の APP_SERVICES 由来）が欠けていないか。"""
+    expected = list(c.expected_services())
+    if not expected:
+        return _unknown(name, "expected app service list is empty")
+    missing = sorted(set(expected) - set(revisions))
+    if missing:
+        return CheckResult(name, Status.BLOCKED, f"app service not running: {', '.join(missing)}")
+    return None
+
+
 def _check_containers(c: Collectors, deployed_box: list[str | None]) -> CheckResult:
     revisions = c.container_revisions()
     if not revisions:
         return _unknown(CHECK_CONTAINERS, "no avp2 app container found")
+    absent = _missing_services(CHECK_CONTAINERS, c, revisions)
+    if absent is not None:
+        return absent
     bad = sorted(
         s for s, r in revisions.items() if r is None or r == "unknown" or r.endswith("-dirty")
     )
@@ -1060,6 +1077,9 @@ def _check_at_target(sha: str, c: Collectors) -> CheckResult:
     revisions = c.container_revisions()
     if not revisions:
         return _unknown(CHECK_AT_TARGET, "no avp2 app container found")
+    absent = _missing_services(CHECK_AT_TARGET, c, revisions)
+    if absent is not None:
+        return absent
     wrong = sorted(s for s, r in revisions.items() if r != sha)
     if wrong:
         return CheckResult(CHECK_AT_TARGET, Status.BLOCKED, f"not at target: {', '.join(wrong)}")

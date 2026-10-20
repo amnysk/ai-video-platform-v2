@@ -30,6 +30,7 @@ from domain.release_preflight import (
     TargetInfo,
 )
 from infrastructure.config import Settings
+from infrastructure.release.app_services import expected_running_services
 from infrastructure.release.compose_queues import required_queues
 from infrastructure.temporal.poller_check import queues_missing_pollers, temporal_describe_factory
 
@@ -161,6 +162,11 @@ class RealCollectors:
             if image in APP_IMAGES:
                 revisions[service] = revision or None
         return revisions
+
+    def expected_services(self) -> Sequence[str]:
+        script = (self._repo / "scripts" / "deploy-workers.sh").read_text(encoding="utf-8")
+        compose = (self._repo / "compose.yaml").read_text(encoding="utf-8")
+        return expected_running_services(script, compose)
 
     # ---- CI（gh api の GET だけ）
     def ci_check_runs(self, sha: str) -> Sequence[CheckRun]:

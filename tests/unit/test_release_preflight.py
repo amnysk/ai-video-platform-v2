@@ -120,6 +120,7 @@ class Fake:
     schedules: Any = field(default_factory=lambda: dict(SCHEDULES))
     queues: Any = field(default_factory=lambda: ["pipeline", "render"])
     missing_queues: Any = field(default_factory=list)
+    expected: Any = field(default_factory=lambda: ["api"])
     target: Any = field(
         default_factory=lambda: rp.TargetInfo(
             db_host="db.internal",
@@ -181,6 +182,9 @@ class Fake:
 
     def queues_without_poller(self, queues: Sequence[str]) -> list[str]:
         return self._get(self.missing_queues)
+
+    def expected_services(self) -> list[str]:
+        return self._get(self.expected)
 
     def target_info(self) -> rp.TargetInfo:
         return self._get(self.target)
@@ -720,3 +724,20 @@ def test_render_text_strips_control_characters_from_details() -> None:
     assert "\x1b" not in text and "\x07" not in text and "\r" not in text
     assert sum(line.startswith("OVERALL:") for line in text.splitlines()) == 1
     assert text.splitlines()[-1] == "OVERALL: BLOCKED"
+
+
+# ---------------------------------------------------------------- 常駐しているべきサービスの欠落
+
+
+def test_a_missing_app_service_is_blocked_before_and_after_deploy() -> None:
+    pre = _run(Fake(expected=["api", "render-worker"]))
+    assert _status(pre, "container_revisions") is rp.Status.BLOCKED
+    assert "render-worker" in next(r.detail for r in pre.results if r.name == "container_revisions")
+    post = _post(Fake(revisions={"api": SHA}, alembic="0016", expected=["api", "render-worker"]))
+    assert _status(post, "containers_at_target") is rp.Status.BLOCKED
+
+
+def test_unknown_expected_service_list_is_unknown() -> None:
+    assert _status(_run(Fake(expected=[])), "container_revisions") is rp.Status.UNKNOWN
+    unreadable = Fake(expected=rp.CollectorUnavailable("compose"))
+    assert _status(_run(unreadable), "container_revisions") is rp.Status.UNKNOWN
