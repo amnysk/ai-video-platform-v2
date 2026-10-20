@@ -18,4 +18,4 @@ data/
 deploy-state/
 
 # release の証跡（承認・replay・preflight 出力）。コミットしない（deploy-workers.sh の dirty 判定を通すため）
-release/
+/release/
