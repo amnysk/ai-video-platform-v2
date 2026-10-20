@@ -109,3 +109,44 @@ def test_no_job_is_a_no_op() -> None:
         assert meaningful, f"{job_id}: 実質何もしない job"
         swallowed = any(r.rstrip().endswith("|| true") for r in runs)
         assert not swallowed, f"{job_id}: `|| true` で失敗を握りつぶさない"
+
+
+def _steps_with_job() -> list[tuple[str, dict[str, Any]]]:
+    return [(jid, s) for jid, job in _jobs().items() for s in job.get("steps", [])]
+
+
+def _runs_under_pipefail(job: dict[str, Any], step: dict[str, Any]) -> bool:
+    """GitHub の `shell: bash` は `bash -eo pipefail`。未指定の既定は `bash -e`（pipefail 無し）。"""
+    shell = (
+        step.get("shell")
+        or job.get("defaults", {}).get("run", {}).get("shell")
+        or _workflow().get("defaults", {}).get("run", {}).get("shell")
+    )
+    if shell == "bash" or (isinstance(shell, str) and "pipefail" in shell):
+        return True
+    return "set -o pipefail" in str(step.get("run", "")) or "set -eo pipefail" in str(
+        step.get("run", "")
+    )
+
+
+def test_every_tee_step_runs_under_pipefail() -> None:
+    """`pytest | tee log` は pipefail が無いと pytest の失敗が tee の 0 に隠れて job が緑になる。"""
+    tee_steps = 0
+    for jid, step in _steps_with_job():
+        if "| tee" in str(step.get("run", "")):
+            tee_steps += 1
+            assert _runs_under_pipefail(_jobs()[jid], step), f"{jid}: `| tee` が pipefail 無し"
+    assert tee_steps >= 2, "検査対象の tee step が見つからない（検査自体が空振りしていないか）"
+
+
+def test_every_teed_pytest_log_is_checked_for_passed_tests() -> None:
+    """pytest が 0 件で終わる（収集失敗・全 skip）ケースを、ログの `N passed` で止める。"""
+    for jid, job in _jobs().items():
+        steps = job.get("steps", [])
+        for step in steps:
+            run = str(step.get("run", ""))
+            if "pytest" not in run or "| tee" not in run:
+                continue
+            log = run.split("| tee", 1)[1].split()[0]
+            later = "\n".join(str(s.get("run", "")) for s in steps[steps.index(step) + 1 :])
+            assert log in later and "[0-9]+ passed" in later, f"{jid}: {log} に passed の検査が無い"

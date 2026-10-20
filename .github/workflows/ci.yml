@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# run の既定シェルは `bash -e {0}`（pipefail 無し）。`shell: bash` は `bash -eo pipefail {0}` なので、
+# `pytest | tee log` の pytest 失敗が tee の 0 に隠れない（tests/contract/test_ci_workflow_policy.py）
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -147,6 +153,8 @@ jobs:
           # でも除外されるが、環境側でも塞ぐ）
           AVP_LIVE_CODEX: ""
           CODEX_BINARY: /nonexistent/codex
+      - name: Fail if no integration test passed (log must show N passed)
+        run: grep -E '[0-9]+ passed' pytest-integration.log
       - name: Fail if too many integration tests were skipped
         # skip を success 扱いしない: TEMPORAL_ADDRESS / MINIO_ENDPOINT / TEST_DATABASE_URL は
         # 全てこのjobで設定済みなので、正当な skip は「実行環境そのものが無い」ケースだけに限られる
@@ -253,6 +261,8 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp_test
           DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
+      - name: Fail if no PostgreSQL migration test passed (log must show N passed)
+        run: grep -E '[0-9]+ passed' pytest-alembic.log
       - name: Fail if the PostgreSQL migration tests were skipped
         run: "! grep -E '[0-9]+ skipped' pytest-alembic.log"
       - name: alembic upgrade head via the CLI on an empty database
