@@ -44,6 +44,10 @@ UNKNOWN を READY として扱わない。staging は本番と何も共有しな
    既に流れた後は、バックアップからの復旧＋所有者の判断（自動化しない）
 5. `--verify-post-deploy` は deploy 後の読み取り専用検査（全コンテナ revision == target、必須 task queue に
    poller、Schedule の状態が preflight 時点の記録と同じ、alembic == head）
+5b. 全ての判定の前に `target_environment`（必須）が、読みに行く DB / Temporal の宛先を確認する: namespace が
+   `avp-staging`、`AVP_ENVIRONMENT` に staging、DB 名が `_test` 終わり/`avp_staging` なら BLOCKED。DB・Temporal を
+   読むチェックの detail には宛先（DB の host/名前・namespace。資格情報は出さない）を併記する。設定は cwd ではなく
+   repo root の `.env` を読む。識別子の宣言元は `contracts/release.py`
 6. staging は `compose.staging.yaml`（project `avp2-staging`）。DB・bucket・volume・port・Temporal namespace を
    本番と共有せず、FAL / YouTube の資格情報は空。契約テストが compose.yaml との非衝突を検査する
 

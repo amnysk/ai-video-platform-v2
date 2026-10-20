@@ -29,3 +29,5 @@
 | `test_marker_*` | 文字列/docstring 内の印、target にだけある ADR、Proposed の ADR、別 revision の ADR による承認のなりすまし |
 | `test_every_tee_step_runs_under_pipefail` / `test_every_teed_pytest_log_is_checked_*` | `pytest \| tee` が pytest の失敗を隠して CI が緑になる／0 件で緑になる |
 | `test_release_evidence_ignored.py` | `release/` の証跡が未追跡ファイルとして `deploy-workers.sh` の dirty 判定を落とす |
+| `test_staging_or_test_targets_are_blocked` / `test_target_*` | cwd の `.env` が staging / `_test` DB を指したまま「本番の判定」が READY になる。宛先を detail に出して取り違えに気づく（資格情報は出さない） |
+| `test_target_info_reads_the_repo_root_dotenv_not_the_cwd` | 実行した場所の `.env` で別の DB を読む |

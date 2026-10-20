@@ -15,12 +15,18 @@ import json
 import re
 import tokenize
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
 
 from contracts.ci import CI_GATE_JOB_NAME
+from contracts.release import (
+    STAGING_DB_NAME,
+    STAGING_ENVIRONMENT_MARK,
+    STAGING_TEMPORAL_NAMESPACE,
+    TEST_DB_SUFFIX,
+)
 
 # ------------------------------------------------------------------ 語彙
 
@@ -58,6 +64,7 @@ BACKUP_COMPONENTS = ("db_dump", "minio", "temporal")
 DEFAULT_BACKUP_MAX_AGE_HOURS = 24.0
 
 CHECK_TARGET_SHA = "target_sha"
+CHECK_TARGET_ENV = "target_environment"
 CHECK_WORKTREE = "worktree_clean"
 CHECK_ANCESTRY = "ancestry"
 CHECK_CI = "ci"
@@ -78,6 +85,7 @@ CHECK_ALEMBIC_HEAD = "alembic_at_head"
 
 PRE_DEPLOY_REQUIRED: tuple[str, ...] = (
     CHECK_TARGET_SHA,
+    CHECK_TARGET_ENV,
     CHECK_WORKTREE,
     CHECK_ANCESTRY,
     CHECK_CI,
@@ -93,10 +101,24 @@ PRE_DEPLOY_REQUIRED: tuple[str, ...] = (
 )
 POST_DEPLOY_REQUIRED: tuple[str, ...] = (
     CHECK_TARGET_SHA,
+    CHECK_TARGET_ENV,
     CHECK_AT_TARGET,
     CHECK_POLLERS,
     CHECK_SCHEDULES_SAME,
     CHECK_ALEMBIC_HEAD,
+)
+
+#: 本番の DB / Temporal を読んで判定するチェック。対象の取り違えに気づけるよう detail に宛先を出す
+TARGET_BOUND_CHECKS = frozenset(
+    {
+        "alembic",
+        "running_workflows",
+        "provider_reservations",
+        "schedule_snapshot",
+        "worker_pollers",
+        "schedules_unchanged",
+        "alembic_at_head",
+    }
 )
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -121,6 +143,17 @@ class CheckRun:
     name: str
     status: str
     conclusion: str | None
+
+
+@dataclass(frozen=True)
+class TargetInfo:
+    """この preflight が読みに行く DB / Temporal の宛先（資格情報は持たない）。"""
+
+    db_host: str
+    db_name: str
+    temporal_address: str
+    temporal_namespace: str
+    environment: str
 
 
 @dataclass(frozen=True)
@@ -162,6 +195,7 @@ class Collectors(Protocol):
     def schedule_states(self) -> Mapping[str, Mapping[str, object]]: ...
     def required_queues(self) -> Sequence[str]: ...
     def queues_without_poller(self, queues: Sequence[str]) -> Sequence[str]: ...
+    def target_info(self) -> TargetInfo: ...
     def read_text(self, path: str) -> str | None: ...
 
 
@@ -220,7 +254,9 @@ def common_revision(revisions: Mapping[str, str | None]) -> str | None:
 
 def run_preflight(req: Request, c: Collectors, now: datetime) -> Report:
     sha_result = _check_target_sha(req.target_sha, c)
+    target_box: list[TargetInfo | None] = [None]
     results: list[CheckResult] = [sha_result]
+    results.append(_guard(CHECK_TARGET_ENV, lambda: _check_target_env(c, target_box)))
     sha_ok = sha_result.status is Status.PASS
 
     def dependent(name: str, fn: Callable[[], CheckResult]) -> None:
@@ -251,6 +287,12 @@ def run_preflight(req: Request, c: Collectors, now: datetime) -> Report:
         dependent(CHECK_APPROVAL, lambda: _check_approval(req, c))
         required = PRE_DEPLOY_REQUIRED
         mode = "pre-deploy"
+    if target_box[0] is not None:
+        label = f" [{target_label(target_box[0])}]"
+        results = [
+            replace(r, detail=r.detail + label) if r.name in TARGET_BOUND_CHECKS else r
+            for r in results
+        ]
     order = {name: i for i, name in enumerate(required)}
     results.sort(key=lambda r: order.get(r.name, len(order)))
     return Report(req.target_sha, mode, required, tuple(results), aggregate(results, required))
@@ -269,6 +311,33 @@ def _check_target_sha(sha: str, c: Collectors) -> CheckResult:
         return CheckResult(CHECK_TARGET_SHA, Status.PASS, "pinned and present locally")
 
     return _guard(CHECK_TARGET_SHA, exists)
+
+
+def target_label(info: TargetInfo) -> str:
+    """DB の host / 名前と Temporal namespace だけ（user・password・address は出さない）。"""
+    host = info.db_host.rsplit("@", 1)[-1]
+    return f"db={host}/{info.db_name} ns={info.temporal_namespace}"
+
+
+def _check_target_env(c: Collectors, box: list[TargetInfo | None]) -> CheckResult:
+    """staging / テスト用 DB を指したまま「本番の判定」をしない。"""
+    info = c.target_info()
+    box[0] = info
+    reasons: list[str] = []
+    if info.temporal_namespace == STAGING_TEMPORAL_NAMESPACE:
+        reasons.append(f"temporal namespace is {STAGING_TEMPORAL_NAMESPACE!r}")
+    if STAGING_ENVIRONMENT_MARK in info.environment.lower():
+        reasons.append("environment says staging")
+    if info.db_name.endswith(TEST_DB_SUFFIX) or info.db_name == STAGING_DB_NAME:
+        reasons.append(f"database {info.db_name!r} is a test/staging database")
+    label = target_label(info)
+    if reasons:
+        return CheckResult(
+            CHECK_TARGET_ENV,
+            Status.BLOCKED,
+            f"not a production target ({'; '.join(reasons)}) [{label}]",
+        )
+    return CheckResult(CHECK_TARGET_ENV, Status.PASS, f"reads {label}")
 
 
 def _check_worktree(sha: str, c: Collectors) -> CheckResult:

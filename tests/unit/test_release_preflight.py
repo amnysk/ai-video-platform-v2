@@ -84,6 +84,15 @@ class Fake:
     schedules: Any = field(default_factory=lambda: dict(SCHEDULES))
     queues: Any = field(default_factory=lambda: ["pipeline", "render"])
     missing_queues: Any = field(default_factory=list)
+    target: Any = field(
+        default_factory=lambda: rp.TargetInfo(
+            db_host="db.internal",
+            db_name="avp",
+            temporal_address="t:7233",
+            temporal_namespace="default",
+            environment="",
+        )
+    )
     texts: Any = field(
         default_factory=lambda: {
             "backup.json": _manifest(),
@@ -135,6 +144,9 @@ class Fake:
 
     def queues_without_poller(self, queues: Sequence[str]) -> list[str]:
         return self._get(self.missing_queues)
+
+    def target_info(self) -> rp.TargetInfo:
+        return self._get(self.target)
 
     def read_text(self, path: str) -> str | None:
         return self._get(self.texts).get(path)
@@ -600,3 +612,70 @@ def test_report_json_and_text_carry_status_and_overall() -> None:
     )
     text = rp.render_text(report)
     assert "BLOCKED" in text and "provider_reservations" in text
+
+
+# ------------------------------------------------------------ 対象の取り違え（staging / test DB）
+
+
+def _target(**kw: str) -> rp.TargetInfo:
+    base = {
+        "db_host": "db.internal",
+        "db_name": "avp",
+        "temporal_address": "t:7233",
+        "temporal_namespace": "default",
+        "environment": "",
+    }
+    base.update(kw)
+    return rp.TargetInfo(**base)
+
+
+def test_production_looking_target_passes_and_is_shown_redacted() -> None:
+    report = _run(Fake())
+    res = next(r for r in report.results if r.name == "target_environment")
+    assert res.status is rp.Status.PASS
+    assert "db.internal/avp" in res.detail and "default" in res.detail
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"temporal_namespace": "avp-staging"},
+        {"environment": "staging"},
+        {"environment": "Staging-2"},
+        {"db_name": "avp_test"},
+        {"db_name": "anything_test"},
+        {"db_name": "avp_staging"},
+    ],
+)
+def test_staging_or_test_targets_are_blocked(kw: dict[str, str]) -> None:
+    report = _run(Fake(target=_target(**kw)))
+    assert _status(report, "target_environment") is rp.Status.BLOCKED
+    assert report.overall is rp.Overall.BLOCKED
+
+
+def test_unreadable_target_is_unknown() -> None:
+    fake = Fake(target=rp.CollectorUnavailable("settings"))
+    report = _run(fake)
+    assert _status(report, "target_environment") is rp.Status.UNKNOWN
+    assert report.overall is rp.Overall.UNKNOWN
+
+
+def test_target_check_is_required_in_both_modes() -> None:
+    assert "target_environment" in rp.PRE_DEPLOY_REQUIRED
+    assert "target_environment" in rp.POST_DEPLOY_REQUIRED
+    assert _status(_post(_good_post()), "target_environment") is rp.Status.PASS
+    bad = _good_post()
+    bad.target = _target(temporal_namespace="avp-staging")
+    assert _status(_post(bad), "target_environment") is rp.Status.BLOCKED
+
+
+def test_target_bound_checks_show_the_redacted_target_in_their_detail() -> None:
+    report = _run(Fake())
+    for name in ("alembic", "provider_reservations", "running_workflows", "schedule_snapshot"):
+        detail = next(r.detail for r in report.results if r.name == name)
+        assert "[db=db.internal/avp ns=default]" in detail, name
+
+
+def test_target_label_never_contains_credentials() -> None:
+    label = rp.target_label(_target(db_host="h", temporal_address="u:p@t:7233"))
+    assert "@" not in label and "password" not in label.lower()

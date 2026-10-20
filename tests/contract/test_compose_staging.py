@@ -150,3 +150,17 @@ def test_container_names_and_networks_are_not_shared() -> None:
     for svc in STG["services"].values():
         assert svc.get("network_mode") != "host"
         assert "container_name" not in svc
+
+
+def test_staging_identifiers_match_the_shared_release_contract() -> None:
+    """preflight が「staging を指している」と判定する値が compose.staging.yaml と同じ（§8）。"""
+    from contracts.release import (
+        STAGING_DB_NAME,
+        STAGING_ENVIRONMENT_MARK,
+        STAGING_TEMPORAL_NAMESPACE,
+    )
+
+    envs = [_env(s) for s in STG["services"].values()]
+    assert any(e.get("TEMPORAL_NAMESPACE") == STAGING_TEMPORAL_NAMESPACE for e in envs)
+    assert any(e.get("AVP_ENVIRONMENT") == STAGING_ENVIRONMENT_MARK for e in envs)
+    assert any(f"/{STAGING_DB_NAME}" in e.get("DATABASE_URL", "") for e in envs)

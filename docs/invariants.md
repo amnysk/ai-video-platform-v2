@@ -429,6 +429,7 @@ UNKNOWN のチェックまたは欠けた必須チェックが1つでもあれ�
 印はコメント token のみ有効で、ADR が deploy 済み revision に在り Accepted で revision id に言及すること。
 静的に読めない書き方は UNKNOWN、本番に入った migration の書き換えは BLOCKED）。
 **この走査は best effort で、通過は安全の証明ではない。人のレビューは省けない**。
+判定の宛先（DB・Temporal namespace）が staging / `_test` DB なら BLOCKED（`target_environment`）。
 rollback は alembic downgrade に依存しない。staging（`compose.staging.yaml`）は本番と project 名・volume・
 bind path・host port・Temporal namespace を共有せず、FAL / YouTube の資格情報は空。
 **機械検査**: `tests/unit/test_release_preflight.py::test_unknown_never_maps_to_ready`
@@ -437,5 +438,7 @@ bind path・host port・Temporal namespace を共有せず、FAL / YouTube の�
 / `tests/unit/test_release_preflight.py::test_collector_exception_becomes_unknown`
 / `tests/unit/test_release_preflight.py::test_destructive_migration_is_blocked_without_marker`
 / `tests/unit/test_release_migration_scan.py`（bypass サンプル・UNKNOWN・in-place 編集・marker なりすまし）
+/ `tests/unit/test_release_preflight.py::test_staging_or_test_targets_are_blocked`
+/ `tests/unit/test_release_collectors_target.py`
 / `tests/architecture/test_release_preflight_read_only.py`
 / `tests/contract/test_compose_staging.py`

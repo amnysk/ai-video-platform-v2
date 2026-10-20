@@ -10,6 +10,7 @@ Schedule の変更・有料 API・YouTube は呼ばない
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -26,6 +27,7 @@ from domain.release_preflight import (
     CollectorUnavailable,
     HeadState,
     Relation,
+    TargetInfo,
 )
 from infrastructure.config import Settings
 from infrastructure.release.compose_queues import required_queues
@@ -53,6 +55,19 @@ def _ok(cmd: Sequence[str], cwd: pathlib.Path) -> str:
     return done.stdout
 
 
+def _dotenv_value(path: pathlib.Path, key: str) -> str | None:
+    """``.env`` から1つのキーを読む（Settings は未知のキーを捨てるので自前で読む）。"""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        name, sep, value = line.strip().partition("=")
+        if sep and name.strip() == key:
+            return value.strip().strip("\"'")
+    return None
+
+
 class RealCollectors:
     def __init__(self, repo: pathlib.Path, settings: Settings | None = None) -> None:
         self._repo = repo
@@ -61,8 +76,22 @@ class RealCollectors:
     @property
     def settings(self) -> Settings:
         if self._settings is None:
-            self._settings = Settings()
+            # cwd の .env ではなく repo root の .env（どこから実行しても同じ対象を読む）
+            self._settings = Settings(_env_file=self._repo / ".env")  # pyright: ignore[reportCallIssue]
         return self._settings
+
+    def target_info(self) -> TargetInfo:
+        url = make_url(self.settings.database_url)
+        environment = os.environ.get("AVP_ENVIRONMENT") or _dotenv_value(
+            self._repo / ".env", "AVP_ENVIRONMENT"
+        )
+        return TargetInfo(
+            db_host=url.host or "",
+            db_name=url.database or "",
+            temporal_address=self.settings.temporal_address,
+            temporal_namespace=self.settings.temporal_namespace,
+            environment=environment or "",
+        )
 
     # ---- git
     def commit_exists(self, sha: str) -> bool:
