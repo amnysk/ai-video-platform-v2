@@ -20,7 +20,7 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
 
 1. 変更が **expand-only** か自分で確認する（§6）。contract migration を含むなら、先に ADR を書き、
    migration に `# contract-migration: approved ADR-NNNN` を付け、所有者の承認を取る
-2. CI が green（`gh run list --commit <sha>`）
+2. CI が green（`gh run list --commit <sha>`）。preflight は check run `CI gate`（`contracts/ci.py`）が success かだけを見る
 3. Temporal の replay 証跡を作る（staging の手順 `docs/operations/staging.md` §5）。結果を
    `release/evidence/<sha>-replay.json`: `{"sha": "<sha>", "result": "pass", "at": "<ISO8601>"}`
 4. バックアップ manifest（DB dump / MinIO / Temporal 各 24h 以内）:
@@ -130,5 +130,4 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
 
 - バックアップを取る/検証する自動手順（manifest は手書き）
 - replay 証跡の自動生成（staging.md §5 は手順のみ）
-- CI の必須チェック名の固定（今は check-runs が全て success であること）
 - `docs/operations/daily-schedule-guard.md` §2 の表が `with-maintenance-pause.sh` の現挙動と食い違う（別 PR で直す）

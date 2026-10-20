@@ -70,4 +70,5 @@ UNKNOWN を READY として扱わない。staging は本番と何も共有しな
   AST と SQL の語の検出に依る（見逃しうる。人のレビューは必須）
 - 悪い: staging は本番と同一ハードウェア上で動かすと負荷を奪う。起動は所有者の判断。
   staging は fal / YouTube を呼べないので、provider を通る経路は fake でしか検証できない
-- 悪い: CI の check-runs は「全て success」しか見ない。必須チェック名の固定は未実装
+- CI 判定は集約 job `CI gate`（名前の唯一の宣言元は `contracts/ci.py`）の check run が success であることだけを見る。
+  gate が無ければ UNKNOWN、gate が失敗なら BLOCKED。同じ SHA に複数の gate run（push と PR）があれば、1つでも失敗なら BLOCKED

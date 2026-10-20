@@ -18,10 +18,12 @@ from typing import Any
 
 import yaml
 
+from contracts.ci import CI_GATE_JOB_NAME
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 CI = REPO / ".github" / "workflows" / "ci.yml"
 GATE_ID = "gate"
-GATE_NAME = "CI gate"
+GATE_NAME = CI_GATE_JOB_NAME  # 唯一の宣言元は contracts/ci.py（release preflight も同じ値を読む）
 
 #: required check になる job 名。ここを書き換える＝branch protection の設定変更なので、
 #: 名前を変えるときは docs/operations/branch-strategy.md の payload も同時に直すこと。

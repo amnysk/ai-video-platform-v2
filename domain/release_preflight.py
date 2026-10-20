@@ -20,6 +20,8 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
 
+from contracts.ci import CI_GATE_JOB_NAME
+
 # ------------------------------------------------------------------ 語彙
 
 
@@ -327,20 +329,22 @@ def _check_ancestry(req: Request, c: Collectors, deployed: str | None) -> CheckR
 
 
 _CI_BAD = {"failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"}
-_CI_GOOD = {"success", "skipped", "neutral"}
 
 
 def _check_ci(sha: str, c: Collectors) -> CheckResult:
-    runs = list(c.ci_check_runs(sha))
-    if not runs:
-        return _unknown(CHECK_CI, "no check runs reported for the SHA")
-    failed = [r.name for r in runs if r.status == "completed" and r.conclusion in _CI_BAD]
-    if failed:
-        return CheckResult(CHECK_CI, Status.BLOCKED, f"CI not green: {', '.join(sorted(failed))}")
-    pending = [r.name for r in runs if r.status != "completed" or r.conclusion not in _CI_GOOD]
-    if pending:
-        return _unknown(CHECK_CI, f"not finished or unrecognized: {', '.join(sorted(pending))}")
-    return CheckResult(CHECK_CI, Status.PASS, f"{len(runs)} check runs succeeded")
+    """集約 job（``CI_GATE_JOB_NAME``）が success であることだけを READY の根拠にする。
+
+    他の check run が全て success でも、gate が無ければ UNKNOWN（gate は全 job を ``needs`` に
+    持つので、gate 抜きの「全部 success」は job を足し忘れた/名前が違うだけかもしれない）。
+    """
+    gates = [r for r in c.ci_check_runs(sha) if r.name == CI_GATE_JOB_NAME]
+    if not gates:
+        return _unknown(CHECK_CI, f"no check run named {CI_GATE_JOB_NAME!r} for the SHA")
+    if any(r.status == "completed" and r.conclusion in _CI_BAD for r in gates):
+        return CheckResult(CHECK_CI, Status.BLOCKED, f"{CI_GATE_JOB_NAME!r} did not succeed")
+    if any(r.status != "completed" or r.conclusion != "success" for r in gates):
+        return _unknown(CHECK_CI, f"{CI_GATE_JOB_NAME!r} not finished or not a success")
+    return CheckResult(CHECK_CI, Status.PASS, f"{CI_GATE_JOB_NAME!r} succeeded")
 
 
 # ---- alembic / migration

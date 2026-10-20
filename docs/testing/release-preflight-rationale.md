@@ -13,7 +13,7 @@
 | `test_target_sha_*` / `test_dependent_checks_*` | `HEAD` / 短縮 SHA / ブランチ名で別の commit を deploy する |
 | `test_worktree_must_be_clean_and_at_the_sha` | build 対象が target と違う（deploy-workers.sh は HEAD から build する） |
 | `test_ancestry_*` / `test_non_ff_*` | 本番より古い／分岐した commit の誤 deploy（rollback は `--allow-non-ff` を明示） |
-| `test_ci_*` | 失敗・実行中・0 件を成功扱いする（失敗は実行中より優先） |
+| `test_ci_*` | gate 以外の「全部 success」・名前違い・失敗・実行中・0 件を成功扱いする（gate 失敗は BLOCKED、gate 不在は UNKNOWN） |
 | `test_container_*` | 稼働中の revision 混在（2026-09-20 の事故）と dirty/unknown ビルドの見逃し |
 | `test_alembic_prod_must_be_on_the_target_chain` | target が本番の知らない/先の revision に migrate しようとする |
 | `test_*migration*` | expand-only の見落とし。downgrade の drop を誤検出しない／既存ファイルを再判定しない／marker は存在する ADR 付きだけ |

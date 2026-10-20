@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from contracts.ci import CI_GATE_JOB_NAME
 from domain import release_preflight as rp
 
 SHA = "a" * 40
@@ -69,7 +70,7 @@ class Fake:
     head: Any = field(default_factory=lambda: rp.HeadState(head_sha=SHA, dirty=False))
     revisions: Any = field(default_factory=lambda: {"api": OLD, "script-worker": OLD})
     relation: Any = rp.Relation.FAST_FORWARD
-    ci: Any = field(default_factory=lambda: [rp.CheckRun("test", "completed", "success")])
+    ci: Any = field(default_factory=lambda: [rp.CheckRun(CI_GATE_JOB_NAME, "completed", "success")])
     alembic: Any = "0015"
     files: Any = field(
         default_factory=lambda: {
@@ -268,28 +269,43 @@ def test_ancestry_is_unknown_when_the_deployed_revision_is_not_determined() -> N
     assert _status(_run(mixed), "ancestry") is rp.Status.UNKNOWN
 
 
+def _gate(conclusion: str | None, status: str = "completed") -> rp.CheckRun:
+    return rp.CheckRun(CI_GATE_JOB_NAME, status, conclusion)
+
+
 @pytest.mark.parametrize(
     ("runs", "status"),
     [
-        (
-            [rp.CheckRun("t", "completed", "success"), rp.CheckRun("l", "completed", "skipped")],
-            "PASS",
-        ),
-        ([rp.CheckRun("t", "completed", "failure")], "BLOCKED"),
-        (
-            [rp.CheckRun("t", "completed", "success"), rp.CheckRun("u", "completed", "cancelled")],
-            "BLOCKED",
-        ),
-        ([rp.CheckRun("t", "in_progress", None)], "UNKNOWN"),
+        ([_gate("success")], "PASS"),
+        # gate が success なら、他の check run の有無・結果は gate が既に集約している
+        ([_gate("success"), rp.CheckRun("Ruff", "completed", "success")], "PASS"),
+        ([_gate("failure")], "BLOCKED"),
+        ([_gate("cancelled")], "BLOCKED"),
+        ([_gate("failure"), _gate("success")], "BLOCKED"),
+        ([_gate(None, "in_progress")], "UNKNOWN"),
+        ([_gate("skipped")], "UNKNOWN"),
+        ([_gate("neutral")], "UNKNOWN"),
         ([], "UNKNOWN"),
+        # gate が無い（名前違い・他の check だけが全て success）は READY の根拠にならない
+        ([rp.CheckRun("test", "completed", "success")], "UNKNOWN"),
+        ([rp.CheckRun("CI gate (copy)", "completed", "success")], "UNKNOWN"),
+        ([rp.CheckRun("ci gate", "completed", "success")], "UNKNOWN"),
+        # gate が無くて他が失敗していても、gate の失敗ではないので UNKNOWN（確認できていない）
+        ([rp.CheckRun("Ruff", "completed", "failure")], "UNKNOWN"),
     ],
 )
-def test_ci_must_be_all_success(runs: list[rp.CheckRun], status: str) -> None:
+def test_ci_requires_the_gate_check_run_to_have_succeeded(
+    runs: list[rp.CheckRun], status: str
+) -> None:
     assert _status(_run(Fake(ci=runs)), "ci").value == status
 
 
-def test_ci_failure_wins_over_still_running() -> None:
-    runs = [rp.CheckRun("a", "in_progress", None), rp.CheckRun("b", "completed", "failure")]
+def test_ci_gate_name_comes_from_the_shared_contract() -> None:
+    assert rp.CI_GATE_JOB_NAME == CI_GATE_JOB_NAME == "CI gate"
+
+
+def test_ci_gate_failure_blocks_even_if_other_runs_are_still_going() -> None:
+    runs = [rp.CheckRun("Ruff", "in_progress", None), _gate("failure")]
     assert _status(_run(Fake(ci=runs)), "ci") is rp.Status.BLOCKED
 
 
