@@ -60,7 +60,8 @@ def test_template_exists_and_all_roles_present() -> None:
 
 def test_budget_and_sharing_safe_defaults() -> None:
     p = _preset()
-    assert 0 < p["budget"]["channel_monthly_fal_cap_jpy"] <= p["budget"]["global_fal_monthly_cap_jpy"]
+    budget = p["budget"]
+    assert 0 < budget["channel_monthly_fal_cap_jpy"] <= budget["global_fal_monthly_cap_jpy"]
     assert p["budget"]["block_if_estimate_unavailable"] is True
     assert p["schedule"]["daily_limit"] == 1
     assert p["schedule"]["overlap"] == "skip"
