@@ -24,14 +24,14 @@ Status: **Proposed**（ADR-0050）。`compose.staging.yaml` は書いてある�
 
 ```bash
 # 起動（本番のスタックには触れない。-p/-f を必ず付ける）
-docker compose -f compose.staging.yaml build --build-arg GIT_REVISION=$(git rev-parse HEAD) api pipeline-worker
-docker compose -f compose.staging.yaml up -d
-docker compose -f compose.staging.yaml ps
+docker compose -p avp2-staging --env-file /dev/null -f compose.staging.yaml build --build-arg GIT_REVISION=$(git rev-parse HEAD) api pipeline-worker
+docker compose -p avp2-staging --env-file /dev/null -f compose.staging.yaml up -d
+docker compose -p avp2-staging --env-file /dev/null -f compose.staging.yaml ps
 # 停止（volume は残る）。消すときは -v（staging の volume だけ）
-docker compose -f compose.staging.yaml down
+docker compose -p avp2-staging --env-file /dev/null -f compose.staging.yaml down
 ```
 
-`docker compose` を `-f compose.staging.yaml` 無しで実行しない（本番を触る）。ホストの負荷が本番と競合するので、
+`docker compose` を `-p avp2-staging --env-file /dev/null -f compose.staging.yaml` 無しで実行しない（本番を触る。`-p` は project 名、`--env-file /dev/null` は cwd の `.env`（本番の値・`COMPOSE_PROJECT_NAME`）の流入を防ぐ）。ホストの負荷が本番と競合するので、
 render 中・Daily の直前は避ける。
 
 ## 3. 本番 dump の取り込み（migration 予行）
@@ -42,7 +42,7 @@ render 中・Daily の直前は避ける。
 # 取得（本番へは読み取りだけ。--no-owner で所有者依存を外す）。取得は所有者の承認後
 docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" -Fc --no-owner "$POSTGRES_DB" > /secure/path/avp-<date>.dump
 # staging へ復元（staging の postgres コンテナ）
-docker compose -f compose.staging.yaml exec -T postgres pg_restore -U avp_staging -d avp_staging --clean --if-exists --no-owner < /secure/path/avp-<date>.dump
+docker compose -p avp2-staging --env-file /dev/null -f compose.staging.yaml exec -T postgres pg_restore -U avp_staging -d avp_staging --clean --if-exists --no-owner < /secure/path/avp-<date>.dump
 ```
 
 dump には個人/運用データが入る。リポジトリ・ログ・共有領域に置かない（0600・repo 外）。
@@ -51,11 +51,11 @@ secret（API キー・OAuth token）は DB に無いが、`.env` の値を stagi
 ## 4. 検証手順
 
 1. **migration 予行**: §3 で復元した状態に、target SHA の `alembic upgrade head` を実行する
-   （`docker compose -f compose.staging.yaml run --rm migrate`）。所要時間・ロック・失敗を記録する。
+   （`docker compose -p avp2-staging --env-file /dev/null -f compose.staging.yaml run --rm migrate`）。所要時間・ロック・失敗を記録する。
    続けて `python scripts/release-preflight.py` の `alembic` / `migration_compat` と同じ判定を手で再確認する
 2. **API**: `curl -s http://127.0.0.1:18000/healthz` 等（実エンドポイントは `apps/api`）と、Episode 一覧が復元データで返る
 3. **UI**（ある場合）: UI の向き先を `http://127.0.0.1:18000` にして読み取り操作のみ確認。投稿・生成の操作はしない
-4. **worker 再起動**: `docker compose -f compose.staging.yaml restart pipeline-worker production-worker` 後、
+4. **worker 再起動**: `docker compose -p avp2-staging --env-file /dev/null -f compose.staging.yaml restart pipeline-worker production-worker` 後、
    healthcheck が healthy に戻り、`TEMPORAL_ADDRESS=127.0.0.1:17233 TEMPORAL_NAMESPACE=avp-staging` で
    `python -m infrastructure.temporal.poller_check --queue pipeline --queue production` が 0
 5. **版**: staging のコンテナの `org.opencontainers.image.revision` ラベルが全て target と一致

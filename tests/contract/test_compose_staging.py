@@ -164,3 +164,24 @@ def test_staging_identifiers_match_the_shared_release_contract() -> None:
     assert any(e.get("TEMPORAL_NAMESPACE") == STAGING_TEMPORAL_NAMESPACE for e in envs)
     assert any(e.get("AVP_ENVIRONMENT") == STAGING_ENVIRONMENT_MARK for e in envs)
     assert any(f"/{STAGING_DB_NAME}" in e.get("DATABASE_URL", "") for e in envs)
+
+
+STAGING_DOC = (ROOT / "docs" / "operations" / "staging.md").read_text(encoding="utf-8")
+#: 手順書のコマンドが必ず付ける前置き。-p は project 名の取り違え、--env-file /dev/null は
+#: cwd の .env（本番の値・COMPOSE_PROJECT_NAME / COMPOSE_FILE）が staging に流れ込むのを防ぐ
+STAGING_COMPOSE_PREFIX = (
+    "docker compose -p avp2-staging --env-file /dev/null -f compose.staging.yaml"
+)
+
+
+def test_staging_doc_commands_pin_project_env_file_and_compose_file() -> None:
+    assert STG["name"] == "avp2-staging"
+    lines = [ln for ln in STAGING_DOC.splitlines() if re.search(r"docker compose [^`\s]", ln)]
+    staging = [ln for ln in lines if "compose.staging.yaml" in ln]
+    assert len(staging) >= 5, "検査が空振りしている"
+    for ln in staging:
+        assert STAGING_COMPOSE_PREFIX in ln, ln
+    # 例外は本番 DB の読み取り（pg_dump）だけ。それ以外の素の `docker compose` は本番を触る
+    bare = [ln for ln in lines if "compose.staging.yaml" not in ln and "-f compose" not in ln]
+    for ln in bare:
+        assert "pg_dump" in ln or "無しで実行しない" in ln, ln
