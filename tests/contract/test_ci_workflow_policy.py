@@ -152,3 +152,17 @@ def test_every_teed_pytest_log_is_checked_for_passed_tests() -> None:
             log = run.split("| tee", 1)[1].split()[0]
             later = "\n".join(str(s.get("run", "")) for s in steps[steps.index(step) + 1 :])
             assert log in later and "[0-9]+ passed" in later, f"{jid}: {log} に passed の検査が無い"
+
+
+def test_secrets_context_is_not_used_in_if_conditions() -> None:
+    # `if:` では secrets コンテキストが使えない。使うと workflow file issue になり
+    # 全 job が 0 秒で失敗する（job の env 経由で参照する）
+    import re
+
+    text = CI.read_text(encoding="utf-8")
+    bad = [
+        line.strip()
+        for line in text.splitlines()
+        if re.match(r"\s*(-\s+)?if:", line) and "secrets." in line
+    ]
+    assert not bad, bad
