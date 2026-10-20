@@ -29,9 +29,17 @@ UNKNOWN を READY として扱わない。staging は本番と何も共有しな
 2. 各チェックは PASS / BLOCKED / UNKNOWN。総合は BLOCKED > UNKNOWN > READY の優先で、
    **必須チェックが1つでも欠ければ UNKNOWN**。READY は必須が全て PASS のときだけ。
    終了コード READY=0 / BLOCKED=2 / UNKNOWN=3
-3. migration は expand-only を既定とする。新しい migration に `drop_column` / `drop_table` / rename /
-   `server_default` の無い `nullable=False` の追加があれば BLOCKED。`# contract-migration: approved ADR-NNNN`
-   の印が（その ADR が存在する形で）あるときだけ通る
+3. migration は expand-only を既定とする。新しい migration の `upgrade()`（と、そこから同じファイル内で
+   呼ばれる関数）に `drop*` 呼び出し・rename・列の型変更・`server_default`（None でない値）の無い NOT NULL
+   （`nullable=False` / `primary_key=True`）・破壊的 SQL（`DROP` / `DELETE FROM` / `RENAME` / `TRUNCATE` /
+   `SET NOT NULL` / 型変更 / DEFAULT 無しの `ADD ... NOT NULL`）があれば BLOCKED。静的に読めない書き方
+   （非リテラルの `op.execute`、`nullable=<変数>`、`**kwargs`、列を変数で渡す `add_column`）は UNKNOWN。
+   本番に入った migration ファイルの書き換え・削除は BLOCKED（内容 hash 比較）。
+   `# contract-migration: approved ADR-NNNN` は **コメント token** にあり、その ADR が **deploy 済み revision**
+   に存在し、`## Status` が Accepted で、その migration の revision id に言及しているときだけ通る
+   （文字列・docstring 内の同じ文面、target にだけ在る ADR、Proposed の ADR では通らない）。
+   **best effort**: 静的走査は抜けうる。通過は安全の証明ではなく、人のレビューは省けない。
+   CHECK 語彙の拡張（`drop_constraint` + 再作成）も走査上は contract なので、印が要る
 4. rollback は「前の SHA のイメージで再 deploy」。alembic downgrade に依存しない。contract migration が
    既に流れた後は、バックアップからの復旧＋所有者の判断（自動化しない）
 5. `--verify-post-deploy` は deploy 後の読み取り専用検査（全コンテナ revision == target、必須 task queue に
@@ -58,8 +66,8 @@ UNKNOWN を READY として扱わない。staging は本番と何も共有しな
 - 良い: 「出してよいか」が再現可能になり、確認できなかった項目が UNKNOWN として見える。
   staging で migration を本番の dump 復元コピーに対して予行できる
 - 悪い（負債）: 必須の証跡（バックアップ manifest・replay 証跡・承認ファイル）は人が作る。
-  作り忘れると UNKNOWN で止まる（意図した挙動）。migration の静的走査は文字列ベースで、
-  `op.execute` の生 SQL は `DROP TABLE/COLUMN`・`RENAME`・`TRUNCATE`・`SET NOT NULL` の語だけを検出する（それ以外の破壊的 SQL は見逃しうる）
+  作り忘れると UNKNOWN で止まる（意図した挙動）。migration の静的走査は best effort で、
+  AST と SQL の語の検出に依る（見逃しうる。人のレビューは必須）
 - 悪い: staging は本番と同一ハードウェア上で動かすと負荷を奪う。起動は所有者の判断。
   staging は fal / YouTube を呼べないので、provider を通る経路は fake でしか検証できない
 - 悪い: CI の check-runs は「全て success」しか見ない。必須チェック名の固定は未実装

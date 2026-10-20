@@ -99,9 +99,13 @@ class RealCollectors:
             if n.endswith(".py")
         }
 
-    def adr_files(self, rev: str) -> Sequence[str]:
+    def adr_text(self, rev: str, number: str) -> str | None:
+        """``rev`` の ADR ``<number>-*.md`` の本文。無ければ None（deploy 済み revision を渡す）。"""
         names = _ok(["git", "ls-tree", "--name-only", rev, ADR_DIR], self._repo).split()
-        return [pathlib.PurePosixPath(n).name for n in names]
+        for n in names:
+            if pathlib.PurePosixPath(n).name.startswith(f"{number}-") and n.endswith(".md"):
+                return _ok(["git", "show", f"{rev}:{n}"], self._repo)
+        return None
 
     # ---- docker（inspect / ps だけ）
     def container_revisions(self) -> Mapping[str, str | None]:

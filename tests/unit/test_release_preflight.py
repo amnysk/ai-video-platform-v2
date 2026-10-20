@@ -37,6 +37,10 @@ def downgrade() -> None:
 BASE_MIGRATION = 'revision = "0015"\ndown_revision = "0014"\n\n\ndef upgrade() -> None:\n    pass\n'
 ROOT_MIGRATION = 'revision = "0014"\ndown_revision = None\n\n\ndef upgrade() -> None:\n    pass\n'
 
+ACCEPTED_ADR = (
+    "# ADR-0050: contract\n\n## Status\n\nAccepted (2026-10-20)\n\nDrops t.x in revision 0016.\n"
+)
+
 SCHEDULES = {
     "avp-daily-episode": {"exists": True, "paused": False, "maintenance": False},
     "avp-daily-watchdog": {"exists": True, "paused": False, "maintenance": False},
@@ -73,7 +77,7 @@ class Fake:
             SHA: {"0014.py": ROOT_MIGRATION, "0015.py": BASE_MIGRATION, "0016.py": SAFE_MIGRATION},
         }
     )
-    adrs: Any = field(default_factory=lambda: ["0050-release-preflight-and-staging.md"])
+    adr_texts: Any = field(default_factory=lambda: {(OLD, "0050"): ACCEPTED_ADR})
     running: Any = 2
     pending: Any = 0
     schedules: Any = field(default_factory=lambda: dict(SCHEDULES))
@@ -113,8 +117,8 @@ class Fake:
     def migration_files(self, rev: str) -> dict[str, str]:
         return self._get(self.files)[rev]
 
-    def adr_files(self, rev: str) -> list[str]:
-        return self._get(self.adrs)
+    def adr_text(self, rev: str, number: str) -> str | None:
+        return self._get(self.adr_texts).get((rev, number))
 
     def running_workflow_count(self) -> int:
         return self._get(self.running)
@@ -380,7 +384,7 @@ def test_destructive_words_in_comments_and_downgrade_are_ignored() -> None:
     assert _status(_run(_with_new_migration(text)), "migration_compat") is rp.Status.PASS
 
 
-def test_contract_marker_with_an_existing_adr_allows_it() -> None:
+def test_contract_marker_with_an_accepted_deployed_adr_allows_it() -> None:
     marked = _upgrade('op.drop_column("t", "x")') + "\n# contract-migration: approved ADR-0050\n"
     assert _status(_run(_with_new_migration(marked)), "migration_compat") is rp.Status.PASS
 

@@ -101,8 +101,11 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
   `server_default` 付きの NOT NULL、CHECK 語彙の**拡張**
 - **contract**（`drop_column` / `drop_table` / rename / `server_default` 無しの NOT NULL / 破壊的 SQL）は
   **別のリリース**で、旧コードが完全に消えた後に出す。preflight は `upgrade()` を静的に走査し、
-  `# contract-migration: approved ADR-NNNN`（その ADR ファイルが target に存在すること）が無ければ BLOCKED
-- 走査は文字列/AST ベースで限界がある（ADR-0050 Consequences）。最終判断は人のレビュー
+  `# contract-migration: approved ADR-NNNN` が無ければ BLOCKED。印が有効なのは、コメントとして書かれ、
+  ADR が**deploy 済みの revision に在り**（その ADR を先に別 PR で入れて deploy する）、`## Status` が Accepted で、
+  migration の revision id に言及しているとき。読めない書き方は UNKNOWN、本番に入った migration の書き換えは BLOCKED
+- CHECK 語彙の拡張（`drop_constraint` + 再作成）も走査上は contract なので印が要る
+- 走査は **best effort**（AST + SQL の語）。通過は安全の証明ではなく、最終判断は人のレビュー（ADR-0050）
 
 ## 7. リリース記録テンプレート（`docs/releases/<tag>.md`、deploy 後に別ブランチでコミット。`release/` は ignore なのでここに置く）
 

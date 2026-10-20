@@ -9,8 +9,11 @@ I/O は一切しない。外界は ``Collectors`` Protocol として注入され
 from __future__ import annotations
 
 import ast
+import hashlib
+import io
 import json
 import re
+import tokenize
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -151,7 +154,7 @@ class Collectors(Protocol):
     def ci_check_runs(self, sha: str) -> Sequence[CheckRun]: ...
     def db_alembic_version(self) -> str | None: ...
     def migration_files(self, rev: str) -> Mapping[str, str]: ...
-    def adr_files(self, rev: str) -> Sequence[str]: ...
+    def adr_text(self, rev: str, number: str) -> str | None: ...
     def running_workflow_count(self) -> int: ...
     def pending_reservation_count(self) -> int: ...
     def schedule_states(self) -> Mapping[str, Mapping[str, object]]: ...
@@ -394,63 +397,187 @@ def _check_alembic(sha: str, c: Collectors) -> CheckResult:
     )
 
 
-_CONTRACT_MARKER = re.compile(
-    r"^\s*#\s*contract-migration:\s*approved\s+ADR-(\d{4})\b", re.MULTILINE
-)
-_DESTRUCTIVE_CALLS = {"drop_column", "drop_table", "rename_table"}
-_DESTRUCTIVE_SQL = re.compile(
-    r"\b(DROP\s+(TABLE|COLUMN)|RENAME|TRUNCATE)\b|ALTER\s+COLUMN\s+\S+\s+SET\s+NOT\s+NULL",
+_MARKER = re.compile(r"^#\s*contract-migration:\s*approved\s+ADR-(\d{4})\b")
+_DESTRUCTIVE_CALLS = {"rename_table"}
+#: 呼び出し名が drop で始まるものは全て破壊的（drop_column / drop_table / drop_index /
+#: drop_constraint / Enum.drop ...）
+_SQL_DESTRUCTIVE = re.compile(
+    r"\bDROP\b|\bRENAME\b|\bTRUNCATE\b|\bDELETE\s+FROM\b|SET\s+NOT\s+NULL"
+    r"|ALTER\s+COLUMN\s+\S+\s+(SET\s+DATA\s+)?TYPE\b",
     re.IGNORECASE,
 )
+_SQL_ADD_NOT_NULL = re.compile(r"\bADD\b[^;]*\bNOT\s+NULL\b", re.IGNORECASE)
+_SQL_DEFAULT = re.compile(r"\bDEFAULT\b", re.IGNORECASE)
+_OPAQUE_CALLS = {"eval", "exec", "__import__", "getattr"}
+_EXECUTE_CALLS = {"execute", "exec_driver_sql"}
 
 
-def _kwargs_has(node: ast.Call, key: str) -> bool:
-    return any(
-        kw.arg == key for sub in ast.walk(node) if isinstance(sub, ast.Call) for kw in sub.keywords
+@dataclass(frozen=True)
+class Finding:
+    """kind: ``destructive``（expand-only でない）/ ``unscannable``（静的に判定できない）。"""
+
+    kind: str
+    text: str
+
+
+def _call_name(node: ast.Call) -> str:
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return getattr(node.func, "id", "")
+
+
+def _sql_findings(value: str, line: int) -> list[Finding]:
+    out: list[Finding] = []
+    if _SQL_DESTRUCTIVE.search(value):
+        out.append(Finding("destructive", f"destructive SQL (line {line})"))
+    for stmt in value.split(";"):
+        if _SQL_ADD_NOT_NULL.search(stmt) and not _SQL_DEFAULT.search(stmt):
+            out.append(Finding("destructive", f"ADD ... NOT NULL without DEFAULT (line {line})"))
+    return out
+
+
+def _literal_sql(arg: ast.expr) -> str | None:
+    """``"..."`` または ``text("...")`` だけが静的に読める。"""
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        return arg.value
+    if (
+        isinstance(arg, ast.Call)
+        and _call_name(arg) == "text"
+        and arg.args
+        and isinstance(arg.args[0], ast.Constant)
+        and isinstance(arg.args[0].value, str)
+    ):
+        return arg.args[0].value
+    return None
+
+
+def _nullability_findings(call: ast.Call, what: str) -> list[Finding]:
+    """NOT NULL を server_default（値が None でないもの）無しで足していないか。"""
+    if any(kw.arg is None for kw in call.keywords):
+        return [Finding("unscannable", f"{what}: **kwargs (line {call.lineno})")]
+    kws = {kw.arg: kw.value for kw in call.keywords}
+    not_null = False
+    out: list[Finding] = []
+    for key, flag in (("nullable", False), ("primary_key", True)):
+        if key not in kws:
+            continue
+        value = kws[key]
+        if not isinstance(value, ast.Constant):
+            out.append(
+                Finding("unscannable", f"{what}: {key} is not a literal (line {call.lineno})")
+            )
+        elif value.value is flag:
+            not_null = True
+    default = kws.get("server_default")
+    has_default = default is not None and not (
+        isinstance(default, ast.Constant) and default.value is None
     )
+    if not_null and not has_default:
+        out.append(
+            Finding("destructive", f"{what}: NOT NULL without server_default (line {call.lineno})")
+        )
+    return out
 
 
-def _not_null_without_default(node: ast.Call) -> bool:
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Call):
-            for kw in sub.keywords:
-                if (
-                    kw.arg == "nullable"
-                    and isinstance(kw.value, ast.Constant)
-                    and kw.value.value is False
-                ):
-                    return not _kwargs_has(node, "server_default")
-    return False
+def _call_findings(node: ast.Call) -> list[Finding]:
+    name = _call_name(node)
+    line = node.lineno
+    if name.startswith("drop") or name in _DESTRUCTIVE_CALLS:
+        return [Finding("destructive", f"{name} (line {line})")]
+    if name in _OPAQUE_CALLS:
+        return [Finding("unscannable", f"{name}() (line {line})")]
+    if name == "alter_column":
+        keys = {kw.arg for kw in node.keywords}
+        if "new_column_name" in keys:
+            return [Finding("destructive", f"rename column (line {line})")]
+        if "type_" in keys:
+            return [Finding("destructive", f"column type change (line {line})")]
+        return _nullability_findings(node, "alter_column")
+    if name == "add_column":
+        column = node.args[1] if len(node.args) > 1 else None
+        if column is None:
+            column = next((kw.value for kw in node.keywords if kw.arg == "column"), None)
+        if not isinstance(column, ast.Call):
+            return [Finding("unscannable", f"add_column with a non-literal column (line {line})")]
+        return _nullability_findings(column, "add_column")
+    if name in _EXECUTE_CALLS and (not node.args or _literal_sql(node.args[0]) is None):
+        return [Finding("unscannable", f"{name} with a non-literal statement (line {line})")]
+    return []
 
 
-def destructive_findings(source: str) -> list[str]:
-    """``upgrade()`` の中だけを見る（downgrade の drop は expand migration でも普通にある）。"""
+def scan_migration(source: str) -> list[Finding]:
+    """``upgrade()`` と、そこから（同じファイル内で）呼ばれる関数だけを見る。
+
+    downgrade の drop は expand migration でも普通にあるので見ない。**best effort**:
+    静的な走査は抜けうる。通過は「安全の証明」ではなく、人のレビューは省けない。
+    """
     tree = ast.parse(source)
-    findings: list[str] = []
-    for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "upgrade"):
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    if "upgrade" not in funcs:
+        return [Finding("unscannable", "no upgrade() found")]
+    reachable: list[ast.FunctionDef] = []
+    seen: set[str] = set()
+    queue = ["upgrade"]
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        reachable.append(funcs[name])
+        for node in ast.walk(funcs[name]):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in funcs
+            ):
+                queue.append(node.func.id)
+    findings: list[Finding] = []
+    for fn in reachable:
+        docstring: ast.AST | None = None
+        first = fn.body[0] if fn.body else None
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+            docstring = first.value
         for node in ast.walk(fn):
             if isinstance(node, ast.Call):
-                name = (
-                    node.func.attr
-                    if isinstance(node.func, ast.Attribute)
-                    else getattr(node.func, "id", "")
-                )
-                if name in _DESTRUCTIVE_CALLS:
-                    findings.append(f"{name} (line {node.lineno})")
-                elif name == "alter_column":
-                    if _kwargs_has(node, "new_column_name"):
-                        findings.append(f"rename column (line {node.lineno})")
-                    elif _not_null_without_default(node):
-                        findings.append(f"SET NOT NULL without server_default (line {node.lineno})")
-                elif name == "add_column" and _not_null_without_default(node):
-                    findings.append(f"NOT NULL column without server_default (line {node.lineno})")
+                findings += _call_findings(node)
             elif (
                 isinstance(node, ast.Constant)
                 and isinstance(node.value, str)
-                and _DESTRUCTIVE_SQL.search(node.value)
+                and node is not docstring
             ):
-                findings.append(f"destructive SQL (line {node.lineno})")
+                findings += _sql_findings(node.value, node.lineno)
     return findings
+
+
+def contract_marker_numbers(source: str) -> list[str]:
+    """``# contract-migration: approved ADR-NNNN`` を **コメント token** からだけ拾う。
+
+    文字列・docstring の中に書かれた同じ文面は数えない。
+    """
+    numbers: list[str] = []
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.COMMENT:
+            match = _MARKER.match(tok.string)
+            if match:
+                numbers.append(match.group(1))
+    return numbers
+
+
+_ADR_STATUS = re.compile(r"^##\s+Status\s*\n+\s*([^\n]+)", re.MULTILINE)
+
+
+def adr_approves_migration(adr: str | None, revision: str | None) -> bool:
+    """ADR が ``## Status`` Accepted で、その migration の revision id に言及している。"""
+    if adr is None or revision is None:
+        return False
+    status = _ADR_STATUS.search(adr)
+    if status is None or not status.group(1).strip().startswith("Accepted"):
+        return False
+    return re.search(rf"(?<!\w){re.escape(revision)}(?!\w)", adr) is not None
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _check_migration(sha: str, c: Collectors, deployed: str | None) -> CheckResult:
@@ -458,30 +585,54 @@ def _check_migration(sha: str, c: Collectors, deployed: str | None) -> CheckResu
         return _unknown(CHECK_MIGRATION, "deployed revision is not determined")
     base = c.migration_files(deployed)
     target = c.migration_files(sha)
+    # 本番に入った migration は不変。書き換え・削除は、過去の revision に破壊的変更を忍ばせる
+    edited = sorted(n for n in base if n in target and _sha256(base[n]) != _sha256(target[n]))
+    removed = sorted(n for n in base if n not in target)
+    if edited or removed:
+        parts = [f"edited in place: {', '.join(edited)}"] if edited else []
+        parts += [f"removed: {', '.join(removed)}"] if removed else []
+        return CheckResult(
+            CHECK_MIGRATION,
+            Status.BLOCKED,
+            "deployed migrations changed (" + "; ".join(parts) + ")",
+        )
     new = {name: text for name, text in target.items() if name not in base}
     if not new:
         return CheckResult(CHECK_MIGRATION, Status.PASS, "no new migration")
     blocked: list[str] = []
+    unknown: list[str] = []
     for name, text in sorted(new.items()):
         try:
-            found = destructive_findings(text)
-        except SyntaxError:
+            found = scan_migration(text)
+            markers = contract_marker_numbers(text)
+        except (SyntaxError, tokenize.TokenError):
             return _unknown(CHECK_MIGRATION, f"{name} cannot be parsed")
         if not found:
             continue
-        marker = _CONTRACT_MARKER.search(text)
-        if marker is not None and any(
-            a.startswith(marker.group(1) + "-") for a in c.adr_files(sha)
-        ):
+        rev = _REV.search(text)
+        revision = rev.group(1) if rev else None
+        if any(adr_approves_migration(c.adr_text(deployed, n), revision) for n in markers):
             continue
-        blocked.append(f"{name}: {'; '.join(found)}")
+        destructive = [f.text for f in found if f.kind == "destructive"]
+        if destructive:
+            blocked.append(f"{name}: {'; '.join(destructive)}")
+        else:
+            unknown.append(f"{name}: {'; '.join(f.text for f in found)}")
     if blocked:
         return CheckResult(
             CHECK_MIGRATION,
             Status.BLOCKED,
-            "contract migration without an approved ADR marker: " + " | ".join(blocked),
+            "contract migration without a valid approved-ADR marker "
+            "(ADR deployed, Accepted, names the revision): " + " | ".join(blocked),
         )
-    return CheckResult(CHECK_MIGRATION, Status.PASS, f"{len(new)} new migration(s), expand-only")
+    if unknown:
+        return _unknown(CHECK_MIGRATION, "cannot be judged statically: " + " | ".join(unknown))
+    return CheckResult(
+        CHECK_MIGRATION,
+        Status.PASS,
+        f"{len(new)} new migration(s), no contract change found "
+        "(best effort; human review required)",
+    )
 
 
 # ---- 実行中・予約・Schedule

@@ -425,7 +425,10 @@ Replayer で replay。非決定にならず1件も発行しない）
 UNKNOWN のチェックまたは欠けた必須チェックが1つでもあれば UNKNOWN、必須が全て PASS のときだけ READY。
 終了コードは READY=0 / BLOCKED=2 / UNKNOWN=3。collector の例外・不在は UNKNOWN になり、READY にならない。
 判定は読み取りだけを行い（書き込み・再起動・Schedule 変更・有料 API・YouTube を呼ばない）、
-新しい migration は expand-only（破壊的変更は `# contract-migration: approved ADR-NNNN` の印が無ければ BLOCKED）。
+新しい migration は expand-only（破壊的変更は `# contract-migration: approved ADR-NNNN` の印が無ければ BLOCKED。
+印はコメント token のみ有効で、ADR が deploy 済み revision に在り Accepted で revision id に言及すること。
+静的に読めない書き方は UNKNOWN、本番に入った migration の書き換えは BLOCKED）。
+**この走査は best effort で、通過は安全の証明ではない。人のレビューは省けない**。
 rollback は alembic downgrade に依存しない。staging（`compose.staging.yaml`）は本番と project 名・volume・
 bind path・host port・Temporal namespace を共有せず、FAL / YouTube の資格情報は空。
 **機械検査**: `tests/unit/test_release_preflight.py::test_unknown_never_maps_to_ready`
@@ -433,5 +436,6 @@ bind path・host port・Temporal namespace を共有せず、FAL / YouTube の�
 / `tests/unit/test_release_preflight.py::test_exit_codes`
 / `tests/unit/test_release_preflight.py::test_collector_exception_becomes_unknown`
 / `tests/unit/test_release_preflight.py::test_destructive_migration_is_blocked_without_marker`
+/ `tests/unit/test_release_migration_scan.py`（bypass サンプル・UNKNOWN・in-place 編集・marker なりすまし）
 / `tests/architecture/test_release_preflight_read_only.py`
 / `tests/contract/test_compose_staging.py`

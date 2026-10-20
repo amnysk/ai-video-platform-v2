@@ -24,3 +24,8 @@
 | `test_release_preflight_read_only.py` | collector に書き込み系の docker/git/SQL/Temporal 呼び出しが混ざる（許可リスト） |
 | `test_release_queues.py` | queue 一覧を別に書き直して compose とずれる（AGENTS.md §8） |
 | `test_compose_staging.py` | staging が本番の project・volume・bind path・port・namespace・資格情報を共有する |
+| `test_release_migration_scan.py` の bypass / UNKNOWN サンプル | `DROP INDEX/CONSTRAINT/TYPE`・`DELETE FROM`・`drop_constraint`・型変更・`server_default=None`・helper 経由・非リテラル SQL・`primary_key=True` が expand-only として素通りする |
+| `test_migration_edited_in_place_is_blocked` | 本番に入った過去の migration の中身を書き換えて破壊的変更を忍ばせる（新規ファイルしか見ない走査の穴） |
+| `test_marker_*` | 文字列/docstring 内の印、target にだけある ADR、Proposed の ADR、別 revision の ADR による承認のなりすまし |
+| `test_every_tee_step_runs_under_pipefail` / `test_every_teed_pytest_log_is_checked_*` | `pytest \| tee` が pytest の失敗を隠して CI が緑になる／0 件で緑になる |
+| `test_release_evidence_ignored.py` | `release/` の証跡が未追跡ファイルとして `deploy-workers.sh` の dirty 判定を落とす |

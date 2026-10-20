@@ -116,7 +116,7 @@ def _steps_with_job() -> list[tuple[str, dict[str, Any]]]:
 
 
 def _runs_under_pipefail(job: dict[str, Any], step: dict[str, Any]) -> bool:
-    """GitHub の `shell: bash` は `bash -eo pipefail`。未指定の既定は `bash -e`（pipefail 無し）。"""
+    """`shell: bash` は `bash -eo pipefail`。未指定の既定は `bash -e`（pipefail 無し）。"""
     shell = (
         step.get("shell")
         or job.get("defaults", {}).get("run", {}).get("shell")
