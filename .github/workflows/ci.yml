@@ -1,9 +1,17 @@
 name: CI
 
+# ブランチ戦略は docs/operations/branch-strategy.md / ADR-0049。
+# pull_request は base を絞らない（積み上げ PR の base は integration ブランチ）。
+# push は production(main)・integration(develop)・release/hotfix だけ。作業ブランチは PR で見る。
 on:
   push:
-    branches: [main]
+    branches: [main, develop, "release/**", "hotfix/**"]
   pull_request:
+  workflow_dispatch:
+
+# 最小権限。job 側で write を足さない（tests/contract/test_ci_workflow_policy.py が検査）
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -212,3 +220,104 @@ jobs:
           import workers.upload.run_worker, workers.pipeline.run_worker
           print('worker imports OK')
           "
+
+  alembic:
+    name: Alembic consistency
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: avp
+          POSTGRES_PASSWORD: change-me
+          POSTGRES_DB: avp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U avp -d avp_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - run: pip install -e ".[dev]"
+      - name: Single head (parallel branches must not fork the migration history)
+        run: |
+          pytest tests/contract/test_migration_single_head.py -q
+          test "$(alembic heads | grep -c '(head)')" = "1"
+      - name: Models match migrations (SQLite upgrade head vs ORM metadata)
+        run: pytest tests/contract/test_migration_matches_models.py tests/contract/test_migration_logging.py tests/contract/test_migration_0015_research.py tests/contract/test_migration_frozen_vocabulary.py -q
+      - name: upgrade head / downgrade on a fresh PostgreSQL database
+        # TEST_DATABASE_URL は *_test のみ許される（ADR-0021）。テストが使い捨てDBを作って
+        # upgrade head -> 各 CHECK 制約 -> downgrade を検査する。skip は成功と数えない
+        run: pytest tests/integration/test_migration_against_postgres.py -q -m integration -rs | tee pytest-alembic.log
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp_test
+          DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
+      - name: Fail if the PostgreSQL migration tests were skipped
+        run: "! grep -E '[0-9]+ skipped' pytest-alembic.log"
+      - name: alembic upgrade head via the CLI on an empty database
+        run: |
+          PGPASSWORD=change-me psql -h localhost -U avp -d avp_test -c 'CREATE DATABASE avp_cli_check'
+          DATABASE_URL=postgresql+psycopg://avp:change-me@localhost:5432/avp_cli_check alembic upgrade head
+
+  temporal-replay:
+    name: Temporal replay
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - run: pip install -e ".[dev]"
+      - name: Replay recorded histories against the current workflow code (INV-40)
+        # 本番で走行中の workflow は、デプロイ後に履歴を replay される。非決定になる変更
+        # （Activity の順序・数の変更、patched 無しの分岐追加）はここで落ちる。
+        # 全ファイルが Replayer を使う。1件も収集できなければ pytest が exit 5 で落ちる
+        run: >-
+          pytest -q
+          tests/unit/test_log_old_history_replay.py
+          tests/unit/test_log_workflow_replay.py
+          tests/unit/test_script_evidence_workflow_opt_in.py
+          tests/unit/test_pipeline_workflows.py
+          tests/architecture/test_research_workflow_determinism.py
+
+  safety:
+    name: Safety contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - run: pip install -e ".[dev]"
+      - name: INV-18 / INV-19 / INV-20 / INV-39 (paid API, private-only upload, secrets)
+        # INV-18: 有料API・実投稿に到達しない  INV-19: YouTube は private のみ
+        # INV-20: secret を出力しない         INV-39: stdout に出る前の redaction
+        run: >-
+          pytest -q
+          tests/architecture/test_no_live_calls.py
+          tests/architecture/test_research_no_live_network.py
+          tests/contract/test_upload_contracts.py
+          tests/unit/test_log_redaction.py
+          tests/unit/test_logging_init_secrets.py
+
+  gate:
+    name: CI gate
+    # branch protection の required check はこれ 1 つだけにする。job を足したら needs にも足す
+    # （tests/contract/test_ci_workflow_policy.py が食い違いを検出する）
+    if: always()
+    needs: [lint, types, unit, contract, architecture, integration, docker-build, alembic, temporal-replay, safety]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every required job must have succeeded (failure / cancelled / skipped all fail)
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | python3 -c '
+          import json, sys
+          needs = json.load(sys.stdin)
+          bad = {k: v["result"] for k, v in needs.items() if v["result"] != "success"}
+          for k, v in needs.items():
+              print(k, v["result"])
+          if bad:
+              print(f"NG: not successful: {bad}")
+              sys.exit(1)
+          '
