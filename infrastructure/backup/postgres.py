@@ -22,8 +22,8 @@ class CommandFailed(Exception):
     pass
 
 
-def parse_pipe_rows(out: str) -> list[list[str]]:
-    return [line.split("|") for line in out.splitlines() if line.strip()]
+def parse_pipe_rows(out: str, sep: str = "|") -> list[list[str]]:
+    return [line.split(sep) for line in out.splitlines() if line.strip()]
 
 
 class PostgresAccess:
@@ -35,9 +35,27 @@ class PostgresAccess:
     def _exec(self, args: Sequence[str], *, stdin: bool = False) -> list[str]:
         return ["docker", "exec", *(["-i"] if stdin else []), self._container, *args]
 
-    def _psql(self, db: str, sql: str) -> str:
+    def query_rows(self, db: str, sql: str, sep: str = "\x1f") -> list[list[str]]:
+        """SELECT の結果を列区切り ``sep`` で読む（key に ``|`` が在っても壊れない）。"""
+        return parse_pipe_rows(self._psql(db, sql, sep), sep)
+
+    def _psql(self, db: str, sql: str, sep: str = "|") -> str:
         res = self._r.run(
-            self._exec(["psql", "-U", self._user, "-d", db, "-v", "ON_ERROR_STOP=1", "-Atc", sql])
+            self._exec(
+                [
+                    "psql",
+                    "-U",
+                    self._user,
+                    "-d",
+                    db,
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-F",
+                    sep,
+                    "-Atc",
+                    sql,
+                ]
+            )
         )
         if res.returncode != 0:
             raise CommandFailed(f"psql {db}: rc={res.returncode} {res.stderr.strip()[:200]}")

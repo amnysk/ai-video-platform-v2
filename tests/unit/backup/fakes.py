@@ -175,3 +175,82 @@ def make_backup(
     return Harness(
         BackupService(cfg, deps), runner, objects, notes, lines, db_root, object_root, clock
     )
+
+
+@dataclass
+class RestoreRunner:
+    """使い捨て復旧先だけを解釈する fake。本番コンテナ名が argv に出たら即失敗する。"""
+
+    source_tables: dict[str, dict[str, int]] = field(
+        default_factory=lambda: {db: {"public.t": 3} for db in BACKUP_DATABASES}
+    )
+    alembic: str = "0015"
+    artifact_rows: list[tuple[str, str, str]] = field(default_factory=list)
+    fail_restore: set[str] = field(default_factory=set)
+    drop_rows: dict[str, int] = field(default_factory=dict)
+    run_rc: int = 0
+    ready_after: int = 0
+    calls: list[list[str]] = field(default_factory=list)
+    restored: dict[str, dict[str, int]] = field(default_factory=dict)
+    running: set[str] = field(default_factory=set)
+    removed: list[str] = field(default_factory=list)
+
+    def run(
+        self, argv: Sequence[str], *, stdin_path: Path | None = None, timeout: float = 0
+    ) -> CmdResult:
+        a = list(argv)
+        self.calls.append(a)
+        assert "avp2-postgres-1" not in a and "avp2-minio-1" not in a, a
+        assert a[0] == "docker", a
+        if a[1] == "--version":
+            return CmdResult(0, "Docker version 28\n", "")
+        if a[1] == "run":
+            if self.run_rc:
+                return CmdResult(self.run_rc, "", "no such image")
+            assert "--network" in a and a[a.index("--network") + 1] == "none"
+            assert "-p" not in a and "--publish" not in a  # ポートを公開しない
+            self.running.add(a[a.index("--name") + 1])
+            return CmdResult(0, "cid\n", "")
+        if a[1] == "rm":
+            self.removed.append(a[-1])
+            self.running.discard(a[-1])
+            return CmdResult(0, "", "")
+        assert a[1] == "exec", a
+        i = 3 if a[2] == "-i" else 2
+        name, tool = a[i], a[i + 1]
+        assert name in self.running, f"exec into a container this drill did not start: {name}"
+        if tool == "pg_isready":
+            if self.ready_after > 0:
+                self.ready_after -= 1
+                return CmdResult(2, "", "")
+            return CmdResult(0, "", "")
+        if tool == "pg_restore" and "--version" in a:
+            return CmdResult(0, "pg_restore (PostgreSQL) 17.11\n", "")
+        if tool == "createdb":
+            return CmdResult(0, "", "")
+        if tool == "pg_restore":
+            db = a[a.index("-d") + 1]
+            assert stdin_path is not None
+            src = stdin_path.read_bytes().decode().removeprefix("PGDMP ")
+            if src in self.fail_restore:
+                return CmdResult(1, "", "pg_restore: error: boom")
+            tables = dict(self.source_tables[src])
+            for t, n in self.drop_rows.items():
+                if t in tables:
+                    tables[t] -= n
+            self.restored[db] = tables
+            return CmdResult(0, "", "")
+        assert tool == "psql", a
+        db = a[a.index("-d") + 1]
+        sql = a[-1]
+        assert db.startswith("restore_"), db
+        if "alembic_version" in sql:
+            return CmdResult(0, self.alembic + "\n", "")
+        if sql == ROW_COUNT_SQL:
+            return CmdResult(0, "".join(f"{t}|{n}\n" for t, n in self.restored[db].items()), "")
+        assert "FROM artifact_metadata" in sql or "FROM research_artifacts" in sql
+        rows = self.artifact_rows if "artifact_metadata" in sql else []
+        return CmdResult(0, "".join("\x1f".join(r) + "\n" for r in rows), "")
+
+    def run_to_file(self, argv: Sequence[str], dest: Path, *, timeout: float = 0) -> FileResult:
+        raise AssertionError("the drill never dumps")
