@@ -417,3 +417,21 @@ Replayer で replay。非決定にならず1件も発行しない）
 / `tests/unit/test_log_old_history_replay.py::test_the_old_histories_cover_every_stage_workflow`
 / `tests/architecture/test_logging_boundaries.py::test_workflow_event_names_and_stages_are_contract_vocabulary`
 / `tests/unit/test_pipeline_workflows.py`（既存の履歴 fixture の replay がログ発行を足した後も通る）
+
+## M. リリース（ADR-0049）
+
+### INV-65 リリース判定は三値で、確認できなかったものを READY にせず、判定自体は何も変更しない
+`scripts/release-preflight.py` の総合判定は、BLOCKED のチェックが1つでもあれば BLOCKED、なければ
+UNKNOWN のチェックまたは欠けた必須チェックが1つでもあれば UNKNOWN、必須が全て PASS のときだけ READY。
+終了コードは READY=0 / BLOCKED=2 / UNKNOWN=3。collector の例外・不在は UNKNOWN になり、READY にならない。
+判定は読み取りだけを行い（書き込み・再起動・Schedule 変更・有料 API・YouTube を呼ばない）、
+新しい migration は expand-only（破壊的変更は `# contract-migration: approved ADR-NNNN` の印が無ければ BLOCKED）。
+rollback は alembic downgrade に依存しない。staging（`compose.staging.yaml`）は本番と project 名・volume・
+bind path・host port・Temporal namespace を共有せず、FAL / YouTube の資格情報は空。
+**機械検査**: `tests/unit/test_release_preflight.py::test_unknown_never_maps_to_ready`
+/ `tests/unit/test_release_preflight.py::test_missing_required_check_is_unknown_not_ready`
+/ `tests/unit/test_release_preflight.py::test_exit_codes`
+/ `tests/unit/test_release_preflight.py::test_collector_exception_becomes_unknown`
+/ `tests/unit/test_release_preflight.py::test_destructive_migration_is_blocked_without_marker`
+/ `tests/architecture/test_release_preflight_read_only.py`
+/ `tests/contract/test_compose_staging.py`
