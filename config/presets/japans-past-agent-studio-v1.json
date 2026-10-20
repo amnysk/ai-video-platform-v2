@@ -1,0 +1,111 @@
+{
+  "schema_version": "1.0",
+  "status": "proposed",
+  "channel": {
+    "slug": "japans-past",
+    "display_name": "Japan's Past",
+    "locale": "en-US",
+    "target_region": "US",
+    "target_age": "20-29",
+    "audience_basis": "assumed",
+    "content_focus": [
+      "Japanese history",
+      "Japanese culture"
+    ],
+    "format_profile": "shorts_en"
+  },
+  "schedule": {
+    "timezone": "Asia/Tokyo",
+    "local_time": "06:00",
+    "daily_limit": 1,
+    "overlap": "skip",
+    "catchup_window_minutes": 60,
+    "enabled": false
+  },
+  "youtube": {
+    "privacy_status": "private",
+    "allow_automatic_publication": false
+  },
+  "budget": {
+    "global_fal_monthly_cap_jpy": 30000,
+    "channel_monthly_fal_cap_jpy": 30000,
+    "block_if_estimate_unavailable": true
+  },
+  "creative": {
+    "hook_window_seconds": 3,
+    "story_structure": [
+      "hook",
+      "context",
+      "reveal",
+      "payoff"
+    ],
+    "facts_citations_required": true,
+    "character_mode": "off",
+    "bgm_mode": "off_until_licensed",
+    "repetitive_content_guard": true
+  },
+  "agent_template": {
+    "id": "shorts_agentic_tools",
+    "version": "1",
+    "enabled": false
+  },
+  "agents": [
+    {
+      "role": "strategy",
+      "spec_ref": "strategy@1.1",
+      "model_policy_ref": "codex_cli_text@1",
+      "max_llm_calls": 3,
+      "max_cost_usd": "0.05",
+      "editable_prompt": "Analyze the target US audience; distinguish measured audience signals from assumptions. Propose multiple Japanese history/culture topics with citations, uncertainty, a clear opening hook, and a falsifiable retention hypothesis. Reject near-duplicate and low-evidence concepts."
+    },
+    {
+      "role": "creative_director",
+      "spec_ref": "creative_director@1.0",
+      "model_policy_ref": "codex_cli_text@1",
+      "max_llm_calls": 2,
+      "max_cost_usd": "0.05",
+      "editable_prompt": "Turn the selected topic into an American-English short with a compelling question in the first three seconds, accurate context, a clear reveal, and satisfying payoff. Annotate each narrative beat and predicted retention mechanism; avoid unverifiable drama."
+    },
+    {
+      "role": "historian",
+      "spec_ref": "historian@1.0",
+      "model_policy_ref": "codex_cli_text@1",
+      "max_llm_calls": 3,
+      "max_cost_usd": "0.05",
+      "editable_prompt": "Fact-check key claims against trustworthy historical sources. Provide evidence references and classify ambiguity honestly; report insufficient rather than inventing citations."
+    },
+    {
+      "role": "quality_reviewer",
+      "spec_ref": "quality_reviewer@1.0",
+      "model_policy_ref": "codex_cli_text@1",
+      "max_llm_calls": 2,
+      "max_cost_usd": "0.05",
+      "editable_prompt": "Review historical accuracy, hook clarity, narration, scene transitions, subtitles, and provider content policy. Report findings and propose revisions without automatically applying paid changes."
+    },
+    {
+      "role": "learning",
+      "spec_ref": "learning@1.1",
+      "model_policy_ref": "codex_cli_text@1",
+      "max_llm_calls": 3,
+      "max_cost_usd": "0.03",
+      "editable_prompt": "When eligible public metrics exist, compare 48-hour, 7-day and 28-day observations to the pre-registered hypothesis and comparable channel baselines. Distinguish correlation from causation, missing data from zero, and suggest controlled follow-up experiments."
+    }
+  ],
+  "insights": {
+    "share_mode": "explicit_approval_only",
+    "share_raw_analytics": false,
+    "share_oauth_or_prompts": false,
+    "allow_adoption_as_hypothesis": true
+  },
+  "model_registry": {
+    "mode": "allowlisted",
+    "live_provider_registration": false,
+    "ollama_allowed_for_offline_evaluation": true
+  },
+  "safety": {
+    "publish_config_requires_human": true,
+    "paid_evaluation_requires_human": true,
+    "pin_versions_per_episode": true,
+    "disable_paid_live_tests": true
+  }
+}
