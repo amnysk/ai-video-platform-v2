@@ -130,8 +130,9 @@ class RealCollectors:
         }
 
     def adr_text(self, rev: str, number: str) -> str | None:
-        """``rev`` の ADR ``<number>-*.md`` の本文。無ければ None（deploy 済み revision を渡す）。"""
-        names = _ok(["git", "ls-tree", "--name-only", rev, ADR_DIR], self._repo).split()
+        """``rev`` の ADR ``<number>-*.md`` の本文。無ければ None（rev は deploy 済み revision）。"""
+        listing = _ok(["git", "ls-tree", "--name-only", rev, ADR_DIR], self._repo)
+        names = listing.split()
         for n in names:
             if pathlib.PurePosixPath(n).name.startswith(f"{number}-") and n.endswith(".md"):
                 return _ok(["git", "show", f"{rev}:{n}"], self._repo)
