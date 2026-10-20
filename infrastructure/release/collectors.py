@@ -130,7 +130,7 @@ class RealCollectors:
         }
 
     def adr_text(self, rev: str, number: str) -> str | None:
-        """``rev`` の ADR ``<number>-*.md`` の本文。無ければ None（rev は deploy 済み revision）。"""
+        """``rev`` の ADR ``<number>-*.md`` の本文。無ければ None。"""
         listing = _ok(["git", "ls-tree", "--name-only", rev, ADR_DIR], self._repo)
         names = listing.split()
         for n in names:
