@@ -1,0 +1,375 @@
+{
+  "_meta": {
+    "applied": false,
+    "note": "定義だけ。適用しない（POST _plugins/_alerting/monitors は所有者の判断）。enabled=false・actions=[]（通知先未設定）。ログは副本のため、発火は『調べる合図』であり再開・投稿の根拠にしない（INV-38）。",
+    "tested_against": "JSON 構文と read-only DSL のみ（tests/contract/test_logging_query_definitions.py）。OpenSearch Alerting plugin への適用は未検証。"
+  },
+  "monitors": [
+    {
+      "name": "avp-stage-stalled-recurring",
+      "type": "monitor",
+      "monitor_type": "query_level_monitor",
+      "enabled": false,
+      "schedule": {
+        "period": {
+          "interval": 1,
+          "unit": "HOURS"
+        }
+      },
+      "inputs": [
+        {
+          "search": {
+            "indices": [
+              "avp-app-prod-*"
+            ],
+            "query": {
+              "size": 0,
+              "query": {
+                "bool": {
+                  "filter": [
+                    {
+                      "term": {
+                        "event_name": "anomaly.recorded"
+                      }
+                    },
+                    {
+                      "match_phrase": {
+                        "message": "anomaly=EPISODE_STAGE_STALLED"
+                      }
+                    },
+                    {
+                      "range": {
+                        "@timestamp": {
+                          "gte": "now-2h"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "triggers": [
+        {
+          "name": "avp-stage-stalled-recurring-trigger",
+          "severity": "2",
+          "condition": {
+            "script": {
+              "source": "ctx.results[0].hits.total.value > 0",
+              "lang": "painless"
+            }
+          },
+          "actions": []
+        }
+      ],
+      "_meta": {
+        "description": "watchdog が停滞を直近2時間に記録した（毎時検査なので持続中。新規かは PG の new_incidents で判断）。"
+      }
+    },
+    {
+      "name": "avp-provider-call-failed-403",
+      "type": "monitor",
+      "monitor_type": "query_level_monitor",
+      "enabled": false,
+      "schedule": {
+        "period": {
+          "interval": 1,
+          "unit": "HOURS"
+        }
+      },
+      "inputs": [
+        {
+          "search": {
+            "indices": [
+              "avp-app-prod-*"
+            ],
+            "query": {
+              "size": 0,
+              "query": {
+                "bool": {
+                  "filter": [
+                    {
+                      "term": {
+                        "event_name": "provider.call.failed"
+                      }
+                    },
+                    {
+                      "term": {
+                        "http_status": 403
+                      }
+                    },
+                    {
+                      "range": {
+                        "@timestamp": {
+                          "gte": "now-1h"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "triggers": [
+        {
+          "name": "avp-provider-call-failed-403-trigger",
+          "severity": "2",
+          "condition": {
+            "script": {
+              "source": "ctx.results[0].hits.total.value > 0",
+              "lang": "painless"
+            }
+          },
+          "actions": []
+        }
+      ],
+      "_meta": {
+        "description": "provider が 403（credentials）を返した。daily の fal 認証失敗の早期検知。"
+      }
+    },
+    {
+      "name": "avp-stage-failed-or-blocked",
+      "type": "monitor",
+      "monitor_type": "query_level_monitor",
+      "enabled": false,
+      "schedule": {
+        "period": {
+          "interval": 1,
+          "unit": "HOURS"
+        }
+      },
+      "inputs": [
+        {
+          "search": {
+            "indices": [
+              "avp-app-prod-*"
+            ],
+            "query": {
+              "size": 0,
+              "query": {
+                "bool": {
+                  "filter": [
+                    {
+                      "terms": {
+                        "event_name": [
+                          "stage.failed",
+                          "stage.blocked"
+                        ]
+                      }
+                    },
+                    {
+                      "range": {
+                        "@timestamp": {
+                          "gte": "now-1h"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "triggers": [
+        {
+          "name": "avp-stage-failed-or-blocked-trigger",
+          "severity": "2",
+          "condition": {
+            "script": {
+              "source": "ctx.results[0].hits.total.value > 0",
+              "lang": "painless"
+            }
+          },
+          "actions": []
+        }
+      ],
+      "_meta": {
+        "description": "工程が failed / blocked で閉じた。"
+      }
+    },
+    {
+      "name": "avp-render-validation-failed",
+      "type": "monitor",
+      "monitor_type": "query_level_monitor",
+      "enabled": false,
+      "schedule": {
+        "period": {
+          "interval": 1,
+          "unit": "HOURS"
+        }
+      },
+      "inputs": [
+        {
+          "search": {
+            "indices": [
+              "avp-app-prod-*"
+            ],
+            "query": {
+              "size": 0,
+              "query": {
+                "bool": {
+                  "filter": [
+                    {
+                      "term": {
+                        "event_name": "render.validation.failed"
+                      }
+                    },
+                    {
+                      "range": {
+                        "@timestamp": {
+                          "gte": "now-1h"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "triggers": [
+        {
+          "name": "avp-render-validation-failed-trigger",
+          "severity": "2",
+          "condition": {
+            "script": {
+              "source": "ctx.results[0].hits.total.value > 0",
+              "lang": "painless"
+            }
+          },
+          "actions": []
+        }
+      ],
+      "_meta": {
+        "description": "Render の技術検査が落ちた。"
+      }
+    },
+    {
+      "name": "avp-upload-failed",
+      "type": "monitor",
+      "monitor_type": "query_level_monitor",
+      "enabled": false,
+      "schedule": {
+        "period": {
+          "interval": 1,
+          "unit": "HOURS"
+        }
+      },
+      "inputs": [
+        {
+          "search": {
+            "indices": [
+              "avp-app-prod-*"
+            ],
+            "query": {
+              "size": 0,
+              "query": {
+                "bool": {
+                  "filter": [
+                    {
+                      "term": {
+                        "event_name": "upload.failed"
+                      }
+                    },
+                    {
+                      "range": {
+                        "@timestamp": {
+                          "gte": "now-1h"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "triggers": [
+        {
+          "name": "avp-upload-failed-trigger",
+          "severity": "2",
+          "condition": {
+            "script": {
+              "source": "ctx.results[0].hits.total.value > 0",
+              "lang": "painless"
+            }
+          },
+          "actions": []
+        }
+      ],
+      "_meta": {
+        "description": "Upload が失敗した。"
+      }
+    },
+    {
+      "name": "avp-no-daily-pipeline-started-26h",
+      "type": "monitor",
+      "monitor_type": "query_level_monitor",
+      "enabled": false,
+      "schedule": {
+        "period": {
+          "interval": 1,
+          "unit": "HOURS"
+        }
+      },
+      "inputs": [
+        {
+          "search": {
+            "indices": [
+              "avp-app-prod-*"
+            ],
+            "query": {
+              "size": 0,
+              "query": {
+                "bool": {
+                  "filter": [
+                    {
+                      "term": {
+                        "event_name": "stage.started"
+                      }
+                    },
+                    {
+                      "term": {
+                        "stage": "pipeline"
+                      }
+                    },
+                    {
+                      "range": {
+                        "@timestamp": {
+                          "gte": "now-26h"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "triggers": [
+        {
+          "name": "avp-no-daily-pipeline-started-26h-trigger",
+          "severity": "2",
+          "condition": {
+            "script": {
+              "source": "ctx.results[0].hits.total.value == 0",
+              "lang": "painless"
+            }
+          },
+          "actions": []
+        }
+      ],
+      "_meta": {
+        "description": "26時間 pipeline の開始ログが無い（発火条件は hits==0）。収集停止と未実行は区別できない（logging-runbook §4-5）。"
+      }
+    }
+  ]
+}
