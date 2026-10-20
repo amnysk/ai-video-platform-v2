@@ -74,7 +74,7 @@ def test_triggers_cover_integration_and_release_branches() -> None:
 
 def test_job_names_required_by_branch_protection_exist_and_are_stable() -> None:
     names = {job["name"] for job in _jobs().values()}
-    assert STABLE_JOB_NAMES <= names, f"missing: {sorted(STABLE_JOB_NAMES - names)}"
+    assert names >= STABLE_JOB_NAMES, f"missing: {sorted(STABLE_JOB_NAMES - names)}"
 
 
 def test_ci_gate_needs_every_other_job() -> None:
@@ -107,4 +107,5 @@ def test_no_job_is_a_no_op() -> None:
         runs = [str(s["run"]).strip() for s in job["steps"] if "run" in s]
         meaningful = [r for r in runs if r not in {"true", ":", "exit 0"}]
         assert meaningful, f"{job_id}: 実質何もしない job"
-        assert not any(r.rstrip().endswith("|| true") for r in runs), f"{job_id}: `|| true` で失敗を握りつぶさない"
+        swallowed = any(r.rstrip().endswith("|| true") for r in runs)
+        assert not swallowed, f"{job_id}: `|| true` で失敗を握りつぶさない"
