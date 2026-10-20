@@ -21,6 +21,10 @@
 # POST が失敗したら、デプロイ自体が成功していても全体を失敗にする。
 #
 # 環境変数: ALLOW_DIRTY / HEALTH_TIMEOUT（既定 300）/ POLL_INTERVAL（既定 5）
+#   SKIP_MIGRATE=1（既定 0=migrate する）: rollback 専用。migrate を走らせず、残りのサービスだけを
+#   作り直す。旧イメージの `alembic upgrade head` は DB が先にいると失敗する（Can't locate revision）ため。
+#   migrate コンテナは削除する（新しい revision のまま残すと workers-versions.sh が混在と判定する）。
+#   使うのは release-runbook §4 の rollback preflight（`--rollback`）が READY のときだけ（ADR-0050）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -35,11 +39,14 @@ APP_SERVICES=(
 BUILD_SERVICES=(api script-worker)
 INFRA_SERVICES=(postgres temporal minio)
 
+SKIP_MIGRATE="${SKIP_MIGRATE:-0}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-300}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 COMPOSE=(docker compose --profile core)
 
 die() { echo "NG: $*" >&2; exit 1; }
+
+case "$SKIP_MIGRATE" in 0 | 1) ;; *) die "SKIP_MIGRATE は 0 か 1（受け取った値: '$SKIP_MIGRATE'）" ;; esac
 
 revision="$(git rev-parse HEAD)"
 if [ -n "$(git status --porcelain)" ]; then
@@ -131,9 +138,17 @@ done
 # up は --no-deps: infra を作り直さない（postgres の bind mount は相対パスで、別 worktree から
 # up すると config が変わり再作成される）。APP_SERVICES の全列挙で部分適用を防ぐ。
 stage=migrate
-echo "== migrate"
-"${COMPOSE[@]}" up -d --no-deps --no-build migrate
-wait_ready migrate
+wait_services=("${APP_SERVICES[@]}")
+if [ "$SKIP_MIGRATE" = "1" ]; then
+  echo "== migrate SKIPPED (SKIP_MIGRATE=1: rollback)"
+  "${COMPOSE[@]}" rm -f migrate
+  wait_services=()
+  for svc in "${APP_SERVICES[@]}"; do [ "$svc" = migrate ] || wait_services+=("$svc"); done
+else
+  echo "== migrate"
+  "${COMPOSE[@]}" up -d --no-deps --no-build migrate
+  wait_ready migrate
+fi
 
 stage=recreate
 echo "== recreate all app services"
@@ -143,7 +158,7 @@ for svc in "${APP_SERVICES[@]}"; do [ "$svc" = migrate ] || rest+=("$svc"); done
 
 stage=health
 echo "== wait until healthy (timeout ${HEALTH_TIMEOUT}s)"
-wait_ready "${APP_SERVICES[@]}"
+wait_ready "${wait_services[@]}"
 
 stage=versions
 echo "== verify versions"

@@ -266,6 +266,8 @@ PRE_DEPLOY_CMD='...' POST_DEPLOY_CMD='...' make deploy-workers
 
 ## 11. `minio/minio:latest` の pull が拒否される既知の問題（未解決・2026-09-28 追記）
 
+> 2026-10-16: CI 側は ADR-0046 で解決（compose.ci.yaml）。以下は本番ホスト側の未解決事項。
+
 このホストで `docker pull minio/minio:latest` が匿名でも `docker login` 後でも
 `pull access denied for minio/minio, repository does not exist or may require 'docker login'`
 になることを実測した（`quay.io/minio/minio:latest` も `401 UNAUTHORIZED`）。既に動いている

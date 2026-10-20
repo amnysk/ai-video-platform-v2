@@ -1,0 +1,42 @@
+# release preflight: 各テストが存在する理由
+
+対象: `domain/release_preflight.py` / `infrastructure/release/` / `scripts/release-preflight.py`（ADR-0050, INV-65）。
+実測の事故ではなく**設計上の穴**を塞ぐテストなので、各テストが防ぐ誤判定を書く。
+
+| テスト | 防ぐ誤判定 |
+|---|---|
+| `test_unknown_never_maps_to_ready` | gh / Temporal / DB が落ちている日に「確認できなかった」が READY に丸まる |
+| `test_missing_required_check_is_unknown_not_ready` | チェックを足し忘れた／例外で走らなかったのに READY になる |
+| `test_blocked_wins_over_unknown` | BLOCKED が UNKNOWN に隠れて「再確認すれば進める」と誤読される |
+| `test_exit_codes` | 自動化が 0 以外を区別できない（READY=0 / BLOCKED=2 / UNKNOWN=3 を固定） |
+| `test_collector_exception_becomes_unknown` | collector の想定外の例外で preflight 自体が落ち、終了コードが偶然 0/1 になる |
+| `test_target_sha_*` / `test_dependent_checks_*` | `HEAD` / 短縮 SHA / ブランチ名で別の commit を deploy する |
+| `test_worktree_must_be_clean_and_at_the_sha` | build 対象が target と違う（deploy-workers.sh は HEAD から build する） |
+| `test_ancestry_*` / `test_non_ff_*` | 本番より古い／分岐した commit の誤 deploy（rollback は `--allow-non-ff` を明示） |
+| `test_ci_*` | gate 以外の「全部 success」・名前違い・失敗・実行中・0 件を成功扱いする（gate 失敗は BLOCKED、gate 不在は UNKNOWN） |
+| `test_container_*` | 稼働中の revision 混在（2026-09-20 の事故）と dirty/unknown ビルドの見逃し |
+| `test_alembic_prod_must_be_on_the_target_chain` | target が本番の知らない/先の revision に migrate しようとする |
+| `test_*migration*` | expand-only の見落とし。downgrade の drop を誤検出しない／既存ファイルを再判定しない／marker は存在する ADR 付きだけ |
+| `test_pending_provider_reservations_*` | 未照合の予約を残したまま入れ替え、再送（二重課金）判断を失う（ADR-0013） |
+| `test_schedule_snapshot_*` / `test_post_deploy_schedules_*` | deploy 後に Schedule が pause のまま残る（2026-09-19） |
+| `test_backup_*` / `test_replay_*` / `test_owner_approval_*` | 他の SHA の証跡の流用、古いバックアップ、承認なしの READY |
+| `test_post_deploy_*` | deploy 後に一部だけ新しい版・poller 不在・alembic が head でないのを見逃す |
+| `test_release_preflight_read_only.py` | collector に書き込み系の docker/git/SQL/Temporal 呼び出しが混ざる（許可リスト） |
+| `test_release_queues.py` | queue 一覧を別に書き直して compose とずれる（AGENTS.md §8） |
+| `test_compose_staging.py` | staging が本番の project・volume・bind path・port・namespace・資格情報を共有する |
+| `test_release_migration_scan.py` の bypass / UNKNOWN サンプル | `DROP INDEX/CONSTRAINT/TYPE`・`DELETE FROM`・`drop_constraint`・型変更・`server_default=None`・helper 経由・非リテラル SQL・`primary_key=True` が expand-only として素通りする |
+| `test_migration_edited_in_place_is_blocked` | 本番に入った過去の migration の中身を書き換えて破壊的変更を忍ばせる（新規ファイルしか見ない走査の穴） |
+| `test_marker_*` | 文字列/docstring 内の印、target にだけある ADR、Proposed の ADR、別 revision の ADR による承認のなりすまし |
+| `test_every_tee_step_runs_under_pipefail` / `test_every_teed_pytest_log_is_checked_*` | `pytest \| tee` が pytest の失敗を隠して CI が緑になる／0 件で緑になる |
+| `test_release_evidence_ignored.py` | `release/` の証跡が未追跡ファイルとして `deploy-workers.sh` の dirty 判定を落とす |
+| `test_staging_or_test_targets_are_blocked` / `test_target_*` | cwd の `.env` が staging / `_test` DB を指したまま「本番の判定」が READY になる。宛先を detail に出して取り違えに気づく（資格情報は出さない） |
+| `test_target_info_reads_the_repo_root_dotenv_not_the_cwd` | 実行した場所の `.env` で別の DB を読む |
+| `test_approval_*` / `test_evidence_max_age_is_bounded` / `test_backup_max_age_is_bounded` | 未来日付・古い承認、無限/0 の許容年齢で承認・証跡の鮮度検査が無効になる |
+| `test_report_changed_after_approval_is_blocked` / `test_approved_report_*` | 承認後に preflight 出力を差し替える、別 SHA・別 mode・BLOCKED・UNKNOWN 入りの出力を承認として流用する |
+| `test_post_deploy_*approval*` / `test_post_deploy_pre_report_*` | 事後検証が別 deploy の pre-report（別 SHA/mode/BLOCKED）で READY になる |
+| `test_rollback_*` | DB が先の rollback が永遠に BLOCKED、または contract が流れた後・revision 不一致・owner 記録なしで通る |
+| `test_skip_migrate_*` | 旧イメージの migrate が rollback を落とす／SKIP_MIGRATE が既定で有効・曖昧な値で有効になる／migrate コンテナが混在 revision を作る |
+| `test_argparse_errors_exit_3_not_2` / `test_unexpected_exception_*` | 使い方の誤りが BLOCKED(2) と区別できない、想定外の例外で素のトレースバック |
+| `test_render_text_strips_control_characters_*` | 証跡由来の文字列が端末を操作する／`OVERALL:` 行を偽装する |
+| `test_a_missing_app_service_is_blocked_*` / `test_release_app_services.py` | 稼働中の worker だけが同じ revision で揃っていて、落ちている worker があっても「全部 target」と判定される（一覧は deploy-workers.sh / compose.yaml から導く） |
+| `test_staging_doc_commands_pin_project_env_file_and_compose_file` | staging の手順が `-p`・`--env-file /dev/null` を欠き、cwd の `.env`（本番の値）や別 project に当たる |

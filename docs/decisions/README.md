@@ -64,3 +64,6 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0038](./0038-evidence-research-and-script-verification.md) | Evidence Research と台本の照合を research の成果物として実装する | Accepted |
 | [0039](./0039-trend-research.md) | Trend Research を research の成果物として実装し、検証つきで読み出せるようにする | Accepted |
 | [0040](./0040-structured-logs-and-opensearch-search-replica.md) | 構造化 JSON ログと OpenSearch の検索用副本（ログは業務判断に使わない） | Accepted |
+| [0046](./0046-ci-minio-image.md) | CI の MinIO image を Chainguard（digest 固定）に差し替える | Accepted |
+| [0049](./0049-branch-strategy-and-ci-gate.md) | ブランチ戦略（trunk-based・`main` = 本番）と単一の required check `CI gate` | Proposed（所有者承認待ち） |
+| [0050](./0050-release-preflight-and-staging.md) | 読み取り専用の release preflight（READY/BLOCKED/UNKNOWN）と本番から隔離した staging | Proposed |

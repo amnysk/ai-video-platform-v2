@@ -417,3 +417,32 @@ Replayer で replay。非決定にならず1件も発行しない）
 / `tests/unit/test_log_old_history_replay.py::test_the_old_histories_cover_every_stage_workflow`
 / `tests/architecture/test_logging_boundaries.py::test_workflow_event_names_and_stages_are_contract_vocabulary`
 / `tests/unit/test_pipeline_workflows.py`（既存の履歴 fixture の replay がログ発行を足した後も通る）
+
+## M. リリース（ADR-0050）
+
+### INV-65 リリース判定は三値で、確認できなかったものを READY にせず、判定自体は何も変更しない
+`scripts/release-preflight.py` の総合判定は、BLOCKED のチェックが1つでもあれば BLOCKED、なければ
+UNKNOWN のチェックまたは欠けた必須チェックが1つでもあれば UNKNOWN、必須が全て PASS のときだけ READY。
+終了コードは READY=0 / BLOCKED=2 / UNKNOWN=3。collector の例外・不在は UNKNOWN になり、READY にならない。
+判定は読み取りだけを行い（書き込み・再起動・Schedule 変更・有料 API・YouTube を呼ばない）、
+新しい migration は expand-only（破壊的変更は `# contract-migration: approved ADR-NNNN` の印が無ければ BLOCKED。
+印はコメント token のみ有効で、ADR が deploy 済み revision に在り Accepted で revision id に言及すること。
+静的に読めない書き方は UNKNOWN、本番に入った migration の書き換えは BLOCKED）。
+**この走査は best effort で、通過は安全の証明ではない。人のレビューは省けない**。
+承認・証跡は SHA・日付（未来/72h 超は BLOCKED）・preflight 出力の sha256 に束縛する（自己申告で認証ではない）。
+rollback は `--rollback` が「DB が先・expand-only・owner の旧コード互換記録」を判定し、migrate は走らせない。
+判定の宛先（DB・Temporal namespace）が staging / `_test` DB なら BLOCKED（`target_environment`）。
+rollback は alembic downgrade に依存しない。staging（`compose.staging.yaml`）は本番と project 名・volume・
+bind path・host port・Temporal namespace を共有せず、FAL / YouTube の資格情報は空。
+**機械検査**: `tests/unit/test_release_preflight.py::test_unknown_never_maps_to_ready`
+/ `tests/unit/test_release_preflight.py::test_missing_required_check_is_unknown_not_ready`
+/ `tests/unit/test_release_preflight.py::test_exit_codes`
+/ `tests/unit/test_release_preflight.py::test_collector_exception_becomes_unknown`
+/ `tests/unit/test_release_preflight.py::test_destructive_migration_is_blocked_without_marker`
+/ `tests/unit/test_release_migration_scan.py`（bypass サンプル・UNKNOWN・in-place 編集・marker なりすまし）
+/ `tests/unit/test_release_preflight.py::test_staging_or_test_targets_are_blocked`
+/ `tests/unit/test_release_collectors_target.py`
+/ `tests/unit/test_release_approval_and_rollback.py`（承認の鮮度・束縛、rollback の各分岐）
+/ `tests/unit/test_deploy_scripts.py::test_skip_migrate_runs_no_migration_and_ignores_the_old_migrate_container`
+/ `tests/architecture/test_release_preflight_read_only.py`
+/ `tests/contract/test_compose_staging.py`
