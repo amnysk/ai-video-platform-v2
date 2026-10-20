@@ -49,6 +49,7 @@ from contracts.states import (
     JobStatus,
     JobType,
     ProviderCall,
+    ReconciliationVerdict,
     RejectedInput,
     RejectionCategory,
     ReservationStatus,
@@ -290,6 +291,46 @@ class ProviderReservationRow(Base):
     provider_result_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: 予約時点の見積もり（USD、ADR-0013 Alternatives (e) を ADR-0017 で解決）。確定額ではない。
     estimated_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+
+
+class ProviderReservationReconciliationRow(Base):
+    """未照合予約の照合記録（ADR-0051）。**追記専用**。最新の1行がその予約の判定。
+
+    ``provider_reservations`` 本体は変えない（台帳は課金の履歴）。観測・人手確定の
+    どちらもここへ1行足すだけで、行は更新も削除もしない。
+    owner 承認 token は保存しない（指紋だけ）。
+    """
+
+    __tablename__ = "provider_reservation_reconciliations"
+    __table_args__ = (
+        _check("verdict", ReconciliationVerdict, "ck_provider_reservation_reconciliations_verdict"),
+        CheckConstraint(
+            "source IN ('provider_status', 'operator')",
+            name="ck_provider_reservation_reconciliations_source",
+        ),
+        # 人手確定は evidence・承認・実行者が必須（DB 制約としても表現する）
+        CheckConstraint(
+            "source <> 'operator' OR (evidence IS NOT NULL AND owner_approval_fingerprint "
+            "IS NOT NULL AND actor IS NOT NULL)",
+            name="ck_provider_reservation_reconciliations_operator_fields",
+        ),
+        Index("ix_provider_reservation_reconciliations_reservation_id", "reservation_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    reservation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("provider_reservations.id", ondelete="RESTRICT"), nullable=False
+    )
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: provider のキュー状態そのまま（観測時のみ）
+    raw_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    owner_approval_fingerprint: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    actor: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class OperationalSwitchRow(Base):

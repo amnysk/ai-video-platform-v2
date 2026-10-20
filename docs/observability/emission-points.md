@@ -34,6 +34,7 @@
 | `provider.call.suppressed` | `infrastructure/production/paid_job.py:PaidJobRunner._check_auth_outage_gate` | |
 | `reservation.reserved` / `dispatched` / `job_ref_recorded` / `spent` | `infrastructure/db/repositories.py:ProviderReservationRepository.reserve` / `mark_dispatched` / `mark_upload_dispatched` / `record_provider_job_ref` / `record_upload_session` / `mark_spent` / `record_upload_result`・`record_upload_result_once`（`_defer_reservation`） | commit 後。書き手（paid_job・upload・planning・storyboard・scene_recovery）を問わない。同じ video id の再記録（no-op）では出さない（I-20） |
 | `reservation.resumed` / `reservation.blocked` | `infrastructure/production/paid_job.py:_resumed` / `_blocked` / `_check_input_fetch_retry` / `_check_rejected_image_gate` | 判断（DB の変更ではない） |
+| `reservation.reconciled` | `infrastructure/db/repositories.py:ProviderReconciliationRepository.record_observation` / `resolve_manual` | commit 後。ADR-0051 の判定記録（証拠本文・承認 token は出さない） |
 | `artifact.stored` / `artifact.superseded` | `infrastructure/db/repositories.py:ArtifactMetadataRepository._defer_stored` / `_supersede_current` | commit 後 |
 | `artifact.reused` | `infrastructure/production/paid_job.py:PaidJobRunner._submit` | 完全性検証（ADR-0033）の後 |
 | `artifact.reuse_rejected` | **未発行（v1）**。既存の `ARTIFACT_VERIFICATION_FAILED` の記録（`infrastructure/artifact/verify.py`）は `log.record` | |
