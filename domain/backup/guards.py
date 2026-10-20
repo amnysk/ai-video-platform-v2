@@ -16,7 +16,6 @@ from contracts.backup import (
     BACKUP_ID_PATTERN,
     PRODUCTION_BUCKETS,
     PRODUCTION_COMPOSE_PROJECT,
-    PRODUCTION_DATA_PATHS,
     PRODUCTION_MINIO_CONTAINER,
     PRODUCTION_MINIO_PORTS,
     PRODUCTION_POSTGRES_CONTAINER,
@@ -57,7 +56,11 @@ def _under(path: str, parent: str) -> bool:
 
 
 def target_problems(target: RestoreTarget, protected_paths: Iterable[str] = ()) -> list[str]:
-    """復旧先が本番と衝突する理由の一覧。空なら隔離されている。"""
+    """復旧先が本番と衝突する理由の一覧。空なら隔離されている。
+
+    ``protected_paths`` は本番データの置き場（MinIO のデータ dir・作業領域・backup root）。
+    呼び出し側（infrastructure）が渡す。定義は ``infrastructure/workdir.py`` が唯一の宣言元。
+    """
     problems: list[str] = []
     if target.compose_project == PRODUCTION_COMPOSE_PROJECT:
         problems.append(f"compose project is production ({target.compose_project})")
@@ -81,7 +84,7 @@ def target_problems(target: RestoreTarget, protected_paths: Iterable[str] = ()) 
         problems.append("no target bucket")
     if not target.work_dir or not posixpath.isabs(target.work_dir):
         problems.append("work_dir must be an absolute path")
-    for protected in (*PRODUCTION_DATA_PATHS, *protected_paths):
+    for protected in protected_paths:
         if target.work_dir and (
             _under(target.work_dir, protected) or _under(protected, target.work_dir)
         ):

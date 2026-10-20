@@ -11,6 +11,7 @@ from typing import Any
 import contracts.backup as cb
 import contracts.release as cr
 from domain import release_preflight as rp
+from infrastructure.workdir import MINIO_DATA_DIR
 from tests.unit.backup.fakes import make_backup
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -32,8 +33,7 @@ def test_production_identifiers_match_compose() -> None:
     assert tuple(cb.PRODUCTION_MINIO_PORTS) == (9000, 9001)
     assert f'ports: ["{cb.PRODUCTION_TEMPORAL_PORT}:7233"]' in COMPOSE
     assert f"POSTGRES_DB: ${{POSTGRES_DB:-{cb.APP_DATABASE}}}" in COMPOSE
-    assert "/mnt/minio-hdd/minio-data:/data" in COMPOSE
-    assert "/mnt/minio-hdd/minio-data" in cb.PRODUCTION_DATA_PATHS
+    assert f"{MINIO_DATA_DIR}:/data" in COMPOSE  # 保護するパスの宣言元は infrastructure/workdir.py
     # コンテナ名は project 名 + service 名 + 連番（compose の既定）
     project = cb.PRODUCTION_COMPOSE_PROJECT
     assert f"{project}-postgres-1" == cb.PRODUCTION_POSTGRES_CONTAINER

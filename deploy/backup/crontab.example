@@ -1,0 +1,6 @@
+# 例（登録しない）。systemd を使わない場合。環境変数は同じ内容を crontab の先頭か wrapper で渡す。
+# AVP_BACKUP_DB_ROOT=... AVP_BACKUP_OBJECT_ROOT=...
+15 4 * * *  cd $HOME/projects/ai-video-platform-v2 && .venv/bin/python scripts/backup.py run >>$HOME/.cache/avp-backup.log 2>&1
+30 5 * * 0  cd $HOME/projects/ai-video-platform-v2 && .venv/bin/python scripts/backup.py restore-drill --backup-id latest --work-root $HOME/.cache/avp-restore >>$HOME/.cache/avp-backup.log 2>&1 && .venv/bin/python scripts/backup.py prune --apply >>$HOME/.cache/avp-backup.log 2>&1
+# 鮮度の監視（古ければ非ゼロ終了）:
+45 8 * * *  cd $HOME/projects/ai-video-platform-v2 && .venv/bin/python scripts/backup.py status --max-age-hours 26 >/dev/null

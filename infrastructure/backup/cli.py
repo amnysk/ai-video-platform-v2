@@ -47,6 +47,7 @@ from infrastructure.backup.runner import CommandRunner, SubprocessRunner
 from infrastructure.backup.service import BackupConfig, BackupDeps, BackupFailed, BackupService
 from infrastructure.backup.verify import verify_files
 from infrastructure.config import Settings
+from infrastructure.workdir import MINIO_DATA_DIR
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 DEFAULT_WORK_ROOT = "/var/tmp"
@@ -211,7 +212,8 @@ def _drill(args, env, db_root, object_root, runner, audit, notifier, now) -> int
         backup_id = ids[-1]
     suffix = f"{backup_id.lower()}-{_free_suffix()}"
     name = f"{RESTORE_CONTAINER_PREFIX}{suffix}"
-    bucket = Settings(_env_file=pathlib.Path(args.env_file or REPO / ".env")).minio_bucket  # pyright: ignore[reportCallIssue]
+    settings = Settings(_env_file=pathlib.Path(args.env_file or REPO / ".env"))  # pyright: ignore[reportCallIssue]
+    bucket = settings.minio_bucket
     target = RestoreTarget(
         container_name=name,
         compose_project=name,
@@ -221,7 +223,9 @@ def _drill(args, env, db_root, object_root, runner, audit, notifier, now) -> int
         buckets=(f"{RESTORE_BUCKET_PREFIX}{bucket}",),
         work_dir=str(Path(args.work_root).resolve() / name),
     )
-    drill = RestoreDrill(db_root, object_root, target, DrillDeps(runner, audit, notifier, now=now))
+    protected = (str(MINIO_DATA_DIR), str(Path(settings.ai_video_work_root)))
+    deps = DrillDeps(runner, audit, notifier, now=now, protected_paths=protected)
+    drill = RestoreDrill(db_root, object_root, target, deps)
     try:
         result = drill.run(backup_id)
     except DrillAborted as exc:

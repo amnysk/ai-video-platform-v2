@@ -36,6 +36,7 @@ from infrastructure.backup import catalog
 from infrastructure.backup.audit import AuditLog, Notifier
 from infrastructure.backup.postgres import PostgresAccess
 from infrastructure.backup.runner import CommandRunner
+from infrastructure.workdir import MINIO_DATA_DIR
 
 RESTORE_PG_USER = "restore"
 READY_ATTEMPTS = 60
@@ -55,6 +56,8 @@ class DrillDeps:
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
     sleep: Callable[[float], None] = time.sleep
     image: str = RESTORE_POSTGRES_IMAGE
+    #: 復旧先として使えない本番データの置き場（backup root は run() が足す）
+    protected_paths: tuple[str, ...] = (str(MINIO_DATA_DIR),)
 
 
 def restore_db_name(db: str) -> str:
@@ -101,7 +104,10 @@ class RestoreDrill:
         ``ProductionTargetRefused``（復旧先が本番）は何も実行する前に上がる。
         """
         t, d = self._target, self._d
-        assert_isolated(t, protected_paths=[str(self._db_root), str(self._object_root)])
+        assert_isolated(
+            t,
+            protected_paths=[str(self._db_root), str(self._object_root), *d.protected_paths],
+        )
         manifest = self._load(backup_id)
         d.audit.emit("restore.started", backup_id=backup_id, container=t.container_name)
         work = Path(t.work_dir)

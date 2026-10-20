@@ -28,6 +28,7 @@ from domain.backup.manifest import (
 )
 from domain.backup.retention import CatalogEntry, Policy, plan_retention
 
+PROTECTED = ["/mnt/minio-hdd/minio-data", "/mnt/minio-hdd/ai-video-work"]
 T0 = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)
 SHA = "a" * 64
 
@@ -189,9 +190,9 @@ def test_an_isolated_target_is_accepted() -> None:
 )
 def test_restore_refuses_any_production_identifier(over: dict) -> None:
     target = isolated(**over)
-    assert target_problems(target)
+    assert target_problems(target, PROTECTED)
     with pytest.raises(ProductionTargetRefused):
-        assert_isolated(target)
+        assert_isolated(target, PROTECTED)
 
 
 def test_restore_refuses_the_backup_root_and_reports_every_reason() -> None:

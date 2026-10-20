@@ -19,7 +19,8 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
 - **承認・証跡は自己申告であって、認証ではない。** preflight が守るのは「古い承認・別 SHA の承認・
   承認後に差し替えた preflight 出力の流用」という**取り違え**だけで、悪意ある偽造は防げない。
   より強い手段（所有者の鍵で署名した git tag を承認とする等）は所有者の判断事項（§8）
-- **バックアップを取る自動手順はこの repo に無い**（未実装。§8）。manifest は所有者が取ったバックアップの記録
+- バックアップは `scripts/backup.py`（ADR-0051、手順は `docs/operations/backup-restore.md`）が取り、manifest を出す。
+  `restore_verified: true`（復旧演習済み）の集合を使う。preflight はまだ `restore_verified` を要求しない（§8）
 
 ## 1. deploy 前（全て `[R]`）
 
@@ -29,7 +30,8 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
 3. Temporal の replay 証跡を作る（staging の手順 `docs/operations/staging.md` §5）。結果を
    `release/evidence/<sha>-replay.json`: `{"sha": "<sha>", "result": "pass", "at": "<ISO8601 with TZ>"}`
    （`at` が未来、または 72 時間より古いと BLOCKED。上限は `--evidence-max-age-hours`、最大 168）
-4. バックアップ manifest（DB dump / MinIO / Temporal 各 24h 以内。`--backup-max-age-hours` は最大 720）:
+4. バックアップ manifest（`python scripts/backup.py run` の出力 `<root>/<backup_id>/manifest.json` を渡す。
+   DB dump / MinIO / Temporal 各 24h 以内。`--backup-max-age-hours` は最大 720。形式の最小形）:
    `{"components": {"db_dump": {"created_at": "<ISO8601 with TZ>"}, "minio": {...}, "temporal": {...}}}`
 5. **承認は二段階**（承認が preflight 出力に束縛される）:
 
@@ -166,7 +168,7 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
 
 ## 8. 未実装・既知の穴
 
-- バックアップを取る/検証する自動手順（manifest は手書き）
+- release preflight が backup の `restore_verified` を要求すること（backup/drill 自体は `scripts/backup.py`。ADR-0051）
 - replay 証跡の自動生成（staging.md §5 は手順のみ）
 - **承認の認証**: 承認ファイルは自己申告（取り違えの防止であって認証ではない）。署名した git tag を承認とする等の強い手段は所有者の判断
 - `docs/operations/daily-schedule-guard.md` §2 の表が `with-maintenance-pause.sh` の現挙動と食い違う（別 PR で直す）

@@ -38,8 +38,6 @@ BACKUP_DATABASES = (APP_DATABASE, *TEMPORAL_DATABASES)
 PRODUCTION_BUCKETS = ("artifacts",)
 #: DB が bucket / object_key / sha256 を持つ表（PG↔MinIO の参照整合性を検査する）
 ARTIFACT_REFERENCE_TABLES = ("artifact_metadata", "research_artifacts")
-#: 本番が実データを置く host path。復旧先・backup 先に使えない（restore の拒否）
-PRODUCTION_DATA_PATHS = ("/mnt/minio-hdd/minio-data", "/mnt/minio-hdd/ai-video-work")
 
 # --- 復旧先（隔離）-----------------------------------------------------------------
 RESTORE_CONTAINER_PREFIX = "avp-restore-"

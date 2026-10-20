@@ -446,3 +446,28 @@ bind path・host port・Temporal namespace を共有せず、FAL / YouTube の�
 / `tests/unit/test_deploy_scripts.py::test_skip_migrate_runs_no_migration_and_ignores_the_old_migrate_container`
 / `tests/architecture/test_release_preflight_read_only.py`
 / `tests/contract/test_compose_staging.py`
+
+## N. バックアップと復旧（ADR-0051）
+
+### INV-66 バックアップは「復旧演習に通るまで未検証」で、復旧は隔離先にしか書かない
+`scripts/backup.py run` が作る manifest は常に `restore_verified: false`。`true` にできるのは
+`scripts/backup.py restore-drill` だけで、それも全検査（全ファイルの sha256・3 DB の復元・行数が backup 時の
+`[before, after]` に入る・alembic revision・オブジェクトの sha256・DB の `artifact_metadata` /
+`research_artifacts` の全行が指す本体の存在と sha256）が pass の証跡があるときだけ（`apply_drill`）。
+backup は本番の PostgreSQL へ `pg_dump` / `pg_dumpall --globals-only` / `SELECT` だけ、MinIO へ list / get だけを
+送り、PostgreSQL を先、MinIO を後に取る（Artifact は不変で DB 行は本体の put の後に commit されるため、dump の
+参照先は後から取る写しに存在する）。保存先は環境変数で明示され（既定なし）、守る対象と同じデバイスなら拒否。
+復旧先（container / compose project / host / port / DB 名 / bucket 名 / 作業パス）が本番または backup root と
+1 つでも一致したら、何も実行せずに拒否する。保持の pruner は未検証・未完了の集合と、最新の検証済み 1 つを
+決して消さない。外部送信（offsite）と通知は既定オフ。
+**機械検査**: `tests/unit/backup/test_domain.py::test_only_a_fully_passing_drill_flips_restore_verified`
+/ `tests/unit/backup/test_domain.py::test_restore_refuses_any_production_identifier`
+/ `tests/unit/backup/test_restore_drill.py::test_restore_refuses_a_production_target_before_running_anything`
+/ `tests/unit/backup/test_restore_drill.py::test_a_corrupted_backup_file_is_detected_and_nothing_is_restored`
+/ `tests/unit/backup/test_domain.py::test_retention_never_deletes_the_last_verified_backup`
+/ `tests/unit/backup/test_prune.py::test_unverified_backups_are_never_pruned_even_far_outside_the_policy`
+/ `tests/unit/backup/test_backup_service.py::test_destination_on_the_production_device_is_refused`
+/ `tests/unit/backup/test_backup_service.py::test_size_mismatch_and_etag_mismatch_are_detected`
+/ `tests/contract/test_backup_contracts.py::test_a_real_manifest_passes_the_release_preflight_backup_check`
+/ `tests/architecture/test_backup_boundaries.py`（本番へは dump と SELECT だけ・削除と docker run/rm の置き場・
+`restore_verified=True` を書けるのは `apply_drill` だけ・外部送信は既定オフ）
