@@ -353,10 +353,15 @@ def test_activity_only_workers_tolerate_long_activities(services, service) -> No
 
 
 def test_temporal_healthcheck_matches_serving_exactly(services) -> None:
-    """``grep -q SERVING`` は ``NOT_SERVING`` にも一致する。行全体で一致させる。"""
+    """部分一致（``grep -q SERVING``）は ``NOT_SERVING`` にも一致する。全体一致で比べる。
+
+    ADR-0052 でパイプ（``| grep -qx``）をやめ ``[ "$(...)" = SERVING ]`` にした。
+    意図（全体一致）は同じで、挙動は ``test_compose_temporal_healthcheck.py`` が実行して固定する。
+    """
     test = _svc(services, "temporal")["healthcheck"]["test"]
     text = test if isinstance(test, str) else " ".join(str(t) for t in test)
-    assert "grep -qx SERVING" in text
+    assert "= SERVING ]" in text
+    assert "grep" not in text
 
 
 def test_pipeline_worker_does_not_receive_minio_credentials(services) -> None:

@@ -67,3 +67,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0046](./0046-ci-minio-image.md) | CI の MinIO image を Chainguard（digest 固定）に差し替える | Accepted |
 | [0049](./0049-branch-strategy-and-ci-gate.md) | ブランチ戦略（trunk-based・`main` = 本番）と単一の required check `CI gate` | Proposed（所有者承認待ち） |
 | [0050](./0050-release-preflight-and-staging.md) | 読み取り専用の release preflight（READY/BLOCKED/UNKNOWN）と本番から隔離した staging | Proposed |
+| [0052](./0052-temporal-container-init-and-leak-free-healthcheck.md) | Temporal コンテナを init 付きにし、healthcheck がプロセスを漏らさないようにする | Proposed |
