@@ -71,3 +71,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0045](./0045-operator-ui-and-episodes-api-auth.md) | 運用者 UI（P2-B）と `/episodes/*` の opt-in 認証 | Accepted |
 | [0046](./0046-ci-minio-image.md) | CI の MinIO image を Chainguard（digest 固定）に差し替える | Accepted |
 | [0047](./0047-agent-tool-registry.md) | Agent Tool Registry（Research / YouTube Analytics を Agent の tool として統合） | Proposed |
+| [0048](./0048-channel-agent-studio-oss-selection.md) | Channel Agent Studio と OSS 選定（非活性ドラフト） | Proposed |
