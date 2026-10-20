@@ -11,7 +11,8 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
 - 対象は 1 つの **40 桁 SHA**（`git rev-parse <ref>` で確定させ、ブランチ名・短縮形は使わない）
 - deploy は専用 worktree（`.worktrees/<agent>-release-<tag>`）で、その SHA を checkout した状態で行う
   （`deploy-workers.sh` は `HEAD` から build する）
-- 証跡は `release/` 配下の**コミットしないファイル**として置く（`release/` は dirty 判定から除外される）:
+- 証跡は `release/` 配下の**コミットしないファイル**として置く（`release/` は `.gitignore` 済みなので、`deploy-workers.sh` の `git status --porcelain` の dirty 判定にも掛からない。
+  `tests/contract/test_release_evidence_ignored.py` が検査）:
   `release/approvals/<sha>.json` / `release/evidence/<sha>-replay.json` / バックアップ manifest
 - **バックアップを取る自動手順はこの repo に無い**（未実装。§8）。manifest は所有者が取ったバックアップの記録
 
@@ -103,7 +104,7 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
   `# contract-migration: approved ADR-NNNN`（その ADR ファイルが target に存在すること）が無ければ BLOCKED
 - 走査は文字列/AST ベースで限界がある（ADR-0050 Consequences）。最終判断は人のレビュー
 
-## 7. リリース記録テンプレート（`release/records/<tag>.md`、deploy 後に別ブランチでコミット）
+## 7. リリース記録テンプレート（`docs/releases/<tag>.md`、deploy 後に別ブランチでコミット。`release/` は ignore なのでここに置く）
 
 ```markdown
 # Release <tag>
