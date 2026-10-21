@@ -166,6 +166,7 @@ def _run(args, env, db_root, object_root, runner, audit, notifier, now) -> int: 
         git_revision=_git(["rev-parse", "HEAD"]) or "unknown",
         git_dirty=bool(_git(["status", "--porcelain"])),
         allow_same_device=args.allow_same_device,
+        protected_paths=(str(MINIO_DATA_DIR), str(Path(settings.ai_video_work_root))),
         quiesce=args.quiesce_note,
         offsite_command=offsite,
         tool_versions={"python": sys.version.split()[0], "docker": _docker_version(runner)},

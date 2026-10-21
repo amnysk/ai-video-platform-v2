@@ -6,6 +6,7 @@ restore は**隔離した復旧先にだけ**書く。復旧先の container / p
 
 from __future__ import annotations
 
+import os
 import posixpath
 import re
 from collections.abc import Iterable
@@ -51,7 +52,7 @@ class RestoreTarget:
 
 
 def _under(path: str, parent: str) -> bool:
-    p, q = posixpath.normpath(path), posixpath.normpath(parent)
+    p, q = posixpath.normpath(_real(path)), posixpath.normpath(_real(parent))
     return p == q or p.startswith(q.rstrip("/") + "/")
 
 
@@ -122,3 +123,25 @@ def safe_relative_key(prefix: str, key: str) -> str | None:
     if any(p in {"", ".", ".."} for p in parts):
         return None
     return posixpath.join(prefix, *parts)
+
+
+def _real(path: str | os.PathLike[str]) -> str:
+    """symlink と ``..`` を解決した絶対パス（存在しない末尾はそのまま残す）。"""
+    return os.path.realpath(path)
+
+
+def root_overlap_problems(
+    role: str, root: str | os.PathLike[str], protected_paths: Iterable[str]
+) -> list[str]:
+    """backup root が保護パス（MinIO のデータ dir 等）の内側・外側で重なる理由。
+
+    ``--allow-same-device`` では緩められない（root が MinIO のデータ dir の中にあると、
+    backup が MinIO の管理領域を書き換え、かつ同じディスクの故障で両方失う）。
+    """
+    real = _real(root)
+    problems: list[str] = []
+    for protected in protected_paths:
+        p = _real(protected)
+        if _under(real, p) or _under(p, real):
+            problems.append(f"{role}: root overlaps a protected path ({protected} -> {p})")
+    return problems

@@ -29,3 +29,4 @@
 | `test_backup_contracts.py` | 識別子が compose.yaml とずれる／manifest が release preflight の `backup_freshness` で読めなくなる（stale は BLOCKED） |
 | `test_backup_deploy_examples.py` | 例が勝手に install される／既定で外部送信・通知が有効になる |
 | `test_backup_boundaries.py` | backup が本番へ書き込み系を送る／drill 以外が `restore_verified=True` を書く／削除や `docker run/rm` の置き場が増える／想定外の外部通信 |
+| `test_guard_overlap.py` | backup root が MinIO データ dir の中/外側/symlink/`..` 経由で重なる（normpath だけでは見逃す）。`--allow-same-device` でも緩めないこと、restore の work_dir が symlink で保護パスへ向くこと |
