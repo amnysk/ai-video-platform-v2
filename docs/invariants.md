@@ -489,3 +489,23 @@ provider が成功を確認した（`confirmed_success`）予約、または未�
 / `tests/unit/test_reconcile_reservations_script.py::test_resolve_requires_evidence_and_owner_approval`
 / `tests/unit/test_reconcile_reservations_script.py::test_reconcile_is_dry_run_by_default_and_writes_nothing`
 / `tests/unit/test_reconcile_reservations_script.py::test_script_has_no_network_or_provider_imports`
+
+## O. 日次 Workflow の失敗検知（ADR-0054）
+
+### INV-68 Episode が作られない日次 workflow の失敗を、健全として黙って見過ごさない（ADR-0054）
+直近 N 日（`daily_failure_lookback_days`）の slot 日のうち、日次 workflow が Failed / TimedOut /
+Terminated / Canceled で閉じ、かつその日の slot（= Episode）が無い日は `DAILY_WORKFLOW_FAILED`
+として `operational_anomalies` に残る。終了状態を確認できない日（Temporal を読めない・保持期間切れ）は
+`DAILY_WORKFLOW_UNOBSERVABLE` として残り、**確認できなかったことを OK にしない**。
+Completed / Running の実行がある日と slot がある日は異常にしない。1日1行（hourly 再実行で行は増えず、
+窓の外の日付を新規に作らない）、確定した FAILED は UNOBSERVABLE に劣化させない。detail は失敗の型と
+message の要約（secret・UUID・URL query を伏せ、長さを制限）と `consecutive_failures` だけを持つ。
+**機械検査**: `tests/unit/test_daily_failure_domain.py::test_failed_without_slot_is_failed`
+/ `tests/unit/test_daily_failure_domain.py::test_completed_or_running_is_ok`
+/ `tests/unit/test_daily_failure_domain.py::test_unreadable_is_unobservable_never_ok`
+/ `tests/unit/test_daily_failure_domain.py::test_summary_redacts_secrets_and_truncates`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_failed_yesterday_and_today_records_two_consecutive_days`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_rerun_adds_no_rows_and_is_not_new`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_unreadable_temporal_records_unobservable_not_ok`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_recorded_failure_survives_retention_expiry`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_failure_outside_window_is_not_recorded`
