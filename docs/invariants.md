@@ -486,6 +486,8 @@ provider が成功を確認した（`confirmed_success`）予約、または未�
 **機械検査**: `tests/unit/test_reservation_reconciliation_repo.py::test_confirmed_success_can_never_be_resubmitted_under_a_new_key`
 / `tests/unit/test_reservation_reconciliation_repo.py::test_unknown_reservation_can_never_be_resubmitted_under_a_new_key`
 / `tests/unit/test_reservation_reconciliation_repo.py::test_dispatched_reserved_without_any_verdict_blocks_a_new_key`
+/ `tests/unit/test_reservation_ledger_locking.py::test_resolve_manual_locks_the_reservation_row`
+/ `tests/unit/test_reservation_ledger_locking.py::test_reserve_takes_the_input_advisory_lock_only_on_postgresql`
 / `tests/unit/test_reservation_reconciliation_domain.py::test_advance_is_idempotent`
 / `tests/unit/test_reservation_reconciliation_domain.py::test_unknown_stays_unknown_without_new_evidence`
 / `tests/unit/test_reservation_reconciliation_domain.py::test_manual_resolution_requires_evidence_and_owner_approval`

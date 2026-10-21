@@ -40,6 +40,13 @@ ADR-0013 は「未照合の予約を自動で再送も解放もしない」と�
    `confirmed_success` → 拒否 / status=`reserved` かつ（判定が `unknown`・`still_running`、または判定なしで
    `dispatched_at` あり）→ 拒否 / それ以外（`reserved` かつ未 dispatch = 呼んでいない証拠、`spent`、
    `abandoned`、`confirmed_failed`、`cancelled`）→ 従来どおり。同じ key は新規送信ではないので対象外。
+   **並行制御**（P2-b）: `resolve_manual` は予約行を `SELECT ... FOR UPDATE` で読み、判定の読み直しと
+   台帳の遷移をそのロックの下で行う（後から来た別 outcome は待った後に確定済み判定を読み、
+   `ManualResolutionError` になって監査行を残さない）。`reserve` は入力タプルの
+   `pg_advisory_xact_lock` を取ってから検査 → INSERT する（PostgreSQL のみ。SQLite は直列なので出さない）。
+   advisory lock は検査と INSERT を直列化するだけで、未 dispatch の先行予約を拒否理由にはしない
+   （それは `find_unreconciled` と ledger round の一意制約の担当）。実 PG での競合試験は
+   `tests/integration/test_reservation_ledger_concurrency.py`（`TEST_DATABASE_URL` が無いと skip）。
 4. `scripts/reconcile-reservations.py`（`list` / `reconcile` / `resolve`）。`reconcile` と
    `resolve` は既定 dry-run。**この CLI は provider へ接続しない**: status 関数は注入するか
    `--observations-file` で与える。実 fal への status/result GET は owner 承認が要る別手順。
