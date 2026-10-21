@@ -355,6 +355,8 @@ class EventName(StrEnum):
     RESERVATION_SPENT = "reservation.spent"
     RESERVATION_RESUMED = "reservation.resumed"
     RESERVATION_BLOCKED = "reservation.blocked"
+    # 未照合予約の判定を記録した（観測・人手確定。ADR-0053。commit 後だけ）
+    RESERVATION_RECONCILED = "reservation.reconciled"
     # 成果物
     ARTIFACT_STORED = "artifact.stored"
     ARTIFACT_REUSED = "artifact.reused"

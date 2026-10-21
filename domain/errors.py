@@ -94,6 +94,13 @@ class UnreconciledReservationError(NeedsInputError):
     """
 
 
+class ResubmitRejectedError(UnreconciledReservationError):
+    """課金済み・結果あり・未確定の予約がある入力へ、新しい idempotency key で再送しようとした。
+
+    provider に冪等キーは無いので、台帳の側で止める（ADR-0053 / INV-67）。
+    """
+
+
 class StoryboardOutputUnparseableError(RetryableError):
     """storyboard 生成器の出力が JSON として読めない（ADR-0014 / ADR-0015）。"""
 

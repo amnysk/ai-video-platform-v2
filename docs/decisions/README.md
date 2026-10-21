@@ -68,3 +68,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0049](./0049-branch-strategy-and-ci-gate.md) | ブランチ戦略（trunk-based・`main` = 本番）と単一の required check `CI gate` | Proposed（所有者承認待ち） |
 | [0050](./0050-release-preflight-and-staging.md) | 読み取り専用の release preflight（READY/BLOCKED/UNKNOWN）と本番から隔離した staging | Proposed |
 | [0051](./0051-restorable-backup-and-restore-drill.md) | 復旧できるバックアップ（pg_dump + S3 API 複写）と隔離先への restore drill | Proposed |
+| [0053](./0053-unreconciled-reservation-reconciliation.md) | 未照合予約の照合記録（5値判定）・手動確定の監査・新 key での再送ガード | Proposed |

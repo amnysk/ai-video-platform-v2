@@ -159,7 +159,10 @@ def test_upgrade_adds_only_research_tables_and_leaves_production_tables_alone(
         )
         for t in PRODUCTION_TABLES
     }
-    _config_after, engine = _upgraded(tmp_path)
+    # 0015 が足す表だけを見る（後続 migration が head を進めても、この契約は 0015 時点のもの）
+    after_url = f"sqlite:///{tmp_path / 'after.db'}"
+    command.upgrade(_config(after_url), "0015")
+    engine = create_engine(after_url)
     after = inspect(engine)
     assert set(after.get_table_names()) - before_tables == RESEARCH_TABLES
     for table in PRODUCTION_TABLES:

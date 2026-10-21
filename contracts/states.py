@@ -231,6 +231,29 @@ class ReservationStatus(StrEnum):
     ABANDONED = "abandoned"
 
 
+class ReconciliationVerdict(StrEnum):
+    """未照合予約の「provider 側で何が起きたか」の判定（ADR-0053）。
+
+    ``UNKNOWN`` は失敗ではない。課金されたかも成功したかも分からない状態で、
+    自動で失敗扱いにも再送にもしない。
+    """
+
+    CONFIRMED_SUCCESS = "confirmed_success"
+    CONFIRMED_FAILED = "confirmed_failed"
+    STILL_RUNNING = "still_running"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
+RECONCILIATION_TERMINAL_VERDICTS: frozenset[ReconciliationVerdict] = frozenset(
+    {
+        ReconciliationVerdict.CONFIRMED_SUCCESS,
+        ReconciliationVerdict.CONFIRMED_FAILED,
+        ReconciliationVerdict.CANCELLED,
+    }
+)
+
+
 class RejectedInput(StrEnum):
     """provider が内容を拒否したとき、拒否の対象になった入力（ADR-0035）。
 

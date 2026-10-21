@@ -447,9 +447,9 @@ bind path・host port・Temporal namespace を共有せず、FAL / YouTube の�
 / `tests/architecture/test_release_preflight_read_only.py`
 / `tests/contract/test_compose_staging.py`
 
-## N. バックアップと復旧（ADR-0051）
+## N. バックアップと復旧（ADR-0053）
 
-### INV-66 バックアップは「復旧演習に通るまで未検証」で、復旧は隔離先にしか書かない
+### INV-67 バックアップは「復旧演習に通るまで未検証」で、復旧は隔離先にしか書かない
 `scripts/backup.py run` が作る manifest は常に `restore_verified: false`。`true` にできるのは
 `scripts/backup.py restore-drill` だけで、それも全検査（全ファイルの sha256・3 DB の復元・行数が backup 時の
 `[before, after]` に入る・alembic revision・オブジェクトの sha256・DB の `artifact_metadata` /
@@ -471,3 +471,21 @@ backup は本番の PostgreSQL へ `pg_dump` / `pg_dumpall --globals-only` / `SE
 / `tests/contract/test_backup_contracts.py::test_a_real_manifest_passes_the_release_preflight_backup_check`
 / `tests/architecture/test_backup_boundaries.py`（本番へは dump と SELECT だけ・削除と docker run/rm の置き場・
 `restore_verified=True` を書けるのは `apply_drill` だけ・外部送信は既定オフ）
+
+## N. 未照合予約（ADR-0053）
+
+### INV-67 確定済み・未確定の課金予約を、新しい idempotency key で再送しない（ADR-0053）
+provider が成功を確認した（`confirmed_success`）予約、または未照合で `unknown` / `still_running`
+の予約がある入力（Episode・provider・シーン・`input_hash`）へ、`reserve` は新しい予約を作らず
+`ResubmitRejectedError` を投げる。`unknown` は失敗ではなく、観測できなかったことを理由に失敗扱い・再送にしない。
+判定は追記専用の `provider_reservation_reconciliations` に残り、確定は他の確定へ変わらず、
+同じ観測の再実行は行を増やさない。人手確定は `--evidence` と `--owner-approval` が必須で、承認 token は
+指紋だけを保存する。`scripts/reconcile-reservations.py` は provider へ接続せず、`reconcile` / `resolve` は既定 dry-run。
+**機械検査**: `tests/unit/test_reservation_reconciliation_repo.py::test_confirmed_success_can_never_be_resubmitted_under_a_new_key`
+/ `tests/unit/test_reservation_reconciliation_repo.py::test_unknown_reservation_can_never_be_resubmitted_under_a_new_key`
+/ `tests/unit/test_reservation_reconciliation_domain.py::test_advance_is_idempotent`
+/ `tests/unit/test_reservation_reconciliation_domain.py::test_unknown_stays_unknown_without_new_evidence`
+/ `tests/unit/test_reservation_reconciliation_domain.py::test_manual_resolution_requires_evidence_and_owner_approval`
+/ `tests/unit/test_reconcile_reservations_script.py::test_resolve_requires_evidence_and_owner_approval`
+/ `tests/unit/test_reconcile_reservations_script.py::test_reconcile_is_dry_run_by_default_and_writes_nothing`
+/ `tests/unit/test_reconcile_reservations_script.py::test_script_has_no_network_or_provider_imports`
