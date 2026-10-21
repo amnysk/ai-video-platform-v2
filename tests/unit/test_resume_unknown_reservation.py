@@ -28,7 +28,9 @@ class _Result403Generator(FakeImageGenerator):
     """結果取得が 403（資格情報）で拒否される fal の形。"""
 
     async def poll(self, ref: ProviderJobRef) -> JobStatus:
-        raise ProviderUnavailableError("fal result refused: HTTP 403 (credentials)", http_status=403)
+        raise ProviderUnavailableError(
+            "fal result refused: HTTP 403 (credentials)", http_status=403
+        )
 
 
 @pytest.fixture
