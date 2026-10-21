@@ -20,13 +20,14 @@ from contracts.backup import (
     BACKUP_DATABASES,
     BACKUP_ID_FORMAT,
 )
-from domain.backup.guards import destination_problems, safe_relative_key
+from domain.backup.guards import destination_problems, root_overlap_problems, safe_relative_key
 from domain.backup.manifest import iso, new_manifest, validate_manifest
 from infrastructure.backup import catalog
 from infrastructure.backup.audit import AuditLog, Notifier
 from infrastructure.backup.objects import ObjectSource, is_plain_md5_etag
 from infrastructure.backup.postgres import CommandFailed, PostgresAccess
 from infrastructure.backup.runner import CommandRunner
+from infrastructure.workdir import MINIO_DATA_DIR
 
 
 class BackupFailed(Exception):
@@ -41,6 +42,8 @@ class BackupConfig:
     git_revision: str
     git_dirty: bool
     allow_same_device: bool = False
+    #: root が重なってはならない本番データの置き場（allow_same_device でも緩めない）
+    protected_paths: tuple[str, ...] = (str(MINIO_DATA_DIR),)
     quiesce: str = "none"
     offsite_command: list[str] | None = None
     tool_versions: dict[str, str] = field(default_factory=dict)
@@ -168,6 +171,7 @@ class BackupService:
         for role, root in _roles(cfg).items():
             if not root.is_dir():
                 raise BackupFailed(f"{role} root does not exist: {root}")
+            problems += root_overlap_problems(role, root, cfg.protected_paths)
             problems += destination_problems(
                 role,
                 d.path_device(root),
