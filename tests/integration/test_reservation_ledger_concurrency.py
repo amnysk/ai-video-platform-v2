@@ -98,7 +98,7 @@ async def test_racing_reserves_with_different_keys_are_serialized_without_error(
 
 async def _resolve(factory, rid: str, outcome: str, gate: asyncio.Event):
     resolution = validate_manual_resolution(
-        outcome=outcome, evidence="e", owner_approval="tok", actor=outcome
+        outcome=outcome, evidence="e", owner_approval="OWNER-20261021-itest01", actor=outcome
     )
     async with factory() as session:
         await gate.wait()
