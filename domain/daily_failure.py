@@ -97,7 +97,7 @@ _KEY_VALUE = re.compile(
     r"(?i)\b([\w-]*(?:api[_-]?key|token|secret|passw(?:or)?d|credential|authorization)[\w-]*)"
     r"\s*[:=]\s*\S+"
 )
-_KNOWN_PREFIX = re.compile(r"\b(?:sk|pk|rk|fal|ghp|gho|xox[abp])[-_][A-Za-z0-9_\-]{8,}")
+_KNOWN_PREFIX = re.compile(r"\b(?:sk|pk|rk|ghp|gho|xox[abp])[-_][A-Za-z0-9_\-]{8,}")
 _OPAQUE = re.compile(r"[A-Za-z0-9+/_=\-]{32,}")
 _SPACE = re.compile(r"\s+")
 
