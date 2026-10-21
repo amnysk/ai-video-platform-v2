@@ -1,0 +1,14 @@
+# 例（install しない）。最新の backup を使い捨ての復旧先（--network none の PG コンテナ）で検証する。
+# 成功したときだけ prune --apply（検証済みの古い集合だけを消す。未検証は消さない）。
+[Unit]
+Description=AVP restore drill + retention - ADR-0051
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/ai-video-platform-v2
+EnvironmentFile=%h/.config/avp/backup.env
+ExecStart=%h/projects/ai-video-platform-v2/.venv/bin/python scripts/backup.py restore-drill --backup-id latest --work-root %h/.cache/avp-restore
+ExecStart=%h/projects/ai-video-platform-v2/.venv/bin/python scripts/backup.py prune --apply
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=idle
