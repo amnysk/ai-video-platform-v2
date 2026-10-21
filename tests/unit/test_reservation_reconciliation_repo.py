@@ -121,6 +121,21 @@ async def test_manual_cancel_abandons_the_reservation(session) -> None:
     assert row is not None and row.status is ReservationStatus.ABANDONED
 
 
+async def test_manual_resolve_after_a_provider_confirmed_observation_still_settles_the_ledger(
+    session,
+) -> None:
+    """監査指摘 P1: 観測だけが確定した予約が reserved のまま詰まってはいけない。"""
+    _, rid = await _reserved(session)
+    repo = ProviderReconciliationRepository(session)
+    done = ProviderObservation(queue_status="COMPLETED", result_outcome="ok")
+    verdict, _ = await repo.record_observation(rid, done)
+    assert verdict is V.CONFIRMED_SUCCESS
+    assert await repo.resolve_manual(rid, _resolution("success")) is True
+    row = await ProviderReservationRepository(session).get(rid)
+    assert row is not None and row.status is ReservationStatus.SPENT
+    assert await repo.resolve_manual(rid, _resolution("success")) is False  # 以後は冪等
+
+
 async def test_provider_observation_cannot_override_a_manual_confirmation(session) -> None:
     _, rid = await _reserved(session)
     repo = ProviderReconciliationRepository(session)
