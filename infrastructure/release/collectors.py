@@ -213,6 +213,23 @@ class RealCollectors:
             self._select_one("SELECT count(*) FROM provider_reservations WHERE status = 'reserved'")
         )
 
+    def unhealthy_services(self) -> list[str]:
+        """compose project の container で Health が unhealthy のもの（読み取りのみ）。"""
+        ids = _ok(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                f"label=com.docker.compose.project={COMPOSE_PROJECT}",
+                "--filter",
+                "health=unhealthy",
+                "--format",
+                '{{.Label "com.docker.compose.service"}}',
+            ],
+            self._repo,
+        )
+        return sorted(set(ids.split()))
+
     # ---- Temporal（describe / list だけ）
     def _temporal(self) -> Any:
         from temporalio.client import Client

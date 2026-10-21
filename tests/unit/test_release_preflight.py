@@ -49,10 +49,10 @@ SCHEDULES = {
 }
 
 
-def _manifest(age_hours: float = 1.0, drop: str | None = None) -> str:
+def _manifest(age_hours: float = 1.0, drop: str | None = None, verified: bool = True) -> str:
     stamp = (NOW - timedelta(hours=age_hours)).isoformat()
     comps = {c: {"created_at": stamp} for c in rp.BACKUP_COMPONENTS if c != drop}
-    return json.dumps({"components": comps})
+    return json.dumps({"components": comps, "restore_verified": verified})
 
 
 def sha256_text(text: str) -> str:
@@ -117,6 +117,7 @@ class Fake:
     adr_texts: Any = field(default_factory=lambda: {(OLD, "0050"): ACCEPTED_ADR})
     running: Any = 2
     pending: Any = 0
+    unhealthy: Any = field(default_factory=list)
     schedules: Any = field(default_factory=lambda: dict(SCHEDULES))
     queues: Any = field(default_factory=lambda: ["pipeline", "render"])
     missing_queues: Any = field(default_factory=list)
@@ -173,6 +174,9 @@ class Fake:
 
     def pending_reservation_count(self) -> int:
         return self._get(self.pending)
+
+    def unhealthy_services(self) -> list[str]:
+        return self._get(self.unhealthy)
 
     def schedule_states(self) -> dict[str, dict[str, object]]:
         return self._get(self.schedules)
@@ -741,3 +745,33 @@ def test_unknown_expected_service_list_is_unknown() -> None:
     assert _status(_run(Fake(expected=[])), "container_revisions") is rp.Status.UNKNOWN
     unreadable = Fake(expected=rp.CollectorUnavailable("compose"))
     assert _status(_run(unreadable), "container_revisions") is rp.Status.UNKNOWN
+
+
+# ---- 復旧検証・サービス健全性（INV-66）
+
+
+def test_backup_without_a_passed_restore_drill_is_unknown_never_ready() -> None:
+    unverified = Fake(texts={"backup.json": _manifest(1, verified=False)})
+    assert _status(_run(unverified), "backup_freshness") is rp.Status.UNKNOWN
+    missing_key = json.loads(_manifest(1))
+    del missing_key["restore_verified"]
+    absent = Fake(texts={"backup.json": json.dumps(missing_key)})
+    assert _status(_run(absent), "backup_freshness") is rp.Status.UNKNOWN
+    truthy = json.loads(_manifest(1))
+    truthy["restore_verified"] = "true"  # 真偽値 True 以外は検証済みと認めない
+    assert (
+        _status(_run(Fake(texts={"backup.json": json.dumps(truthy)})), "backup_freshness")
+        is rp.Status.UNKNOWN
+    )
+    report = _run(unverified)
+    assert report.overall is not rp.Overall.READY
+
+
+def test_unhealthy_service_blocks_and_unreadable_health_is_unknown() -> None:
+    assert _status(_run(Fake()), "service_health") is rp.Status.PASS
+    sick = _run(Fake(unhealthy=["temporal"]))
+    assert _status(sick, "service_health") is rp.Status.BLOCKED
+    assert sick.overall is rp.Overall.BLOCKED
+    assert _status(_run(Fake(unhealthy=RuntimeError("docker"))), "service_health") is (
+        rp.Status.UNKNOWN
+    )

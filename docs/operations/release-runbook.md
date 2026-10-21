@@ -184,3 +184,12 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
 
 `--pre-report` / 承認の検証、migration 走査、承認の束縛は「取り違えの防止」であり、悪意ある偽造や走査をすり抜ける
 書き方を完全には防げない（best effort）。最終判断は人。
+
+## 復旧検証と本番サービス健全性の判定（INV-65 / INV-66）
+
+- `backup_freshness`: manifest が新しくても `restore_verified: true`（復旧演習に合格）でなければ **UNKNOWN**。
+  READY には復旧演習済みのバックアップが必要。
+- `service_health`（新設・必須）: compose project に `unhealthy` の container が1つでもあれば **BLOCKED**。
+  healthcheck の閾値を緩めて通すことはしない（ADR-0052）。docker が読めなければ UNKNOWN。
+- `provider_reservations`: 未照合が1件でもあれば現状 **BLOCKED**（一律）。対象 Episode・provider・変更範囲に基づく
+  リスクベース判定は未実装（P2）。`scripts/reconcile-reservations.py list` で状態を確認する（ADR-0053）。

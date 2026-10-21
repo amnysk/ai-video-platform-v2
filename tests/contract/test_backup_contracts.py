@@ -74,8 +74,12 @@ def test_a_real_manifest_passes_the_release_preflight_backup_check(tmp_path: pat
     h = make_backup(tmp_path)
     manifest = h.service.run()
     done = datetime.fromisoformat(manifest["finished_at"])
-    assert _preflight_backup_status(manifest, done + timedelta(hours=1)) is rp.Status.PASS
-    assert _preflight_backup_status(manifest, done + timedelta(hours=30)) is rp.Status.BLOCKED
+    # 復旧演習に通るまでは未検証 = UNKNOWN（INV-66）。演習合格後の manifest だけが PASS
+    assert manifest["restore_verified"] is False
+    assert _preflight_backup_status(manifest, done + timedelta(hours=1)) is rp.Status.UNKNOWN
+    verified = {**manifest, "restore_verified": True}
+    assert _preflight_backup_status(verified, done + timedelta(hours=1)) is rp.Status.PASS
+    assert _preflight_backup_status(verified, done + timedelta(hours=30)) is rp.Status.BLOCKED
     assert _preflight_backup_status({"schema_version": 1}, done) is rp.Status.UNKNOWN
     # 時刻は全て TZ 付き（naive は preflight が「確認できない」とする）
     for comp in manifest["components"].values():
