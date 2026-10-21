@@ -39,6 +39,7 @@ from infrastructure.db.repositories import (
 )
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
+from infrastructure.temporal.daily_runs import TemporalDailyRunReader
 from infrastructure.temporal.schedules import TemporalScheduleControl
 from infrastructure.temporal.watchdog import (
     TemporalPipelineOutcomeChecker,
@@ -88,6 +89,7 @@ class PipelineActivities:
             notifier=self.notifier_factory(),
             request=request,
             pipeline_outcome_checker=TemporalPipelineOutcomeChecker(self._temporal_client),
+            daily_run_reader=TemporalDailyRunReader(self._temporal_client),
         )
 
     async def _paused_reason(self, session: AsyncSession, *, include_uploads: bool) -> str | None:

@@ -1915,6 +1915,12 @@ class DailyEpisodeSlotRepository:
             return False  # 同じ plan を別の Episode が先に取った。読み直すと holder が見える
         return True
 
+    async def earliest_slot_date(self) -> date | None:
+        """最初の slot の日。これより前の日は「日次運用が始まる前」で、失敗検知の対象にしない。"""
+        return (
+            await self._session.execute(select(func.min(DailyEpisodeSlotRow.slot_date)))
+        ).scalar_one_or_none()
+
     async def list_for_date(self, slot_date: date) -> list[DailyEpisodeSlot]:
         return [
             DailyEpisodeSlot(

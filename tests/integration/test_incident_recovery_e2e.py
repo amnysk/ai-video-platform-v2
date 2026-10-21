@@ -62,6 +62,7 @@ from infrastructure.db.repositories import (
     ProviderAuthIncidentRepository,
 )
 from infrastructure.production.paid_job import PaidJobRunner, Submitted
+from infrastructure.temporal.daily_runs import TemporalDailyRunReader
 from infrastructure.temporal.watchdog import TemporalPipelineOutcomeChecker, run_daily_watchdog
 from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.production import (
@@ -684,6 +685,7 @@ async def test_watchdog_flags_stopped_pipeline_before_resume_then_resume_recover
             notifier=_DiscardingNotifier(),
             request=WatchdogCheckRequest(now=now.isoformat()),
             pipeline_outcome_checker=outcome_checker,
+            daily_run_reader=TemporalDailyRunReader(client),
         )
         assert (
             AnomalyKind.EPISODE_STAGE_STALLED.value in watchdog_result.anomalies

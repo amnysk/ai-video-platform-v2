@@ -66,7 +66,7 @@ Schedule の再登録（`--apply`）は冪等で、現在の pause を保つ。
 
 ## 5. 異常の読み方
 
-`operational_anomalies` — Schedule 系（下表の上5件）は1日1行、Episode 系（下表の残り4件、
+`operational_anomalies` — Schedule 系（下表の上5件と末尾の `DAILY_WORKFLOW_*` 2件、ADR-0054）は1日1行、Episode 系（下表の残り4件、
 ADR-0031）は **Episode ごとに1日1行**（`episode_id` 列で区別。部分インデックス2本で強制）。
 ログは ERROR `OPERATIONAL_ANOMALY anomaly=<KIND> date=...`。
 
@@ -81,6 +81,8 @@ ADR-0031）は **Episode ごとに1日1行**（`episode_id` 列で区別。部�
 | `EPISODE_NOT_COMPLETED_BY_DEADLINE`（ADR-0031） | 作成から完成期限（既定 `completion_deadline_hours`）を超えても `render_ready` 以降に達していない | 停滞中の工程を確認（多くは `EPISODE_STAGE_STALLED` と併発する） |
 | `EPISODE_NOT_UPLOADED_BY_DEADLINE`（ADR-0031） | `render_ready`/`approved` 到達から投稿期限（既定 `upload_deadline_hours`）を超えても `uploaded` に届かない | `UPLOADS_PAUSED` なら意図した停止（このkindは記録されない）。そうでなければ upload worker を確認 |
 | `PIPELINE_OUTCOME_MISMATCH`（ADR-0031） | `EpisodePipelineWorkflow` が Temporal 上は `completed` なのに型付き結果が `outcome=stopped` で、他のどの検査にも映らない | `detail.stopped_stage` / `detail.reason` を見て該当工程を確認。他の episode 系 kind と重複しないよう二重報告は避ける設計 |
+| `DAILY_WORKFLOW_FAILED`（ADR-0054） | 直近 N 日（`daily_failure_lookback_days`、既定3）の日次 workflow が Failed / TimedOut / Terminated / Canceled で閉じ、その日の slot（= Episode）が無い。Episode が作られる前の失敗はこれだけが拾う | `detail.failure_type` / `failure_message`（secret を伏せた要約）と `workflow_id` で原因を確認。`detail.consecutive_failures` が「何日連続か」。slot ができる・成功した再実行が出る・（窓内で）Completed/Running になると自動で閉じる |
+| `DAILY_WORKFLOW_UNOBSERVABLE`（ADR-0054） | 終了状態を確認できない日（Temporal を読めない・履歴が保持期間で消えた）。**健全の意味ではない** | `detail.reason`（`reader_error` / `no_execution_in_retention`）。Temporal の到達性を確認。既に FAILED が記録された日は上書きされない |
 
 ```sql
 select kind, anomaly_date, episode_id, occurrences, first_detected_at, resolved_at, notified_at
@@ -90,6 +92,18 @@ from operational_anomalies order by anomaly_date desc, kind;
 `stage_stall_grace_minutes` / `completion_deadline_hours` / `upload_deadline_hours` の既定値は
 `contracts/schedule_guard.py` の単一宣言元（`infrastructure/config.py` の Settings で上書き可能）。
 Shorts 等の尺に固有の値をここ以外に埋め込まない。
+
+### 日次 workflow の失敗検知（ADR-0054）の要点
+
+- 判定の対象日: 最新の slot 日から `daily_failure_lookback_days` 日さかのぼった日のうち、
+  **最初の slot の日以降**だけ（日次運用が始まる前の日を異常にしない。slot が1つも無い新品の DB では最新日だけ）。
+- 第一の読み取りは Temporal visibility、読めなければ Schedule の `recent_actions` → 各 workflow の `describe`。
+  どちらも読めなければその日は `DAILY_WORKFLOW_UNOBSERVABLE`。履歴は既定1日で消えるので、
+  **古い日の失敗は、消える前の watchdog 実行（毎時）が記録した行が唯一の証拠**になる。
+- 最新の slot 日に実行が見つからないときは `DAILY_AUTOMATION_NOT_STARTED` の担当（二重に報告しない）。
+- 手動確認（読み取りのみ）: `select anomaly_date, detail->>'consecutive_failures', detail->>'failure_message'
+  from operational_anomalies where kind='DAILY_WORKFLOW_FAILED' and resolved_at is null order by 1;`
+- watchdog は再実行しない。原因を直した後の復旧は運用者が日次 workflow を手動起動する。
 
 通知は `AnomalyNotifier`（`infrastructure/observability/anomaly_notifier.py`）。既定はログのみ。
 Slack / メール等は同じ Protocol を実装し、`workers/pipeline/activities.py` の
