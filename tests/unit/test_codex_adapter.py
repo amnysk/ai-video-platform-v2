@@ -14,9 +14,13 @@ from typing import Any
 import pytest
 
 from domain.errors import (
+    FailureClass,
     ProviderInvocationError,
     ProviderTimeoutError,
     ProviderUnavailableError,
+    UnsupportedModelError,
+    classify_failure,
+    failure_class_from_type_name,
 )
 from domain.script.ports import GenerationRequest, GenerationResult
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
@@ -471,3 +475,39 @@ async def test_model_is_not_passed_when_unset(tmp_path) -> None:
     )
     await generator.generate(_request())
     assert "-m" not in runner.argv
+
+
+UNSUPPORTED_MODEL_JSONL = json.dumps(
+    {
+        "type": "error",
+        "message": '{"type":"error","status":400,"error":{"type":"invalid_request_error",'
+        '"message":"The \'gpt-6-sol\' model is not supported when using '
+        'Codex with a ChatGPT account."}}',
+    }
+)
+
+
+async def test_rejection_carries_the_model_name_and_is_not_retryable(tmp_path) -> None:
+    generator = CodexCliStoryGenerator(
+        binary="/x/codex",
+        model="",  # config.toml 由来で -m を渡していない場合でも名前が分かる
+        runner=FakeProcessRunner(stdout=UNSUPPORTED_MODEL_JSONL),
+        workspace=tmp_path,
+    )
+    with pytest.raises(UnsupportedModelError) as excinfo:
+        await generator.generate(_request())
+    assert excinfo.value.model == "gpt-6-sol"
+    assert "gpt-6-sol" in str(excinfo.value)
+    assert isinstance(excinfo.value, ProviderUnavailableError)
+    assert classify_failure(excinfo.value) is FailureClass.NEEDS_INPUT
+    assert failure_class_from_type_name("UnsupportedModelError") is FailureClass.NEEDS_INPUT
+
+
+async def test_rejection_message_has_no_secret(tmp_path) -> None:
+    leaky = UNSUPPORTED_MODEL_JSONL.replace("The ", "token=abc123 The ")
+    generator = CodexCliStoryGenerator(
+        binary="/x/codex", model="m", runner=FakeProcessRunner(stdout=leaky), workspace=tmp_path
+    )
+    with pytest.raises(UnsupportedModelError) as excinfo:
+        await generator.generate(_request())
+    assert "abc123" not in str(excinfo.value)

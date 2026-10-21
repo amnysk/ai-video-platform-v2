@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.client import Client
 from temporalio.worker import Worker
 
+from contracts.codex_models import parse_allowlist
 from contracts.topic_planning import TOPIC_PLANNER_TASK_QUEUE
 from domain.errors import AnalyticsUnavailableError
 from infrastructure.analytics.youtube_analytics import (
@@ -28,6 +29,7 @@ from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.providers.codex_cli import CodexCliStoryGenerator, resolve_codex_binary
+from infrastructure.providers.codex_model_check import verify_codex_model
 from infrastructure.providers.process import SubprocessRunner
 from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.storage.minio_store import MinioArtifactStore
@@ -150,6 +152,10 @@ async def main() -> None:
     await store.ensure_bucket()
 
     binary = resolve_codex_binary(settings.codex_binary)
+    verify_codex_model(
+        model_setting=settings.codex_model,
+        allowed=parse_allowlist(settings.codex_allowed_models),
+    )
     workspace = Path(settings.codex_workspace).expanduser()
     workspace.mkdir(parents=True, exist_ok=True)
 

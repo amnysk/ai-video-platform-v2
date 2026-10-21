@@ -225,6 +225,7 @@ services:
       HOME: /home/avp
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_MODEL: ${CODEX_MODEL:-}
+      CODEX_ALLOWED_MODELS: ${CODEX_ALLOWED_MODELS:-}
       CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
       # Topic Planner の live Analytics（ADR-0025）。既定は無効。upload-worker と同じ OAuth client・token
       YOUTUBE_ANALYTICS_ENABLED: ${YOUTUBE_ANALYTICS_ENABLED:-false}
@@ -266,6 +267,7 @@ services:
       HOME: /home/avp
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_MODEL: ${CODEX_MODEL:-}
+      CODEX_ALLOWED_MODELS: ${CODEX_ALLOWED_MODELS:-}
       CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
       # コンテナ内の固定パス。host 側は OPENMONTAGE_HOST_PATH
@@ -364,6 +366,7 @@ services:
       HOME: /home/avp
       CODEX_BINARY: /usr/local/bin/codex
       CODEX_MODEL: ${CODEX_MODEL:-}
+      CODEX_ALLOWED_MODELS: ${CODEX_ALLOWED_MODELS:-}
       CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
     volumes:
       - type: bind

@@ -78,6 +78,17 @@ class ProviderUnavailableError(NeedsInputError):
         self.http_status = http_status
 
 
+class UnsupportedModelError(ProviderUnavailableError):
+    """指定（または config.toml 由来）の model がアカウントで使えない。設定の誤り。
+
+    何度呼んでも直らないので ``needs_input``。``model`` は診断用（secret を含まない）。
+    """
+
+    def __init__(self, message: str, *, model: str = "", http_status: int | None = None) -> None:
+        super().__init__(message, http_status=http_status)
+        self.model = model
+
+
 class ProviderCredentialSuspectedOutageError(NeedsInputError):
     """同じ provider への認可拒否がウィンドウ内で閾値を超えた（ADR-0030）。
 
