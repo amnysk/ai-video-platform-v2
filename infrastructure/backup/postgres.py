@@ -26,6 +26,10 @@ def parse_pipe_rows(out: str, sep: str = "|") -> list[list[str]]:
     return [line.split(sep) for line in out.splitlines() if line.strip()]
 
 
+#: psql は SELECT だけを送る。接続設定でも書き込めないようにする（読み取り専用は慣習にしない）
+READ_ONLY_PGOPTIONS = "PGOPTIONS=-c default_transaction_read_only=on"
+
+
 class PostgresAccess:
     def __init__(self, runner: CommandRunner, container: str, user: str) -> None:
         self._r = runner
@@ -41,21 +45,24 @@ class PostgresAccess:
 
     def _psql(self, db: str, sql: str, sep: str = "|") -> str:
         res = self._r.run(
-            self._exec(
-                [
-                    "psql",
-                    "-U",
-                    self._user,
-                    "-d",
-                    db,
-                    "-v",
-                    "ON_ERROR_STOP=1",
-                    "-F",
-                    sep,
-                    "-Atc",
-                    sql,
-                ]
-            )
+            [
+                "docker",
+                "exec",
+                "-e",
+                READ_ONLY_PGOPTIONS,
+                self._container,
+                "psql",
+                "-U",
+                self._user,
+                "-d",
+                db,
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-F",
+                sep,
+                "-Atc",
+                sql,
+            ]
         )
         if res.returncode != 0:
             raise CommandFailed(f"psql {db}: rc={res.returncode} {res.stderr.strip()[:200]}")

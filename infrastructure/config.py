@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     codex_model: str = ""  # 空なら codex の既定（~/.codex/config.toml）に従う
     #: CLI 側にタイムアウトオプションが無いので、Python 側の上限がこれだけ。
     codex_timeout_seconds: int = 900
+    #: 許可 model（カンマ区切り）。空なら未検証（contracts/codex_models.py）
+    codex_allowed_models: str = ""
     #: codex を ``-C`` で走らせる作業ディレクトリ（sandbox は read-only）。
     codex_workspace: str = "."
 

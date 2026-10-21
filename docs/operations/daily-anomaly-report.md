@@ -71,3 +71,9 @@ counts = await recurring_unresolved_by_category(session, now, reader)  # {"stage
 - `deploy/logging/alerts/daily-anomaly-monitors.json`: Alerting の query monitor 定義。**`enabled:false`・
   `actions:[]`・未適用**。適用は所有者の判断（`POST _plugins/_alerting/monitors`）。Alerting plugin への適用は未検証。
 - 使うイベント名はすべて `docs/observability/emission-points.md` に載っているもの（契約テストで検査）。
+
+## 補足: watchdog との関係（ADR-0054）
+
+このレポートの `workflow_failure` / `missed_schedule_run` は読み取り専用の事後ビューで、何も書かない。
+Episode が作られない日次 workflow の失敗は、同じ事象を watchdog が `DAILY_WORKFLOW_FAILED` として
+`operational_anomalies` に記録し、通知経路に乗せる（連続日数は `detail.consecutive_failures`）。

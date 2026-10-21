@@ -476,16 +476,42 @@ backup は本番の PostgreSQL へ `pg_dump` / `pg_dumpall --globals-only` / `SE
 
 ### INV-67 確定済み・未確定の課金予約を、新しい idempotency key で再送しない（ADR-0053）
 provider が成功を確認した（`confirmed_success`）予約、または未照合で `unknown` / `still_running`
-の予約がある入力（Episode・provider・シーン・`input_hash`）へ、`reserve` は新しい予約を作らず
-`ResubmitRejectedError` を投げる。`unknown` は失敗ではなく、観測できなかったことを理由に失敗扱い・再送にしない。
+の予約、または**照合記録が無くても `dispatched_at` のある `reserved`**（呼んだ可能性がある。`unknown` として扱う）
+がある入力（Episode・provider・シーン・`input_hash`）へ、`reserve` は新しい予約を作らず
+`ResubmitRejectedError` を投げる（別の idempotency key の場合。同じ key は対象外）。未 dispatch の `reserved`・
+`spent` / `abandoned` / `confirmed_failed` / `cancelled` は従来どおり。`unknown` は失敗ではなく、観測できなかったことを理由に失敗扱い・再送にしない。
 判定は追記専用の `provider_reservation_reconciliations` に残り、確定は他の確定へ変わらず、
-同じ観測の再実行は行を増やさない。人手確定は `--evidence` と `--owner-approval` が必須で、承認 token は
+同じ観測の再実行は行を増やさない。人手確定は `--evidence` と `--owner-approval`（`OWNER-<yyyymmdd>-<id>` 形式。認証ではない）が必須で、承認 token は
 指紋だけを保存する。`scripts/reconcile-reservations.py` は provider へ接続せず、`reconcile` / `resolve` は既定 dry-run。
 **機械検査**: `tests/unit/test_reservation_reconciliation_repo.py::test_confirmed_success_can_never_be_resubmitted_under_a_new_key`
 / `tests/unit/test_reservation_reconciliation_repo.py::test_unknown_reservation_can_never_be_resubmitted_under_a_new_key`
+/ `tests/unit/test_reservation_reconciliation_repo.py::test_dispatched_reserved_without_any_verdict_blocks_a_new_key`
+/ `tests/unit/test_reservation_ledger_locking.py::test_resolve_manual_locks_the_reservation_row`
+/ `tests/unit/test_reservation_ledger_locking.py::test_reserve_takes_the_input_advisory_lock_only_on_postgresql`
 / `tests/unit/test_reservation_reconciliation_domain.py::test_advance_is_idempotent`
 / `tests/unit/test_reservation_reconciliation_domain.py::test_unknown_stays_unknown_without_new_evidence`
 / `tests/unit/test_reservation_reconciliation_domain.py::test_manual_resolution_requires_evidence_and_owner_approval`
+/ `tests/unit/test_reservation_reconciliation_domain.py::test_owner_approval_must_be_a_structured_reference`
 / `tests/unit/test_reconcile_reservations_script.py::test_resolve_requires_evidence_and_owner_approval`
 / `tests/unit/test_reconcile_reservations_script.py::test_reconcile_is_dry_run_by_default_and_writes_nothing`
 / `tests/unit/test_reconcile_reservations_script.py::test_script_has_no_network_or_provider_imports`
+
+## O. 日次 Workflow の失敗検知（ADR-0054）
+
+### INV-68 Episode が作られない日次 workflow の失敗を、健全として黙って見過ごさない（ADR-0054）
+直近 N 日（`daily_failure_lookback_days`）の slot 日のうち、日次 workflow が Failed / TimedOut /
+Terminated / Canceled で閉じ、かつその日の slot（= Episode）が無い日は `DAILY_WORKFLOW_FAILED`
+として `operational_anomalies` に残る。終了状態を確認できない日（Temporal を読めない・保持期間切れ）は
+`DAILY_WORKFLOW_UNOBSERVABLE` として残り、**確認できなかったことを OK にしない**。
+Completed / Running の実行がある日と slot がある日は異常にしない。1日1行（hourly 再実行で行は増えず、
+窓の外の日付を新規に作らない）、確定した FAILED は UNOBSERVABLE に劣化させない。detail は失敗の型と
+message の要約（secret・UUID・URL query を伏せ、長さを制限）と `consecutive_failures` だけを持つ。
+**機械検査**: `tests/unit/test_daily_failure_domain.py::test_failed_without_slot_is_failed`
+/ `tests/unit/test_daily_failure_domain.py::test_completed_or_running_is_ok`
+/ `tests/unit/test_daily_failure_domain.py::test_unreadable_is_unobservable_never_ok`
+/ `tests/unit/test_daily_failure_domain.py::test_summary_redacts_secrets_and_truncates`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_failed_yesterday_and_today_records_two_consecutive_days`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_rerun_adds_no_rows_and_is_not_new`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_unreadable_temporal_records_unobservable_not_ok`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_recorded_failure_survives_retention_expiry`
+/ `tests/unit/test_daily_workflow_failure_watchdog.py::test_failure_outside_window_is_not_recorded`

@@ -112,32 +112,42 @@ def test_blocks_new_round(status: ReservationStatus, verdict: V, blocked: bool) 
     assert (blocks_new_round(status, verdict) is not None) is blocked
 
 
+def test_blocks_new_round_treats_a_dispatched_reserved_without_verdict_as_unknown() -> None:
+    reserved = ReservationStatus.RESERVED
+    assert blocks_new_round(reserved, None, dispatched=True) is not None
+    assert blocks_new_round(reserved, None, dispatched=False) is None  # 呼んでいない証拠
+    assert blocks_new_round(ReservationStatus.SPENT, None, dispatched=True) is None
+    assert blocks_new_round(ReservationStatus.ABANDONED, None, dispatched=True) is None
+
+
 def test_manual_resolution_requires_evidence_and_owner_approval() -> None:
     ok = validate_manual_resolution(
         outcome="success",
         evidence="fal dashboard shows COMPLETED",
-        owner_approval="tok-1",
+        owner_approval="OWNER-20261021-A1B2C3",
         actor="yoshiki",
     )
     assert ok.verdict is V.CONFIRMED_SUCCESS
     assert ok.reconciled_by == "operator:yoshiki"
     for bad in (
-        dict(evidence="", owner_approval="tok", actor="a"),
-        dict(evidence="   ", owner_approval="tok", actor="a"),
+        dict(evidence="", owner_approval="OWNER-20261021-A1B2C3", actor="a"),
+        dict(evidence="   ", owner_approval="OWNER-20261021-A1B2C3", actor="a"),
         dict(evidence="e", owner_approval="", actor="a"),
-        dict(evidence="e", owner_approval="tok", actor=""),
+        dict(evidence="e", owner_approval="OWNER-20261021-A1B2C3", actor=""),
     ):
         with pytest.raises(ManualResolutionError):
             validate_manual_resolution(outcome="failure", **bad)  # type: ignore[arg-type]
     with pytest.raises(ManualResolutionError):
-        validate_manual_resolution(outcome="unknown", evidence="e", owner_approval="t", actor="a")
+        validate_manual_resolution(
+            outcome="unknown", evidence="e", owner_approval="OWNER-20261021-A1B2C3", actor="a"
+        )
 
 
 def test_owner_approval_is_stored_as_a_fingerprint_not_the_token() -> None:
     r = validate_manual_resolution(
-        outcome="failure", evidence="e", owner_approval="super-secret-token", actor="a"
+        outcome="failure", evidence="e", owner_approval="OWNER-20261021-SUPERSECRET", actor="a"
     )
-    assert "super-secret-token" not in r.owner_approval_fingerprint
+    assert "SUPERSECRET" not in r.owner_approval_fingerprint
     assert len(r.owner_approval_fingerprint) == 16
 
 
@@ -177,3 +187,29 @@ def test_summary_is_collector_friendly() -> None:
     assert s["by_verdict"]["unknown"] == 1
     assert s["oldest_age_seconds"] == 5 * 3600
     assert summarize_unreconciled([])["count"] == 0
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "tok",  # 短い自由文字列
+        "approved",
+        "OWNER-20261021",  # id 部が無い
+        "OWNER-20261021-abc",  # id が短い（6 文字未満）
+        "OWNER-2026-1021-ABCDEF",  # 日付が 8 桁でない
+        "OWNER-20261341-ABCDEF",  # 存在しない日付
+        "owner-20261021-ABCDEF",  # 接頭辞の大小
+        "OWNER-20261021-AB CDEF",  # 空白入り
+        "OWNER-20261021-" + "A" * 65,  # 長すぎる
+    ],
+)
+def test_owner_approval_must_be_a_structured_reference(token: str) -> None:
+    with pytest.raises(ManualResolutionError, match="OWNER-"):
+        validate_manual_resolution(outcome="success", evidence="e", owner_approval=token, actor="a")
+
+
+def test_owner_approval_reference_with_surrounding_whitespace_is_accepted() -> None:
+    r = validate_manual_resolution(
+        outcome="success", evidence="e", owner_approval="  OWNER-20261021-ABCDEF\n", actor="a"
+    )
+    assert len(r.owner_approval_fingerprint) == 16

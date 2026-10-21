@@ -29,3 +29,7 @@
 | `test_backup_contracts.py` | 識別子が compose.yaml とずれる／manifest が release preflight の `backup_freshness` で読めなくなる（stale は BLOCKED） |
 | `test_backup_deploy_examples.py` | 例が勝手に install される／既定で外部送信・通知が有効になる |
 | `test_backup_boundaries.py` | backup が本番へ書き込み系を送る／drill 以外が `restore_verified=True` を書く／削除や `docker run/rm` の置き場が増える／想定外の外部通信 |
+| `test_guard_overlap.py` | backup root が MinIO データ dir の中/外側/symlink/`..` 経由で重なる（normpath だけでは見逃す）。`--allow-same-device` でも緩めないこと、restore の work_dir が symlink で保護パスへ向くこと |
+| `test_precheck_domain.py` | 総合判定が最悪の値にならない／何も確認していないのに PASS／必要容量の係数／pg_dump < server の取り違え／DDL 判定が query 本文を漏らす／daily(21:00 UTC)・watchdog(:35) の窓を踏む |
+| `test_precheck.py` | precheck が書く・dump する／secret の値を出す／root を作る／同一 device・MinIO データ dir 内・書込不可の root を通す／確認できないものを PASS にする／容量不足・DDL・排他ロック・バージョン不一致・bucket 欠落・認証情報欠落を見逃す |
+| `test_backup_boundaries.py::test_precheck_is_read_only_*` | precheck に書き込み系の docker/SQL/ファイル操作や audit 書き込みが混ざる |

@@ -35,12 +35,23 @@ from contracts.backup import (
     RESTORE_BUCKET_PREFIX,
     RESTORE_CONTAINER_PREFIX,
 )
+from contracts.pipeline import DEFAULT_DAILY_SCHEDULE_CRON, DEFAULT_SCHEDULE_TIMEZONE
+from contracts.schedule_guard import DEFAULT_WATCHDOG_CRON
 from domain.backup.guards import ProductionTargetRefused, RestoreTarget
 from domain.backup.retention import Policy
 from infrastructure.backup import catalog
 from infrastructure.backup.audit import AuditLog, notifier_from_env
-from infrastructure.backup.objects import MinioObjectSource
+from infrastructure.backup.mounts import mount_source
+from infrastructure.backup.objects import MinioObjectSource, ObjectSource
 from infrastructure.backup.postgres import PostgresAccess
+from infrastructure.backup.precheck import (
+    REQUIRED_CREDENTIALS,
+    OsFs,
+    PrecheckConfig,
+    PrecheckDeps,
+    Prechecker,
+    render_human,
+)
 from infrastructure.backup.prune import prune
 from infrastructure.backup.restore import DrillAborted, DrillDeps, RestoreDrill, restore_db_name
 from infrastructure.backup.runner import CommandRunner, SubprocessRunner
@@ -70,13 +81,13 @@ def _roots(args: argparse.Namespace, env: Mapping[str, str]) -> tuple[Path, Path
 
 def _mount_device(runner: CommandRunner, container: str, destination: str) -> int:
     """コンテナの mount 元（host path）が載っているデバイス。確認できなければ失敗（安全側）。"""
-    res = runner.run(["docker", "inspect", "--format", "{{json .Mounts}}", container])
-    if res.returncode != 0:
-        raise BackupFailed(f"cannot inspect {container}: cannot prove the destination is separate")
-    for mount in json.loads(res.stdout):
-        if mount.get("Destination") == destination:
-            return os.stat(mount["Source"]).st_dev
-    raise BackupFailed(f"{container}: no mount at {destination}")
+    source = mount_source(runner, container, destination)
+    if source is None:
+        raise BackupFailed(
+            f"cannot inspect {container} mount {destination}: "
+            "cannot prove the destination is separate"
+        )
+    return os.stat(source).st_dev
 
 
 def _git(args: Sequence[str]) -> str:
@@ -99,6 +110,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--object-root", help=f"オブジェクトの写しの置き場（既定: ${ENV_OBJECT_ROOT}）")
     p.add_argument("--env-file", help="MinIO の接続設定を読む .env（既定: repo root の .env）")
     sub = p.add_subparsers(dest="cmd", required=True)
+    pre = sub.add_parser(
+        "precheck", help="本番 backup 承認前の read-only 点検（何も作らず書かない）"
+    )
+    pre.add_argument("--bucket", action="append", help="対象 bucket（既定: Settings の bucket）")
+    pre.add_argument("--postgres-container", default=PRODUCTION_POSTGRES_CONTAINER)
+    pre.add_argument("--minio-container", default=PRODUCTION_MINIO_CONTAINER)
+    pre.add_argument("--pg-user", default=os.environ.get("POSTGRES_USER", "avp"))
+    pre.add_argument("--json-only", action="store_true", help="人向けの要約を出さない")
     run = sub.add_parser("run", help="backup を取る（本番へは読み取りだけ）")
     run.add_argument("--bucket", action="append", help="対象 bucket（既定: Settings の bucket）")
     run.add_argument(
@@ -128,11 +147,14 @@ def main(
     env: Mapping[str, str] | None = None,
     *,
     runner: CommandRunner | None = None,
+    objects: ObjectSource | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> int:
     env = os.environ if env is None else env
     args = build_parser().parse_args(argv)
     runner = runner or SubprocessRunner()
+    if args.cmd == "precheck":  # root が無くても作らない・audit も残さない
+        return _precheck(args, env, runner, now, objects)
     try:
         db_root, object_root = _roots(args, env)
         for r in dict.fromkeys((db_root, object_root)):
@@ -156,6 +178,71 @@ def main(
         return EXIT_REFUSED
 
 
+def _env_file_names(path: pathlib.Path) -> frozenset[str]:
+    """.env に在る変数の**名前だけ**（値は読み捨てる。コメント行は除く）。"""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return frozenset()
+    names = set()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            names.add(stripped.split("=", 1)[0].strip())
+    return frozenset(names)
+
+
+def _repo_alembic_head() -> str:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(REPO / "alembic.ini"))
+    config.set_main_option("script_location", str(REPO / "infrastructure" / "db" / "migrations"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    return ",".join(heads)
+
+
+def _precheck(args, env, runner, now, objects) -> int:  # type: ignore[no-untyped-def]
+    env_file = pathlib.Path(args.env_file or REPO / ".env")
+    settings = Settings(_env_file=env_file)  # pyright: ignore[reportCallIssue]
+    file_names = _env_file_names(env_file)
+
+    def source(name: str) -> str:
+        return (
+            "environment"
+            if name in env
+            else "env-file"
+            if name in file_names
+            else "built-in default"
+        )
+
+    cfg = PrecheckConfig(
+        db_root=args.db_root or env.get(ENV_DB_ROOT),
+        object_root=args.object_root or env.get(ENV_OBJECT_ROOT),
+        buckets=tuple(args.bucket or [settings.minio_bucket]),
+        postgres_container=args.postgres_container,
+        minio_container=args.minio_container,
+        protected_paths=(str(MINIO_DATA_DIR), str(Path(settings.ai_video_work_root))),
+        daily_cron=DEFAULT_DAILY_SCHEDULE_CRON,
+        schedule_timezone=DEFAULT_SCHEDULE_TIMEZONE,
+        watchdog_cron=DEFAULT_WATCHDOG_CRON,
+        credential_sources={n: source(n) for n in REQUIRED_CREDENTIALS},
+    )
+    deps = PrecheckDeps(
+        runner=runner,
+        postgres=PostgresAccess(runner, args.postgres_container, args.pg_user),
+        objects=objects or MinioObjectSource.from_settings(settings),
+        fs=OsFs(),
+        now=now,
+        repo_alembic_head=_repo_alembic_head,
+    )
+    report = Prechecker(cfg, deps).run()
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    if not args.json_only:
+        print(render_human(report), file=sys.stderr)
+    return EXIT_OK if report["verdict"] == "PASS" else EXIT_FAILED
+
+
 def _run(args, env, db_root, object_root, runner, audit, notifier, now) -> int:  # type: ignore[no-untyped-def]
     settings = Settings(_env_file=pathlib.Path(args.env_file or REPO / ".env"))  # pyright: ignore[reportCallIssue]
     offsite = shlex.split(env[ENV_OFFSITE_CMD]) if env.get(ENV_OFFSITE_CMD) else None
@@ -166,6 +253,7 @@ def _run(args, env, db_root, object_root, runner, audit, notifier, now) -> int: 
         git_revision=_git(["rev-parse", "HEAD"]) or "unknown",
         git_dirty=bool(_git(["status", "--porcelain"])),
         allow_same_device=args.allow_same_device,
+        protected_paths=(str(MINIO_DATA_DIR), str(Path(settings.ai_video_work_root))),
         quiesce=args.quiesce_note,
         offsite_command=offsite,
         tool_versions={"python": sys.version.split()[0], "docker": _docker_version(runner)},

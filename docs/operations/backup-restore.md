@@ -30,6 +30,17 @@ alembic revision が取得中に変わったら失敗する。静止（maintenan
 backup の失敗が Daily の停止になる。手動で取るときに限り、所有者の判断で
 `--quiesce-note "paused by <name> at <time>"` と併用できる（記録のみで証明ではない）。
 
+## 2.5 実行前の点検（`[R]`、何も作らない）
+
+```bash
+python scripts/backup.py --db-root … --object-root … --env-file … precheck   # JSON(stdout) + 要約(stderr)
+```
+
+保存先・容量（取得元 x 2）・PG/MinIO の到達性とバージョン・認証情報の有無（名前のみ）・alembic・Schedule の窓を
+PASS/FAIL/UNKNOWN で出す。root が無くても作らず、audit も残さない。保存先が `MINIO_DATA_DIR` 等の保護パスと
+（symlink 解決後に）重なる場合は `--allow-same-device` でも拒否される。結果と承認手順:
+`docs/operations/production-recovery-preapproval.md`。
+
 ## 3. backup を取る（`[R]` + `[W]`）
 
 ```bash

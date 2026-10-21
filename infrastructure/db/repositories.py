@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections.abc import Iterable, Sequence
@@ -10,7 +11,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, Select, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -688,6 +689,30 @@ def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
     )
 
 
+def reservation_for_update_stmt(reservation_id: uuid.UUID | str) -> Select[Any]:
+    """予約行を ``SELECT ... FOR UPDATE`` で読む文（ADR-0053）。
+
+    同じ予約への並行する ``resolve_manual`` を直列化する。ロックは呼び出し側の commit /
+    rollback まで。SQLite は ``FOR UPDATE`` を出さない（書き込みが直列なので不要）。
+    ``populate_existing`` で、待った後に identity map の古い値を使わず最新を読む。
+    """
+    return (
+        select(ProviderReservationRow)
+        .where(ProviderReservationRow.id == _as_uuid(reservation_id))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def input_lock_key(
+    episode_id: uuid.UUID | str, provider: ProviderCall, scene_id: str | None, input_hash: str
+) -> int:
+    """入力（Episode・provider・シーン・input_hash）の advisory lock の鍵（符号付き 64bit）。"""
+    material = "\x1f".join((str(episode_id), provider.value, scene_id or "", input_hash))
+    digest = hashlib.sha256(material.encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
 class ProviderReservationRepository:
     """予約台帳（ADR-0013）。commit は呼び出し側の責務。
 
@@ -841,6 +866,9 @@ class ProviderReservationRepository:
         予約、または未照合で結果が分からない予約が既にあれば、新しい idempotency key での
         予約を作らず ``ResubmitRejectedError``。provider に冪等キーは無いので、ここが最後の砦。
         """
+        # 同じ入力への「検査 → INSERT」を直列化する（PostgreSQL のみ。トランザクション終了で解放）。
+        # 呼び出し側は reserve の直後に commit する規約なので、保持は短い
+        await self._lock_input(episode_id, provider, scene_id, input_hash)
         await self._reject_resubmit(
             episode_id=episode_id,
             provider=provider,
@@ -867,6 +895,20 @@ class ProviderReservationRepository:
         _defer_reservation(self._session, EventName.RESERVATION_RESERVED, "reserved", reservation)
         return reservation
 
+    async def _lock_input(
+        self,
+        episode_id: uuid.UUID | str,
+        provider: ProviderCall,
+        scene_id: str | None,
+        input_hash: str,
+    ) -> None:
+        if self._session.get_bind().dialect.name != "postgresql":
+            return
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"),
+            {"k": input_lock_key(episode_id, provider, scene_id, input_hash)},
+        )
+
     async def _reject_resubmit(
         self,
         *,
@@ -891,9 +933,11 @@ class ProviderReservationRepository:
         recon = ProviderReconciliationRepository(self._session)
         for row in (await self._session.scalars(stmt)).all():
             verdict = await recon.latest_verdict(row.id)
-            if verdict is None:
-                continue  # 照合記録の無い行は従来の経路（find_unreconciled 等）が扱う
-            reason = blocks_new_round(ReservationStatus(row.status), verdict)
+            # 照合記録の無い dispatched な reserved は UNKNOWN 扱い（blocks_new_round が決める）。
+            # 未 dispatch の reserved は従来の経路（find_unreconciled 等）が扱う
+            reason = blocks_new_round(
+                ReservationStatus(row.status), verdict, dispatched=row.dispatched_at is not None
+            )
             if reason is not None:
                 raise ResubmitRejectedError(f"reservation {row.id}: {reason}")
 
@@ -1411,7 +1455,8 @@ class ProviderReconciliationRepository:
         return True
 
     async def _row_for_update(self, reservation_id: uuid.UUID | str) -> ProviderReservationRow:
-        row = await self._session.get(ProviderReservationRow, _as_uuid(reservation_id))
+        """行ロックつきで読む。以降の判定（最新の判定・status）はこのロックの下で行う。"""
+        row = (await self._session.scalars(reservation_for_update_stmt(reservation_id))).first()
         if row is None:
             raise InvalidTransitionError(f"unknown reservation {reservation_id}")
         return row
@@ -1869,6 +1914,12 @@ class DailyEpisodeSlotRepository:
         except IntegrityError:
             return False  # 同じ plan を別の Episode が先に取った。読み直すと holder が見える
         return True
+
+    async def earliest_slot_date(self) -> date | None:
+        """最初の slot の日。これより前の日は「日次運用が始まる前」で、失敗検知の対象にしない。"""
+        return (
+            await self._session.execute(select(func.min(DailyEpisodeSlotRow.slot_date)))
+        ).scalar_one_or_none()
 
     async def list_for_date(self, slot_date: date) -> list[DailyEpisodeSlot]:
         return [
