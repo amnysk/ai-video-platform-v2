@@ -1374,7 +1374,7 @@ class ProviderReconciliationRepository:
             raise ManualResolutionError(step.conflict)
         reserved = ReservationStatus(row.status) is ReservationStatus.RESERVED
         if current is resolution.verdict and not reserved:
-            return False  # 台帳まで確定済みの再実行。観測だけ確定で reserved のままなら下で台帳を動かす
+            return False  # 台帳まで確定済みの再実行（観測のみ確定なら下で台帳を動かす）
         if not reserved:
             raise ManualResolutionError(
                 f"reservation {row.id} is already {row.status}; its ledger state is final"
