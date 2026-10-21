@@ -27,6 +27,7 @@ from contracts.release import (
     STAGING_TEMPORAL_NAMESPACE,
     TEST_DB_SUFFIX,
 )
+from domain.backup.manifest import drill_problems
 
 # ------------------------------------------------------------------ 語彙
 
@@ -972,6 +973,9 @@ def _check_backup(req: Request, c: Collectors, now: datetime) -> CheckResult:
         return _unknown(
             CHECK_BACKUP, "backup is not restore-verified (no passed restore drill; INV-66)"
         )
+    forged = drill_problems(manifest.get("restore_drill"))
+    if forged:
+        return _unknown(CHECK_BACKUP, f"restore drill evidence not credible: {forged[0]}")
     return CheckResult(
         CHECK_BACKUP,
         Status.PASS,

@@ -11,6 +11,7 @@ from typing import Any
 import contracts.backup as cb
 import contracts.release as cr
 from domain import release_preflight as rp
+from domain.backup.manifest import REQUIRED_DRILL_CHECKS, DrillEvidence, apply_drill
 from infrastructure.workdir import MINIO_DATA_DIR
 from tests.unit.backup.fakes import make_backup
 
@@ -64,6 +65,11 @@ class _Collectors:
         return self._text
 
 
+def good_drill_evidence(backup_id: str) -> DrillEvidence:
+    checks = {n: {"passed": True} for n in REQUIRED_DRILL_CHECKS}
+    return DrillEvidence(backup_id, datetime.now().astimezone(), {}, checks, {})
+
+
 def _preflight_backup_status(manifest: dict[str, Any], now: datetime) -> rp.Status:
     req = rp.Request(target_sha="a" * 40, backup_manifest="manifest.json")
     result = rp._check_backup(req, _Collectors(json.dumps(manifest)), now)  # type: ignore[arg-type]
@@ -77,7 +83,7 @@ def test_a_real_manifest_passes_the_release_preflight_backup_check(tmp_path: pat
     # 復旧演習に通るまでは未検証 = UNKNOWN（INV-66）。演習合格後の manifest だけが PASS
     assert manifest["restore_verified"] is False
     assert _preflight_backup_status(manifest, done + timedelta(hours=1)) is rp.Status.UNKNOWN
-    verified = {**manifest, "restore_verified": True}
+    verified = apply_drill(manifest, good_drill_evidence(manifest["backup_id"]))
     assert _preflight_backup_status(verified, done + timedelta(hours=1)) is rp.Status.PASS
     assert _preflight_backup_status(verified, done + timedelta(hours=30)) is rp.Status.BLOCKED
     assert _preflight_backup_status({"schema_version": 1}, done) is rp.Status.UNKNOWN

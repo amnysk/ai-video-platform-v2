@@ -257,3 +257,19 @@ def test_retention_keeps_the_newest_of_each_day_week_and_month() -> None:
     assert len([k for k, v in weekly.keep.items() if "weekly" in v]) == 4
     monthly = plan_retention([entry(d) for d in range(0, 200)], Policy(0, 0, 3))
     assert len([k for k, v in monthly.keep.items() if "monthly" in v]) == 3
+
+
+def test_hand_forged_restore_drill_is_not_accepted_as_verified() -> None:
+    """監査指摘 P1: ``restore_drill: {}`` や hash 不一致の自己申告は検証済みと認めない。"""
+    m = make_manifest()
+    m["restore_verified"] = True
+    m["restore_drill"] = {}
+    assert any("restore_drill" in p for p in validate_manifest(m))
+    genuine = apply_drill(make_manifest(), good_evidence(make_manifest()["backup_id"]))
+    assert validate_manifest(genuine) == []
+    tampered = copy.deepcopy(genuine)
+    tampered["restore_drill"]["checks"]["row_counts"]["detail"] = "edited"
+    assert any("evidence_sha256" in p for p in validate_manifest(tampered))
+    failed = copy.deepcopy(genuine)
+    failed["restore_drill"]["result"] = "fail"
+    assert any("restore_drill" in p for p in validate_manifest(failed))

@@ -111,8 +111,11 @@ def validate_manifest(m: object) -> list[str]:
         problems.append("status is not complete")
     if not isinstance(m.get("restore_verified"), bool):
         problems.append("restore_verified must be a bool")
-    if m.get("restore_verified") is True and not isinstance(m.get("restore_drill"), dict):
-        problems.append("restore_verified without restore_drill evidence")
+    if m.get("restore_verified") is True:
+        if not isinstance(m.get("restore_drill"), dict):
+            problems.append("restore_verified without restore_drill evidence")
+        else:
+            problems += drill_problems(m.get("restore_drill"))
     comps = m.get("components")
     if not isinstance(comps, dict):
         problems.append("components missing")
@@ -208,6 +211,33 @@ def evidence_passed(e: DrillEvidence) -> list[str]:
     return problems
 
 
+def drill_digest(drill: Mapping[str, Any]) -> str:
+    body = {k: v for k, v in drill.items() if k != "evidence_sha256"}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def drill_problems(drill: object) -> list[str]:
+    """``restore_drill`` が「全検査 pass の演習が出した証跡」として内部整合しているか。
+
+    改ざん**検知**であって改ざん防止ではない（hash は書き手が再計算できる）。手書きの
+    ``restore_verified: true`` / 空の ``restore_drill`` / 編集後の証跡を弾く。
+    """
+    if not isinstance(drill, dict):
+        return ["restore_drill is not an object"]
+    problems: list[str] = []
+    if drill.get("result") != "pass" or drill.get("problems"):
+        problems.append("restore_drill result is not pass")
+    checks = drill.get("checks")
+    checks = checks if isinstance(checks, dict) else {}
+    for name in REQUIRED_DRILL_CHECKS:
+        entry = checks.get(name)
+        if not isinstance(entry, dict) or entry.get("passed") is not True:
+            problems.append(f"restore_drill check not passed: {name}")
+    if drill.get("evidence_sha256") != drill_digest(drill):
+        problems.append("restore_drill evidence_sha256 does not match its content")
+    return problems
+
+
 def apply_drill(manifest: Mapping[str, Any], evidence: DrillEvidence) -> dict[str, Any]:
     """演習の結果を manifest へ書く。pass のときだけ ``restore_verified`` を True にする。
 
@@ -224,9 +254,7 @@ def apply_drill(manifest: Mapping[str, Any], evidence: DrillEvidence) -> dict[st
         "checks": {k: dict(v) for k, v in evidence.checks.items()},
         "tool_versions": dict(evidence.tool_versions),
     }
-    drill["evidence_sha256"] = hashlib.sha256(
-        json.dumps(drill, sort_keys=True, ensure_ascii=False).encode()
-    ).hexdigest()
+    drill["evidence_sha256"] = drill_digest(drill)
     out = copy.deepcopy(dict(manifest))
     out["restore_drill"] = drill
     out["restore_verified"] = not problems

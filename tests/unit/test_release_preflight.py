@@ -16,6 +16,7 @@ import pytest
 
 from contracts.ci import CI_GATE_JOB_NAME
 from domain import release_preflight as rp
+from domain.backup.manifest import REQUIRED_DRILL_CHECKS, drill_digest
 
 SHA = "a" * 40
 OLD = "b" * 40
@@ -52,7 +53,16 @@ SCHEDULES = {
 def _manifest(age_hours: float = 1.0, drop: str | None = None, verified: bool = True) -> str:
     stamp = (NOW - timedelta(hours=age_hours)).isoformat()
     comps = {c: {"created_at": stamp} for c in rp.BACKUP_COMPONENTS if c != drop}
-    return json.dumps({"components": comps, "restore_verified": verified})
+    manifest: dict[str, Any] = {"components": comps, "restore_verified": verified}
+    if verified:
+        drill: dict[str, Any] = {
+            "result": "pass",
+            "problems": [],
+            "checks": {c: {"passed": True} for c in REQUIRED_DRILL_CHECKS},
+        }
+        drill["evidence_sha256"] = drill_digest(drill)
+        manifest["restore_drill"] = drill
+    return json.dumps(manifest)
 
 
 def sha256_text(text: str) -> str:
@@ -774,4 +784,20 @@ def test_unhealthy_service_blocks_and_unreadable_health_is_unknown() -> None:
     assert sick.overall is rp.Overall.BLOCKED
     assert _status(_run(Fake(unhealthy=RuntimeError("docker"))), "service_health") is (
         rp.Status.UNKNOWN
+    )
+
+
+def test_hand_written_restore_verified_without_drill_evidence_is_unknown() -> None:
+    forged = json.loads(_manifest(1))
+    forged["restore_drill"] = {}
+    assert (
+        _status(_run(Fake(texts={"backup.json": json.dumps(forged)})), "backup_freshness")
+        is rp.Status.UNKNOWN
+    )
+    edited = json.loads(_manifest(1))
+    edited["restore_drill"]["checks"]["row_counts"]["passed"] = True
+    edited["restore_drill"]["problems"] = ["x"]  # 内容を変えると hash が合わない
+    assert (
+        _status(_run(Fake(texts={"backup.json": json.dumps(edited)})), "backup_freshness")
+        is rp.Status.UNKNOWN
     )
