@@ -449,7 +449,7 @@ bind path・host port・Temporal namespace を共有せず、FAL / YouTube の�
 
 ## N. バックアップと復旧（ADR-0053）
 
-### INV-67 バックアップは「復旧演習に通るまで未検証」で、復旧は隔離先にしか書かない
+### INV-66 バックアップは「復旧演習に通るまで未検証」で、復旧は隔離先にしか書かない
 `scripts/backup.py run` が作る manifest は常に `restore_verified: false`。`true` にできるのは
 `scripts/backup.py restore-drill` だけで、それも全検査（全ファイルの sha256・3 DB の復元・行数が backup 時の
 `[before, after]` に入る・alembic revision・オブジェクトの sha256・DB の `artifact_metadata` /
