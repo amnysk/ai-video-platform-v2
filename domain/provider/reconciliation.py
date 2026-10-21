@@ -171,7 +171,7 @@ def is_owner_approval_reference(token: str) -> bool:
     承認の参照番号（チケット・チャットの発言 id 等）を残させ、監査行から辿れるようにするための
     形式検査。日付は実在する暦日であること。
     """
-    match = _OWNER_APPROVAL_RE.match(token)
+    match = _OWNER_APPROVAL_RE.fullmatch(token)
     if match is None:
         return False
     try:

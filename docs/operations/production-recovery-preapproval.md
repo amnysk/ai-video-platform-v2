@@ -127,3 +127,10 @@ pgdata の NVMe を順次読む）。MinIO は全 object を順に GET（HDD の
   secret は名前だけを扱う。境界: `tests/architecture/test_backup_boundaries.py::test_precheck_is_read_only_against_production`
 - `domain/backup/guards.py`: root と保護パスの重なりを `realpath` で判定し、`--allow-same-device` でも緩めない（独立レビューの指摘。
   `tests/unit/backup/test_guard_overlap.py`）。restore の `work_dir` 判定も `realpath` になった
+
+## 補足: precheck の判定の読み方（独立レビュー反映）
+
+- `credentials` は MinIO の資格情報が**組み込み既定値**のとき UNKNOWN。既定の宛先 `localhost:9000` が
+  本番の `avp2-minio-1`（9000 を公開）であることを所有者が確認した上で承認する（開発機の別 MinIO を数えていないこと）。
+- precheck の psql は `default_transaction_read_only=on` の接続で SELECT だけを送る。
+- 承認トークン `OWNER-<yyyymmdd>-<id>` は `fullmatch`（末尾改行を許さない）。形式の確認であって認証ではない。

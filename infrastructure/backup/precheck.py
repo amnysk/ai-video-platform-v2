@@ -341,13 +341,20 @@ class Prechecker:
     def _credentials(self) -> None:
         sources = {n: self._c.credential_sources.get(n) for n in REQUIRED_CREDENTIALS}
         missing = [n for n, s in sources.items() if not s]
-        defaults = [n for n, s in sources.items() if s == "built-in default"]
+        # 宛先を決めるのは MinIO の資格情報（既定は localhost:9000 の別 MinIO を指しうる）。
+        # POSTGRES_USER の既定値は、誤っていれば接続に失敗するだけで別物を数えない
+        defaults = [
+            n for n, s in sources.items() if s == "built-in default" and n.startswith("MINIO_")
+        ]
         self._add(
             "credentials",
-            Status.FAIL if missing else Status.PASS,
+            Status.FAIL if missing else Status.UNKNOWN if defaults else Status.PASS,
             f"missing: {missing}"
             if missing
-            else ("present (names only); built-in default in use for: " + ", ".join(defaults))
+            else (
+                "built-in default in use for: " + ", ".join(defaults) + " — the MinIO endpoint "
+                "may not be the production one; confirm the target before trusting the counts"
+            )
             if defaults
             else "present (names only)",
             sources={n: s or "missing" for n, s in sources.items()},

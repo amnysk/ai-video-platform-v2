@@ -17,7 +17,12 @@ import pytest
 from contracts.backup import EXIT_FAILED
 from infrastructure.backup.cli import main
 from infrastructure.backup.postgres import PostgresAccess
-from infrastructure.backup.precheck import PrecheckConfig, PrecheckDeps, Prechecker
+from infrastructure.backup.precheck import (
+    REQUIRED_CREDENTIALS,
+    PrecheckConfig,
+    PrecheckDeps,
+    Prechecker,
+)
 from infrastructure.backup.runner import CmdResult
 from tests.unit.backup.fakes import FakeObjects
 
@@ -284,8 +289,16 @@ def test_object_counts_and_versioning_are_reported() -> None:
 def test_missing_credentials_fail_and_defaults_are_called_out() -> None:
     pc, _, _ = build(cred_sources={"MINIO_ACCESS_KEY": "env-file"})
     assert by_id(pc.run())["credentials"]["status"] == "FAIL"
-    check = by_id(build()[0].run())["credentials"]
-    assert check["status"] == "PASS" and "built-in default" in check["detail"]
+    risky = {
+        "MINIO_ACCESS_KEY": "built-in default",
+        "MINIO_SECRET_KEY": "built-in default",
+        "POSTGRES_USER": "env-file",
+    }
+    check = by_id(build(cred_sources=risky)[0].run())["credentials"]
+    # 既定値の認証情報・宛先では本番の MinIO を数えたと言えない（開発機の :9000 の恐れ）→ UNKNOWN
+    assert check["status"] == "UNKNOWN" and "built-in default" in check["detail"]
+    explicit = {n: "env-file" for n in REQUIRED_CREDENTIALS}
+    assert by_id(build(cred_sources=explicit)[0].run())["credentials"]["status"] == "PASS"
 
 
 def test_alembic_mismatch_is_unknown_and_unreadable_is_fail() -> None:
@@ -334,3 +347,18 @@ def test_the_cli_precheck_creates_nothing_even_without_roots(
     assert report["verdict"] == "FAIL" and report["read_only"] is True
     creds = [c for c in report["checks"] if c["id"] == "credentials"][0]
     assert creds["data"]["sources"]["MINIO_SECRET_KEY"] == "env-file"
+
+
+def test_postgres_access_runs_psql_in_a_read_only_session() -> None:
+    """レビュー指摘: precheck の SELECT は慣習でなく接続設定でも読み取り専用にする。"""
+    seen: list[list[str]] = []
+
+    class R:
+        def run(self, argv, **kw):  # type: ignore[no-untyped-def]
+            seen.append(list(argv))
+            return CmdResult(0, "x\n", "")
+
+    PostgresAccess(R(), "pg", "avp").query_rows("avp", "SELECT 1")  # type: ignore[arg-type]
+    argv = seen[0]
+    assert "PGOPTIONS=-c default_transaction_read_only=on" in argv
+    assert argv.index("-e") < argv.index("pg")  # docker exec の option は container 名より前
