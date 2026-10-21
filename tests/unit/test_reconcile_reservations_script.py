@@ -19,7 +19,7 @@ from infrastructure.db.repositories import (
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "reconcile-reservations.py"
 V = ReconciliationVerdict
-TOKEN = "OWNER-SECRET-TOKEN-123"
+TOKEN = "OWNER-20261021-SECRET123"
 
 
 def _load():

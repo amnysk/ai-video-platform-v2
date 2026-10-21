@@ -481,7 +481,7 @@ provider が成功を確認した（`confirmed_success`）予約、または未�
 `ResubmitRejectedError` を投げる（別の idempotency key の場合。同じ key は対象外）。未 dispatch の `reserved`・
 `spent` / `abandoned` / `confirmed_failed` / `cancelled` は従来どおり。`unknown` は失敗ではなく、観測できなかったことを理由に失敗扱い・再送にしない。
 判定は追記専用の `provider_reservation_reconciliations` に残り、確定は他の確定へ変わらず、
-同じ観測の再実行は行を増やさない。人手確定は `--evidence` と `--owner-approval` が必須で、承認 token は
+同じ観測の再実行は行を増やさない。人手確定は `--evidence` と `--owner-approval`（`OWNER-<yyyymmdd>-<id>` 形式。認証ではない）が必須で、承認 token は
 指紋だけを保存する。`scripts/reconcile-reservations.py` は provider へ接続せず、`reconcile` / `resolve` は既定 dry-run。
 **機械検査**: `tests/unit/test_reservation_reconciliation_repo.py::test_confirmed_success_can_never_be_resubmitted_under_a_new_key`
 / `tests/unit/test_reservation_reconciliation_repo.py::test_unknown_reservation_can_never_be_resubmitted_under_a_new_key`
@@ -491,6 +491,7 @@ provider が成功を確認した（`confirmed_success`）予約、または未�
 / `tests/unit/test_reservation_reconciliation_domain.py::test_advance_is_idempotent`
 / `tests/unit/test_reservation_reconciliation_domain.py::test_unknown_stays_unknown_without_new_evidence`
 / `tests/unit/test_reservation_reconciliation_domain.py::test_manual_resolution_requires_evidence_and_owner_approval`
+/ `tests/unit/test_reservation_reconciliation_domain.py::test_owner_approval_must_be_a_structured_reference`
 / `tests/unit/test_reconcile_reservations_script.py::test_resolve_requires_evidence_and_owner_approval`
 / `tests/unit/test_reconcile_reservations_script.py::test_reconcile_is_dry_run_by_default_and_writes_nothing`
 / `tests/unit/test_reconcile_reservations_script.py::test_script_has_no_network_or_provider_imports`

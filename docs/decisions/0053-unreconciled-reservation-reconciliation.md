@@ -28,7 +28,8 @@ ADR-0013 は「未照合の予約を自動で再送も解放もしない」と�
    に戻らない。`unknown` の観測は既存の知識を消さない。
 2. provider の観測（`record_observation`）は判定行を足すだけで、台帳の `status` を変えない。
    台帳を動かすのは人手確定（`resolve_manual`）だけで、`--evidence` と `--owner-approval` が必須。
-   承認 token は保存せず指紋（sha256 先頭16桁）だけを残す。success / failure は `spent`
+   承認 token は `OWNER-<yyyymmdd>-<id>` 形式（実在する日付・id 6〜64 文字。2026-10-21 追加、空でなければ通す、をやめた）でなければ拒否し、
+   保存せず指紋（sha256 先頭16桁）だけを残す。形式検査であって認証ではない。success / failure は `spent`
    （課金された前提）、cancelled は `abandoned`。
 3. **再送ガード**: `ProviderReservationRepository.reserve` は、同じ（Episode・provider・シーン・
    `input_hash`）に `confirmed_success` の予約、または未照合で `unknown` / `still_running` の

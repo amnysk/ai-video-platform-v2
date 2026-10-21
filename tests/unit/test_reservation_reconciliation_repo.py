@@ -50,7 +50,10 @@ async def _reserved(
 
 def _resolution(outcome="success"):
     return validate_manual_resolution(
-        outcome=outcome, evidence="fal dashboard: COMPLETED", owner_approval="tok", actor="owner"
+        outcome=outcome,
+        evidence="fal dashboard: COMPLETED",
+        owner_approval="OWNER-20261021-A1B2C3",
+        actor="owner",
     )
 
 

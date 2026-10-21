@@ -12,6 +12,7 @@
 | `test_terminal_verdicts_never_flip_to_another_terminal` | success と failed の食い違いを黙って上書きする（通報されない） |
 | `test_blocks_new_round` | 課金済み／未確定の入力に新ラウンドを許す条件の取り違え（failed は許す側も固定） |
 | `test_manual_resolution_requires_evidence_and_owner_approval` | 根拠も承認も無い手動確定（「緑にするための確定」） |
+| `test_owner_approval_must_be_a_structured_reference` | `tok` のような非空なら何でも通る承認（形骸化）。形式（`OWNER-<yyyymmdd>-<id>`・実在日付・長さ・空白）を固定。認証ではない |
 | `test_owner_approval_is_stored_as_a_fingerprint_not_the_token` | 承認 token が DB・ログに残る |
 | `test_summary_is_collector_friendly` | preflight が provider 別・Episode 別に見られず、一律の止め／通しになる |
 | `test_observation_is_idempotent_and_leaves_the_ledger_untouched` | 観測だけで `reserved` が自動で出る（INV-15 違反） |

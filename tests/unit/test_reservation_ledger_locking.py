@@ -83,7 +83,7 @@ async def test_resolve_manual_locks_the_reservation_row(session) -> None:
     _, rid = await _dispatched(session)
     spy = _Recorder(session)
     resolution = validate_manual_resolution(
-        outcome="success", evidence="e", owner_approval="tok", actor="a"
+        outcome="success", evidence="e", owner_approval="OWNER-20261021-A1B2C3", actor="a"
     )
     await ProviderReconciliationRepository(session).resolve_manual(rid, resolution)
     assert any(getattr(s, "_for_update_arg", None) is not None for s in spy.statements)

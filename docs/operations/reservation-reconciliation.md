@@ -4,10 +4,13 @@
 python scripts/reconcile-reservations.py list                 # 読み取り専用。JSON
 python scripts/reconcile-reservations.py reconcile --observations-file obs.json   # dry-run
 python scripts/reconcile-reservations.py resolve --reservation-id ID --outcome success \
-    --evidence "<根拠>" --owner-approval "<token>" --actor <name>                   # dry-run
+    --evidence "<根拠>" --owner-approval "OWNER-<yyyymmdd>-<id>" --actor <name>                   # dry-run
 # 書くときだけ --apply（監査行を追記し、resolve は台帳を spent / abandoned にする）
 ```
 
+- `--owner-approval` は承認の参照番号 `OWNER-<yyyymmdd>-<id>`（実在する日付、id は英数字・`_`・`-` の
+  6〜64 文字。例 `OWNER-20261021-TICKET42`）。**形式検査であって認証ではない**（誰でも書ける。承認の
+  出所を後から辿るための参照を残させるだけ）。DB・ログには sha256 先頭16桁の指紋だけが残る。
 - この CLI は provider へ接続しない。実 fal の status/result GET は **owner 承認が要る別手順**。
 - `unknown` は失敗ではない。読めなかったことを理由に失敗扱い・再送をしない。
 - 新しい idempotency key での再送は台帳が拒否する（INV-67）。`confirmed_success` は結果を取得する。
