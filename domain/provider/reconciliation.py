@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from datetime import datetime as _datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -38,6 +40,7 @@ __all__ = [
     "advance_verdict",
     "blocks_new_round",
     "classify_observation",
+    "is_owner_approval_reference",
     "request_id_from_ref",
     "summarize_unreconciled",
     "validate_manual_resolution",
@@ -113,14 +116,22 @@ def advance_verdict(
 
 
 def blocks_new_round(
-    status: ReservationStatus, verdict: ReconciliationVerdict | None
+    status: ReservationStatus,
+    verdict: ReconciliationVerdict | None,
+    *,
+    dispatched: bool = False,
 ) -> str | None:
     """同じ入力に新しい idempotency key で課金呼び出しを作ってよいか。
 
     止める理由を返す（``None`` なら止めない）。
     - CONFIRMED_SUCCESS: provider 側に結果がある（課金済み）。取得すべきで再送ではない
     - 未照合（reserved）で UNKNOWN / STILL_RUNNING: 課金中か課金済みかもしれない
+    - 照合記録が無い（``verdict is None``）でも、reserved かつ ``dispatched``（呼んだ可能性が
+      ある）なら UNKNOWN として扱う。記録が無いことは「無事」の証拠ではない（INV-67）。
+      未 dispatch の reserved（呼んでいない証拠）と終端状態（spent / abandoned）は従来どおり。
     """
+    if verdict is None and status is ReservationStatus.RESERVED and dispatched:
+        verdict = V.UNKNOWN
     if verdict is V.CONFIRMED_SUCCESS:
         return "provider confirmed the job succeeded (billed); fetch its result, do not resubmit"
     if (
@@ -151,12 +162,32 @@ class ManualResolution:
         return f"operator:{self.actor}"
 
 
+_OWNER_APPROVAL_RE = re.compile(r"^OWNER-(\d{8})-[A-Za-z0-9][A-Za-z0-9_-]{5,63}$")
+
+
+def is_owner_approval_reference(token: str) -> bool:
+    """``OWNER-<yyyymmdd>-<id>`` の形か。**認証ではない**（誰でも書ける）。
+
+    承認の参照番号（チケット・チャットの発言 id 等）を残させ、監査行から辿れるようにするための
+    形式検査。日付は実在する暦日であること。
+    """
+    match = _OWNER_APPROVAL_RE.match(token)
+    if match is None:
+        return False
+    try:
+        _datetime.strptime(match.group(1), "%Y%m%d")
+    except ValueError:
+        return False
+    return True
+
+
 def validate_manual_resolution(
     *, outcome: str, evidence: str, owner_approval: str, actor: str
 ) -> ManualResolution:
     """success / failure / cancelled への手動確定の入力検査。
 
-    owner 承認 token は保存・ログに出さず、指紋（sha256 の先頭16桁）だけを残す。
+    owner 承認 token は ``OWNER-<yyyymmdd>-<id>`` 形式（認証ではない）。
+    保存・ログに出さず、指紋（sha256 の先頭16桁）だけを残す。
     """
     verdict = _MANUAL_OUTCOMES.get(outcome)
     if verdict is None:
@@ -165,6 +196,12 @@ def validate_manual_resolution(
         raise ManualResolutionError("--evidence is required")
     if not owner_approval.strip():
         raise ManualResolutionError("--owner-approval is required")
+    if not is_owner_approval_reference(owner_approval.strip()):
+        raise ManualResolutionError(
+            "--owner-approval must be an owner approval reference like OWNER-<yyyymmdd>-<id> "
+            "(valid date, id of 6-64 chars [A-Za-z0-9_-]). This is a format check for "
+            "traceability, not authentication"
+        )
     if not actor.strip():
         raise ManualResolutionError("--actor is required")
     fingerprint = hashlib.sha256(owner_approval.strip().encode()).hexdigest()[:16]
