@@ -194,6 +194,22 @@ class ScheduleSnapshot:
     next_run: datetime | None = None
 
 
+async def recent_action_workflow_ids(
+    client: Client, schedule_id: str, since: datetime
+) -> list[str]:
+    """Schedule が ``since`` 以降に起動した workflow の id（読み取りだけ。ADR-0054）。
+
+    Schedule を触る API はこのモジュールに閉じる（INV-2）ので、日次失敗検知の読み取りもここを通る。
+    """
+    description = await client.get_schedule_handle(schedule_id).describe()
+    ids: list[str] = []
+    for action in description.info.recent_actions:
+        workflow_id = getattr(action.action, "workflow_id", None)
+        if workflow_id and action.started_at >= since:
+            ids.append(workflow_id)
+    return ids
+
+
 class TemporalScheduleControl:
     """Schedule の describe / pause / unpause。Schedule を触る API はここに閉じる（INV-2）。"""
 
