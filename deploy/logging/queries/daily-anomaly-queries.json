@@ -1,0 +1,319 @@
+{
+  "_meta": {
+    "purpose": "daily-anomaly-report の OpenSearch 側の読み取り検索（_search / _count にだけ使う）。",
+    "how": "deploy/logging 資料 logging-runbook §5 の q() で POST $OS/avp-app-prod-*/_search -d @<body>。窓は gte を now-24h / now-7d / now-30d に替える。",
+    "caveat": "ログは検索用の副本（INV-38）。件数で再開・投稿を判断しない。distinct episode と未解決は PostgreSQL（scripts/daily-anomaly-report.py）が正。",
+    "applied": false
+  },
+  "queries": {
+    "watchdog_anomalies_by_kind_and_day": {
+      "size": 0,
+      "query": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "event_name": "anomaly.recorded"
+              }
+            },
+            {
+              "range": {
+                "@timestamp": {
+                  "gte": "now-30d"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "aggs": {
+        "kind": {
+          "filters": {
+            "filters": {
+              "EPISODE_STAGE_STALLED": {
+                "match_phrase": {
+                  "message": "anomaly=EPISODE_STAGE_STALLED"
+                }
+              },
+              "EPISODE_NOT_COMPLETED_BY_DEADLINE": {
+                "match_phrase": {
+                  "message": "anomaly=EPISODE_NOT_COMPLETED_BY_DEADLINE"
+                }
+              },
+              "EPISODE_NOT_UPLOADED_BY_DEADLINE": {
+                "match_phrase": {
+                  "message": "anomaly=EPISODE_NOT_UPLOADED_BY_DEADLINE"
+                }
+              },
+              "PIPELINE_OUTCOME_MISMATCH": {
+                "match_phrase": {
+                  "message": "anomaly=PIPELINE_OUTCOME_MISMATCH"
+                }
+              },
+              "DAILY_AUTOMATION_NOT_STARTED": {
+                "match_phrase": {
+                  "message": "anomaly=DAILY_AUTOMATION_NOT_STARTED"
+                }
+              }
+            }
+          },
+          "aggs": {
+            "per_day": {
+              "date_histogram": {
+                "field": "@timestamp",
+                "calendar_interval": "day",
+                "time_zone": "Asia/Tokyo"
+              }
+            }
+          }
+        }
+      }
+    },
+    "provider_call_failures": {
+      "size": 0,
+      "query": {
+        "bool": {
+          "filter": [
+            {
+              "term": {
+                "event_name": "provider.call.failed"
+              }
+            },
+            {
+              "range": {
+                "@timestamp": {
+                  "gte": "now-30d"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "aggs": {
+        "by_status": {
+          "terms": {
+            "field": "http_status",
+            "size": 20
+          }
+        },
+        "by_category": {
+          "terms": {
+            "field": "error_category",
+            "size": 20
+          }
+        },
+        "episodes": {
+          "cardinality": {
+            "field": "episode_id"
+          }
+        },
+        "per_day": {
+          "date_histogram": {
+            "field": "@timestamp",
+            "calendar_interval": "day",
+            "time_zone": "Asia/Tokyo"
+          }
+        }
+      }
+    },
+    "stage_failures_and_blocks": {
+      "size": 0,
+      "query": {
+        "bool": {
+          "filter": [
+            {
+              "terms": {
+                "event_name": [
+                  "stage.failed",
+                  "stage.blocked"
+                ]
+              }
+            },
+            {
+              "range": {
+                "@timestamp": {
+                  "gte": "now-30d"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "aggs": {
+        "by_stage": {
+          "terms": {
+            "field": "stage",
+            "size": 20
+          }
+        },
+        "episodes": {
+          "cardinality": {
+            "field": "episode_id"
+          }
+        },
+        "per_day": {
+          "date_histogram": {
+            "field": "@timestamp",
+            "calendar_interval": "day",
+            "time_zone": "Asia/Tokyo"
+          }
+        }
+      }
+    },
+    "render_failures": {
+      "size": 0,
+      "query": {
+        "bool": {
+          "filter": [
+            {
+              "terms": {
+                "event_name": [
+                  "render.validation.failed"
+                ]
+              }
+            },
+            {
+              "range": {
+                "@timestamp": {
+                  "gte": "now-30d"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "aggs": {
+        "episodes": {
+          "cardinality": {
+            "field": "episode_id"
+          }
+        },
+        "per_day": {
+          "date_histogram": {
+            "field": "@timestamp",
+            "calendar_interval": "day",
+            "time_zone": "Asia/Tokyo"
+          }
+        }
+      }
+    },
+    "upload_failures": {
+      "size": 0,
+      "query": {
+        "bool": {
+          "filter": [
+            {
+              "terms": {
+                "event_name": [
+                  "upload.failed"
+                ]
+              }
+            },
+            {
+              "range": {
+                "@timestamp": {
+                  "gte": "now-30d"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "aggs": {
+        "episodes": {
+          "cardinality": {
+            "field": "episode_id"
+          }
+        },
+        "per_day": {
+          "date_histogram": {
+            "field": "@timestamp",
+            "calendar_interval": "day",
+            "time_zone": "Asia/Tokyo"
+          }
+        }
+      }
+    },
+    "activity_failures_error_level": {
+      "size": 0,
+      "query": {
+        "bool": {
+          "filter": [
+            {
+              "terms": {
+                "event_name": [
+                  "activity.failed"
+                ]
+              }
+            },
+            {
+              "term": {
+                "level": "ERROR"
+              }
+            },
+            {
+              "range": {
+                "@timestamp": {
+                  "gte": "now-7d"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "aggs": {
+        "by_service": {
+          "terms": {
+            "field": "service_name",
+            "size": 20
+          }
+        },
+        "per_day": {
+          "date_histogram": {
+            "field": "@timestamp",
+            "calendar_interval": "day",
+            "time_zone": "Asia/Tokyo"
+          }
+        }
+      }
+    },
+    "daily_pipeline_started": {
+      "size": 0,
+      "query": {
+        "bool": {
+          "filter": [
+            {
+              "terms": {
+                "event_name": [
+                  "stage.started"
+                ]
+              }
+            },
+            {
+              "term": {
+                "stage": "pipeline"
+              }
+            },
+            {
+              "range": {
+                "@timestamp": {
+                  "gte": "now-30d"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "aggs": {
+        "per_day": {
+          "date_histogram": {
+            "field": "@timestamp",
+            "calendar_interval": "day",
+            "time_zone": "Asia/Tokyo",
+            "min_doc_count": 0
+          }
+        }
+      }
+    }
+  }
+}

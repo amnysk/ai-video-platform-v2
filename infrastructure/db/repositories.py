@@ -31,6 +31,7 @@ from contracts.states import (
     JobStatus,
     JobType,
     ProviderCall,
+    ReconciliationVerdict,
     RejectedInput,
     RejectionCategory,
     ReservationStatus,
@@ -47,10 +48,20 @@ from domain.episode.transitions import EpisodeEvent, Rejected, transition_episod
 from domain.errors import (
     InvalidTransitionError,
     ProviderRejection,
+    ResubmitRejectedError,
     UnreconciledReservationError,
 )
 from domain.job.entities import Job
 from domain.job.transitions import JobEvent, transition_job
+from domain.provider.reconciliation import (
+    ManualResolution,
+    ProviderObservation,
+    UnreconciledView,
+    advance_verdict,
+    blocks_new_round,
+    classify_observation,
+    request_id_from_ref,
+)
 from domain.provider.reservations import ReservationEvent, transition_reservation
 from infrastructure.db.models import (
     AnalyticsSnapshotRow,
@@ -62,6 +73,7 @@ from infrastructure.db.models import (
     OperationalSwitchRow,
     ProviderAuthIncidentRow,
     ProviderRejectionRow,
+    ProviderReservationReconciliationRow,
     ProviderReservationRow,
     TopicCandidateRow,
     TopicPlanRow,
@@ -823,7 +835,19 @@ class ProviderReservationRepository:
         scene_id: str | None = None,
         estimated_cost_usd: Decimal | None = None,
     ) -> ProviderReservation:
-        """予約を INSERT する。呼び出し側がこの直後に commit すること。"""
+        """予約を INSERT する。呼び出し側がこの直後に commit すること。
+
+        **再送ガード（ADR-0053 / INV-67）**: 同じ入力に、provider が成功を確認した（課金済み）
+        予約、または未照合で結果が分からない予約が既にあれば、新しい idempotency key での
+        予約を作らず ``ResubmitRejectedError``。provider に冪等キーは無いので、ここが最後の砦。
+        """
+        await self._reject_resubmit(
+            episode_id=episode_id,
+            provider=provider,
+            scene_id=scene_id,
+            input_hash=input_hash,
+            idempotency_key=idempotency_key,
+        )
         row = ProviderReservationRow(
             scene_id=scene_id,
             estimated_cost_usd=estimated_cost_usd,
@@ -842,6 +866,36 @@ class ProviderReservationRepository:
         reservation = _to_reservation(row)
         _defer_reservation(self._session, EventName.RESERVATION_RESERVED, "reserved", reservation)
         return reservation
+
+    async def _reject_resubmit(
+        self,
+        *,
+        episode_id: uuid.UUID | str,
+        provider: ProviderCall,
+        scene_id: str | None,
+        input_hash: str,
+        idempotency_key: str,
+    ) -> None:
+        scene_filter = (
+            ProviderReservationRow.scene_id.is_(None)
+            if scene_id is None
+            else ProviderReservationRow.scene_id == scene_id
+        )
+        stmt = select(ProviderReservationRow).where(
+            ProviderReservationRow.episode_id == _as_uuid(episode_id),
+            ProviderReservationRow.provider == provider.value,
+            ProviderReservationRow.input_hash == input_hash,
+            ProviderReservationRow.idempotency_key != idempotency_key,
+            scene_filter,
+        )
+        recon = ProviderReconciliationRepository(self._session)
+        for row in (await self._session.scalars(stmt)).all():
+            verdict = await recon.latest_verdict(row.id)
+            if verdict is None:
+                continue  # 照合記録の無い行は従来の経路（find_unreconciled 等）が扱う
+            reason = blocks_new_round(ReservationStatus(row.status), verdict)
+            if reason is not None:
+                raise ResubmitRejectedError(f"reservation {row.id}: {reason}")
 
     async def mark_dispatched(self, reservation_id: uuid.UUID | str) -> ProviderReservation:
         """subprocess を起動する**直前**に呼び、commit してから起動する。
@@ -1204,6 +1258,163 @@ class ProviderReservationRepository:
         row.error_summary = (error_summary or "")[:2000] or None
         await self._session.flush()
         return _to_reservation(row)
+
+
+class ProviderReconciliationRepository:
+    """未照合予約の照合記録（ADR-0053）。commit は呼び出し側の責務。
+
+    **追記専用**: ``provider_reservation_reconciliations`` に1行足すだけで、行は更新・削除しない。
+    ``provider_reservations`` の状態を動かすのは ``resolve_manual``（人手確定）だけ。
+    provider の観測（``record_observation``）は台帳の status を変えない。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def _latest_row(
+        self, reservation_id: uuid.UUID | str
+    ) -> ProviderReservationReconciliationRow | None:
+        stmt = (
+            select(ProviderReservationReconciliationRow)
+            .where(ProviderReservationReconciliationRow.reservation_id == _as_uuid(reservation_id))
+            .order_by(ProviderReservationReconciliationRow.id.desc())
+            .limit(1)
+        )
+        return (await self._session.scalars(stmt)).first()
+
+    async def latest_verdict(self, reservation_id: uuid.UUID | str) -> ReconciliationVerdict | None:
+        row = await self._latest_row(reservation_id)
+        return ReconciliationVerdict(row.verdict) if row else None
+
+    async def list_unreconciled(self, *, now: datetime | None = None) -> list[UnreconciledView]:
+        """``status = reserved`` の全予約（preflight の未照合件数と同じ集合）。"""
+        now = now or _now()
+        stmt = (
+            select(ProviderReservationRow)
+            .where(ProviderReservationRow.status == ReservationStatus.RESERVED.value)
+            .order_by(ProviderReservationRow.reserved_at, ProviderReservationRow.id)
+        )
+        views: list[UnreconciledView] = []
+        for row in (await self._session.scalars(stmt)).all():
+            verdict = await self.latest_verdict(row.id) or ReconciliationVerdict.UNKNOWN
+            reserved_at = row.reserved_at
+            if reserved_at.tzinfo is None:
+                reserved_at = reserved_at.replace(tzinfo=UTC)
+            views.append(
+                UnreconciledView(
+                    reservation_id=str(row.id),
+                    episode_id=str(row.episode_id),
+                    job_id=str(row.job_id) if row.job_id else None,
+                    provider=ProviderCall(row.provider),
+                    scene_id=row.scene_id,
+                    provider_request_id=request_id_from_ref(row.provider_job_ref),
+                    reserved_at=reserved_at,
+                    age_seconds=max(0, int((now - reserved_at).total_seconds())),
+                    dispatched=row.dispatched_at is not None,
+                    verdict=verdict,
+                    estimated_cost_usd=row.estimated_cost_usd,
+                )
+            )
+        return views
+
+    async def unreconciled_summary(self, *, now: datetime | None = None) -> dict[str, Any]:
+        """collector 向け: 未照合の件数・provider 別・episode 別・判定別・最古の経過秒。"""
+        from domain.provider.reconciliation import summarize_unreconciled
+
+        return summarize_unreconciled(await self.list_unreconciled(now=now))
+
+    async def record_observation(
+        self, reservation_id: uuid.UUID | str, observation: ProviderObservation
+    ) -> tuple[ReconciliationVerdict, bool]:
+        """provider の観測を記録する。冪等（同じ観測を何度与えても行は増えない）。
+
+        台帳の status は変えない。返り値は ``(現在の判定, 行を足したか)``。
+        確定済みの判定と食い違う観測は足さず、例外にもしない（呼び出し側は戻り値で見る）。
+        """
+        row = await self._session.get(ProviderReservationRow, _as_uuid(reservation_id))
+        if row is None:
+            raise InvalidTransitionError(f"unknown reservation {reservation_id}")
+        observed = classify_observation(observation)
+        step = advance_verdict(await self.latest_verdict(reservation_id), observed)
+        if not step.changed:
+            return step.verdict, False
+        self._session.add(
+            ProviderReservationReconciliationRow(
+                reservation_id=row.id,
+                verdict=step.verdict.value,
+                source="provider_status",
+                raw_status=(observation.queue_status or "")[:64] or None,
+            )
+        )
+        await self._session.flush()
+        _defer_reservation(
+            self._session,
+            EventName.RESERVATION_RECONCILED,
+            "reconciled",
+            _to_reservation(row),
+            verdict=step.verdict.value,
+            source="provider_status",
+        )
+        return step.verdict, True
+
+    async def resolve_manual(
+        self, reservation_id: uuid.UUID | str, resolution: ManualResolution
+    ) -> bool:
+        """人手の確定（evidence・owner 承認付き）を監査行として残し、台帳を動かす。
+
+        success / failure → ``spent``（課金された前提。保守的）、cancelled → ``abandoned``。
+        冪等: 同じ結論の再実行は何もしない（False）。別の確定済み結論への変更は拒否する。
+        """
+        from domain.provider.reconciliation import ManualResolutionError
+
+        row = await self._row_for_update(reservation_id)
+        current = await self.latest_verdict(reservation_id)
+        step = advance_verdict(current, resolution.verdict)
+        if step.conflict is not None:
+            raise ManualResolutionError(step.conflict)
+        reserved = ReservationStatus(row.status) is ReservationStatus.RESERVED
+        if current is resolution.verdict and not reserved:
+            return False  # 台帳まで確定済みの再実行（観測のみ確定なら下で台帳を動かす）
+        if not reserved:
+            raise ManualResolutionError(
+                f"reservation {row.id} is already {row.status}; its ledger state is final"
+            )
+        self._session.add(
+            ProviderReservationReconciliationRow(
+                reservation_id=row.id,
+                verdict=resolution.verdict.value,
+                source="operator",
+                evidence=resolution.evidence,
+                owner_approval_fingerprint=resolution.owner_approval_fingerprint,
+                actor=resolution.actor,
+            )
+        )
+        await self._session.flush()
+        repo = ProviderReservationRepository(self._session)
+        if resolution.verdict is ReconciliationVerdict.CANCELLED:
+            await repo.abandon(row.id, reconciled_by=resolution.reconciled_by)
+        else:
+            await repo.mark_spent(
+                row.id,
+                raw_output_key=None,
+                reconciled_by=resolution.reconciled_by,
+                error_summary=f"manual reconciliation: {resolution.verdict.value}",
+            )
+        _defer_reservation(
+            self._session,
+            EventName.RESERVATION_RECONCILED,
+            "reconciled",
+            _to_reservation(row),
+            verdict=resolution.verdict.value,
+            source="operator",
+        )
+        return True
+
+    async def _row_for_update(self, reservation_id: uuid.UUID | str) -> ProviderReservationRow:
+        row = await self._session.get(ProviderReservationRow, _as_uuid(reservation_id))
+        if row is None:
+            raise InvalidTransitionError(f"unknown reservation {reservation_id}")
+        return row
 
 
 class ProviderAuthIncidentRepository:

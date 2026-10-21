@@ -27,6 +27,7 @@ from contracts.release import (
     STAGING_TEMPORAL_NAMESPACE,
     TEST_DB_SUFFIX,
 )
+from domain.backup.manifest import drill_problems
 
 # ------------------------------------------------------------------ 語彙
 
@@ -81,6 +82,7 @@ CHECK_RUNNING = "running_workflows"
 CHECK_RESERVATIONS = "provider_reservations"
 CHECK_SCHEDULES = "schedule_snapshot"
 CHECK_BACKUP = "backup_freshness"
+CHECK_SERVICE_HEALTH = "service_health"
 CHECK_REPLAY = "replay_evidence"
 CHECK_APPROVAL = "owner_approval"
 
@@ -102,6 +104,7 @@ PRE_DEPLOY_REQUIRED: tuple[str, ...] = (
     CHECK_RUNNING,
     CHECK_RESERVATIONS,
     CHECK_SCHEDULES,
+    CHECK_SERVICE_HEALTH,
     CHECK_BACKUP,
     CHECK_REPLAY,
     CHECK_APPROVAL,
@@ -122,6 +125,7 @@ TARGET_BOUND_CHECKS = frozenset(
         "alembic",
         "running_workflows",
         "provider_reservations",
+        "service_health",
         "schedule_snapshot",
         "worker_pollers",
         "schedules_unchanged",
@@ -205,6 +209,7 @@ class Collectors(Protocol):
     def adr_text(self, rev: str, number: str) -> str | None: ...
     def running_workflow_count(self) -> int: ...
     def pending_reservation_count(self) -> int: ...
+    def unhealthy_services(self) -> Sequence[str]: ...
     def schedule_states(self) -> Mapping[str, Mapping[str, object]]: ...
     def required_queues(self) -> Sequence[str]: ...
     def queues_without_poller(self, queues: Sequence[str]) -> Sequence[str]: ...
@@ -302,6 +307,7 @@ def run_preflight(req: Request, c: Collectors, now: datetime) -> Report:
         results.append(_guard(CHECK_RUNNING, lambda: _check_running(c)))
         results.append(_guard(CHECK_RESERVATIONS, lambda: _check_reservations(c)))
         results.append(_guard(CHECK_SCHEDULES, lambda: _check_schedule_snapshot(c)))
+        results.append(_guard(CHECK_SERVICE_HEALTH, lambda: _check_service_health(c)))
         results.append(_guard(CHECK_BACKUP, lambda: _check_backup(req, c, now)))
         dependent(CHECK_REPLAY, lambda: _check_replay(req, c, now))
         dependent(CHECK_APPROVAL, lambda: _check_approval(req, c, now))
@@ -864,6 +870,18 @@ def _check_reservations(c: Collectors) -> CheckResult:
     return CheckResult(CHECK_RESERVATIONS, Status.PASS, "no pending reservation", {"count": 0})
 
 
+def _check_service_health(c: Collectors) -> CheckResult:
+    sick = sorted(c.unhealthy_services())
+    if sick:
+        return CheckResult(
+            CHECK_SERVICE_HEALTH,
+            Status.BLOCKED,
+            f"unhealthy service(s): {', '.join(sick)} (health is never loosened to pass)",
+            {"unhealthy": sick},
+        )
+    return CheckResult(CHECK_SERVICE_HEALTH, Status.PASS, "no unhealthy service")
+
+
 def _check_schedule_snapshot(c: Collectors) -> CheckResult:
     states = {k: dict(v) for k, v in c.schedule_states().items()}
     if not states:
@@ -951,8 +969,17 @@ def _check_backup(req: Request, c: Collectors, now: datetime) -> CheckResult:
         return _unknown(
             CHECK_BACKUP, f"components not confirmed in the manifest: {', '.join(missing)}"
         )
+    if manifest.get("restore_verified") is not True:
+        return _unknown(
+            CHECK_BACKUP, "backup is not restore-verified (no passed restore drill; INV-66)"
+        )
+    forged = drill_problems(manifest.get("restore_drill"))
+    if forged:
+        return _unknown(CHECK_BACKUP, f"restore drill evidence not credible: {forged[0]}")
     return CheckResult(
-        CHECK_BACKUP, Status.PASS, f"all components within {req.backup_max_age_hours:g}h"
+        CHECK_BACKUP,
+        Status.PASS,
+        f"all components within {req.backup_max_age_hours:g}h, restore-verified",
     )
 
 

@@ -1,0 +1,11 @@
+# 例（install しない）。毎日 1 回。deploy（migration）と時刻が重ならないようにする
+[Unit]
+Description=Daily AVP backup
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

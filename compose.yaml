@@ -119,6 +119,8 @@ services:
   temporal:
     logging: *logging
     image: temporalio/auto-setup:latest
+    # PID 1 が temporal-server だと孤児の子を wait されず zombie になる。docker-init(tini) が刈る（ADR-0052）。
+    init: true
     profiles: [core]
     depends_on:
       postgres: {condition: service_healthy}
@@ -131,7 +133,8 @@ services:
     ports: ["7233:7233"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "temporal operator cluster health --address temporal:7233 | grep -qx SERVING"]
+      # パイプを使わず、CLI は docker の timeout(5s) より短い KILL timeout で打ち切る（ADR-0052）。
+      test: ["CMD-SHELL", "[ \"$$(timeout -s KILL 4 temporal operator cluster health --address temporal:7233)\" = SERVING ]"]
       interval: 10s
       timeout: 5s
       retries: 30

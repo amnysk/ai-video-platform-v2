@@ -1,0 +1,10 @@
+# 例（install しない）。週 1 回（backup の後）
+[Unit]
+Description=Weekly AVP restore drill
+
+[Timer]
+OnCalendar=Sun *-*-* 05:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

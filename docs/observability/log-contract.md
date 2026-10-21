@@ -237,7 +237,7 @@ Collector が行から作る `@timestamp`（Docker の時刻）・`message`（�
 | `provider.call.started`(DEBUG) / `provider.call.succeeded` / `provider.call.failed` | 外部呼び出し1回。`provider_operation` で区別。submit の受理は **ref の commit 前に** INFO で出す（§9） |
 | `provider.job.state_changed` | poll で状態が変わった時だけ |
 | `provider.auth_incident.recorded` / `provider.call.suppressed` | ADR-0030 の記録・抑止 |
-| `reservation.reserved` / `reservation.dispatched` / `reservation.job_ref_recorded` / `reservation.spent` / `reservation.resumed` / `reservation.blocked` | 予約台帳。**commit 後だけ**（`blocked` は未照合・拒否入力で新ラウンドを止めた判断） |
+| `reservation.reserved` / `reservation.dispatched` / `reservation.job_ref_recorded` / `reservation.spent` / `reservation.resumed` / `reservation.blocked` / `reservation.reconciled` | 予約台帳。**commit 後だけ**（`blocked` は未照合・拒否入力で新ラウンドを止めた判断、`reconciled` は ADR-0053 の判定記録。証拠本文・承認 token は出さない） |
 | `artifact.stored` / `artifact.reused` / `artifact.reuse_rejected` / `artifact.superseded` | 成果物（stored・superseded は commit 後） |
 | `scene.rejected` / `scene.input_refetch` / `scene.alternative.started` / `scene.alternative.result` | 403/422/file_download_error と既存 fallback |
 | `episode.resume.requested` / `episode.resume.rejected` / `episode.resume.started` | 統一再開 |

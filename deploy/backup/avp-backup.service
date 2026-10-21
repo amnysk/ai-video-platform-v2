@@ -1,0 +1,16 @@
+# 例（install しない）。~/.config/systemd/user/avp-backup.service
+[Unit]
+Description=AVP backup (PostgreSQL 3 DBs then MinIO) - ADR-0051
+# docker が上がっていること
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/ai-video-platform-v2
+EnvironmentFile=%h/.config/avp/backup.env
+# repo の venv（minio SDK 入り）で実行。失敗は非ゼロ終了 + audit.log + 任意の通知
+ExecStart=%h/projects/ai-video-platform-v2/.venv/bin/python scripts/backup.py run
+# 取得は 2.1GB 規模で数分。長すぎる実行は失敗として扱う
+TimeoutStartSec=2h
+Nice=10
+IOSchedulingClass=idle
