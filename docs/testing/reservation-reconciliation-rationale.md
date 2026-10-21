@@ -18,6 +18,8 @@
 | `test_manual_resolve_*` | 監査行が残らない／再実行で二重に書く／確定済みを別の結論へ変える |
 | `test_confirmed_success_can_never_be_resubmitted_under_a_new_key` | 課金済み・結果ありの予約を、新 key で再送して二重課金する（`spent` で取得物が無いと `_plan_round` は次ラウンドを選ぶ） |
 | `test_unknown_reservation_can_never_be_resubmitted_under_a_new_key` | 「分からない」を理由に再送する |
+| `test_dispatched_reserved_without_any_verdict_blocks_a_new_key` / `test_blocks_new_round_treats_a_dispatched_reserved_without_verdict_as_unknown` | 観測ゼロの dispatched な reserved（本番の sb4 の形）を「記録なし = 無事」と読み、新 key で二重 submit する（独立レビュー P2-a） |
+| `test_never_dispatched_reserved_does_not_block_a_new_key` / `test_terminal_reservations_without_verdict_do_not_block` / `test_same_key_is_not_a_resubmit_even_if_dispatched` | 新ガードが強すぎて、呼んでいない予約・spent・abandoned の通常 retry や同一 key の再開まで止める |
 | `test_confirmed_failure_may_start_a_new_round` | ガードが強すぎて failed の通常 retry まで止める |
 | `test_a_different_input_is_not_blocked` | ガードが入力を区別せず、プロンプトを直した新入力まで止める |
 | `test_reconcile_is_dry_run_by_default_and_writes_nothing` | dry-run のつもりで台帳に書く |

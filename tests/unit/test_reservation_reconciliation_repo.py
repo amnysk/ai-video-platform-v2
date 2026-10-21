@@ -197,3 +197,71 @@ async def test_a_different_input_is_not_blocked(session) -> None:
         round=1,
         scene_id="sb1",
     )
+
+
+# ---- (e) 照合記録の無い dispatched な reserved（独立レビュー P2-a）
+
+
+async def _reserve_dispatch(session, episode_id: str, key: str, *, dispatch: bool) -> str:
+    repo = ProviderReservationRepository(session)
+    r = await repo.reserve(
+        episode_id=episode_id,
+        provider=ProviderCall.FAL_VIDEO,
+        idempotency_key=key,
+        input_hash="h1",
+        round=1,
+        scene_id="sb1",
+    )
+    if dispatch:
+        await repo.mark_dispatched(r.id)
+    await session.commit()
+    return r.id
+
+
+async def test_dispatched_reserved_without_any_verdict_blocks_a_new_key(session) -> None:
+    """観測ゼロでも、呼んだ可能性のある reserved は UNKNOWN として再送を止める。"""
+    episode = await EpisodeRepository(session).create(topic="t")
+    await _reserve_dispatch(session, episode.id, "k-old", dispatch=True)
+    assert (await ProviderReconciliationRepository(session).list_unreconciled())[
+        0
+    ].verdict is V.UNKNOWN  # list と guard の読み方が一致している
+    with pytest.raises(ResubmitRejectedError):
+        await _try_new_key(session, episode.id)
+
+
+async def test_never_dispatched_reserved_does_not_block_a_new_key(session) -> None:
+    """呼んでいない証拠のある reserved は従来どおり（別経路 find_unreconciled が扱う）。"""
+    episode = await EpisodeRepository(session).create(topic="t")
+    await _reserve_dispatch(session, episode.id, "k-old", dispatch=False)
+    await _try_new_key(session, episode.id)
+
+
+async def test_same_key_is_not_a_resubmit_even_if_dispatched(session) -> None:
+    """同じ idempotency key は新規送信ではない: ガード自身は拒否しない（一意制約が止める）。"""
+    from sqlalchemy.exc import IntegrityError
+
+    episode = await EpisodeRepository(session).create(topic="t")
+    await _reserve_dispatch(session, episode.id, "k-old", dispatch=True)
+    with pytest.raises(IntegrityError):
+        await ProviderReservationRepository(session).reserve(
+            episode_id=episode.id,
+            provider=ProviderCall.FAL_VIDEO,
+            idempotency_key="k-old",
+            input_hash="h1",
+            round=1,
+            scene_id="sb1",
+        )
+
+
+async def test_terminal_reservations_without_verdict_do_not_block(session) -> None:
+    """spent（conservative 確定）・abandoned は照合記録が無くても従来どおり次ラウンド可。"""
+    episode = await EpisodeRepository(session).create(topic="t")
+    repo = ProviderReservationRepository(session)
+    rid = await _reserve_dispatch(session, episode.id, "k-spent", dispatch=True)
+    await repo.mark_spent(rid, raw_output_key=None, reconciled_by="conservative")
+    await session.commit()
+    await _try_new_key(session, episode.id)
+    rid2 = await _reserve_dispatch(session, episode.id, "k-aband", dispatch=False)
+    await repo.abandon(rid2, reconciled_by="operator:x")
+    await session.commit()
+    await _try_new_key(session, episode.id)

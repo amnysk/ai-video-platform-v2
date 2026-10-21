@@ -112,6 +112,14 @@ def test_blocks_new_round(status: ReservationStatus, verdict: V, blocked: bool) 
     assert (blocks_new_round(status, verdict) is not None) is blocked
 
 
+def test_blocks_new_round_treats_a_dispatched_reserved_without_verdict_as_unknown() -> None:
+    reserved = ReservationStatus.RESERVED
+    assert blocks_new_round(reserved, None, dispatched=True) is not None
+    assert blocks_new_round(reserved, None, dispatched=False) is None  # 呼んでいない証拠
+    assert blocks_new_round(ReservationStatus.SPENT, None, dispatched=True) is None
+    assert blocks_new_round(ReservationStatus.ABANDONED, None, dispatched=True) is None
+
+
 def test_manual_resolution_requires_evidence_and_owner_approval() -> None:
     ok = validate_manual_resolution(
         outcome="success",

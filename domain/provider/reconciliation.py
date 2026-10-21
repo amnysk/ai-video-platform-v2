@@ -113,14 +113,22 @@ def advance_verdict(
 
 
 def blocks_new_round(
-    status: ReservationStatus, verdict: ReconciliationVerdict | None
+    status: ReservationStatus,
+    verdict: ReconciliationVerdict | None,
+    *,
+    dispatched: bool = False,
 ) -> str | None:
     """同じ入力に新しい idempotency key で課金呼び出しを作ってよいか。
 
     止める理由を返す（``None`` なら止めない）。
     - CONFIRMED_SUCCESS: provider 側に結果がある（課金済み）。取得すべきで再送ではない
     - 未照合（reserved）で UNKNOWN / STILL_RUNNING: 課金中か課金済みかもしれない
+    - 照合記録が無い（``verdict is None``）でも、reserved かつ ``dispatched``（呼んだ可能性が
+      ある）なら UNKNOWN として扱う。記録が無いことは「無事」の証拠ではない（INV-67）。
+      未 dispatch の reserved（呼んでいない証拠）と終端状態（spent / abandoned）は従来どおり。
     """
+    if verdict is None and status is ReservationStatus.RESERVED and dispatched:
+        verdict = V.UNKNOWN
     if verdict is V.CONFIRMED_SUCCESS:
         return "provider confirmed the job succeeded (billed); fetch its result, do not resubmit"
     if (

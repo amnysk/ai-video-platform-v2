@@ -891,9 +891,11 @@ class ProviderReservationRepository:
         recon = ProviderReconciliationRepository(self._session)
         for row in (await self._session.scalars(stmt)).all():
             verdict = await recon.latest_verdict(row.id)
-            if verdict is None:
-                continue  # 照合記録の無い行は従来の経路（find_unreconciled 等）が扱う
-            reason = blocks_new_round(ReservationStatus(row.status), verdict)
+            # 照合記録の無い dispatched な reserved は UNKNOWN 扱い（blocks_new_round が決める）。
+            # 未 dispatch の reserved は従来の経路（find_unreconciled 等）が扱う
+            reason = blocks_new_round(
+                ReservationStatus(row.status), verdict, dispatched=row.dispatched_at is not None
+            )
             if reason is not None:
                 raise ResubmitRejectedError(f"reservation {row.id}: {reason}")
 
