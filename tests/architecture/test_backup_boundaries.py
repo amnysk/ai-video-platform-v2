@@ -164,7 +164,8 @@ def test_precheck_is_read_only_against_production() -> None:
         "open(",
     ):
         assert word not in text, word
-    assert "psql" not in text and "pg_dump" not in text  # SQL は PostgresAccess 経由だけ
+    # コマンド名を argv として直接組まない（PostgresAccess 経由だけ）
+    assert not re.search(r'"(psql|pg_dump|pg_dumpall|pg_restore)"', text)
     for s in _string_constants(BACKUP / "precheck.py"):
         if re.match(r"^\s*(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\b", s, re.IGNORECASE):
             assert s.lstrip().upper().startswith("SELECT"), s

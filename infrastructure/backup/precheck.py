@@ -1,7 +1,8 @@
 """本番 backup を承認する前の read-only 点検（ADR-0051）。
 
-本番へ送るのは ``docker inspect`` / SQL（SELECT のみ。PostgresAccess 経由）/ pg_dump のバージョン確認 / S3 の
-list・stat だけ。何も作らず、書かず、audit も残さない（root が無くても作らない）。
+本番へ送るのは ``docker inspect`` / SQL（SELECT のみ。PostgresAccess 経由）/
+ダンプ側のバージョン確認 / S3 の list・stat だけ。
+何も作らず、書かず、audit も残さない（root が無くても作らない）。
 secret は**名前だけ**を扱い、値は出力・例外・ログに入れない。
 判定は ``domain/backup/precheck.py``。
 """
