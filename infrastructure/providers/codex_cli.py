@@ -23,10 +23,12 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
+from contracts.codex_models import extract_unsupported_model
 from domain.errors import (
     ProviderInvocationError,
     ProviderTimeoutError,
     ProviderUnavailableError,
+    UnsupportedModelError,
 )
 from domain.script.ports import GenerationRequest, GenerationResult
 from infrastructure.providers.process import ProcessResult, ProcessRunner, ProcessTimeout
@@ -219,6 +221,14 @@ class CodexCliStoryGenerator:
 
         if turn_error is not None or result.returncode != 0:
             detail = mask_secrets(turn_error or stderr.strip() or raw_log.strip()[-500:])
+            rejected = extract_unsupported_model(mask_secrets(f"{result.stderr}\n{result.stdout}"))
+            if rejected is not None:
+                raise UnsupportedModelError(
+                    f"codex model {rejected!r} is not supported for this account "
+                    f"(fix CODEX_MODEL or ~/.codex/config.toml): {detail[:300]}",
+                    model=rejected,
+                    http_status=400,
+                )
             if any(pattern in haystack for pattern in UNAVAILABLE_PATTERNS):
                 # CLI不在・未認証・使えないモデル等。何度呼んでも直らないので
                 # retry予算を浪費せず人間へ回す（needs_input → blocked）。
