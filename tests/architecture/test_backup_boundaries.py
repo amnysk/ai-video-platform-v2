@@ -146,3 +146,28 @@ def test_a_webhook_must_be_http_and_a_failing_target_is_reported_after_trying_al
     with pytest.raises(RuntimeError):
         n.notify({"event": "e"})
     assert out.exists()  # webhook が落ちても command には届く
+
+
+def test_precheck_is_read_only_against_production() -> None:
+    """precheck は inspect / SELECT / S3 list だけ。書く・作る・audit に残す語彙を持たない。"""
+    text = _text("precheck.py")
+    assert set(re.findall(r'"docker",\s*"([a-z-]+)"', text)) <= {"inspect"}
+    assert set(re.findall(r'"docker",\s*"([a-z-]+)"', _text("mounts.py"))) <= {"inspect"}
+    for word in (
+        "mkdir",
+        "makedirs",
+        "write_text",
+        "write_bytes",
+        "rmtree",
+        "unlink",
+        ".emit(",
+        "open(",
+    ):
+        assert word not in text, word
+    assert "psql" not in text and "pg_dump" not in text  # SQL は PostgresAccess 経由だけ
+    for s in _string_constants(BACKUP / "precheck.py"):
+        if re.match(r"^\s*(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER)\b", s, re.IGNORECASE):
+            assert s.lstrip().upper().startswith("SELECT"), s
+            assert FORBIDDEN_SQL.search(s) is None, s
+    cli = _text("cli.py")
+    assert cli.index('args.cmd == "precheck"') < cli.index("AuditLog(")  # root も audit も作らない
