@@ -54,9 +54,11 @@ FAILED になる事故が実際に起きた（7日連続、各約9.5秒、Episod
    `domain/daily_failure.py::summarize_failure` が token / key / Bearer / URL query / userinfo /
    長い不透明文字列 / UUID を伏せ、空白を畳み、型 80 文字・message 200 文字に切る。
    stack trace・入力 payload は取らない。
-7. `WatchdogCheckRequest.daily_failure_lookback_days`（既定3、上限7）。既定値の宣言元は
+7. **判定する日**は最新 slot 日から窓の日数ぶんのうち、最初の slot の日以降だけ（日次運用の開始前を
+   異常にしない。slot が無い新品の DB は最新日のみ）。
+8. `WatchdogCheckRequest.daily_failure_lookback_days`（既定3、上限7）。既定値の宣言元は
    `contracts/schedule_guard.py`。
-8. watchdog は検出・記録だけで何も再実行しない。
+9. watchdog は検出・記録だけで何も再実行しない。
 
 ## Alternatives
 
