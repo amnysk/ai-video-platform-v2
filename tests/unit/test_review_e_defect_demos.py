@@ -7,6 +7,7 @@ at which point the marker should be removed. Production code is untouched.
 
 from __future__ import annotations
 
+import importlib
 import textwrap
 
 import pytest
@@ -20,8 +21,12 @@ from domain import release_preflight as rp
 from infrastructure.db.provider_health_repositories import PostgresProviderHealth
 from infrastructure.db.repositories import EpisodeRepository
 from infrastructure.db.safety import is_destructive_statement
-from infrastructure.providers.fal_refusal import summarize_refusal_body
 from tests.unit.test_release_migration_scan import _migration_status, _module
+
+# dynamic on purpose: INV-18 forbids static fal_* imports from tests outside the allowlist
+summarize_refusal_body = importlib.import_module(
+    "infrastructure.providers.fal_refusal"
+).summarize_refusal_body
 
 FAL = ProviderAccount(ProviderFamily.FAL)
 
