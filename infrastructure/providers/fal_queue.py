@@ -8,7 +8,9 @@ submit / status / result / download と、**結果の分類**だけを持つ。
 - **受理されなかったことが確実**（接続前に失敗 / 429 / 4xx）
   - 一時的（接続拒否・DNS・429・``X-Fal-Retryable``）→ ``ProviderJobFailedError``（retryable）
   - 拒否（入力不正・ポリシー）→ ``ProviderRejectedError``（needs_input）
-  - 認証（401/403）→ ``ProviderUnavailableError``（needs_input）
+  - 401/402/403 → ``fal_refusal.refusal_error``（ADR-0057）。本文の印で残高不足
+    （``ProviderBalanceExhaustedError``）、印が無い 401 は認証（``ProviderUnavailableError``）、
+    印が無い 402/403 は分類不能（``ProviderRefusalUnknownError``）。いずれも受理されていない
 - **受理されたか分からない**（送信後のタイムアウト / 5xx / request_id 欠落 / 想定外の HTTP 例外）
   → ``ProviderSubmitAmbiguousError``。fal に冪等キーは無いので**再送しない**
 - **2xx + request_id は受理**。以後の異常（URL のホスト違い・型の崩れ）で「受理されなかった」に
@@ -45,6 +47,7 @@ from domain.errors import (
 )
 from domain.production.ports import ProviderJobRef
 from infrastructure.logging.provider import CallObservation
+from infrastructure.providers.fal_refusal import refusal_error
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +308,7 @@ class FalQueueClient:
         """
         if not api_key:
             raise ProviderUnavailableError("FAL_KEY is not configured")
+        self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._submit_timeout = httpx.Timeout(timeout_seconds, connect=connect_timeout_seconds)
         timeout = httpx.Timeout(
@@ -361,10 +365,8 @@ class FalQueueClient:
             raise ProviderSubmitAmbiguousError(f"fal submit outcome unknown: HTTP {status}")
         if status == 429:
             raise ProviderJobFailedError("fal submit not accepted: HTTP 429 (rate limited)")
-        if status in (401, 403):
-            raise ProviderUnavailableError(
-                f"fal submit refused: HTTP {status} (credentials)", http_status=status
-            )
+        if status in (401, 402, 403):
+            raise refusal_error(status, body, what="submit", secrets=(self._api_key,))
         if status >= 400:
             if _retryable_header(response) is True:
                 raise ProviderJobFailedError(

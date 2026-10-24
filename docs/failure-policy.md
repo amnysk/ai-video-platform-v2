@@ -70,6 +70,9 @@
 | `SceneAlternativeNotApplicableError`（ADR-0035 (8)） | `needs_input` | そのシーンの未対処の失敗に内容方針（`content_policy`）以外の分類（`input_validation` / `unknown` / `input_unreachable`）がある。映像を差し替えても直らないので planner を呼ばない |
 | `ProviderInputFetchError`（ADR-0035 (8)） | `needs_input` | provider がこちらの入力（URL のファイル）を取得できなかった（分類 `input_unreachable`。内容の判定ではない）。予約は spent、`input_rejected_by_provider` は立てない、拒否台帳に分類つきで残す。workflow は入力を上げ直す次のラウンドへ**1回だけ**進む（INV-35） |
 | `ProviderInputFetchRetryExhaustedError`（ADR-0035 (8)） | `needs_input` | そのシーンの取得失敗が再試行を含めて2回記録された後の新ラウンドを、予約の**前**に止めた（予約も課金も作らない。resume でも同じ） |
+| `ProviderBalanceExhaustedError`（`ProviderRefusalError` の下位、ADR-0057 / INV-71） | `needs_input` | fal アカウントの残高ロック（401/402/403 + 本文に残高の印）。**受理されていない・費用 0・入力の拒否ではない**。`ProviderUnavailableError`（認証 incident）にも `ProviderRejectedError`（恒久ブロック）にも数えない。breaker を開き `blocked` + 保留で止まる。入金後は**同じ入力をそのまま**再開できる |
+| `ProviderRefusalUnknownError`（同上） | `needs_input` | 402/403 だが残高とも認証とも文書化された根拠で確定できない。安全側として残高不足と同じに止まる（breaker を開く）。本文の要約を残すので人が原因を確かめる |
+| `ProviderBreakerOpenError`（ADR-0057 / INV-72） | `needs_input` | provider アカウントの breaker が open。予約 INSERT の**前**に止める（台帳に何も残さず、provider へ何も送らない）。時間では解除されない |
 | `ProviderJobFailedError` | `retryable` | provider 側ジョブの失敗。次ラウンド（新しい予約）で再生成 |
 | `ProviderPollDeadlineError` | `retryable` | 完了待ちの期限切れ。ジョブの状態は不明なので**同じ予約で再 await**（再送しない。上限を使い切ったら記録して止まる） |
 | `MediaValidationError` | `retryable` | 生成メディアが形式・解像度・尺の規則を満たさない |

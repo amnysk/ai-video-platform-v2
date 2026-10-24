@@ -515,3 +515,18 @@ message の要約（secret・UUID・URL query を伏せ、長さを制限）と 
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_unreadable_temporal_records_unobservable_not_ok`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_recorded_failure_survives_retention_expiry`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_failure_outside_window_is_not_recorded`
+
+## P. provider の残高不足（ADR-0057）
+
+### INV-71 残高不足・分類不能の拒否は、入力の拒否でも認証障害でもなく、provider アカウントの状態として扱う（ADR-0057）
+fal の 401/402/403 は、本文の文書化された印（`fal_refusal.BALANCE_BODY_MARKERS`、出所つき・1表だけ）が
+あるときだけ `BALANCE_EXHAUSTED`、印が無い 401 は `AUTH_INVALID`、印が無い 402/403 は `UNKNOWN`。
+**HTTP status だけで残高不足と決めない**（公式文書に残高の構造化コードは無い）。
+`ProviderBalanceExhaustedError` / `ProviderRefusalUnknownError` は `ProviderUnavailableError`
+（ADR-0030 の認証 incident）の子でも `ProviderRejectedError`（ADR-0034 の恒久ブロック）の子でもない。
+応答本文の要約を残す（secret・署名付き URL・query を除く。300 文字まで）。
+**機械検査**: `tests/unit/test_fal_refusal.py::test_status_alone_never_decides_balance`
+/ `tests/unit/test_fal_refusal.py::test_three_statuses_map_to_three_different_kinds`
+/ `tests/unit/test_fal_refusal.py::test_markers_live_in_one_place_with_provenance`
+/ `tests/unit/test_fal_refusal.py::test_summary_redacts_secrets_urls_and_truncates`
+/ `tests/unit/test_fal_refusal.py::test_submit_refusals_use_distinct_error_types`
