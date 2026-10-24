@@ -530,3 +530,16 @@ fal の 401/402/403 は、本文の文書化された印（`fal_refusal.BALANCE_
 / `tests/unit/test_fal_refusal.py::test_markers_live_in_one_place_with_provenance`
 / `tests/unit/test_fal_refusal.py::test_summary_redacts_secrets_urls_and_truncates`
 / `tests/unit/test_fal_refusal.py::test_submit_refusals_use_distinct_error_types`
+
+### INV-72 breaker は provider アカウント単位で永続し、時間では閉じず、予約の前に止める（ADR-0057）
+breaker は PostgreSQL（`provider_breakers`）に持つ。鍵は `ProviderAccount.key`。`open` は残高不足・分類不能の
+拒否の最初の1件で開き、冪等かつ並行安全（一意制約と条件付き UPDATE。同時に開いても行は1つ・勝者は1人）。
+**時間経過では閉じない**。`half_open` / `closed` への遷移は所有者承認つきの操作だけ（`half_open` で
+provider が submit を受理したときの `closed` を除く）。migration 0018 は expand-only（新しい表だけ。既存の
+CHECK を広げない）。
+**機械検査**: `tests/unit/test_provider_health_repo.py::test_breaker_never_closes_with_time`
+/ `tests/unit/test_provider_health_repo.py::test_open_is_idempotent_and_keeps_the_first_reason`
+/ `tests/unit/test_provider_health_repo.py::test_half_open_needs_open_then_accepted_submit_closes_it`
+/ `tests/integration/test_provider_breaker_postgres.py::test_simultaneous_opens_leave_one_row_and_exactly_one_winner`
+/ `tests/contract/test_provider_health_migration.py::test_release_preflight_scanner_finds_nothing_in_0018`
+/ `tests/contract/test_provider_health_migration.py::test_0018_upgrade_only_creates_tables_and_indexes`
