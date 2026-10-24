@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import textwrap
+import uuid
 
 import pytest
 
@@ -31,7 +32,6 @@ summarize_refusal_body = importlib.import_module(
 FAL = ProviderAccount(ProviderFamily.FAL)
 
 
-@pytest.mark.xfail(strict=True, reason="E-P2: scheme-less URL query leaks into error_summary")
 def test_refusal_summary_drops_query_strings_of_scheme_less_urls() -> None:
     text = "upload to //cdn.fal.media/f?sig=SECRETSIG ok"
     assert "SECRETSIG" not in summarize_refusal_body({"detail": text})
@@ -99,11 +99,6 @@ def test_widening_exemption_rejects_batch_alter_table_that_recreates_the_table()
     assert status is rp.Status.BLOCKED
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="E-P1: holds are never released when the episode is resumed by a non-CLI path, "
-    "so they keep counting toward MAX_HELD_EPISODES (daily goes HELD_BACKLOG forever)",
-)
 async def test_hold_of_an_episode_that_left_the_held_state_does_not_count(
     session_factory,
 ) -> None:
@@ -127,7 +122,7 @@ async def test_hold_of_an_episode_that_left_the_held_state_does_not_count(
 
     async with session_factory() as session:
         await session.execute(
-            update(EpisodeRow).where(EpisodeRow.id == ep).values(status="completed")
+            update(EpisodeRow).where(EpisodeRow.id == uuid.UUID(str(ep))).values(status="completed")
         )
         await session.commit()
     assert await health.open_hold_count() == 0

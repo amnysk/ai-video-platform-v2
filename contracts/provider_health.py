@@ -23,7 +23,15 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
-from contracts.states import ProviderCall
+from contracts.states import EpisodeStatus, ProviderCall
+
+#: 信用保留が「まだ有効」でありうる Episode の状態（単一宣言元 / AGENTS.md §8）。
+#: production 中の保留は ``blocked``、日次ゲートの保留（production 前）は ``storyboard_ready``。
+#: これ以外の状態へ進んだ / 終わった Episode の未解放行は古い（stale）ので、読み取りで数えない。
+HELD_EPISODE_STATUSES: tuple[EpisodeStatus, ...] = (
+    EpisodeStatus.BLOCKED,
+    EpisodeStatus.STORYBOARD_READY,
+)
 
 
 class ProviderFamily(StrEnum):
@@ -130,6 +138,7 @@ class CreditHoldWriter(Protocol):
 
 
 __all__ = [
+    "HELD_EPISODE_STATUSES",
     "DEFAULT_ACCOUNT_LABEL",
     "MAX_HELD_EPISODES",
     "PROVIDER_FAMILY",

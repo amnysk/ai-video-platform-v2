@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from contracts.daily_gate import OpenHold
 from contracts.provider_health import (
+    HELD_EPISODE_STATUSES,
     PROVIDER_FAMILY,
     BreakerSnapshot,
     BreakerState,
@@ -30,10 +31,28 @@ from contracts.provider_health import (
 from contracts.states import ArtifactType
 from infrastructure.db.models import (
     ArtifactMetadataRow,
+    EpisodeRow,
     ProviderBreakerRow,
     ProviderCreditHoldRow,
     ProviderReservationRow,
 )
+
+
+def _live_open_hold():
+    """未解放で、かつ Episode が今も保留状態にある行の条件（review-E P1-1）。
+
+    解放は resume CLI だけが行う。API 再開・完了・取消で Episode が保留状態を離れても行は残る
+    ので、読み取り側で Episode の状態を見て古い行を数えない。行は消さない（監査用）。
+    """
+    return (
+        ProviderCreditHoldRow.released_at.is_(None),
+        ProviderCreditHoldRow.episode_id.in_(
+            select(EpisodeRow.id).where(
+                EpisodeRow.status.in_([s.value for s in HELD_EPISODE_STATUSES])
+            )
+        ),
+    )
+
 
 #: 保留の写しに残す成功済み成果物の型（再開で再利用される単位）
 _SCENE_OUTPUT_TYPES = (
@@ -390,10 +409,20 @@ class PostgresProviderHealth:
         async with self._session_factory() as session:
             count = await session.scalar(
                 select(func.count(distinct(ProviderCreditHoldRow.episode_id))).where(
-                    ProviderCreditHoldRow.released_at.is_(None)
+                    *_live_open_hold()
                 )
             )
             return int(count or 0)
+
+    async def has_live_hold(self, episode_id: uuid.UUID | str) -> bool:
+        """この Episode に有効な未解放の保留があるか（API 再開が拒否に使う）。"""
+        async with self._session_factory() as session:
+            count = await session.scalar(
+                select(func.count(ProviderCreditHoldRow.id)).where(
+                    *_live_open_hold(), ProviderCreditHoldRow.episode_id == _as_uuid(episode_id)
+                )
+            )
+            return bool(count)
 
     async def list_holds(self, *, account: ProviderAccount | None = None) -> list[CreditHold]:
         async with self._session_factory() as session:
@@ -414,7 +443,7 @@ class PostgresProviderHealth:
         async with self._session_factory() as session:
             rows = await session.scalars(
                 select(ProviderCreditHoldRow)
-                .where(ProviderCreditHoldRow.released_at.is_(None))
+                .where(*_live_open_hold())
                 .order_by(ProviderCreditHoldRow.held_at, ProviderCreditHoldRow.id)
             )
             first: dict[str, ProviderCreditHoldRow] = {}
@@ -438,10 +467,7 @@ class PostgresProviderHealth:
         async with self._session_factory() as session:
             rows = await session.execute(
                 select(ProviderCreditHoldRow.episode_id, func.min(ProviderCreditHoldRow.held_at))
-                .where(
-                    ProviderCreditHoldRow.released_at.is_(None),
-                    ProviderCreditHoldRow.account_key == account.key,
-                )
+                .where(*_live_open_hold(), ProviderCreditHoldRow.account_key == account.key)
                 .group_by(ProviderCreditHoldRow.episode_id)
                 .order_by(func.min(ProviderCreditHoldRow.held_at), ProviderCreditHoldRow.episode_id)
                 .limit(limit)
