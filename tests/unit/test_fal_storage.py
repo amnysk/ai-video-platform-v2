@@ -12,7 +12,9 @@ import httpx
 import pytest
 
 from domain.errors import (
+    ProviderBalanceExhaustedError,
     ProviderInvocationError,
+    ProviderRefusalUnknownError,
     ProviderRejectedError,
     ProviderUnavailableError,
 )
@@ -69,10 +71,15 @@ async def test_token_then_upload_returns_access_url() -> None:
     assert "secret-key" not in upload_req.headers["authorization"]
 
 
-@pytest.mark.parametrize("status", [401, 403])
+#: ADR-0057: 本文の印が無い 401 は認証、402/403 は分類不能（残高とも認証とも確定しない）
+_REFUSAL_ERROR = {401: ProviderUnavailableError, 402: ProviderRefusalUnknownError}
+_REFUSAL_ERROR[403] = ProviderRefusalUnknownError
+
+
+@pytest.mark.parametrize("status", [401, 402, 403])
 async def test_auth_failure_needs_input(status) -> None:
     client, _ = _client({STORAGE_TOKEN_URL: httpx.Response(status)})
-    with pytest.raises(ProviderUnavailableError) as info:
+    with pytest.raises(_REFUSAL_ERROR[status]) as info:
         await client.upload(b"PNG", "image/png", "a.png")
     assert "secret-key" not in str(info.value)
 
@@ -81,7 +88,7 @@ async def test_auth_failure_needs_input(status) -> None:
 async def test_auth_failure_does_not_assert_a_cause(status) -> None:
     """ADR-0030: 403 を「credentials」と決め打たない。応答本文は評価に使えない（body なし）。"""
     client, _ = _client({STORAGE_TOKEN_URL: httpx.Response(status)})
-    with pytest.raises(ProviderUnavailableError) as info:
+    with pytest.raises(_REFUSAL_ERROR[status]) as info:
         await client.upload(b"PNG", "image/png", "a.png")
     assert "credentials" not in str(info.value).lower()
 
@@ -101,7 +108,7 @@ async def test_auth_failure_logs_structured_diagnostics_without_secrets(status, 
     )
     with (
         caplog.at_level(logging.ERROR, logger="infrastructure.providers.fal_storage"),
-        pytest.raises(ProviderUnavailableError),
+        pytest.raises(_REFUSAL_ERROR[status]),
     ):
         await client.upload(b"PNG", "image/png", "a.png")
     assert len(caplog.records) == 1
@@ -122,7 +129,7 @@ async def test_auth_failure_without_request_id_logs_none(caplog) -> None:
     client, _ = _client({STORAGE_TOKEN_URL: httpx.Response(403)})
     with (
         caplog.at_level(logging.ERROR, logger="infrastructure.providers.fal_storage"),
-        pytest.raises(ProviderUnavailableError),
+        pytest.raises(ProviderRefusalUnknownError),
     ):
         await client.upload(b"PNG", "image/png", "a.png")
     message = caplog.records[0].getMessage()
@@ -182,3 +189,14 @@ async def test_other_4xx_is_rejected_and_bad_body_is_retryable() -> None:
     )
     with pytest.raises(ProviderInvocationError):
         await client.upload(b"PNG", "image/png", "a.png")
+
+
+@pytest.mark.parametrize("status", [402, 403])
+async def test_balance_marker_in_the_body_is_balance_exhausted_not_auth(status) -> None:
+    """ADR-0057: 準備工程（token 取得）でも残高ロックを認証 incident に混ぜない。"""
+    body = {"detail": "User is locked: Exhausted balance"}
+    client, _ = _client({STORAGE_TOKEN_URL: httpx.Response(status, json=body)})
+    with pytest.raises(ProviderBalanceExhaustedError) as info:
+        await client.upload(b"PNG", "image/png", "a.png")
+    assert not isinstance(info.value, ProviderUnavailableError)
+    assert "Exhausted balance" in str(info.value)

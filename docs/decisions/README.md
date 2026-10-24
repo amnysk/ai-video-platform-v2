@@ -73,5 +73,6 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0059](./0059-opensearch-memory-guard-and-single-container-recovery.md) | OpenSearch のメモリ保護（hysteresis）・単一コンテナの自動復旧（opt-in）・OpenSearch に依存しない警報と dead-man's switch（ADR-0040 §7 を更新） | Proposed |
 | [0054](./0054-daily-workflow-failure-detection.md) | 日次 Workflow が失敗し Episode が作られない日を watchdog が検知（連続日数・unobservable・秘匿要約） | Proposed |
 | [0055](./0055-destructive-schema-op-guard-and-db-role-separation.md) | 破壊的スキーマ操作の単一ガード（INV-69）と DB ロール分離の設計 | Proposed |
+| [0057](./0057-fal-balance-exhaustion-managed-pause.md) | fal の残高不足を「管理された一時停止」として扱う（拒否の分類・永続 breaker・`blocked` + 保留・承認つき再開） | Proposed |
 | [0058](./0058-daily-preflight-credit-hold-and-watchdog-classification.md) | 日次の事前診断（Codex model・breaker・保留数）・残高不足の保留・watchdog の失敗/保留/未納品の分類 | Proposed |
 | [0060](./0060-check-vocabulary-widening-in-release-scan.md) | CHECK 語彙の拡張だけを、宣言と機械検査つきで release 走査の contract から外す | Proposed |

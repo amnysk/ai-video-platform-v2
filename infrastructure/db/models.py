@@ -34,6 +34,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from contracts.operations import OperationalSwitch
+from contracts.provider_health import BreakerState, HoldReason, RefusalKind
 from contracts.research import (
     ResearchArtifactType,
     ResearchCall,
@@ -448,6 +449,94 @@ class ProviderAuthIncidentRow(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProviderBreakerRow(Base):
+    """provider アカウントの circuit breaker（ADR-0057 / INV-72）。鍵は ``ProviderAccount.key``。
+
+    ``open`` は残高拒否・分類不能の拒否で開き、**時間では閉じない**。``half_open`` / ``closed``
+    への遷移は所有者承認 token（指紋だけ保存）つきの CLI だけが行う（受理された submit による
+    ``half_open → closed`` を除く）。1アカウント1行。
+    """
+
+    __tablename__ = "provider_breakers"
+    __table_args__ = (
+        _check("state", BreakerState, "ck_provider_breakers_state"),
+        _check("reason", RefusalKind, "ck_provider_breakers_reason"),
+        CheckConstraint(
+            "state = 'closed' OR reason IS NOT NULL", name="ck_provider_breakers_reason_required"
+        ),
+    )
+
+    account_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: 開いた理由（``RefusalKind``）。閉じた後も最後の理由を残す（監査）
+    reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: 応答本文の要約（secret なし・300 文字まで）
+    evidence: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    opened_by_episode_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="SET NULL"), nullable=True
+    )
+    #: 開いている間に観測した拒否の数（原子的に加算する）
+    refusal_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    last_refusal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    state_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    #: 人の承認（half_open / close）。token 本体は保存しない
+    approval_fingerprint: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 所有者の残高確認の根拠（attestation）
+    approval_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ProviderCreditHoldRow(Base):
+    """残高不足による保留（ADR-0057 / INV-73）。Episode は ``blocked`` のまま、理由をここに持つ。
+
+    未解放の保留は (episode_id, scene_key, account_key) で一意（冪等）。``scene_key`` は
+    ``scene_id`` か、Episode 全体の保留なら空文字（NULL は一意制約に効かないため別列にする）。
+    解放（``released_at``）は再開の承認つきでだけ行う。行は消さない。
+    """
+
+    __tablename__ = "provider_credit_holds"
+    __table_args__ = (
+        _check("reason", HoldReason, "ck_provider_credit_holds_reason"),
+        Index("ix_provider_credit_holds_episode_id", "episode_id"),
+        Index(
+            "uq_provider_credit_holds_open",
+            "episode_id",
+            "scene_key",
+            "account_key",
+            unique=True,
+            sqlite_where=text("released_at IS NULL"),
+            postgresql_where=text("released_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+    )
+    scene_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    scene_key: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="", server_default=""
+    )
+    account_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    resumable_stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    generation_profile_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: 保留時点の写し: ``{"reservation_ids": [...], "succeeded_artifact_ids": [...]}``
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    held_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: 解放した承認の指紋（token 本体は保存しない）
+    released_approval_fingerprint: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class AnalyticsSnapshotRow(Base):

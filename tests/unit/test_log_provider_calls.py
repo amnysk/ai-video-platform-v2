@@ -14,9 +14,9 @@ import pytest
 
 from domain.errors import (
     ProviderInputFetchError,
+    ProviderRefusalUnknownError,
     ProviderRejectedError,
     ProviderSubmitAmbiguousError,
-    ProviderUnavailableError,
 )
 from infrastructure.providers.fal_queue import QUEUE_BASE_URL, FalQueueClient, FalSubmission
 from infrastructure.providers.fal_storage import STORAGE_TOKEN_URL, FalStorageClient
@@ -39,7 +39,8 @@ def _submission() -> FalSubmission:
 
 async def test_403_is_access_denied_from_the_status_alone_and_keeps_its_status() -> None:
     client = _client(httpx.Response(403, headers={"x-fal-request-id": "fal-req-9"}))
-    with capture_json() as logs, pytest.raises(ProviderUnavailableError) as caught:
+    # ADR-0057: 本文に印の無い 403 は分類不能（認証とも残高とも決めない）
+    with capture_json() as logs, pytest.raises(ProviderRefusalUnknownError) as caught:
         await client.submit(ENDPOINT, {"prompt": "x"})
     assert caught.value.http_status == 403  # 制御は変えず、観測した status を持たせる
     [failed] = logs.events("provider.call.failed")
@@ -122,7 +123,7 @@ async def test_storage_403_keeps_the_existing_line_and_adds_fields() -> None:
             )
         ),
     )
-    with capture_json() as logs, pytest.raises(ProviderUnavailableError):
+    with capture_json() as logs, pytest.raises(ProviderRefusalUnknownError):
         await client.upload(b"PNG", "image/png", "a.png")
     [failed] = logs.events("provider.call.failed")
     assert failed["message"].startswith("PROVIDER_AUTH_FAILURE fal_operation=token http_status=403")
