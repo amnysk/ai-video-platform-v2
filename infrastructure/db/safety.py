@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import event, text
@@ -49,12 +50,24 @@ OVERRIDING_QUERY_KEYS: frozenset[str] = frozenset(
 #: 設定されていると URL に現れない所へ繋がりうる libpq の環境変数（URL が host・DB を明示していても
 #: ``PGHOSTADDR`` / ``PGSERVICE`` は接続先を変えうるので常に拒否する）
 _ALWAYS_REFUSED_ENV: tuple[str, ...] = ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE")
-_COMMENT = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
 _DESTRUCTIVE_STATEMENT = re.compile(
     r"^\s*(?:DROP\s+(?P<kind>TABLE|SCHEMA|DATABASE)\b(?:\s+IF\s+EXISTS)?(?:\s+(?P<name>\"[^\"]+\"|\w+))?"
     r"|(?P<truncate>TRUNCATE)\b)",
     re.IGNORECASE,
 )
+_DO_BLOCK = re.compile(r"^\s*DO\b", re.IGNORECASE)
+_EXECUTE_WORD = re.compile(r"\bEXECUTE\b", re.IGNORECASE)
+_ANY_DESTRUCTIVE_WORD = re.compile(r"\b(?:DROP|TRUNCATE)\b", re.IGNORECASE)
+_ALTER_TABLE = re.compile(r"^\s*ALTER\s+TABLE\b", re.IGNORECASE)
+#: ``ALTER TABLE .. DROP [COLUMN] c`` は列とそのデータを消す（COLUMN は省略できる）。
+#: ``DROP CONSTRAINT`` と ``ALTER COLUMN .. DROP DEFAULT|NOT NULL|IDENTITY|EXPRESSION`` は
+#: データを消さない
+_DROP_COLUMN = re.compile(
+    r"\bDROP\s+(?!(?:CONSTRAINT|DEFAULT|NOT|IDENTITY|EXPRESSION)\b)", re.IGNORECASE
+)
+_BULK_DELETE = re.compile(r"^\s*DELETE\s+FROM\b", re.IGNORECASE)
+_WHERE = re.compile(r"\bWHERE\b", re.IGNORECASE)
+_DOLLAR_TAG = re.compile(r"\$(?:[^\W\d]\w*)?\$")
 
 
 class UnsafeDatabaseError(RuntimeError):
@@ -282,15 +295,130 @@ def guarded_drop_database(
 _VERIFIED_KEY = "avp_live_verified"
 
 
-def _destructive_matches(statement: str) -> list[re.Match[str]]:
-    """``;`` 区切りの各文のうち、破壊的なもの（コメントは除いて先頭で判定）。"""
-    found = (_DESTRUCTIVE_STATEMENT.match(_COMMENT.sub(" ", part)) for part in statement.split(";"))
-    return [m for m in found if m is not None]
+@dataclass(frozen=True)
+class _Destructive:
+    #: TABLE / SCHEMA / DATABASE / TRUNCATE / DROP COLUMN / DYNAMIC / BULK DELETE
+    kind: str
+    name: str = ""
 
 
-def is_destructive_statement(statement: str) -> bool:
-    """SQL 文字列が ``DROP TABLE|SCHEMA|DATABASE`` / ``TRUNCATE`` を含む文なら True。"""
-    return bool(_destructive_matches(statement))
+def _is_word_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _split_statements(sql: str) -> list[tuple[str, str]]:
+    """SQL を文に分ける。``(raw, skeleton)`` の組を返す。
+
+    コメント（``--``・入れ子の ``/* */``）は取り除き、``;`` の分割は **引用の外だけ**
+    （``'..'`` ``E'..'`` ``".."`` ``$tag$..$tag$``）。分割前にコメントを剥がすと
+    ``/* ; */ DROP ..`` が見えなくなり、分割後に剥がすと ``'; '`` の中の ``;`` で誤分割する。
+    ``raw`` は引用の中身を残し（動的 SQL の検出用）、``skeleton`` は中身を空白にする
+    （``WHERE`` 等の語を文字列の中から拾わないため）。
+    閉じていない引用・コメントは末尾まで続くものとする。
+    """
+    out: list[tuple[str, str]] = []
+    raw: list[str] = []
+    skel: list[str] = []
+    n = len(sql)
+    i = 0
+
+    def flush() -> None:
+        r = "".join(raw)
+        if r.strip():
+            out.append((r, "".join(skel)))
+        raw.clear()
+        skel.clear()
+
+    while i < n:
+        ch = sql[i]
+        two = sql[i : i + 2]
+        if two == "--":
+            j = sql.find("\n", i)
+            i = n if j < 0 else j
+            raw.append(" ")
+            skel.append(" ")
+        elif two == "/*":
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if sql.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif sql.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            raw.append(" ")
+            skel.append(" ")
+        elif ch in ("'", '"'):
+            escapes = (
+                ch == "'"
+                and i > 0
+                and sql[i - 1] in "eE"
+                and (i < 2 or not _is_word_char(sql[i - 2]))
+            )
+            j = i + 1
+            while j < n:
+                if escapes and sql[j] == "\\":
+                    j += 2
+                elif sql[j] == ch:
+                    if sql.startswith(ch, j + 1):
+                        j += 2
+                    else:
+                        break
+                else:
+                    j += 1
+            end = min(j + 1, n)
+            raw.append(sql[i:end])
+            skel.append(" '' " if ch == "'" else sql[i:end])
+            i = end
+        elif ch == "$" and (i == 0 or not _is_word_char(sql[i - 1])) and _DOLLAR_TAG.match(sql, i):
+            tag = _DOLLAR_TAG.match(sql, i)
+            assert tag is not None
+            close = sql.find(tag.group(), tag.end())
+            end = n if close < 0 else close + len(tag.group())
+            raw.append(sql[i:end])
+            skel.append(" '' ")
+            i = end
+        elif ch == ";":
+            flush()
+            i += 1
+        else:
+            raw.append(ch)
+            skel.append(ch)
+            i += 1
+    flush()
+    return out
+
+
+def _destructive_matches(statement: str, *, bulk_delete: bool = False) -> list[_Destructive]:
+    """文ごとに破壊的かを判定する。迷うときは破壊的（安全側）とする。
+
+    - ``DROP TABLE|SCHEMA|DATABASE`` / ``TRUNCATE``（文頭。コメント・引用を正しく読んだ上で）
+    - ``ALTER TABLE .. DROP [COLUMN] c``（列のデータが消える。``DROP CONSTRAINT`` は含めない:
+      データを消さず、migration が日常的に行う）
+    - ``DO`` ブロックで ``EXECUTE`` を含むもの、または ``DROP`` / ``TRUNCATE`` の語を含むもの
+      （動的 SQL は中身を静的に確定できない）
+    - ``bulk_delete=True`` のときだけ ``WHERE`` の無い ``DELETE FROM``（テスト DB 守衛用）
+    """
+    found: list[_Destructive] = []
+    for raw, skel in _split_statements(statement):
+        m = _DESTRUCTIVE_STATEMENT.match(raw)
+        if m is not None:
+            kind = (m.group("kind") or "TRUNCATE").upper()
+            found.append(_Destructive(kind, (m.group("name") or "").strip('"')))
+        elif _DO_BLOCK.match(raw) and (
+            _EXECUTE_WORD.search(raw) or _ANY_DESTRUCTIVE_WORD.search(raw)
+        ):
+            found.append(_Destructive("DYNAMIC"))
+        elif _ALTER_TABLE.match(skel) and _DROP_COLUMN.search(skel):
+            found.append(_Destructive("DROP COLUMN"))
+        elif bulk_delete and _BULK_DELETE.match(skel) and not _WHERE.search(skel):
+            found.append(_Destructive("BULK DELETE"))
+    return found
+
+
+def is_destructive_statement(statement: str, *, bulk_delete: bool = False) -> bool:
+    """SQL 文字列に破壊的な文（``_destructive_matches`` の規則）があれば True。"""
+    return bool(_destructive_matches(statement, bulk_delete=bulk_delete))
 
 
 def check_statement(
@@ -299,15 +427,17 @@ def check_statement(
     verify_connection: Callable[[], None],
     allowlist: frozenset[str] = frozenset(),
 ) -> None:
-    """破壊的な文（DROP TABLE|SCHEMA|DATABASE / TRUNCATE）なら、実行前に接続先を検証する。
+    """破壊的な文なら、実行前に接続先を検証する。
+
+    規則は ``_destructive_matches``（``WHERE`` 無しの ``DELETE`` を含む）。
 
     ``DROP DATABASE`` は消す対象の名前も ``_test`` で終わることを要求する。
     それ以外の文は何もしない。
     """
-    for match in _destructive_matches(statement):
+    for match in _destructive_matches(statement, bulk_delete=True):
         verify_connection()
-        if (match.group("kind") or "").upper() == "DATABASE":
-            target = (match.group("name") or "").strip('"')
+        if match.kind == "DATABASE":
+            target = match.name
             if not (target.endswith(TEST_SUFFIX) or target in allowlist):
                 raise UnsafeDatabaseError(
                     f"DROP DATABASE の対象 {target!r} は {TEST_SUFFIX!r} で終わらない"
