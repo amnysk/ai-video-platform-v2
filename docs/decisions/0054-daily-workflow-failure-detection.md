@@ -84,8 +84,9 @@ FAILED になる事故が実際に起きた（7日連続、各約9.5秒、Episod
 - 読めないことが `DAILY_WORKFLOW_UNOBSERVABLE` として残り、健全と区別できる
 
 **悪い側 / 引き受けた負債**
-- AnomalyKind が2つ増えるため migration 0017 が必要（`kind` の CHECK 制約の拡張のみ。
-  expand-only。列・表は増えない）
+- AnomalyKind が2つ増えるため migration 0017 が必要（`kind` の CHECK 制約の語彙拡張のみ。
+  旧値は全て通り続け、列・表は増えない。release 走査では drop + create が現れるので
+  ADR-0060 の `CHECK_WIDENING` 宣言で通す。「expand-only」はこの意味）
 - 保持期間（既定1日）を過ぎた過去日の失敗は原因が取れない。履歴が消えていても、
   記録済みの行は残る。初めて見る古い日は UNOBSERVABLE になる
 - 過去日で「正常に Completed したが slot が無い（pause 等で skip）」日も、保持期間が切れていれば
