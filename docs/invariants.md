@@ -518,18 +518,42 @@ message の要約（secret・UUID・URL query を伏せ、長さを制限）と 
 
 ## P. 破壊的スキーマ操作の隔離（ADR-0055）
 
-### INV-69 `drop_all` / `create_all` / `DROP SCHEMA|DATABASE` は、DB名が `_test` で終わる（または明示 allowlist の）DBにしか実行されず、判定は接続を作る前に URL だけで行う（ADR-0055）
-判定は `infrastructure/db/safety.py` の1か所。DB名が `_test` で終わらない・host がローカルでない（`AVP_ALLOW_REMOTE_TEST_DB=1` 無し）・
-アプリの `DATABASE_URL` / `Settings().database_url` と同じDB（host の別表記 localhost / 127.0.0.1 / ::1 / postgres と末尾ドット、
-DB名の大文字小文字、`?options` 等の query を畳んで比較）・query が接続先を上書きする（`host` / `dbname` / `port` ...）URL は
-`UnsafeDatabaseError`。allowlist を渡しても、アプリのDBと同一のDBは通らない。tests/support/db.py は再公開のみで規則を持たない。
-実行コード（apps / workers / domain / infrastructure / scripts / contracts）は safety.py の外でこれらを呼べない。
-tests は「SQLite のインメモリのみ」か「ガードを呼ぶ」ファイルだけが呼べる。
+### INV-69 `drop_all` / `create_all` / `DROP TABLE|SCHEMA|DATABASE` / `TRUNCATE` は、URL が接続先を完全に決めた `_test` DB にしか実行されず、静的判定は接続を作る前に行う（ADR-0055）
+判定は `infrastructure/db/safety.py` の1か所。次の URL は `UnsafeDatabaseError`: DB名が `_test` で終わらない・
+**host または DB 名が URL に無い**（libpq が `PGHOST` / `PGDATABASE` / `PGSERVICE` で決める）・
+`PGHOSTADDR` / `PGSERVICE` / `PGSERVICEFILE` が環境にある・host が `localhost` / `127.0.0.1` / `::1` 以外
+（`AVP_ALLOW_REMOTE_TEST_DB=1` 無し。**compose のサービス名 `postgres` と `0.0.0.0` はローカル扱いしない**）・
+アプリの `DATABASE_URL` / `Settings().database_url` と同じDB（`postgres` / `0.0.0.0` も「同じサーバの別名」として
+同一性の判定にだけ使い、host 別名・末尾ドット・DB名の大文字小文字・`?options` を畳んで比較）・query が接続先を
+上書きする（`host` / `dbname` / `port` ...）。allowlist を渡しても、アプリのDBと同一のDBは通らない。
+tests/support/db.py は再公開のみで規則を持たない。実際に繋がっている接続の検査は INV-83。
+破壊的な呼び出しは **箇所ごと** に、囲む関数の中で先行するガード呼び出しを持つ（SQLite のインメモリだけを
+自分で作る tests の関数を除く）。ファイルに1か所ガードがあれば他の関数が通る、という抜け穴は無い。
 **機械検査**: `tests/unit/test_db_destructive_guard.py::test_protected_database_is_refused_before_any_connection`
-/ `tests/unit/test_db_destructive_guard.py::test_engine_is_never_created_when_url_is_refused`
+/ `tests/unit/test_db_destructive_guard.py::test_a_url_that_does_not_fix_the_target_is_refused`
+/ `tests/unit/test_db_destructive_guard.py::test_libpq_environment_that_can_redirect_the_connection_is_refused`
+/ `tests/unit/test_db_destructive_guard.py::test_only_loopback_names_are_local`
 / `tests/unit/test_db_destructive_guard.py::test_same_database_is_detected_through_url_variations`
 / `tests/unit/test_db_destructive_guard.py::test_libpq_override_in_query_is_refused`
 / `tests/unit/test_db_destructive_guard.py::test_explicit_allowlist_admits_a_non_test_name_but_never_the_app_database`
-/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_runtime_code_has_no_unguarded_schema_ops`
-/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_test_code_schema_ops_are_sqlite_only_or_guarded`
+/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_every_destructive_call_site_is_guarded`
+/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_checker_flags_only_the_unguarded_function_in_a_file_with_a_guard`
+/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_checker_covers_every_destructive_form`
 / `tests/contract/test_ci_db_isolation.py::test_ci_test_database_urls_are_isolated`
+
+### INV-83 破壊的な DB 操作は、実際に繋がっている接続が印のある `_test` DB であると確認できたときだけ実行される（ADR-0055）
+URL は `connect_args` / `creator` / 環境変数で実際の接続先と食い違いうる。破壊的な文（`DROP TABLE|SCHEMA|DATABASE` /
+`TRUNCATE`）は、PostgreSQL では実行直前に `current_database()` と DB コメントの印（`avp-test-database`）を
+読み、DB 名が `_test` で終わらない・URL の DB と違う・印が無いなら `UnsafeDatabaseError`（DDL は走らない）。
+`DROP DATABASE` は消す対象の名前も `_test` で終わること。`guarded_drop_all` / `guarded_create_all` は同じ検査を明示で行い、
+tests の `conftest.py` は全 PostgreSQL 接続の文の入口にも同じ検査を入れる（`drop_all` も生 SQL も止まる）。
+本番と `avp_test` が同じインスタンスにあるときは、サーバのアドレスでは区別できないので DB 名と印で区別する
+（印の付与は CI の使い捨て DB か所有者の手作業。別インスタンスへの分離が最終形）。
+**機械検査**: `tests/integration/test_destructive_db_mistake.py`（失敗注入12: 本番に見立てた DB・`connect_args`・
+`creator`・libpq 環境変数・印の無い `_test` DB・`DROP DATABASE` のどれでも拒否され、実 DB の表と行が残る。
+印のある DB は通る対照つき）
+/ `tests/unit/test_db_destructive_guard.py::test_a_connect_args_style_override_is_stopped_by_the_live_check`
+/ `tests/unit/test_db_destructive_guard.py::test_live_check_refuses_everything_else`
+/ `tests/unit/test_db_destructive_guard.py::test_destructive_statements_are_verified_before_they_run`
+/ `tests/unit/test_db_destructive_guard.py::test_drop_database_names_must_end_with_test_even_on_a_verified_connection`
+/ `tests/contract/test_ci_db_isolation.py::test_ci_steps_that_get_a_test_database_also_mark_it`

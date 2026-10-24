@@ -41,3 +41,11 @@ def test_ci_integration_steps_always_set_test_database_url() -> None:
         for step in wf["jobs"][job_name]["steps"]:
             if "pytest tests/integration" in str(step.get("run", "")):
                 assert "TEST_DATABASE_URL" in (step.get("env") or {}), (job_name, step)
+
+
+def test_ci_steps_that_get_a_test_database_also_mark_it() -> None:
+    # 印（INV-83）が無い DB では drop_all / DROP / TRUNCATE が拒否される。CI は自分の使い捨て DB に
+    # だけ印を付ける（AVP_MARK_TEST_DB=1）。付け忘れると integration が全滅するのでここで固定する
+    for job, env in _envs():
+        if "TEST_DATABASE_URL" in env:
+            assert env.get("AVP_MARK_TEST_DB") == "1", job

@@ -18,7 +18,7 @@ from sqlalchemy.engine import make_url
 
 from infrastructure.db.models import Base
 from infrastructure.db.urls import sync_database_url
-from tests.support.db import assert_destructive_allowed, require_test_database_url
+from tests.support.db import TEST_DB_MARKER, assert_destructive_allowed, require_test_database_url
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TEST_DATABASE_URL = require_test_database_url()
@@ -65,6 +65,8 @@ def probe_url():
     with admin.connect() as conn:
         conn.execute(text(f'DROP DATABASE IF EXISTS "{PROBE_DATABASE}"'))
         conn.execute(text(f'CREATE DATABASE "{PROBE_DATABASE}"'))
+        # 破壊的操作ガードの印（INV-83）。この DB を作ったのはこのテストなので、印を付けてよい
+        conn.execute(text(f"COMMENT ON DATABASE \"{PROBE_DATABASE}\" IS '{TEST_DB_MARKER}'"))
 
     yield url
 

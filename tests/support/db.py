@@ -8,24 +8,34 @@ from __future__ import annotations
 
 from infrastructure.db.safety import (
     LOCAL_HOSTS,
+    TEST_DB_MARKER,
     TEST_SUFFIX,
     UnsafeDatabaseError,
     UnsafeTestDatabaseError,
     assert_destructive_allowed,
+    assert_live_test_database,
     guarded_create_all,
     guarded_drop_all,
+    guarded_drop_database,
+    install_destructive_statement_guard,
+    mark_test_database,
     require_test_database_url,
     validate_test_database_url,
 )
 
 __all__ = [
     "LOCAL_HOSTS",
+    "TEST_DB_MARKER",
     "TEST_SUFFIX",
     "UnsafeDatabaseError",
     "UnsafeTestDatabaseError",
     "assert_destructive_allowed",
+    "assert_live_test_database",
     "guarded_create_all",
     "guarded_drop_all",
+    "guarded_drop_database",
+    "install_destructive_statement_guard",
+    "mark_test_database",
     "require_test_database_url",
     "validate_test_database_url",
 ]

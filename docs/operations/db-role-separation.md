@@ -136,3 +136,16 @@ GRANT CREATE ON SCHEMA public TO PUBLIC;  -- PG15 以降の既定は付かない
 6. **PG の同居は残る**: 同一インスタンスのまま。resource 枯渇（テストの重い負荷）は防げない。
    完全な隔離は別インスタンス（ADR-0055 Alternatives）。
 7. パスワードは secret として管理し、ログ・コミットに出さない（INV-20）。
+
+## 追補（2026-10-25）: テストの隔離と印（INV-83）
+
+- 現状、本番 `avp` とテスト `avp_test` は同じ PostgreSQL インスタンスにある。サーバのアドレス・ポートでは区別できないので、
+  破壊的操作ガードは **DB 名（`_test`）と印**（DB コメント `avp-test-database`）を実接続で確認する。
+- **所有者の一度きりの作業**（本番インスタンスの `avp_test` が対象。`COMMENT` は破壊的ではない）:
+  `docker compose exec postgres psql -U avp -d avp_test -c "COMMENT ON DATABASE avp_test IS 'avp-test-database'"`
+  付けるまで、このホストでの integration は `drop_all` / `DROP` で拒否される（意図した挙動）。`avp` に付けてはいけない。
+- **推奨（最終形）**: テストを別インスタンス（別 compose project・別 volume・別 port）へ移す。URL・環境変数・`connect_args` の
+  どれを間違えても本番に届かない構成にでき、印も要らなくなる。移すまでは二重検査（静的 + 実接続）が防壁。
+- compose のサービス名 `postgres` はローカル扱いしない。隔離スタック内の PostgreSQL にテストを向けるときは
+  `AVP_ALLOW_REMOTE_TEST_DB=1` を明示する（`deploy/logging/test/compose.apptest.yaml` が該当）。
+- DB ロールの分離・認証の強化は本追補の範囲外（上の設計のまま）。
