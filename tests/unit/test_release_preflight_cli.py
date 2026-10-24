@@ -10,7 +10,7 @@ import pytest
 
 from domain import release_preflight as rp
 from infrastructure.release.compose_queues import required_queues
-from tests.unit.test_release_preflight import SHA, Fake
+from tests.unit.test_release_preflight import NOW, SHA, Fake
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -40,14 +40,14 @@ ARGS = [
 
 
 def test_cli_ready_exits_0(capsys: pytest.CaptureFixture[str]) -> None:
-    assert _cli().main(ARGS + ["--json"], collectors=Fake()) == 0
+    assert _cli().main(ARGS + ["--json"], collectors=Fake(), now=NOW) == 0
     assert json.loads(capsys.readouterr().out)["overall"] == "READY"
 
 
 def test_cli_blocked_exits_2_and_unknown_exits_3(capsys: pytest.CaptureFixture[str]) -> None:
-    assert _cli().main(ARGS, collectors=Fake(pending=1)) == 2
+    assert _cli().main(ARGS, collectors=Fake(pending=1), now=NOW) == 2
     assert "OVERALL: BLOCKED" in capsys.readouterr().out
-    assert _cli().main(ARGS, collectors=Fake(ci=rp.CollectorUnavailable("gh"))) == 3
+    assert _cli().main(ARGS, collectors=Fake(ci=rp.CollectorUnavailable("gh")), now=NOW) == 3
     assert "OVERALL: UNKNOWN" in capsys.readouterr().out
 
 
@@ -64,14 +64,14 @@ def test_required_queues_come_from_the_compose_healthchecks() -> None:
 
 def test_argparse_errors_exit_3_not_2(capsys: pytest.CaptureFixture[str]) -> None:
     """argparse 既定の終了コード 2 は BLOCKED と同じ。使い方の誤りは UNKNOWN(3) に寄せる。"""
-    assert _cli().main([], collectors=Fake()) == 3
-    assert _cli().main(ARGS + ["--no-such-flag"], collectors=Fake()) == 3
-    assert _cli().main(ARGS + ["--evidence-max-age-hours", "abc"], collectors=Fake()) == 3
+    assert _cli().main([], collectors=Fake(), now=NOW) == 3
+    assert _cli().main(ARGS + ["--no-such-flag"], collectors=Fake(), now=NOW) == 3
+    assert _cli().main(ARGS + ["--evidence-max-age-hours", "abc"], collectors=Fake(), now=NOW) == 3
     capsys.readouterr()
 
 
 def test_help_exits_0(capsys: pytest.CaptureFixture[str]) -> None:
-    assert _cli().main(["--help"], collectors=Fake()) == 0
+    assert _cli().main(["--help"], collectors=Fake(), now=NOW) == 0
     capsys.readouterr()
 
 
@@ -84,7 +84,7 @@ def test_unexpected_exception_exits_3_without_a_traceback(
         raise RuntimeError("secret detail")
 
     monkeypatch.setattr(cli, "run_preflight", boom)
-    assert cli.main(ARGS, collectors=Fake()) == 3
+    assert cli.main(ARGS, collectors=Fake(), now=NOW) == 3
     captured = capsys.readouterr()
     assert "RuntimeError" in captured.err
     assert "secret detail" not in captured.err and "Traceback" not in captured.err
@@ -100,6 +100,6 @@ def test_new_flags_reach_the_request(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(cli, "run_preflight", spy)
     extra = ["--rollback", "--approved-report", "r.json", "--evidence-max-age-hours", "10"]
-    assert cli.main(ARGS + extra, collectors=Fake()) == 0
+    assert cli.main(ARGS + extra, collectors=Fake(), now=NOW) == 0
     req = seen[0]
     assert req.rollback and req.approved_report == "r.json" and req.evidence_max_age_hours == 10
