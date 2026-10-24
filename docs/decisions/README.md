@@ -71,3 +71,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0053](./0053-unreconciled-reservation-reconciliation.md) | 未照合予約の照合記録（5値判定）・手動確定の監査・新 key での再送ガード | Proposed |
 | [0052](./0052-temporal-container-init-and-leak-free-healthcheck.md) | Temporal コンテナを init 付きにし、healthcheck がプロセスを漏らさないようにする | Proposed |
 | [0054](./0054-daily-workflow-failure-detection.md) | 日次 Workflow が失敗し Episode が作られない日を watchdog が検知（連続日数・unobservable・秘匿要約） | Proposed |
+| [0055](./0055-destructive-schema-op-guard-and-db-role-separation.md) | 破壊的スキーマ操作の単一ガード（INV-69）と DB ロール分離の設計 | Proposed |

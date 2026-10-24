@@ -515,3 +515,21 @@ message の要約（secret・UUID・URL query を伏せ、長さを制限）と 
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_unreadable_temporal_records_unobservable_not_ok`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_recorded_failure_survives_retention_expiry`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_failure_outside_window_is_not_recorded`
+
+## P. 破壊的スキーマ操作の隔離（ADR-0055）
+
+### INV-69 `drop_all` / `create_all` / `DROP SCHEMA|DATABASE` は、DB名が `_test` で終わる（または明示 allowlist の）DBにしか実行されず、判定は接続を作る前に URL だけで行う（ADR-0055）
+判定は `infrastructure/db/safety.py` の1か所。DB名が `_test` で終わらない・host がローカルでない（`AVP_ALLOW_REMOTE_TEST_DB=1` 無し）・
+アプリの `DATABASE_URL` / `Settings().database_url` と同じDB（host の別表記 localhost / 127.0.0.1 / ::1 / postgres と末尾ドット、
+DB名の大文字小文字、`?options` 等の query を畳んで比較）・query が接続先を上書きする（`host` / `dbname` / `port` ...）URL は
+`UnsafeDatabaseError`。allowlist を渡しても、アプリのDBと同一のDBは通らない。tests/support/db.py は再公開のみで規則を持たない。
+実行コード（apps / workers / domain / infrastructure / scripts / contracts）は safety.py の外でこれらを呼べない。
+tests は「SQLite のインメモリのみ」か「ガードを呼ぶ」ファイルだけが呼べる。
+**機械検査**: `tests/unit/test_db_destructive_guard.py::test_protected_database_is_refused_before_any_connection`
+/ `tests/unit/test_db_destructive_guard.py::test_engine_is_never_created_when_url_is_refused`
+/ `tests/unit/test_db_destructive_guard.py::test_same_database_is_detected_through_url_variations`
+/ `tests/unit/test_db_destructive_guard.py::test_libpq_override_in_query_is_refused`
+/ `tests/unit/test_db_destructive_guard.py::test_explicit_allowlist_admits_a_non_test_name_but_never_the_app_database`
+/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_runtime_code_has_no_unguarded_schema_ops`
+/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_test_code_schema_ops_are_sqlite_only_or_guarded`
+/ `tests/contract/test_ci_db_isolation.py::test_ci_test_database_urls_are_isolated`
