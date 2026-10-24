@@ -39,6 +39,54 @@ gpt-6-astra / gpt-6.1-sol を列挙するが、どちらも利用可否の保証
 候補（根拠の強さ順、いずれも未検証）: `gpt-5.6-sol`（CLI が gpt-5.5 の移行先に指定）、`gpt-6.1-sol`。
 gpt-6-sol が拒否された原因がアカウントか 0.154.0 という古い client かも切り分けられていない。
 
+## 追加調査（2026-10-25、読み取りのみ・利用枠は使っていない）
+
+- `codex debug models`（カタログ取得のみ、prompt なし）= `models_cache.json` と同じ 9 件。
+  **gpt-6-sol は今もカタログにある**のに本番では 400。カタログは利用権の証拠にならない（再確認）。
+- 同アカウントの**ホスト対話セッションの記録**（`~/.codex/state_5.sqlite` の `threads`、
+  rollout の `task_complete`）: 10-18 22:13〜22:21（codex 0.163.0, VS Code）に **gpt-6-sol が 2 スレッドで
+  完了**（計 8.2M tokens）、**gpt-5.6-terra が 1 スレッドで完了**（2.6M tokens）。gpt-5.5 は 0 tokens。
+  => アカウントは gpt-6-sol / gpt-5.6-terra を使える。コンテナ（codex 0.154.0）だけが 400 になる。
+  原因の第一候補は **client 版**（0.154.0 → 0.163.0 以上）。**未証明**（probe で切り分ける）。
+- 推奨 model（脚本の品質順、**未実測**）: `gpt-6.1-sol`（カタログ上の最新・「GPT-6.1-Sol: near-Astra 性能を
+  低コストで」）> `gpt-6-sol`（ホストで実績あり）> `gpt-5.6-terra`（ホストで実績あり）。
+  `gpt-6-astra` は最上位だが利用枠の消費が大きい（日次の台本に必要な水準を超える）。**どれも設定しない**:
+  probe を所有者が承認してから、通った最上位を固定する。
+
+### 所有者承認が要る probe（利用枠を 1 回ずつ使う。承認前は実行しない）
+
+判定したいのは**本番のコンテナの codex（0.154.0）**で通るかなので、まずコンテナで行う
+（`docker exec` は実行中の worker に対する読み取り的な操作で、再作成はしない）:
+
+```bash
+# 1) コンテナ版 0.154.0 で、推奨順に 1 回ずつ（通ったら止める。read-only sandbox、一時 session）
+for m in gpt-6.1-sol gpt-6-sol gpt-5.6-terra; do
+  echo "== $m"; docker exec avp2-script-worker-1 \
+    codex exec --ephemeral -s read-only -m "$m" "reply with the single word: ok" 2>&1 | tail -3
+done
+# 2) 全部 400 なら、client 版の切り分け: ホスト 0.163.0 で同じ 1 回（gpt-6-sol は対話で実績がある）
+codex exec --ephemeral -s read-only -m gpt-6-sol "reply with the single word: ok"
+```
+
+結果の読み方: コンテナで通った最上位 = 固定する model。コンテナは全部 400・ホストは通る = 版ずれ
+（`Dockerfile` の `CODEX_VERSION` を上げる別 PR が先）。両方 400 = 認証・アカウント（再ログインが先）。
+
+### 設定変更（probe の後。所有者が実施。共有の config.toml には触れない）
+
+`.env`（リポジトリ直下、本番ホスト）に model を**明示**する。config.toml は対話の codex と共有なので
+本番の model の出所にしない:
+
+```
+CODEX_MODEL=<probe で通った model>
+CODEX_ALLOWED_MODELS=<probe で通った model>
+CODEX_REQUIRE_PINNED_MODEL=true
+```
+
+反映: `docker compose up -d script-worker storyboard-worker scene-alternative-worker`（再作成）。
+3 つの worker は compose の `x-codex-env` から同じ値を読む。確認は読み取りだけで足りる:
+`python scripts/codex-model-preflight.py`（利用枠を使わない）。日次の入口（ADR-0058）は、
+許可リスト外の model / 未固定を Codex を呼ぶ前に止める。
+
 ## 提案する変更（承認後に実施）
 
 1. （先に実測）承認のもと、ホストで 1 回だけ最小の実呼び出しで判定する:

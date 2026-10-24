@@ -18,6 +18,7 @@ from infrastructure.db.session import session_factory_from_settings
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.temporal.connect import connect_with_retry
 from workers.pipeline.activities import PipelineActivities
+from workers.pipeline.gate_ports import build_gate_ports
 from workers.pipeline.watchdog import DailyWatchdogWorkflow
 from workers.pipeline.workflows import DailyEpisodeWorkflow, EpisodePipelineWorkflow
 
@@ -39,11 +40,14 @@ def build_worker(
 async def main() -> None:
     settings = Settings()
     client = await connect_with_retry(settings)
+    session_factory = session_factory_from_settings(settings)
     activities = PipelineActivities(
-        session_factory=session_factory_from_settings(settings),
+        session_factory=session_factory,
         paused_env=settings.paused,
         uploads_paused_env=settings.uploads_paused,
         temporal_client=client,
+        # 入口ゲート・保留の結線点（ADR-0058。ADR-0057 の実装はここで差し込む）
+        gate_ports=build_gate_ports(session_factory),
     )
     worker = build_worker(client, activities)
     logger.info(

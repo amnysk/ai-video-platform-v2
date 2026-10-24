@@ -19,6 +19,12 @@ from temporalio import activity, workflow
 from temporalio.client import Client, ScheduleActionExecutionStartWorkflow
 from temporalio.worker import Worker
 
+from contracts.daily_gate import (
+    PIPELINE_DAILY_GATE,
+    DailyGateRequest,
+    DailyGateResult,
+    DailyRunMode,
+)
 from contracts.pipeline import (
     DAILY_SCHEDULE_ID,
     PIPELINE_CHECK_PAUSED,
@@ -90,6 +96,11 @@ async def test_schedule_trigger_starts_one_daily_run_and_ensure_is_idempotent() 
         # 子 pipeline を起動させない（この test は Schedule → Daily の配線だけを見る）
         return ClaimDailySlotResult(outcome=ClaimOutcome.LIMIT_REACHED)
 
+    @activity.defn(name=PIPELINE_DAILY_GATE)
+    async def daily_gate(req: DailyGateRequest) -> DailyGateResult:
+        # ADR-0058 の入口ゲート。この test の関心（Schedule → Daily の配線）では通常モード
+        return DailyGateResult(mode=DailyRunMode.NORMAL.value)
+
     @activity.defn(name=PIPELINE_UPLOAD_GATE)
     async def gate(req: UploadGateRequest) -> UploadGateResult:
         return UploadGateResult(allowed=False, reason="stub")
@@ -139,7 +150,7 @@ async def test_schedule_trigger_starts_one_daily_run_and_ensure_is_idempotent() 
             client,
             task_queue=queue,
             workflows=[DailyEpisodeWorkflow, EpisodePipelineWorkflow, StubTopicPlanner],
-            activities=[check_paused, claim, gate],
+            activities=[check_paused, claim, gate, daily_gate],
         ):
             await handle.trigger()
             await asyncio.wait_for(claimed.wait(), timeout=60)
