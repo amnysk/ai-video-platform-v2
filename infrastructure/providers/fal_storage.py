@@ -48,6 +48,7 @@ from domain.errors import (
 )
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.logging.provider import allowed_headers, classify
+from infrastructure.providers.fal_refusal import refusal_error
 
 STORAGE_TOKEN_URL = "https://rest.fal.ai/storage/auth/token?storage_type=fal-cdn-v3"
 CDN_UPLOAD_URL = "https://v3.fal.media/files/upload"
@@ -141,13 +142,15 @@ def _raise_for_status(response: httpx.Response, *, what: str) -> None:
     status = response.status_code
     if status < 400:
         return
-    if status in (401, 403):
+    if status in (401, 402, 403):
         _log_http_failure(response, what=what, tag="PROVIDER_AUTH_FAILURE")
-        raise ProviderUnavailableError(
-            f"fal storage {what} refused: HTTP {status}. Cause unconfirmed — see the "
-            "PROVIDER_AUTH_FAILURE diagnostic log line for this request.",
-            http_status=status,
-        )
+        try:
+            body: Any = response.json()
+        except ValueError:
+            body = None
+        # ADR-0057: 本文の印で残高不足を分け、確定できない 402/403 は UNKNOWN。HTTP status だけで
+        # 原因を断定しない方針（ADR-0030）は、印が無いときの扱いとして維持する
+        raise refusal_error(status, body, what=f"storage {what}")
     if status == 429 or status >= 500:
         _log_http_failure(response, what=what, tag="PROVIDER_TRANSIENT_FAILURE")
         raise ProviderInvocationError(f"fal storage {what} failed: HTTP {status}")

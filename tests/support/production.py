@@ -165,8 +165,11 @@ class _FakeAsyncJobGenerator:
         ambiguous_submit: bool = False,
         cost_usd: float = 0.05,
         prepare_error: Exception | None = None,
+        submit_error: Exception | None = None,
     ) -> None:
         self.pending_polls = pending_polls
+        #: submit() が投げる例外を注入できる（ADR-0057: 残高拒否・分類不能の拒否）
+        self.submit_error = submit_error
         self.fail_with = fail_with
         self.ambiguous_submit = ambiguous_submit
         self.cost_usd = cost_usd
@@ -190,6 +193,8 @@ class _FakeAsyncJobGenerator:
 
     async def submit(self, request: Any) -> ProviderJobRef:
         self.submit_calls += 1
+        if self.submit_error is not None:
+            raise self.submit_error
         if self.ambiguous_submit:
             raise ProviderSubmitAmbiguousError("fake: submit outcome unknown")
         ref = f"fake-job-{next(self._ids)}-{uuid.uuid4().hex[:8]}"
