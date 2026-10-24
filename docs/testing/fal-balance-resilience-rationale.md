@@ -93,3 +93,23 @@ fake / `httpx.MockTransport` だけを使い、fal・YouTube には一切到達�
 | テスト | 守るもの |
 |---|---|
 | `test_not_accepted_refusals_do_not_count_as_cost` | `scripts/production-metrics.py` の費用合計が、受理されなかった拒否（`reconciled_by=not_accepted`）の見積額を数えない（G3: 過大計上の解消） |
+
+## 再開 CLI（`tests/unit/test_provider_credits_script.py`、unit: SQLite + fake の再開 API）
+
+| テスト | 守るもの / 落ちたら何が起きているか |
+|---|---|
+| `test_status_is_read_only_and_reports_the_hold` | status は何も書かない。breaker・保留 Episode・予算上限が見える |
+| `test_half_open_needs_a_structured_approval_and_evidence` | 承認 token なし・形式不正・根拠なしでは breaker を動かせない（口頭の「入金した」だけで再開しない） |
+| `test_half_open_is_dry_run_by_default_and_never_prints_the_token` | 既定 dry-run。承認 token 本体は出力・DB に残らず指紋だけ |
+| `test_resume_is_refused_while_the_breaker_is_open` | open のまま再開できない（先に承認つきで half-open） |
+| `test_resume_is_refused_for_the_production_unreconciled_reservation_state` | **本番の `591d1a8b…`（fal_video・dispatched・provider 参照あり・未照合）と同じ状態**の Episode は再開を拒否し、再開 API を呼ばず、保留も解放しない。二重課金の最後の砦 |
+| `test_resume_is_refused_over_budget_or_without_a_cap` | 月予算を超える・上限未設定の再開は拒否（課金を伴う再開を上限なしで通さない） |
+| `test_resume_concurrency_is_capped` | 明示 id でも `--oldest` でも `RESUME_MAX_CONCURRENCY`（1）を超えない |
+| `test_a_resumed_episode_still_running_counts_toward_the_cap` | 再開済みでまだ実行中の Episode も同時数に数える（連続で1件ずつ投入して実質並列にならない） |
+| `test_oldest_picks_the_first_held_episode_and_uses_the_existing_resume_path` | 古い順 N 件。再開は既存の再開 API の呼び出しだけで、breaker は触らない（half_open のまま受理された submit が閉じる） |
+| `test_resume_dry_run_changes_nothing` | dry-run は保留も再開 API も動かさない |
+| `test_failed_resume_restores_the_hold` | 再開 API が拒否したら保留を元に戻す（保留の無い blocked を作らない） |
+| `test_only_held_blocked_episodes_can_be_resumed` | 保留の無い Episode を、この CLI から再開できない |
+| `test_succeeded_scenes_are_reused_after_resume_not_regenerated` | 再開後の production は、成功済みシーンを再利用ゲートで再利用する（provider に何も送らない） |
+| `test_api_resume_client_calls_only_the_existing_resume_endpoint` | 再開クライアントは `POST /episodes/{id}/resume` だけを呼び、202 以外は拒否として扱う |
+| `test_script_has_no_network_or_provider_imports` | スクリプト自体は fal に接続しない（残高の確認は所有者の attestation） |

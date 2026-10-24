@@ -548,6 +548,25 @@ CHECK を広げない）。
 / `tests/unit/test_paid_job_balance.py::test_non_fal_providers_are_not_gated`
 / `tests/unit/test_paid_job_balance.py::test_accepted_submit_in_half_open_closes_the_breaker`
 
+### INV-73 保留した Episode の再開は、所有者の承認・未照合予約なし・予算内・同時1件の下で、既存の再開経路だけを通る（ADR-0057）
+残高不足で止まった Episode は `blocked` のまま `provider_credit_holds` に理由を持つ（新しい EpisodeStatus は無い。
+workflow は終わる）。再開（`scripts/provider-credits.py`）は、breaker が `open` のとき・未照合の予約
+（`reserved` で evidence なし。dispatched で provider 参照があるもの＝本番の `591d1a8b…` と同じ状態を含む）が
+あるとき・当月の見積支出 + 追加見積が `fal_monthly_budget_usd` を超える（または未設定）とき・対象が
+`RESUME_MAX_CONCURRENCY` を超える（実行中の再開済みも数える）ときは**拒否**し、何も書かない。
+`half-open` / `close` / `resume` は構造化された所有者承認 token（`OWNER-<yyyymmdd>-<id>`。指紋だけ保存）と
+入金確認の根拠（attestation）が必須で、既定は dry-run。再開は既存の `POST /episodes/{id}/resume` だけを呼び、
+新しい workflow を作らない。成功済みシーンは再利用ゲートで再利用する（再送・再生成しない）。
+**機械検査**: `tests/unit/test_provider_credits_script.py::test_resume_is_refused_for_the_production_unreconciled_reservation_state`
+/ `tests/unit/test_provider_credits_script.py::test_resume_is_refused_while_the_breaker_is_open`
+/ `tests/unit/test_provider_credits_script.py::test_resume_is_refused_over_budget_or_without_a_cap`
+/ `tests/unit/test_provider_credits_script.py::test_resume_concurrency_is_capped`
+/ `tests/unit/test_provider_credits_script.py::test_a_resumed_episode_still_running_counts_toward_the_cap`
+/ `tests/unit/test_provider_credits_script.py::test_half_open_needs_a_structured_approval_and_evidence`
+/ `tests/unit/test_provider_credits_script.py::test_api_resume_client_calls_only_the_existing_resume_endpoint`
+/ `tests/unit/test_provider_credits_script.py::test_succeeded_scenes_are_reused_after_resume_not_regenerated`
+/ `tests/unit/test_provider_credits_script.py::test_script_has_no_network_or_provider_imports`
+
 ### INV-74 受理されなかったことが確実な拒否は費用 0 で、曖昧な送信は未照合のまま再送しない（ADR-0057）
 残高ロック・分類不能の拒否（`ProviderRefusalError`）で終わった予約は `spent` +
 `reconciled_by="not_accepted"` で確定し、費用は 0 として数える（`domain/provider/cost.py` の
