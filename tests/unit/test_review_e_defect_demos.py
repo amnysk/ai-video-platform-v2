@@ -83,17 +83,11 @@ CHECK_WIDENING = {
 """
 
 
-@pytest.mark.xfail(
-    strict=True, reason="E-P2: the exemption trusts the declaration; a PK/FK/UNIQUE name passes"
-)
 def test_widening_exemption_cannot_drop_a_non_check_constraint() -> None:
     status = _migration_status(_module(textwrap.dedent(_PK_BODY), _PK_DECL))
     assert status is rp.Status.BLOCKED
 
 
-@pytest.mark.xfail(
-    strict=True, reason="E-P2: batch_alter_table keywords (recreate/copy_from) are not inspected"
-)
 def test_widening_exemption_rejects_batch_alter_table_that_recreates_the_table() -> None:
     status = _migration_status(_module(textwrap.dedent(_RECREATE_BODY), _T_DECL))
     assert status is rp.Status.BLOCKED

@@ -183,3 +183,63 @@ def test_downgrade_is_not_scanned_and_cannot_smuggle_an_upgrade_drop() -> None:
 
 def test_the_marker_route_is_unchanged_for_other_contract_migrations() -> None:
     assert _migration_status(_module('op.drop_column("t", "x")')) is rp.Status.BLOCKED
+
+
+# ---- P2-3: 宣言を信用しない（PK/FK/UNIQUE 名・表の作り直し・生 SQL） --------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "episodes_pkey",
+        "episodes_topic_key",
+        "episodes_fkey",
+        "uq_episodes_topic",
+        "fk_x",
+        "pk_x",
+        "ck_t_kind_fkey",
+        "kind_check",
+        "t_kind",
+    ],
+)
+def test_a_declaration_naming_a_non_check_constraint_is_blocked(name: str) -> None:
+    decl = DECL.replace("ck_t_kind", name)
+    body = BODY.replace("ck_t_kind", name)
+    assert _status(body, decl) is rp.Status.BLOCKED
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        'recreate="always"',
+        'recreate="always", copy_from=SMALLER',
+        "table_args=(sa.UniqueConstraint('x'),)",
+        "reflect_args=[]",
+        'schema="other"',
+        'recreate="never"',
+    ],
+)
+def test_batch_alter_table_keywords_void_the_exemption(kw: str) -> None:
+    body = BODY.replace('batch_alter_table("t")', f'batch_alter_table("t", {kw})')
+    assert _status(body) is rp.Status.BLOCKED
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        'op.execute("ALTER TABLE t DROP CONSTRAINT ck_t_kind")',
+        'op.execute("ALTER TABLE t DROP CONSTRAINT t_pkey")',
+        'op.execute(sa.text("alter table t drop constraint x"))',
+        'op.drop_constraint("t_pkey", "t", type_="primary")',
+    ],
+)
+def test_a_raw_drop_next_to_a_valid_widening_is_still_blocked(extra: str) -> None:
+    assert _status(BODY + extra + "\n") is rp.Status.BLOCKED
+
+
+def test_a_narrowing_is_blocked_even_when_the_create_matches_the_declaration() -> None:
+    decl = DECL.replace('"old": ("A", "B")', '"old": ("A", "B", "C", "D")').replace(
+        '"new": ("A", "B", "C")', '"new": ("A", "B")'
+    )
+    body = BODY.replace("'A', 'B', 'C'", "'A', 'B'")
+    assert _status(body, decl) is rp.Status.BLOCKED

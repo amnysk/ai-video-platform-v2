@@ -724,7 +724,9 @@ unrecoverable は `log-recoverability.py` が出し、元の json-file には書
 `CHECK_WIDENING`（table / constraint / column / old / new。リテラル、`old` ⊊ `new`、重複なし）を宣言し、
 `upgrade()` が `with op.batch_alter_table(table) as b:` の本体にちょうど
 `b.drop_constraint(constraint, type_="check")` → `b.create_check_constraint(constraint, "column IN ('..', ..)")`
-だけを持ち、IN の集合が `new` と一致するとき、その 1 組だけが contract と数えられない（免除は preflight の
+だけを持ち（`batch_alter_table` にキーワード引数〔recreate / copy_from / table_args / reflect_args / schema〕が
+あれば免除しない。`constraint` は CHECK の命名規約 `ck_*` で、`*_pkey` / `*_fkey` / `*_key` / `uq_*` / `fk_*` /
+`pk_*` など PK/FK/UNIQUE の名前は宣言不正として BLOCKED。2026-10-25 追記: 宣言を信用せず名前と引数で絞る）、IN の集合が `new` と一致するとき、その 1 組だけが contract と数えられない（免除は preflight の
 detail に残る）。宣言の不正・不一致・別名・別の制約種別・別の表・順序違い・with の外・2 回目の drop・
 同じファイルの他の drop / 破壊的 SQL は BLOCKED のまま。宣言の `old` が実際の旧制約と一致することと、
 旧コードの値が拡張後も通ることは、prod 形から流す実 INSERT のテストが示す。
