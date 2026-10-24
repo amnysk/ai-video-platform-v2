@@ -130,6 +130,16 @@ watchdog は 3 つを区別する。**失敗**（インフラ: Daily が失敗�
 - 記録済みの履歴の replay テスト（リポジトリの fixture）に加え、本番 Temporal から読み取り専用で
   export した履歴を Replayer で検証する（`docs/testing/daily-resilience-rationale.md`）。
 
+### 7. 検証の記録（2026-10-25）
+
+- 旧コード（40cf2ca）の workflow で取得した実履歴（Daily・Pipeline）を新コードで replay: 2/2 成功
+  （`tests/unit/test_daily_credit_hold_workflows.py`）。
+- 本番 Temporal から読み取り専用で export した保持期間内の全履歴（DailyWatchdog 24、DailyEpisode 1、
+  TopicPlanner 1）を新コードで `Replayer` にかけた: **26/26 成功**（本番の image は 80775c0。
+  DailyEpisode は 10-24 の失敗実行）。
+- 保留を通る新しい履歴の replay fixture は、実運用で最初の保留が起きたあとに追加する
+  （fake の履歴を「実履歴」と呼ばないため）。
+
 ## §8 の確認（新しい設定キー・語彙の読み手 / 書き手）
 
 `grep -rn "CODEX_REQUIRE_PINNED_MODEL\|codex_require_pinned" apps/ workers/ domain/ infrastructure/

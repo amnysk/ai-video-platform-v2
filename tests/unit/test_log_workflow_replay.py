@@ -23,7 +23,9 @@ from tests.unit.test_pipeline_workflows import (
     Env,
     fake_check_paused,
     fake_claim,
+    fake_daily_gate,
     fake_gate,
+    fake_production_gate,
 )
 from workers.pipeline.workflows import DailyEpisodeWorkflow, EpisodePipelineWorkflow
 
@@ -37,7 +39,13 @@ async def test_workflow_events_are_emitted_once_and_replay_emits_nothing() -> No
             wf_env.client,
             task_queue=env.queue,
             workflows=[DailyEpisodeWorkflow, EpisodePipelineWorkflow],
-            activities=[fake_check_paused, fake_claim, fake_gate],
+            activities=[
+                fake_check_paused,
+                fake_claim,
+                fake_gate,
+                fake_daily_gate,
+                fake_production_gate,
+            ],
             max_cached_workflows=0,
         )
         stages = Worker(
