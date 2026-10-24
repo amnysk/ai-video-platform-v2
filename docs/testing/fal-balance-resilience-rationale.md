@@ -138,3 +138,12 @@ Workflow コードは変えていない。残高拒否の例外は `NeedsInputEr
 | `test_open_hold_reader_folds_holds_per_episode_oldest_first` | ADR-0058 の watchdog 用 port: Episode 単位・最初の保留が代表・解放した Episode は消える |
 | `test_open_hold_record_matches_the_daily_gate_contract_once_merged` | `contracts/daily_gate.py` がある branch（統合後）でだけ走り、返す形が `OpenHold` と一致することを確かめる |
 | `test_a_daily_gate_hold_at_storyboard_ready_resumes_from_production` | 日次ゲートの保留（`storyboard_ready`・`scene_id=NULL`）も `production` から再開できる |
+
+## 拒否本文の要約・分類の硬化（review-E P2-5 / P2-6）
+
+| テスト | 守るもの |
+|---|---|
+| `test_summary_drops_query_strings_of_every_url_shape`（`test_fal_refusal.py`） | 署名付き URL の query は scheme なし（`//host/f?sig=`）・裸 host（`host.tld/f?sig=`）でも署名を持つ。`https://` だけを見る旧パターンは ledger / breaker evidence に署名を漏らした。 |
+| `test_summary_keeps_a_question_mark_in_plain_prose` | 反対側: ドットの無い普通の文の `?` まで URL とみなして本文を壊さない。 |
+| `test_balance_marker_ignores_whitespace_differences` | 印が空白 2 個・改行・タブで割れても `BALANCE_EXHAUSTED`（status だけでは決めない方針は不変。印が無ければ従来どおり UNKNOWN）。 |
+| `test_refusal_body_echoing_the_api_key_is_redacted`（`test_fal_storage.py`） | storage の拒否が `secrets=` を渡さず、パターンに合わない形で本文にエコーされた key が例外・ledger に残りえた。 |

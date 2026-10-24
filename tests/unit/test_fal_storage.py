@@ -200,3 +200,15 @@ async def test_balance_marker_in_the_body_is_balance_exhausted_not_auth(status) 
         await client.upload(b"PNG", "image/png", "a.png")
     assert not isinstance(info.value, ProviderUnavailableError)
     assert "Exhausted balance" in str(info.value)
+
+
+@pytest.mark.parametrize("status", [401, 402, 403])
+async def test_refusal_body_echoing_the_api_key_is_redacted(status) -> None:
+    """key が本文に（パターンに合わない形で）エコーされても、例外メッセージに残さない。"""
+    client, _ = _client(
+        {STORAGE_TOKEN_URL: httpx.Response(status, json={"detail": "bad credential secret-key!"})}
+    )
+    with pytest.raises(_REFUSAL_ERROR[status]) as info:
+        await client.upload(b"PNG", "image/png", "a.png")
+    assert "secret-key" not in str(info.value)
+    assert "[REDACTED]" in str(info.value)
