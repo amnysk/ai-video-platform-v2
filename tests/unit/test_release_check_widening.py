@@ -87,7 +87,7 @@ def test_the_created_values_must_equal_the_declared_new_set() -> None:
         "kind IS NOT NULL",
         "other IN ('A', 'B', 'C')",
         "kind IN ('A', 'B', 'C') OR 1=1",
-        "kind IN ('A', 'B', 'C'); DROP TABLE t",
+        "kind IN ('A', 'B', 'C'); ALTER TABLE t DROP CONSTRAINT c",
         "kind IN ('A', 'B', 'C\\'); DELETE FROM t; --')",
         "kind NOT IN ('A')",
     ],
