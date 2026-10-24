@@ -27,6 +27,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from avp_alerts import Alert, AlertSink, write_heartbeat  # noqa: E402
+
 LEVELS = ("ok", "warn", "crit")
 
 
@@ -158,7 +161,28 @@ def decide_output(state_file: Path, level: str, *, now: float, heartbeat_s: int)
     return decision
 
 
-def main(argv: list[str] | None = None) -> int:
+def publish_alerts(directory: Path, report: dict[str, object], *, now: float) -> None:
+    """heartbeat と警報を共通の口（avp_alerts。OpenSearch に依存しない）へ出す（ADR-0059 / INV-80）。"""  # noqa: E501
+    level = str(report["level"])
+    write_heartbeat(directory, "host-process-monitor", now=now, level=level)
+    active: dict[str, Alert] = {}
+    zom = report["zombies"]
+    cg = report["cgroup_pids"]
+    assert isinstance(zom, dict) and isinstance(cg, dict)
+    for key, part, what in (
+        ("HOST_ZOMBIES", zom, "zombie"),
+        ("HOST_CGROUP_PIDS", cg, "cgroup pids"),
+    ):
+        if part["level"] in ("warn", "crit", "unknown"):
+            active[key] = Alert(
+                key,
+                "crit" if part["level"] == "crit" else "warn",
+                f"{what}: {part['level']}（{json.dumps(part, ensure_ascii=False, sort_keys=True)}）",  # noqa: E501
+            )
+    AlertSink(directory, now=now).sync("host-process-monitor", active)
+
+
+def main(argv: list[str] | None = None, *, now: float | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     uid = os.getuid()
     ap.add_argument("--proc", default="/proc")
@@ -175,7 +199,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--warn-pids-ratio", type=float, default=0.7)
     ap.add_argument("--crit-pids-ratio", type=float, default=0.9)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument(
+        "--alerts-dir",
+        default=None,
+        help="heartbeat と警報の置き場（既定: --state-file と同じ dir）",
+    )
+    ap.add_argument("--no-alerts", action="store_true", help="heartbeat・警報を書かない（診断用）")
     a = ap.parse_args(argv)
+    clock = time.time() if now is None else now
 
     z = scan_zombies(Path(a.proc))
     zl = judge_zombies(
@@ -213,9 +244,11 @@ def main(argv: list[str] | None = None) -> int:
     decision = decide_output(
         Path(a.state_file),
         "unknown" if report["incomplete"] and level == "ok" else level,
-        now=time.time(),
+        now=clock,
         heartbeat_s=a.heartbeat_s,
     )
+    if not a.no_alerts:
+        publish_alerts(Path(a.alerts_dir or Path(a.state_file).parent), report, now=clock)
     if decision is not None or a.json:
         line = json.dumps(report, ensure_ascii=False, sort_keys=True)
         print(line if a.json else f"{decision} {line}")

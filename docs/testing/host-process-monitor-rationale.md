@@ -12,3 +12,9 @@
 | `test_output_is_quiet_when_ok_and_unchanged_and_loud_on_change` / `test_corrupt_state_file_is_treated_as_first_run` | 1 分毎に動かしても journal を埋めない（変化と heartbeat だけ）。壊れた state でも動き、通知を黙り込まない |
 | `test_exit_code_reflects_worst_level` | crit > unknown > warn > ok の順。unknown を 0 にしない |
 | `test_main_runs_against_a_fake_host_and_reports_json` | 引数から出力・終了コードまでの一連（top の親の pid・comm・件数が出る） |
+
+## heartbeat・警報の統合（ADR-0059）
+
+`tests/unit/test_monitor_watch.py` の `test_host_process_monitor_writes_heartbeat_and_pid_alerts_to_the_shared_path` /
+`test_no_alerts_flag_writes_nothing_for_diagnostics`。PID・zombie の異常が guard と同じ警報口（OpenSearch に依存しない）へ出ること、
+回復で resolved になること、診断（`--no-alerts`）では何も書かないこと。既存の読み取り専用の契約（signal・subprocess が無い）は変えない。
