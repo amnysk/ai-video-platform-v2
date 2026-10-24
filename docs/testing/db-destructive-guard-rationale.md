@@ -33,8 +33,16 @@ URL に現れない上書き（`connect_args` / `creator` / libpq 環境変数�
 文の入口
 - `test_destructive_statements_are_verified_before_they_run`: `DROP TABLE|SCHEMA|DATABASE` / `TRUNCATE`、小文字、
   先頭の空白・コメント、`;` 連結の2文目でも、実行前に接続の検証が呼ばれる。
+  追記（独立レビュー E の P2-4）: `/* ; */ DROP ..`・入れ子コメント・`'..;..'` と `$$ ; $$` の後ろの DROP・
+  `DO` + `EXECUTE`・`DO` 内の DROP・`ALTER TABLE .. DROP [COLUMN]`・`WHERE` 無し `DELETE`（コメント内の `WHERE` は無効）を
+  加えた。以前は `;` で分割してからコメントを剥がしていたので、コメント内の `;` で DROP が見えなくなっていた。
 - `test_other_statements_are_not_touched`: `SELECT` / `INSERT` / `DELETE ... WHERE` / `ALTER` / 文字列中の `DROP TABLE` に
-  過剰反応しない（通常のテストが壊れない）。
+  過剰反応しない（通常のテストが壊れない）。追記: `DROP CONSTRAINT` / `DROP DEFAULT|NOT NULL`、文字列・コメント中の
+  `;` や `DROP TABLE`、`$$DROP TABLE x$$`、`DO` で `PERFORM` だけのもの、サブクエリ付きの `DELETE ... WHERE` も触らない。
+- `test_destructive_detector_scope_is_documented_in_one_place`: 公開関数 `is_destructive_statement` は既定で
+  `WHERE` 無し `DELETE` を数えず（architecture テストの拾うリテラルに過剰反応しない）、実行時の守衛だけが数える。
+  integration への影響: `tests/integration/test_migration_against_postgres.py` などの `DELETE FROM episodes`（WHERE 無し）は、
+  印のある `avp_test` では接続ごとに 1 回の live check を通るだけで通る。印の無い DB では拒否される（意図どおり）。
 - `test_drop_database_names_must_end_with_test_even_on_a_verified_connection`: 検証済みの接続からでも、`avp` /
   `temporal` を消す文は拒否。
 

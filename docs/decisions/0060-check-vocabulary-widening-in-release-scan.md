@@ -88,4 +88,6 @@ CI の「upgrade head」だけでは本番の形の遷移は踏めない。本�
 - 悪い: PostgreSQL の `ADD CONSTRAINT ... CHECK` は既存行を検証する間テーブルをロックする。行数の多い表では
   `NOT VALID` + `VALIDATE` の別手順を使う（その場合は本 ADR の形ではなく contract 扱いで印を取る）
 - rollback: コードだけ戻す（`SKIP_MIGRATE=1`）は安全（旧コードの値は通る。新 kind の行は旧コードでは
-  `AnomalyKind(...)` で例外になるが watchdog が握りつぶす）。alembic downgrade は新 kind の行を消してから旧 CHECK に戻す
+  `AnomalyKind(...)` で例外になるが watchdog が握りつぶす）。alembic downgrade は新 kind の行が残っていれば
+  **拒否する**（2026-10-25 変更: 以前は黙って消していた。監査行を暗黙に失わない。0018 と同じ方針）。消すと決めた所有者が
+  行を退避・削除してから再実行する。新 kind の行が無ければ旧 CHECK に戻る

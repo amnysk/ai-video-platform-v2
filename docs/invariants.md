@@ -731,7 +731,9 @@ unrecoverable は `log-recoverability.py` が出し、元の json-file には書
 `CHECK_WIDENING`（table / constraint / column / old / new。リテラル、`old` ⊊ `new`、重複なし）を宣言し、
 `upgrade()` が `with op.batch_alter_table(table) as b:` の本体にちょうど
 `b.drop_constraint(constraint, type_="check")` → `b.create_check_constraint(constraint, "column IN ('..', ..)")`
-だけを持ち、IN の集合が `new` と一致するとき、その 1 組だけが contract と数えられない（免除は preflight の
+だけを持ち（`batch_alter_table` にキーワード引数〔recreate / copy_from / table_args / reflect_args / schema〕が
+あれば免除しない。`constraint` は CHECK の命名規約 `ck_*` で、`*_pkey` / `*_fkey` / `*_key` / `uq_*` / `fk_*` /
+`pk_*` など PK/FK/UNIQUE の名前は宣言不正として BLOCKED。2026-10-25 追記: 宣言を信用せず名前と引数で絞る）、IN の集合が `new` と一致するとき、その 1 組だけが contract と数えられない（免除は preflight の
 detail に残る）。宣言の不正・不一致・別名・別の制約種別・別の表・順序違い・with の外・2 回目の drop・
 同じファイルの他の drop / 破壊的 SQL は BLOCKED のまま。宣言の `old` が実際の旧制約と一致することと、
 旧コードの値が拡張後も通ることは、prod 形から流す実 INSERT のテストが示す。
@@ -748,7 +750,16 @@ detail に残る）。宣言の不正・不一致・別名・別の制約種別�
 URL は `connect_args` / `creator` / 環境変数で実際の接続先と食い違いうる。破壊的な文（`DROP TABLE|SCHEMA|DATABASE` /
 `TRUNCATE`）は、PostgreSQL では実行直前に `current_database()` と DB コメントの印（`avp-test-database`）を
 読み、DB 名が `_test` で終わらない・URL の DB と違う・印が無いなら `UnsafeDatabaseError`（DDL は走らない）。
-`DROP DATABASE` は消す対象の名前も `_test` で終わること。`guarded_drop_all` / `guarded_create_all` は同じ検査を明示で行い、
+`DROP DATABASE` は消す対象の名前も `_test` で終わること。
+**文の判定**（2026-10-25 追記、独立レビュー E の P2-4）: `;` の分割はコメント（`--`・入れ子の `/* */`）と引用
+（`'..'` `E'..'` `".."` `$tag$..$tag$`）を正しく読んだ上で行う（`/* ; */ DROP TABLE x` が漏れない）。
+`DO` ブロックで `EXECUTE` または `DROP`/`TRUNCATE` の語を含むものは動的 SQL として破壊的扱い（安全側）。
+`ALTER TABLE .. DROP [COLUMN] c` は破壊的（列のデータが消える）、`DROP CONSTRAINT` / `DROP DEFAULT|NOT NULL` は
+対象外（データを消さず、CHECK 作り直しの migration が日常的に行う）。`WHERE` 無しの `DELETE FROM` は実行時の
+守衛（conftest）だけが破壊的扱いにする（architecture テストが拾うリテラルには数えない）。
+範囲外のまま: `CALL`/`SELECT fn()` が中で行う DDL、文字列連結で組み立てた動的 SQL を `DO` 以外から実行する経路、
+SQLAlchemy Engine を通らない生 psycopg 接続、サブプロセスの alembic。
+`guarded_drop_all` / `guarded_create_all` は同じ検査を明示で行い、
 tests の `conftest.py` は全 PostgreSQL 接続の文の入口にも同じ検査を入れる（`drop_all` も生 SQL も止まる）。
 本番と `avp_test` が同じインスタンスにあるときは、サーバのアドレスでは区別できないので DB 名と印で区別する
 （印の付与は CI の使い捨て DB か所有者の手作業。別インスタンスへの分離が最終形）。

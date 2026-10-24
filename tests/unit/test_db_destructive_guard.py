@@ -303,6 +303,26 @@ class _Verify:
         "-- note\nDROP TABLE x",
         "SELECT 1; DROP TABLE x",
         "DROP DATABASE IF EXISTS scratch_test",
+        # コメント・引用を正しく読む（独立レビュー E の P2-4）
+        "/* ; */ DROP TABLE episodes",
+        "/* a;b */\nDROP SCHEMA public CASCADE",
+        "/* outer /* nested ; */ still comment ; */ DROP TABLE x",
+        "-- ;\nDROP TABLE x",
+        "SELECT 'it''s ; fine'; DROP TABLE x",
+        "SELECT $$ ; $$; DROP TABLE x",
+        "SELECT $t$ $$ ; $t$; DROP TABLE x",
+        "DO $$ BEGIN EXECUTE 'DROP TABLE episodes'; END $$",
+        "do $q$ begin execute format('%s', 'x'); end $q$",
+        "DO $$ BEGIN DROP TABLE x; END $$",
+        "ALTER TABLE t DROP COLUMN c",
+        "alter table t drop c",
+        "ALTER TABLE IF EXISTS t DROP COLUMN IF EXISTS c",
+        "DELETE FROM t",
+        "DELETE FROM t USING u",
+        "SELECT 1; DELETE FROM t",
+        "DELETE FROM t /* WHERE id = 1 */",
+        "DELETE FROM t -- WHERE id = 1",
+        "DELETE FROM t RETURNING 'where'",
     ],
 )
 def test_destructive_statements_are_verified_before_they_run(statement: str) -> None:
@@ -321,12 +341,30 @@ def test_destructive_statements_are_verified_before_they_run(statement: str) -> 
         "ALTER TABLE t ADD COLUMN x int",
         "SELECT 'DROP TABLE x'",
         "CREATE TABLE t (id int)",
+        # データを消さない ALTER は対象外（0017 のような CHECK 作り直しを止めない）
+        "ALTER TABLE t DROP CONSTRAINT ck_t",
+        "ALTER TABLE t ALTER COLUMN c DROP DEFAULT",
+        "ALTER TABLE t ALTER COLUMN c DROP NOT NULL",
+        "SELECT 'a;b' /* DROP TABLE x */ -- DROP TABLE y",
+        "SELECT '; DROP TABLE x'",
+        "DELETE FROM t WHERE id IN (SELECT id FROM u)",
+        "DO $$ BEGIN PERFORM 1; END $$",
+        "SELECT $$DROP TABLE x$$",
     ],
 )
 def test_other_statements_are_not_touched(statement: str) -> None:
     verify = _Verify(ok=False)
     check_statement(statement, verify_connection=verify)
     assert verify.calls == 0
+
+
+def test_destructive_detector_scope_is_documented_in_one_place() -> None:
+    """``is_destructive_statement`` は既定で WHERE 無し DELETE を数えない（architecture テストが
+    リテラル SQL を拾うため）。実行時の守衛 ``check_statement`` だけが数える。"""
+    assert not safety.is_destructive_statement("DELETE FROM t")
+    assert safety.is_destructive_statement("DELETE FROM t", bulk_delete=True)
+    assert safety.is_destructive_statement("/* ; */ DROP TABLE episodes")
+    assert safety.is_destructive_statement("DO $$ BEGIN EXECUTE 'DROP TABLE x'; END $$")
 
 
 def test_drop_database_names_must_end_with_test_even_on_a_verified_connection() -> None:

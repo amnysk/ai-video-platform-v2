@@ -718,6 +718,11 @@ def _call_findings(node: ast.Call) -> list[Finding]:
 _WIDEN_NAME = "CHECK_WIDENING"
 _WIDEN_KEYS = frozenset({"table", "constraint", "column", "old", "new"})
 _IDENT = re.compile(r"[a-z_][a-z0-9_]*")
+#: 宣言できる制約名は CHECK の命名規約（``ck_`` 始まり）だけ。PK/FK/UNIQUE（``*_pkey`` /
+#: ``*_fkey`` / ``*_key`` / ``uq_*`` / ``fk_*`` / ``pk_*``）の名前を CHECK と偽って
+#: 宣言しても免除しない（静的走査は制約の種類を DB から引けないので、名前の規約で絞る）
+_CHECK_NAME = re.compile(r"ck_[a-z0-9_]+")
+_NOT_CHECK_SUFFIX = ("_pkey", "_fkey", "_key", "_pk", "_fk", "_uq", "_unique")
 _VALUE = re.compile(r"[A-Z][A-Z0-9_]*")
 _IN_LIST = re.compile(
     r"(?P<col>[a-z_][a-z0-9_]*) IN \((?P<vals>'[A-Z][A-Z0-9_]*'(?:, '[A-Z][A-Z0-9_]*')*)\)"
@@ -768,6 +773,9 @@ def _widening_decl(tree: ast.Module) -> tuple[_Widening | None, list[Finding]]:
     for key in ("table", "constraint", "column"):
         if not isinstance(value[key], str) or not _IDENT.fullmatch(value[key]):
             return bad(f"{key} must be a lowercase identifier literal")
+    constraint = value["constraint"]
+    if not _CHECK_NAME.fullmatch(constraint) or constraint.endswith(_NOT_CHECK_SUFFIX):
+        return bad("constraint must be a CHECK name (ck_*), never a PK/FK/UNIQUE name")
     sets: dict[str, tuple[str, ...]] = {}
     for key in ("old", "new"):
         v = value[key]
@@ -813,6 +821,7 @@ def _widening_nodes(fn: ast.FunctionDef, spec: _Widening) -> set[int] | None:
     drop は ``b.drop_constraint(C, type_="check")``、
     create は ``b.create_check_constraint(C, "col IN (...)")``。
     C・T・col は宣言と一致し、値の集合は宣言の ``new`` と一致すること。
+    ``batch_alter_table`` にキーワード引数があれば免除しない。
     """
     for node in ast.walk(fn):
         if not isinstance(node, ast.With) or len(node.items) != 1 or len(node.body) != 2:
@@ -826,6 +835,9 @@ def _widening_nodes(fn: ast.FunctionDef, spec: _Widening) -> set[int] | None:
             and isinstance(ctx.func.value, ast.Name)
             and ctx.func.value.id == "op"
             and len(ctx.args) == 1
+            # recreate= / copy_from= / table_args= / reflect_args= / schema= などは表を作り直したり
+            # 宣言外の対象へ向けたりできる。1 つでもあれば免除しない
+            and not ctx.keywords
             and _str_const(ctx.args[0], spec.table) is not None
             and isinstance(item.optional_vars, ast.Name)
         ):

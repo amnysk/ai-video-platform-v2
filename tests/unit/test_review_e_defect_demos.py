@@ -1,8 +1,8 @@
-"""Independent review (Agent E) defect demonstrations. NOT a fix.
+"""独立レビュー（Agent E）が実証した欠陥の回帰テスト（docs/testing/independent-review-regressions.md）。
 
-Each test states the behaviour the design intends and is marked ``xfail(strict=True)``:
-it fails today (proving the defect) and will turn red-as-XPASS the moment the defect is fixed,
-at which point the marker should be removed. Production code is untouched.
+各テストは最初 ``xfail(strict=True)`` で欠陥を実証し、修正（F1: 保留の解放・sanitizer、
+F2: migration 走査の免除）で緑になった時点で marker を外した。破壊的 SQL の実証は
+``tests/unit/test_db_destructive_guard.py`` へ移した（architecture 走査の対象外の場所）。
 """
 
 from __future__ import annotations
@@ -10,8 +10,6 @@ from __future__ import annotations
 import importlib
 import textwrap
 import uuid
-
-import pytest
 
 from contracts.provider_health import (
     HoldReason,
@@ -21,7 +19,6 @@ from contracts.provider_health import (
 from domain import release_preflight as rp
 from infrastructure.db.provider_health_repositories import PostgresProviderHealth
 from infrastructure.db.repositories import EpisodeRepository
-from infrastructure.db.safety import is_destructive_statement
 from tests.unit.test_release_migration_scan import _migration_status, _module
 
 # dynamic on purpose: INV-18 forbids static fal_* imports from tests outside the allowlist
@@ -35,21 +32,6 @@ FAL = ProviderAccount(ProviderFamily.FAL)
 def test_refusal_summary_drops_query_strings_of_scheme_less_urls() -> None:
     text = "upload to //cdn.fal.media/f?sig=SECRETSIG ok"
     assert "SECRETSIG" not in summarize_refusal_body({"detail": text})
-
-
-@pytest.mark.xfail(strict=True, reason="E-P2: a ';' inside a block comment hides DROP from guard")
-@pytest.mark.parametrize(
-    "sql",
-    [
-        "/* ; */ DROP TABLE episodes",
-        "/* a;b */\nDROP SCHEMA public CASCADE",
-        "DO $$ BEGIN EXECUTE 'DROP TABLE episodes'; END $$",
-    ],
-)
-def test_destructive_statement_guard_sees_drop_hidden_behind_semicolon_in_comment(
-    sql: str,
-) -> None:
-    assert is_destructive_statement(sql)
 
 
 _PK_DECL = """
@@ -83,17 +65,11 @@ CHECK_WIDENING = {
 """
 
 
-@pytest.mark.xfail(
-    strict=True, reason="E-P2: the exemption trusts the declaration; a PK/FK/UNIQUE name passes"
-)
 def test_widening_exemption_cannot_drop_a_non_check_constraint() -> None:
     status = _migration_status(_module(textwrap.dedent(_PK_BODY), _PK_DECL))
     assert status is rp.Status.BLOCKED
 
 
-@pytest.mark.xfail(
-    strict=True, reason="E-P2: batch_alter_table keywords (recreate/copy_from) are not inspected"
-)
 def test_widening_exemption_rejects_batch_alter_table_that_recreates_the_table() -> None:
     status = _migration_status(_module(textwrap.dedent(_RECREATE_BODY), _T_DECL))
     assert status is rp.Status.BLOCKED
