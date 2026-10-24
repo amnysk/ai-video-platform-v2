@@ -515,3 +515,61 @@ message の要約（secret・UUID・URL query を伏せ、長さを制限）と 
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_unreadable_temporal_records_unobservable_not_ok`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_recorded_failure_survives_retention_expiry`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_failure_outside_window_is_not_recorded`
+
+## P. 日次の事前診断・保留（ADR-0058）
+
+### INV-75 設定された Codex model が必ず失敗する構成は、日次が Codex を呼ぶ前に・prompt を送らずに検知する（ADR-0058）
+実効 model（`CODEX_MODEL` > config.toml）が、アカウントの model catalog（`models_cache.json`）に無い・
+許可リスト（`CODEX_ALLOWED_MODELS`）に無い・固定が必須（`CODEX_REQUIRE_PINNED_MODEL`）なのに未固定のとき、
+`DailyEpisodeWorkflow` は Planner / Codex を呼ばずに non-retryable で失敗し、原因（verdict と model 名）を
+失敗に残す。検査は設定ファイルの読み取りだけで利用枠を使わない。**catalog に載っていることは「使える」の
+証拠にしない**（`OK` は許可リストにもある場合だけ。許可リストが空なら `UNVERIFIED`）。読めない・古い
+catalog は「無い」の根拠にしない。3 つの Codex worker は model 設定を compose の `x-codex-env` 1 箇所から読む。
+**機械検査**: `tests/unit/test_codex_model_preflight.py::test_model_missing_from_the_catalog_blocks_before_any_prompt`
+/ `tests/unit/test_codex_model_preflight.py::test_a_catalogued_model_is_never_reported_as_verified_without_an_allowlist`
+/ `tests/unit/test_codex_model_preflight.py::test_a_model_outside_the_allowlist_blocks`
+/ `tests/unit/test_codex_model_preflight.py::test_unreadable_or_stale_catalog_never_blocks_and_never_verifies`
+/ `tests/unit/test_codex_model_preflight.py::test_run_preflight_reads_files_only`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_a_blocking_codex_preflight_fails_the_daily_run_before_any_codex_call`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_an_unverified_codex_model_does_not_stop_the_run`
+/ `tests/contract/test_codex_env_single_source.py`
+
+### INV-76 provider の breaker が閉じていない間、日次は新しい有料生成を始めず、保留を記録する（ADR-0058）
+`DailyEpisodeWorkflow` は Schedule が発火したら必ず走り、入口ゲート（読み取り専用）でモードを決める。
+breaker が `open` / `half_open` なら企画・台本・絵コンテ（Codex、無課金）は進めるが、production の前で
+`CreditHoldWriter` に保留（`resumable_stage="production"`、Episode 全体）を記録して止まり、有料の
+provider を呼ばない。理由は残高不足と確定できたときだけ `WAITING_FOR_CREDITS`、それ以外は
+`PROVIDER_REFUSAL_UNKNOWN`。未解放の保留が `MAX_HELD_EPISODES` に達したら新しい Episode を作らない
+（Planner も Codex も呼ばない）。したがって breaker が開いたまま 7 日経っても Episode は高々
+`MAX_HELD_EPISODES`、有料呼び出しは 0。所有者承認の再開（API / 統一再開が起動する pipeline）は
+このゲートに止められない（`credit_gate` は日次が起動したものだけ）。
+**機械検査**: `tests/unit/test_daily_credit_hold_workflows.py::test_open_breaker_keeps_planning_and_script_but_starts_no_paid_work`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_an_unconfirmed_refusal_is_not_called_waiting_for_credits`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_half_open_breaker_is_not_used_by_the_daily_run`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_backlog_at_the_cap_creates_no_episode_and_calls_no_codex`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_seven_days_of_open_breaker_are_bounded_and_repeat_no_paid_attempt`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_a_pipeline_not_started_by_daily_is_never_stopped_by_the_gate`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_open_breaker_without_a_hold_writer_refuses_instead_of_going_on_to_paid_work`
+/ `tests/unit/test_daily_gate_domain.py`
+
+### INV-77 保留は失敗でも成功でもない。watchdog は失敗・保留・未納品を区別し、保留を見えなくしない（ADR-0058）
+保留で止まった pipeline は `PipelineOutcome.HELD`、保留で Episode を作らなかった日次は
+`DailyOutcome.HELD_BACKLOG`。どちらも `COMPLETED` / `STARTED`（成功）ではなく、`STOPPED`（失敗）でもない。
+watchdog は猶予内（`DEFAULT_HOLD_ESCALATION_DAYS`）の保留を停滞・完成期限の通報から除くが、毎時の
+`WatchdogResult.held_*` と `HELD_EPISODES` ログに出す。猶予を超えたら**既存の** `EPISODE_STAGE_STALLED`
+を `detail.hold` 付きで記録し（新しい kind・CHECK の拡張をしない）、解放されれば閉じる。保留と無関係の
+本物の失敗は保留があっても通報され、保留を読めないときは何も除かない。保留で Episode を作らなかった
+日は日次失敗（ADR-0054）にならない。
+**機械検査**: `tests/unit/test_hold_watchdog_classification.py`（全テスト）
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_backlog_at_the_cap_creates_no_episode_and_calls_no_codex`
+/ `tests/unit/test_daily_gate_domain.py::test_recent_holds_are_exempt_and_long_holds_are_escalated`
+
+### INV-78 日次は過去の Episode や有料の仕事を再開せず、変えた分岐は旧履歴を replay できる（ADR-0058）
+日次は常に新しい slot の新しい Episode を `SCRIPT` から始める。未完了・保留の Episode の再開は
+再開経路（ADR-0032 / ADR-0057）だけが行い、日次の入口ゲートは `half_open`（所有者承認の枠）も使わない。
+`DailyEpisodeWorkflow` の新分岐は `workflow.patched("daily-preflight-0058")`、`EpisodePipelineWorkflow` の
+新分岐は入力フラグ（旧履歴は False）で振り分け、`DailyWatchdogWorkflow` は変更しない。ADR-0058 より前に
+記録した履歴が replay できること。
+**機械検査**: `tests/unit/test_daily_credit_hold_workflows.py::test_seven_days_of_open_breaker_are_bounded_and_repeat_no_paid_attempt`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_histories_recorded_before_adr_0058_replay_without_nondeterminism`
+/ `tests/unit/test_pipeline_workflows.py::test_history_from_before_the_topic_planner_replays_without_nondeterminism`

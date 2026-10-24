@@ -31,6 +31,7 @@ from typing import Protocol
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.client import Client
 
+from contracts.daily_gate import DEFAULT_HOLD_ESCALATION_DAYS, OpenHold, OpenHoldReader
 from contracts.operations import OperationalSwitch
 from contracts.pipeline import EpisodePipelineResult, PipelineOutcome
 from contracts.schedule_guard import (
@@ -50,6 +51,7 @@ from domain.daily_failure import (
     lookback_dates,
     summarize_failure,
 )
+from domain.daily_gate import classify_holds
 from domain.schedule_guard import daily_start_status, latest_daily_fire
 from infrastructure.db.repositories import (
     AnomalyRecord,
@@ -192,6 +194,8 @@ async def _check_stalled_episodes(
     local_today: date,
     grace_minutes: int,
     blocked_grace_minutes: int,
+    held_ids: frozenset[uuid.UUID] = frozenset(),
+    keep_open_ids: frozenset[uuid.UUID] = frozenset(),
 ) -> tuple[list[AnomalyRecord], set[uuid.UUID]]:
     """進行（ADR-0031）: blocked / needs_work のまま停滞猶予を超えた Episode。
 
@@ -209,6 +213,8 @@ async def _check_stalled_episodes(
     stalled_ids: set[uuid.UUID] = set()
     records: list[AnomalyRecord] = []
     for snap in snapshots:
+        if snap.id in held_ids or snap.id in keep_open_ids:
+            continue  # 保留中（意図した停止）/ 保留の通報で既に扱っている（ADR-0058）
         threshold = thresholds[EpisodeStatus(snap.status)]
         if snap.status_changed_at > threshold:
             continue
@@ -232,13 +238,97 @@ async def _check_stalled_episodes(
     recovered = [
         r.episode_id
         for r in open_stalled
-        if r.episode_id is not None and r.episode_id not in stalled_ids
+        if r.episode_id is not None
+        and r.episode_id not in stalled_ids
+        and r.episode_id not in keep_open_ids
     ]
     if recovered:
         await anomalies.resolve_open(
             [AnomalyKind.EPISODE_STAGE_STALLED], now=now, episode_ids=recovered
         )
     return records, stalled_ids
+
+
+def _as_uuid_set(ids: set[str]) -> frozenset[uuid.UUID]:
+    out: set[uuid.UUID] = set()
+    for value in ids:
+        try:
+            out.add(uuid.UUID(value))
+        except ValueError:
+            continue
+    return frozenset(out)
+
+
+async def _check_credit_holds(
+    hold_reader: OpenHoldReader | None,
+    anomalies: OperationalAnomalyRepository,
+    *,
+    now: datetime,
+    local_today: date,
+    escalation_days: int,
+) -> tuple[list[AnomalyRecord], frozenset[uuid.UUID], frozenset[uuid.UUID], int, float]:
+    """保留（ADR-0058）。失敗でも未納品でもない第三の状態として扱う。
+
+    返り値: (通報した記録, 停滞・完成期限の検査から除く Episode, 通報中で自動 resolve させない
+    Episode, 保留数, 最古の保留日数)。猶予内の保留は異常にしない
+    （見える形は毎時の ``HELD_EPISODES`` ログと ``WatchdogResult.held_*``）。猶予を超えたら
+    **既存の** ``EPISODE_STAGE_STALLED`` を ``detail.hold`` 付きで記録する（CHECK を広げない）。
+    解放されれば既存の自動 resolve で閉じる。
+    保留を読めなければ何も除かない（誤報側に倒れる。確認できなかったことを健全にしない）。
+    """
+    if hold_reader is None:
+        return [], frozenset(), frozenset(), 0, 0.0
+    try:
+        holds: list[OpenHold] = await hold_reader.list_open_holds()
+    except Exception as exc:
+        logger.warning("watchdog: open holds unreadable: %s", type(exc).__name__)
+        return [], frozenset(), frozenset(), 0, 0.0
+    by_episode: dict[str, OpenHold] = {}
+    for hold in holds:  # Episode 単位に畳む（最も古い保留）
+        known = by_episode.get(hold.episode_id)
+        if known is None or hold.held_since < known.held_since:
+            by_episode[hold.episode_id] = hold
+    collapsed = list(by_episode.values())
+    cls = classify_holds(collapsed, now, escalation_days)
+    records: list[AnomalyRecord] = []
+    for hold in collapsed:
+        if hold.episode_id not in cls.escalated_ids:
+            continue
+        try:
+            episode_uuid = uuid.UUID(hold.episode_id)
+        except ValueError:
+            continue
+        days = (now - hold.held_since).total_seconds() / 86400
+        records.append(
+            await anomalies.record(
+                AnomalyKind.EPISODE_STAGE_STALLED,
+                local_today,
+                {
+                    "episode_id": hold.episode_id,
+                    "current_status": "held",
+                    "reason": f"held ({hold.reason}) for {days:.1f} days "
+                    f"(escalation after {escalation_days})",
+                    "resumable": True,
+                    "hold": {
+                        "reason": hold.reason,
+                        "account": hold.account_key,
+                        "since": hold.held_since.isoformat(),
+                        "resumable_stage": hold.resumable_stage,
+                    },
+                },
+                now=now,
+                episode_id=episode_uuid,
+            )
+        )
+    if cls.count:
+        logger.warning(
+            "HELD_EPISODES count=%d escalated=%d oldest_days=%.1f",
+            cls.count,
+            len(cls.escalated_ids),
+            cls.oldest_days,
+        )
+    exempt = _as_uuid_set(cls.exempt_ids | cls.escalated_ids)
+    return records, exempt, _as_uuid_set(cls.escalated_ids), cls.count, cls.oldest_days
 
 
 async def _check_completion_deadline(
@@ -248,6 +338,7 @@ async def _check_completion_deadline(
     now: datetime,
     local_today: date,
     deadline_hours: float,
+    held_ids: frozenset[uuid.UUID] = frozenset(),
 ) -> tuple[list[AnomalyRecord], set[uuid.UUID]]:
     """完成（ADR-0031）: 作成から完成期限を超えても render_ready 以降に達していない Episode。"""
     threshold = timedelta(hours=deadline_hours)
@@ -255,6 +346,8 @@ async def _check_completion_deadline(
     overdue_ids: set[uuid.UUID] = set()
     records: list[AnomalyRecord] = []
     for snap in snapshots:
+        if snap.id in held_ids:
+            continue  # 保留中: 期限超過ではなく保留として扱う（ADR-0058）
         if now - snap.created_at < threshold:
             continue
         overdue_ids.add(snap.id)
@@ -546,6 +639,7 @@ async def run_daily_watchdog(
     request: WatchdogCheckRequest,
     pipeline_outcome_checker: PipelineOutcomeChecker,
     daily_run_reader: DailyRunReader,
+    hold_reader: OpenHoldReader | None = None,
 ) -> WatchdogResult:
     now = datetime.fromisoformat(request.now)
     if now.tzinfo is None:
@@ -657,6 +751,19 @@ async def run_daily_watchdog(
         await session.commit()
 
         # --------------------------------------------------- Episode 進行・完成・投稿（ADR-0031）
+        (
+            hold_records,
+            held_ids,
+            escalated_hold_ids,
+            held_count,
+            oldest_hold_days,
+        ) = await _check_credit_holds(
+            hold_reader,
+            anomalies,
+            now=now,
+            local_today=local_today,
+            escalation_days=DEFAULT_HOLD_ESCALATION_DAYS,
+        )
         stalled_records, stalled_ids = await _check_stalled_episodes(
             episodes,
             anomalies,
@@ -664,13 +771,17 @@ async def run_daily_watchdog(
             local_today=local_today,
             grace_minutes=request.stage_stall_grace_minutes,
             blocked_grace_minutes=request.blocked_grace_minutes,
+            held_ids=held_ids,
+            keep_open_ids=escalated_hold_ids,
         )
+        stalled_ids = stalled_ids | set(escalated_hold_ids)
         completion_records, overdue_completion_ids = await _check_completion_deadline(
             episodes,
             anomalies,
             now=now,
             local_today=local_today,
             deadline_hours=request.completion_deadline_hours,
+            held_ids=held_ids,
         )
         upload_records, overdue_upload_ids = await _check_upload_deadline(
             episodes,
@@ -693,6 +804,7 @@ async def run_daily_watchdog(
             covered_episode_ids=covered_ids,
         )
         episode_new_records = [
+            *hold_records,
             *stalled_records,
             *completion_records,
             *upload_records,
@@ -732,6 +844,9 @@ async def run_daily_watchdog(
         slot_date=slot_date.isoformat() if slot_date else "",
         episode_anomaly_count=len(episode_new_records),
         consecutive_daily_failures=consecutive_daily_failures,
+        held_episodes=held_count,
+        held_escalated=len(escalated_hold_ids),
+        oldest_hold_days=round(oldest_hold_days, 2),
     )
 
 

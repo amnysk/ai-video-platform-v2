@@ -37,6 +37,7 @@ from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.youtube.errors import YouTubeAuthError
 from infrastructure.youtube.oauth import RefreshTokenCredentials
 from workers.planning.activities import ScriptActivities
+from workers.planning.preflight_activities import CodexPreflightActivities
 from workers.planning.topic_activities import TopicPlannerActivities, TrendBriefSource
 from workers.planning.topic_workflows import TopicPlannerWorkflow
 from workers.planning.workflows import ScriptWorkflow
@@ -215,6 +216,11 @@ async def main() -> None:
             activities=[
                 *activities.all_activities(),
                 *topic_activities.all_activities(),
+                *CodexPreflightActivities(
+                    model_setting=settings.codex_model,
+                    allowed_raw=settings.codex_allowed_models,
+                    require_pinned=settings.codex_require_pinned_model,
+                ).all_activities(),
                 *research.activities,
             ],
         ):
