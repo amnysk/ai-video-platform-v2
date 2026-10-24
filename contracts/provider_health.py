@@ -110,6 +110,25 @@ class ProviderHealthReader(Protocol):
     async def open_hold_count(self) -> int: ...
 
 
+class CreditHoldWriter(Protocol):
+    """保留を記録する port。実装（fal 障害耐性側）が予約・成功済み Artifact の写しも保存する。
+
+    ``scene_id`` は Episode 全体の保留（日次の入口ゲート）なら ``None``。冪等: 同じ
+    (episode_id, scene_id, account) の未解放の保留があれば何もしない。
+    """
+
+    async def hold_episode(
+        self,
+        *,
+        episode_id: str,
+        scene_id: str | None,
+        account: ProviderAccount,
+        reason: HoldReason,
+        resumable_stage: str,
+        generation_profile_id: str | None,
+    ) -> None: ...
+
+
 __all__ = [
     "DEFAULT_ACCOUNT_LABEL",
     "MAX_HELD_EPISODES",
@@ -117,6 +136,7 @@ __all__ = [
     "RESUME_MAX_CONCURRENCY",
     "BreakerSnapshot",
     "BreakerState",
+    "CreditHoldWriter",
     "HoldReason",
     "ProviderAccount",
     "ProviderFamily",
