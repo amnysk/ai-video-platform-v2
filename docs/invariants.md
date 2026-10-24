@@ -515,3 +515,21 @@ message の要約（secret・UUID・URL query を伏せ、長さを制限）と 
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_unreadable_temporal_records_unobservable_not_ok`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_recorded_failure_survives_retention_expiry`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_failure_outside_window_is_not_recorded`
+
+## P. migration の走査（ADR-0060）
+
+### INV-82 CHECK 語彙の拡張だけが release 走査の contract から外れ、その免除は宣言と機械検査で縛られる（ADR-0060）
+`migration_compat` は `drop*` を contract として扱い続ける。例外は 1 つだけ: migration が
+`CHECK_WIDENING`（table / constraint / column / old / new。リテラル、`old` ⊊ `new`、重複なし）を宣言し、
+`upgrade()` が `with op.batch_alter_table(table) as b:` の本体にちょうど
+`b.drop_constraint(constraint, type_="check")` → `b.create_check_constraint(constraint, "column IN ('..', ..)")`
+だけを持ち、IN の集合が `new` と一致するとき、その 1 組だけが contract と数えられない（免除は preflight の
+detail に残る）。宣言の不正・不一致・別名・別の制約種別・別の表・順序違い・with の外・2 回目の drop・
+同じファイルの他の drop / 破壊的 SQL は BLOCKED のまま。宣言の `old` が実際の旧制約と一致することと、
+旧コードの値が拡張後も通ることは、prod 形から流す実 INSERT のテストが示す。
+**機械検査**: `tests/unit/test_release_check_widening.py`（宣言どおりは PASS、否定例は全て BLOCKED、
+実 0017 の認識）
+/ `tests/contract/test_migration_0017_check_widening.py`（old が 0016 の実制約と一致・旧値は拡張後も通る・
+新値が通る・未知値は拒否・downgrade で新値の行だけ消えて旧制約に戻る・`new` = `AnomalyKind`）
+/ `tests/integration/test_migration_against_postgres.py::test_0017_widens_the_kind_check_and_keeps_old_code_working_on_postgres`
+/ `tests/unit/test_release_migration_scan.py`（既存の bypass 例は従来どおり BLOCKED）
