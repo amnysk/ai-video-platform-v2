@@ -176,6 +176,7 @@ ingested_at）→ Dashboards`。
   （使う時だけ起動する profile）、Fluent Bit 256MiB。ログ基盤のコンテナは `oom_score_adj` を上げ、
   OOM 時に本番 worker より先に落ちるようにする。performance analyzer は無効。
 - データは NVMe 上の named volume（MinIO の HDD と I/O を競合させない）。
+- **[ADR-0059（2026-10-25）で更新: 下の閾値は 1 サンプルでなく連続 5 サンプルかつ 180 秒以上。停止・復旧は `scripts/opensearch-guard.py`、`--enforce-memory` は廃止。以下は旧テキストのまま残す]**
 - swap が満杯の現状では、**本番ホストへの共存は隔離試験での実測と、次の運用閾値を条件とする**:
   MemAvailable が 2GiB を下回ったら Dashboards を止め、1.5GiB を下回ったら OpenSearch を止める
   （Fluent Bit はバッファに溜め、上限を超えれば破棄する）。確認スクリプトが MemAvailable を報告し、systemd timer から `--enforce-memory` 付きで動かすと閾値で `avp2-logging` project のコンテナ**だけ**を止める（アプリには触れない。既定は報告のみ）。

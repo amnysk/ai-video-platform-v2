@@ -9,5 +9,6 @@ After=docker.service
 
 [Service]
 Type=oneshot
-# 本番では --enforce-memory を付ける（MemAvailable の閾値で avp2-logging のコンテナだけを止める）
-ExecStart=%h/projects/ai-video-platform-v2/deploy/logging/scripts/check-pipeline.sh --env prod --enforce-memory
+# 報告だけ。メモリでの停止・復旧は deploy/host-monitor/avp-opensearch-guard.*（ADR-0059）。
+# --enforce-memory は廃止（付けても何も止めない）
+ExecStart=%h/projects/ai-video-platform-v2/deploy/logging/scripts/check-pipeline.sh --env prod

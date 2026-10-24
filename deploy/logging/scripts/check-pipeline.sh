@@ -19,8 +19,9 @@
 #   証明書      CA・ノード証明書の残り日数（30日未満で異常）
 #   ホスト      Docker root のディスク、MemAvailable（ADR-0040 §7 の閾値）
 #
-# --enforce-memory: MemAvailable が 2GiB 未満なら Dashboards、1.5GiB 未満なら OpenSearch を止める。
-#   止めるのは --project のコンテナだけ（アプリの project には触れない）。既定は報告だけ。
+# --enforce-memory: **廃止（ADR-0059）**。受け付けるが何も止めない。1 サンプルの低下で OpenSearch を止め、
+#   誰も起こさず 4 日止まった事故（2026-10-21）のため、停止・復旧は hysteresis と状態を持つ
+#   scripts/opensearch-guard.py へ移した（docs/operations/opensearch-recovery.md）。この script は報告だけ。
 # --catchup-only: Fluent Bit と追いつきだけを見る（deploy の前。platform.md §6）。
 #
 # 資格情報: 読み取り専用ユーザー avp_viewer のパスワード <secrets-dir>/viewer.pw と CA <secrets-dir>/pki/ca.pem
@@ -302,21 +303,12 @@ if [[ -n "$docker_root" ]]; then
 fi
 avail_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
 avail_mib=$((avail_kb / 1024))
-stop_service() {
-  local ids
-  ids="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" \
-    --filter "label=com.docker.compose.service=$1")"
-  if [[ -n "$ids" ]]; then
-    # shellcheck disable=SC2086
-    docker stop $ids >/dev/null && echo "      stopped $PROJECT/$1"
-  fi
-}
 if [[ "$avail_kb" -lt "$MEM_STOP_OPENSEARCH_KB" ]]; then
   fail "host: MemAvailable ${avail_mib}MiB（< 1.5GiB。OpenSearch を止める閾値）"
-  if [[ $ENFORCE -eq 1 ]]; then stop_service dashboards; stop_service opensearch; fi
+  [[ $ENFORCE -eq 1 ]] && warn "--enforce-memory は廃止（何も止めない）。scripts/opensearch-guard.py を使う（ADR-0059）"
 elif [[ "$avail_kb" -lt "$MEM_STOP_DASHBOARDS_KB" ]]; then
   fail "host: MemAvailable ${avail_mib}MiB（< 2GiB。Dashboards を止める閾値）"
-  if [[ $ENFORCE -eq 1 ]]; then stop_service dashboards; fi
+  [[ $ENFORCE -eq 1 ]] && warn "--enforce-memory は廃止（何も止めない）。scripts/opensearch-guard.py を使う（ADR-0059）"
 else
   ok "host: MemAvailable ${avail_mib}MiB"
 fi

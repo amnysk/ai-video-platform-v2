@@ -1,0 +1,11 @@
+# 例（インストールはしない。REQUIRES OWNER APPROVAL）。guard を 30 秒ごとに動かす（1 回 = 1 サンプル）。
+[Unit]
+Description=Run the AVP OpenSearch memory guard every 30 seconds
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

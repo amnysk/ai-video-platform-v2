@@ -515,3 +515,50 @@ message の要約（secret・UUID・URL query を伏せ、長さを制限）と 
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_unreadable_temporal_records_unobservable_not_ok`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_recorded_failure_survives_retention_expiry`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_failure_outside_window_is_not_recorded`
+
+## P. ログ基盤の保護・復旧・監視（ADR-0059）
+
+### INV-79 メモリ逼迫での OpenSearch 停止は一時的な低下では起きず、復旧は guard が止めた OpenSearch 1 コンテナだけを条件が揃ったときだけ行う（ADR-0059）
+MemAvailable が停止線（1.5GiB）未満の**連続 5 サンプルかつ 180 秒以上**でだけ OpenSearch / Dashboards を止め
+（サンプル間 150 秒超は連続でない）、止めるのは `avp2-logging` のコンテナだけ。停止の理由・時刻・サンプル・復旧条件・
+試行は state に残る。自動起動は `--auto-restart` を付けたときだけで、`docker start <その 1 コンテナ>` のみ
+（compose・rm・run・recreate を呼ばない）。条件は MemAvailable >= 4096MiB の連続 3 サンプル・avp2 の全コンテナが
+healthy・停止から 10 分以上・backoff・24 時間 3 回未満。上限後は止めたまま警報。guard が止めていない停止は起こさない。
+`check-pipeline.sh` は何も止めない。
+**機械検査**: `tests/unit/test_opensearch_guard.py::test_transient_dip_below_threshold_stops_nothing`
+/ `tests/unit/test_opensearch_guard.py::test_oscillating_memory_never_starts_a_stop_start_loop`
+/ `tests/unit/test_opensearch_guard.py::test_sustained_pressure_still_stops_opensearch_and_dashboards_only`
+/ `tests/unit/test_opensearch_guard.py::test_opensearch_stop_raises_alert_records_state_and_spares_others`
+/ `tests/unit/test_opensearch_guard.py::test_auto_restart_is_off_unless_the_flag_is_given`
+/ `tests/unit/test_opensearch_guard.py::test_auto_restart_starts_only_the_opensearch_container`
+/ `tests/unit/test_opensearch_guard.py::test_restart_requires_all_workers_healthy`
+/ `tests/unit/test_opensearch_guard.py::test_never_restarts_an_opensearch_the_guard_did_not_stop`
+/ `tests/unit/test_opensearch_guard.py::test_flap_cap_stays_stopped_and_alerts_after_max_restarts`
+/ `tests/unit/test_opensearch_guard.py::test_guard_source_never_uses_compose_or_destructive_docker_verbs`
+/ `tests/unit/test_opensearch_guard.py::test_guard_constants_match_the_fluent_bit_config_and_documented_conditions`
+/ `tests/contract/test_opensearch_guard_deploy.py::test_check_pipeline_no_longer_stops_any_container`
+/ `tests/contract/test_opensearch_guard_deploy.py::test_guard_unit_is_stop_only_by_default_auto_restart_is_a_separate_decision`
+
+### INV-80 ログ基盤・ホスト監視の警報と heartbeat は OpenSearch に依存せず、監視が止まったことを別の timer が検知する（ADR-0059）
+警報は journal 向けの stderr 行・`alerts.jsonl`・`alerts-current.json` に出る（OpenSearch・Temporal・DB を経由しない）。
+guard と host-process-monitor（PID/zombie）は毎回 heartbeat を書き、**別の unit・別の timer** の `monitor-watch.py` が
+古い・無い heartbeat を crit にする。無い heartbeat を OK にしない。watcher は読み取り専用。
+**機械検査**: `tests/unit/test_avp_alerts.py::test_same_alert_is_not_repeated_until_the_interval_and_resolves_once`
+/ `tests/unit/test_opensearch_guard.py::test_alert_is_written_to_stderr_with_a_journal_priority`
+/ `tests/unit/test_opensearch_guard.py::test_heartbeat_is_written_every_run_even_when_everything_is_fine`
+/ `tests/unit/test_monitor_watch.py::test_a_stopped_guard_is_flagged_while_the_other_monitor_stays_quiet`
+/ `tests/unit/test_monitor_watch.py::test_a_missing_heartbeat_is_critical_not_ok`
+/ `tests/unit/test_monitor_watch.py::test_host_process_monitor_writes_heartbeat_and_pid_alerts_to_the_shared_path`
+/ `tests/unit/test_monitor_watch.py::test_watcher_never_touches_docker_network_or_other_processes`
+/ `tests/contract/test_opensearch_guard_deploy.py::test_watch_is_a_separate_unit_and_timer_from_the_monitors_it_watches`
+
+### INV-81 ログ収集の欠損（buffer 上限・retry 窓の接近・破棄）は黙らず、取り戻せる範囲の調査は読み取り専用（ADR-0059）
+Fluent Bit の filesystem buffer が上限の 70% / 90%、最古の chunk が retry 窓（retry_limit x 平均 backoff）の 50% / 80% に
+達したら破棄の**前**に、chunk の破棄（`cannot be retried`）は**後**に警報になる。停止窓のログの recoverable /
+unrecoverable は `log-recoverability.py` が出し、元の json-file には書かない。
+**機械検査**: `tests/unit/test_opensearch_guard.py::test_buffer_near_its_limit_alerts_before_any_drop`
+/ `tests/unit/test_opensearch_guard.py::test_oldest_chunk_nearing_the_retry_window_alerts_before_drops`
+/ `tests/unit/test_opensearch_guard.py::test_dropped_chunks_in_fluent_bit_log_raise_a_crit_alert`
+/ `tests/unit/test_log_recoverability.py::test_rotated_away_start_of_the_window_is_unrecoverable`
+/ `tests/unit/test_log_recoverability.py::test_backfill_copies_only_window_lines_verbatim_and_never_writes_the_source`
+/ `tests/unit/test_log_recoverability.py::test_source_only_uses_read_only_docker_verbs`
