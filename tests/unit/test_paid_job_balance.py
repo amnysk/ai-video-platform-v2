@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import uuid
+from decimal import Decimal
+
 import pytest
+from sqlalchemy import update
 
 from contracts.production_activities import AUTH_INCIDENT_SUPPRESSION_THRESHOLD
 from contracts.provider_health import (
@@ -12,7 +16,7 @@ from contracts.provider_health import (
     ProviderFamily,
     RefusalKind,
 )
-from contracts.states import ArtifactType, ProviderCall, ReservationStatus
+from contracts.states import ArtifactType, EpisodeStatus, ProviderCall, ReservationStatus
 from domain.errors import (
     ProviderBalanceExhaustedError,
     ProviderBreakerOpenError,
@@ -22,6 +26,7 @@ from domain.errors import (
 )
 from domain.production.ports import ImageRequest
 from domain.provider.cost import NOT_ACCEPTED_RECONCILER, CostState, cost_state
+from infrastructure.db.models import EpisodeRow
 from infrastructure.db.provider_health_repositories import PostgresProviderHealth
 from infrastructure.db.repositories import (
     EpisodeRepository,
@@ -62,6 +67,13 @@ async def _spec(
 ) -> PaidJobSpec:
     async with session_factory() as session:
         episode = await EpisodeRepository(session).create(topic="t")
+        # 本番では残高拒否で workflow が終わるとき Episode は blocked（保留は blocked の間だけ
+        # 有効。review-E P1-1）。保留数を数えるテストが実態と同じ状態の Episode を使う
+        await session.execute(
+            update(EpisodeRow)
+            .where(EpisodeRow.id == uuid.UUID(str(episode.id)))
+            .values(status=EpisodeStatus.BLOCKED.value)
+        )
         await session.commit()
     return PaidJobSpec(
         episode_id=episode.id,
@@ -133,6 +145,8 @@ async def test_not_accepted_refusal_adds_nothing_to_the_recovery_cost(
             spec.episode_id
         )
     assert [c.estimated_cost_usd for c in costs] == [0]
+    # 支出は 0 でも、次の作り直しの投影に使う見積り額は残る（review-E P2-7）
+    assert [c.nominal_cost_usd for c in costs] == [Decimal("0.5")]
 
 
 async def test_unknown_refusal_opens_the_breaker_with_the_unknown_hold_reason(

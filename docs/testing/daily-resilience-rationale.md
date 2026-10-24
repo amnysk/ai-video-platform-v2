@@ -55,3 +55,7 @@ fake を fixture に**足しただけ**（アサーションは変えていな�
 | `test_a_real_failure_is_still_reported_next_to_a_hold` | 保留があるだけで他の本物の失敗が埋もれる |
 | `test_an_unreadable_hold_table_does_not_hide_anything` | 保留を読めないことを健全として扱う |
 | `test_a_day_skipped_for_backlog_is_not_a_daily_failure` | 意図して Episode を作らなかった日が `DAILY_WORKFLOW_FAILED` になる |
+
+## watchdog の保留読み取り失敗（`test_hold_watchdog_classification.py`, review-E P2-10）
+
+- `test_an_unreadable_hold_table_is_visible_in_the_result_and_logged_as_error`: 読み取り失敗は従来 WARNING だけで従来の停滞検査に倒れ、失敗自体が誰にも見えなかった。ERROR ログ `HOLD_READER_FAILED` と `WatchdogResult.hold_reader_failed` で見せる（CHECK は広げない）。成功時は false のまま（反対側）。

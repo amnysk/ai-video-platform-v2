@@ -194,6 +194,21 @@ async def test_an_unreadable_hold_table_does_not_hide_anything(session_factory) 
     assert result.held_episodes == 0
 
 
+async def test_an_unreadable_hold_table_is_visible_in_the_result_and_logged_as_error(
+    session_factory, caplog
+) -> None:
+    """保留を読めなかったこと自体を見えるようにする（review-E P2-10）。CHECK は広げない。"""
+    await _slot(session_factory)
+    with caplog.at_level("ERROR"):
+        result, _ = await _watch(session_factory, _Holds(error=True))
+    assert result.hold_reader_failed is True
+    assert any(
+        r.levelname == "ERROR" and "HOLD_READER_FAILED" in r.getMessage() for r in caplog.records
+    )
+    ok, _ = await _watch(session_factory, _Holds([]))
+    assert ok.hold_reader_failed is False
+
+
 async def test_a_day_skipped_for_backlog_is_not_a_daily_failure(session_factory) -> None:
     """日次が HELD_BACKLOG で Episode を作らなかった日（Completed・slot 無し）は失敗日ではない。"""
     started = datetime(2026, 9, 20, 21, 0, tzinfo=UTC)
