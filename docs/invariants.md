@@ -515,3 +515,19 @@ message の要約（secret・UUID・URL query を伏せ、長さを制限）と 
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_unreadable_temporal_records_unobservable_not_ok`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_recorded_failure_survives_retention_expiry`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_failure_outside_window_is_not_recorded`
+
+## P. 日次の事前診断・保留（ADR-0058）
+
+### INV-75 設定された Codex model が必ず失敗する構成は、日次が Codex を呼ぶ前に・prompt を送らずに検知する（ADR-0058）
+実効 model（`CODEX_MODEL` > config.toml）が、アカウントの model catalog（`models_cache.json`）に無い・
+許可リスト（`CODEX_ALLOWED_MODELS`）に無い・固定が必須（`CODEX_REQUIRE_PINNED_MODEL`）なのに未固定のとき、
+`DailyEpisodeWorkflow` は Planner / Codex を呼ばずに non-retryable で失敗し、原因（verdict と model 名）を
+失敗に残す。検査は設定ファイルの読み取りだけで利用枠を使わない。**catalog に載っていることは「使える」の
+証拠にしない**（`OK` は許可リストにもある場合だけ。許可リストが空なら `UNVERIFIED`）。読めない・古い
+catalog は「無い」の根拠にしない。3 つの Codex worker は model 設定を compose の `x-codex-env` 1 箇所から読む。
+**機械検査**: `tests/unit/test_codex_model_preflight.py::test_model_missing_from_the_catalog_blocks_before_any_prompt`
+/ `tests/unit/test_codex_model_preflight.py::test_a_catalogued_model_is_never_reported_as_verified_without_an_allowlist`
+/ `tests/unit/test_codex_model_preflight.py::test_a_model_outside_the_allowlist_blocks`
+/ `tests/unit/test_codex_model_preflight.py::test_unreadable_or_stale_catalog_never_blocks_and_never_verifies`
+/ `tests/unit/test_codex_model_preflight.py::test_run_preflight_reads_files_only`
+/ `tests/contract/test_codex_env_single_source.py`
