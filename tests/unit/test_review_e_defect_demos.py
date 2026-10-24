@@ -1,4 +1,6 @@
-"""独立レビュー（Agent E）が実証した欠陥の回帰テスト（docs/testing/independent-review-regressions.md）。
+"""独立レビュー（Agent E）が実証した欠陥の回帰テスト。
+
+理由は docs/testing/independent-review-regressions.md。
 
 各テストは最初 ``xfail(strict=True)`` で欠陥を実証し、修正（F1: 保留の解放・sanitizer、
 F2: migration 走査の免除）で緑になった時点で marker を外した。破壊的 SQL の実証は
