@@ -26,6 +26,7 @@ from infrastructure.db.provider_health_repositories import PostgresProviderHealt
 from infrastructure.db.repositories import (
     EpisodeRepository,
     ProviderAuthIncidentRepository,
+    ProviderRejectionRepository,
     ProviderReservationRepository,
 )
 from infrastructure.production.paid_job import PaidJobRunner, PaidJobSpec, Submitted
@@ -118,6 +119,20 @@ async def test_balance_refusal_is_not_accepted_zero_cost_and_opens_the_breaker(
             ProviderCall.FAL_IMAGE, since=row.reserved_at.replace(year=2000)
         )
     assert count == 0 < AUTH_INCIDENT_SUPPRESSION_THRESHOLD
+
+
+async def test_not_accepted_refusal_adds_nothing_to_the_recovery_cost(
+    runner, session_factory
+) -> None:
+    """復旧費用の上限（INV-34）に、受理されなかった拒否の見積額を数えない。"""
+    spec = await _spec(session_factory)
+    with pytest.raises(ProviderBalanceExhaustedError):
+        await runner.submit(spec, FakeImageGenerator(submit_error=BALANCE, cost_usd=0.5), REQUEST)
+    async with session_factory() as session:
+        costs = await ProviderRejectionRepository(session).list_paid_reservation_costs(
+            spec.episode_id
+        )
+    assert [c.estimated_cost_usd for c in costs] == [0]
 
 
 async def test_unknown_refusal_opens_the_breaker_with_the_unknown_hold_reason(

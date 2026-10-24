@@ -2597,7 +2597,12 @@ class ProviderRejectionRepository:
             PaidReservationCost(
                 scene_id=row.scene_id,
                 provider=ProviderCall(row.provider),
-                estimated_cost_usd=row.estimated_cost_usd or Decimal("0"),
+                # 受理されなかった拒否（ADR-0057 / INV-74）は費用 0。復旧費用の上限に数えない
+                estimated_cost_usd=(
+                    Decimal("0")
+                    if row.reconciled_by == NOT_ACCEPTED_RECONCILER
+                    else row.estimated_cost_usd or Decimal("0")
+                ),
                 input_rejected_by_provider=bool(row.input_rejected_by_provider),
                 reserved_at=row.reserved_at,
             )

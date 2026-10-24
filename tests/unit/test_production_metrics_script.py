@@ -8,6 +8,7 @@ import uuid
 from decimal import Decimal
 
 from contracts.states import ArtifactType, EpisodeStatus, ProviderCall
+from domain.provider.cost import NOT_ACCEPTED_RECONCILER
 from infrastructure.db.models import EpisodeRow
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
@@ -97,3 +98,28 @@ async def test_metrics_report_rates_alternatives_cost_and_completion(session_fac
     assert report["episodes"]["completion_rate"] == 0.5
     assert report["estimated_cost_usd"]["total"] == "2.9500"
     assert report["estimated_cost_usd"]["per_uploaded_episode"] == "1.0100"
+
+
+async def test_not_accepted_refusals_do_not_count_as_cost(session_factory) -> None:
+    """ADR-0057 / INV-74: 残高拒否で受理されなかった予約の見積額は費用に数えない。"""
+    async with session_factory() as session:
+        ep = await _episode(session, EpisodeStatus.BLOCKED)
+        await _paid(session, ep, ProviderCall.FAL_IMAGE, "sb1", "0.04")
+        reservations = ProviderReservationRepository(session)
+        row = await reservations.reserve(
+            episode_id=ep,
+            provider=ProviderCall.FAL_VIDEO,
+            idempotency_key=uuid.uuid4().hex,
+            input_hash=uuid.uuid4().hex * 2,
+            round=1,
+            scene_id="sb1",
+            estimated_cost_usd=Decimal("0.97"),
+        )
+        await reservations.mark_dispatched(row.id)
+        await reservations.mark_spent(
+            row.id, raw_output_key=None, reconciled_by=NOT_ACCEPTED_RECONCILER
+        )
+        await session.commit()
+    async with session_factory() as session:
+        report = await _load().collect(session)
+    assert report["estimated_cost_usd"]["total"] == "0.0400"

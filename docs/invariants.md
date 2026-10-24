@@ -560,3 +560,5 @@ CHECK を広げない）。
 / `tests/unit/test_paid_job_balance.py::test_balance_refusal_is_not_accepted_zero_cost_and_opens_the_breaker`
 / `tests/unit/test_paid_job_balance.py::test_after_the_top_up_the_same_input_is_submitted_again`
 / `tests/unit/test_paid_job_balance.py::test_ambiguous_submit_stays_unreconciled_and_is_never_resent`
+/ `tests/unit/test_paid_job_balance.py::test_not_accepted_refusal_adds_nothing_to_the_recovery_cost`
+/ `tests/unit/test_production_metrics_script.py::test_not_accepted_refusals_do_not_count_as_cost`

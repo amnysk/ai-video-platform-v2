@@ -75,6 +75,7 @@ fake / `httpx.MockTransport` だけを使い、fal・YouTube には一切到達�
 | `test_accepted_submit_in_half_open_closes_the_breaker` | 承認済みの再開で受理された submit だけが half_open を閉じる |
 | `test_ambiguous_submit_stays_unreconciled_and_is_never_resent` | 送信後の切断は曖昧: 未照合・費用 unknown・breaker は開かず、2回目の submit は `UnreconciledReservationError` で止まり provider へ再送しない |
 | `test_non_fal_providers_are_not_gated` | fal 以外（YouTube など）は breaker の影響を受けない |
+| `test_not_accepted_refusal_adds_nothing_to_the_recovery_cost` | 復旧費用の上限（INV-34 / ADR-0035）が、受理されなかった拒否の見積額で食われない |
 
 ### 費用区分（`tests/unit/test_provider_cost_state.py`、純粋関数）
 
@@ -86,3 +87,9 @@ fake / `httpx.MockTransport` だけを使い、fal・YouTube には一切到達�
 
 既存テストの変更: `tests/unit/test_log_provider_calls.py` の本文なし 403 の例外型（`ProviderUnavailableError` →
 `ProviderRefusalUnknownError`。ADR-0057）。ログの `error_category=access_denied` / `http_status_only` は変えていない。
+
+### 費用の集計（`tests/unit/test_production_metrics_script.py`）
+
+| テスト | 守るもの |
+|---|---|
+| `test_not_accepted_refusals_do_not_count_as_cost` | `scripts/production-metrics.py` の費用合計が、受理されなかった拒否（`reconciled_by=not_accepted`）の見積額を数えない（G3: 過大計上の解消） |
