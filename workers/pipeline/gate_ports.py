@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from contracts.daily_gate import OpenHoldReader
 from contracts.provider_health import CreditHoldWriter, ProviderHealthReader
+from infrastructure.db.provider_health_repositories import build_provider_health_ports
 from infrastructure.db.repositories import ProviderReconciliationRepository
 
 
@@ -50,6 +51,13 @@ class GatePorts:
 def build_gate_ports(session_factory: async_sessionmaker[AsyncSession]) -> GatePorts:
     """pipeline worker が使う port を組む。**ここが ADR-0057 の実装との結線点**。
 
-    統合では ``health`` / ``holds`` / ``open_holds`` を保留テーブルの実装に差し替える。
+    breaker・保留・未解放保留の読み出しは1つの実装（``provider_breakers`` /
+    ``provider_credit_holds`` の表）が担う。
     """
-    return GatePorts(unreconciled=DbUnreconciledCounter(session_factory))
+    health = build_provider_health_ports(session_factory)
+    return GatePorts(
+        health=health,
+        holds=health,
+        open_holds=health,
+        unreconciled=DbUnreconciledCounter(session_factory),
+    )

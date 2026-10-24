@@ -18,6 +18,7 @@ from sqlalchemy import distinct, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from contracts.daily_gate import OpenHold
 from contracts.provider_health import (
     PROVIDER_FAMILY,
     BreakerSnapshot,
@@ -70,18 +71,6 @@ class CreditHold:
     snapshot: dict
     held_at: datetime
     released_at: datetime | None
-
-
-@dataclass(frozen=True, slots=True)
-class OpenHoldRecord:
-    """未解放の保留 1 件（Episode 単位）。``contracts.daily_gate.OpenHold`` と同じ5フィールド。"""
-
-    episode_id: str
-    held_since: datetime
-    #: ``HoldReason`` の値
-    reason: str
-    account_key: str
-    resumable_stage: str
 
 
 def _to_hold(row: ProviderCreditHoldRow) -> CreditHold:
@@ -416,12 +405,11 @@ class PostgresProviderHealth:
             )
             return [_to_hold(r) for r in rows]
 
-    async def list_open_holds(self) -> list[OpenHoldRecord]:
+    async def list_open_holds(self) -> list[OpenHold]:
         """未解放の保留を Episode 単位に畳んで返す（1 回の SELECT）。
 
         ``contracts.daily_gate.OpenHoldReader.list_open_holds`` と同じ署名（ADR-0058 の watchdog 用
-        port）。返す型は同じ5フィールドの ``OpenHoldRecord``（その契約は統合後に parent が結線する。
-        この branch には無いので、型を import せず構造だけ合わせる）。
+        port）。返す型は契約の ``contracts.daily_gate.OpenHold``（単一宣言元 / AGENTS.md §8）。
         """
         async with self._session_factory() as session:
             rows = await session.scalars(
@@ -433,7 +421,7 @@ class PostgresProviderHealth:
             for row in rows:
                 first.setdefault(str(row.episode_id), row)  # 最初に保留した行がその Episode の代表
         return [
-            OpenHoldRecord(
+            OpenHold(
                 episode_id=episode_id,
                 held_since=row.held_at,
                 reason=row.reason,
@@ -473,7 +461,6 @@ def build_provider_health_ports(
 __all__ = [
     "BreakerDetail",
     "CreditHold",
-    "OpenHoldRecord",
     "PostgresProviderHealth",
     "build_provider_health_ports",
 ]
