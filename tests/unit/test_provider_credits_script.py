@@ -259,6 +259,33 @@ async def test_a_resumed_episode_still_running_counts_toward_the_cap(
     assert code == 2 and "already running 1" in out["error"]
 
 
+async def test_a_daily_gate_hold_at_storyboard_ready_resumes_from_production(
+    session_factory, health
+) -> None:
+    """日次の入口ゲート（ADR-0058）の保留: storyboard_ready のまま scene なしの保留行だけがある。"""
+    ep = await _blocked_episode(session_factory, health, hold=False)
+    async with session_factory() as session:
+        row = await session.get(EpisodeRow, uuid.UUID(ep))
+        assert row is not None
+        row.status = EpisodeStatus.STORYBOARD_READY.value
+        row.workflow_id = None
+        await session.commit()
+    await health.hold_episode(
+        episode_id=ep,
+        scene_id=None,
+        account=FAL,
+        reason=HoldReason.WAITING_FOR_CREDITS,
+        resumable_stage="production",
+        generation_profile_id=None,
+    )
+    await _half_open(health)
+    client = FakeResume()
+    code, out = await _run(session_factory, _resume_args(ep), client=client)
+    assert code == 0, out
+    assert client.calls == [ep] and out["episodes"][0]["target_stage"] == "production"
+    assert await health.open_hold_count() == 0
+
+
 async def test_failed_resume_restores_the_hold(session_factory, health) -> None:
     ep = await _blocked_episode(session_factory, health)
     await _half_open(health)

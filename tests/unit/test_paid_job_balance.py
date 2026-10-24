@@ -107,7 +107,7 @@ async def test_balance_refusal_is_not_accepted_zero_cost_and_opens_the_breaker(
 
     snap = await health.snapshot(FAL)
     assert snap.state is BreakerState.OPEN and snap.reason is RefusalKind.BALANCE_EXHAUSTED
-    (hold,) = await health.list_open_holds()
+    (hold,) = await health.list_holds()
     assert hold.episode_id == str(spec.episode_id) and hold.scene_id == "sb1"
     assert hold.reason is HoldReason.WAITING_FOR_CREDITS
     assert hold.resumable_stage == "production"
@@ -143,7 +143,7 @@ async def test_unknown_refusal_opens_the_breaker_with_the_unknown_hold_reason(
         await runner.submit(spec, FakeImageGenerator(submit_error=UNKNOWN), REQUEST)
     snap = await health.snapshot(FAL)
     assert snap.state is BreakerState.OPEN and snap.reason is RefusalKind.UNKNOWN
-    (hold,) = await health.list_open_holds()
+    (hold,) = await health.list_holds()
     assert hold.reason is HoldReason.PROVIDER_REFUSAL_UNKNOWN
 
 

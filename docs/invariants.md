@@ -566,6 +566,11 @@ workflow は終わる）。再開（`scripts/provider-credits.py`）は、breake
 / `tests/unit/test_provider_credits_script.py::test_api_resume_client_calls_only_the_existing_resume_endpoint`
 / `tests/unit/test_provider_credits_script.py::test_succeeded_scenes_are_reused_after_resume_not_regenerated`
 / `tests/unit/test_provider_credits_script.py::test_script_has_no_network_or_provider_imports`
+/ `tests/unit/test_provider_credits_script.py::test_a_daily_gate_hold_at_storyboard_ready_resumes_from_production`
+/ `tests/unit/test_production_balance_workflow.py::test_a_seven_day_hold_costs_no_more_activity_and_no_more_history`
+/ `tests/unit/test_production_balance_workflow.py::test_balance_refusal_ends_the_workflow_blocked_without_a_retry_storm`
+/ `tests/unit/test_provider_health_repo.py::test_breaker_and_holds_survive_a_process_restart`
+/ `tests/integration/test_provider_breaker_postgres.py::test_concurrent_episodes_hitting_balance_exhaustion_open_one_breaker_and_double_nothing`
 
 ### INV-74 受理されなかったことが確実な拒否は費用 0 で、曖昧な送信は未照合のまま再送しない（ADR-0057）
 残高ロック・分類不能の拒否（`ProviderRefusalError`）で終わった予約は `spent` +

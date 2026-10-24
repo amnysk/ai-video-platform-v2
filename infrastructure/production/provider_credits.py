@@ -52,6 +52,12 @@ from infrastructure.db.repositories import EpisodeRepository, ProviderReservatio
 
 DEFAULT_ACCOUNT = ProviderAccount(ProviderFamily.FAL)
 
+#: 保留中の Episode の2つの形（ADR-0057）。どちらも既存の再開 API が ``production`` から始める:
+#: - ``blocked``: production の最中に残高拒否 / breaker open で止まった
+#: - ``storyboard_ready``: 日次の入口ゲートが production の前で保留した（``storyboard_ready →
+#:   blocked`` は遷移表に無いので状態は変わらず、``scene_id=NULL`` の保留行だけが残る / ADR-0058）
+RESUMABLE_HELD_STATUSES = (EpisodeStatus.BLOCKED, EpisodeStatus.STORYBOARD_READY)
+
 
 class CreditsRefused(Exception):
     """承認・予算・未照合予約などの条件を満たさず、操作を拒否した。理由は人が読む文。"""
@@ -175,7 +181,7 @@ async def status(
     """読み取りだけ（何も書かない・provider に接続しない）。"""
     moment = now or datetime.now(UTC)
     detail = await health.detail(account)
-    holds = await health.list_open_holds(account=account)
+    holds = await health.list_holds(account=account)
     held: dict[str, dict[str, Any]] = {}
     for hold in holds:
         entry = held.setdefault(
@@ -317,14 +323,17 @@ async def resume_episodes(
                 f"resume concurrency is capped at {RESUME_MAX_CONCURRENCY} "
                 f"(requested {len(targets)}, already running {active})"
             )
-        open_holds = {h.episode_id for h in await health.list_open_holds(account=account)}
+        open_holds = {h.episode_id for h in await health.list_holds(account=account)}
         plans: list[dict[str, Any]] = []
         for episode_id in targets:
             if episode_id not in open_holds:
                 raise CreditsRefused(f"episode {episode_id} has no open credit hold")
             episode = await EpisodeRepository(session).get(uuid.UUID(episode_id))
-            if episode is None or episode.status is not EpisodeStatus.BLOCKED:
-                raise CreditsRefused(f"episode {episode_id} is not blocked")
+            if episode is None or episode.status not in RESUMABLE_HELD_STATUSES:
+                raise CreditsRefused(
+                    f"episode {episode_id} is not blocked (production-time hold) or "
+                    "storyboard_ready (daily-gate hold before production)"
+                )
             pending = await unreconciled_for_episode(session, episode_id)
             if pending:
                 raise CreditsRefused(
@@ -375,9 +384,7 @@ async def resume_episodes(
     for episode_id in targets:
         # 先に解放する: 再開した workflow が直ちに再び止まったとき、保留を新しく記録できるように
         # （未解放の行が残っていると冪等で何も書かれず、保留の無い blocked になる）
-        held = [
-            h for h in await health.list_open_holds(account=account) if h.episode_id == episode_id
-        ]
+        held = [h for h in await health.list_holds(account=account) if h.episode_id == episode_id]
         await health.release_holds(
             episode_id, account=account, approval_fingerprint=approval.fingerprint
         )

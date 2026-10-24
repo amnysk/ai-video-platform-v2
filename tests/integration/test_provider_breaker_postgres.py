@@ -8,6 +8,7 @@ TEST_DATABASE_URL (*_test) が無ければ skip する。fal には到達しな�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 
 import pytest
@@ -107,3 +108,71 @@ async def test_simultaneous_holds_for_the_same_target_make_one_row(pg_session_fa
     async with pg_session_factory() as session:
         count = await session.scalar(select(func.count()).select_from(ProviderCreditHoldRow))
     assert count == 1
+
+
+async def test_concurrent_episodes_hitting_balance_exhaustion_open_one_breaker_and_double_nothing(
+    pg_session_factory, tmp_path
+) -> None:
+    """複数 Episode が同時に同じ provider の残高拒否に当たる: breaker は1つ・予約は重複しない。"""
+    from contracts.states import ArtifactType, ProviderCall, ReservationStatus
+    from domain.errors import ProviderBalanceExhaustedError, ProviderBreakerOpenError
+    from domain.production.ports import ImageRequest
+    from infrastructure.db.models import ProviderReservationRow
+    from infrastructure.production.paid_job import PaidJobRunner, PaidJobSpec
+    from infrastructure.storage.memory_store import InMemoryArtifactStore
+    from infrastructure.workdir import WorkDirectory
+    from tests.support.production import FakeImageGenerator
+
+    runner = PaidJobRunner(
+        session_factory=pg_session_factory,
+        store=InMemoryArtifactStore(),
+        workdir=WorkDirectory(tmp_path / "work", forbidden=()),
+    )
+    request = ImageRequest(prompt="p", width=1080, height=1920, aspect="9:16")
+    refusal = ProviderBalanceExhaustedError("HTTP 403 Exhausted balance", http_status=403)
+    episodes = [await _episode(pg_session_factory) for _ in range(6)]
+
+    def spec(ep: str) -> PaidJobSpec:
+        return PaidJobSpec(
+            episode_id=ep,
+            scene_id="sb1",
+            provider=ProviderCall.FAL_IMAGE,
+            artifact_type=ArtifactType.SCENE_IMAGE,
+            # 冪等キーは (provider, input_hash, round)。Episode ごとに入力が違う前提で一意にする
+            input_hash=ep.replace("-", "") * 2,
+            round=1,
+        )
+
+    gens = [FakeImageGenerator(submit_error=refusal) for _ in episodes]
+    results = await asyncio.gather(
+        *[runner.submit(spec(ep), g, request) for ep, g in zip(episodes, gens, strict=True)],
+        return_exceptions=True,
+    )
+    assert all(
+        isinstance(r, ProviderBalanceExhaustedError | ProviderBreakerOpenError) for r in results
+    ), results
+
+    async with pg_session_factory() as session:
+        breakers = (await session.scalars(select(ProviderBreakerRow))).all()
+        reservations = (await session.scalars(select(ProviderReservationRow))).all()
+        holds = (await session.scalars(select(ProviderCreditHoldRow))).all()
+    assert len(breakers) == 1 and breakers[0].state == BreakerState.OPEN.value
+    # 予約は (episode, scene) ごとに高々1つ、すべて「受理されなかった」で確定（未照合を残さない）
+    assert len({(r.episode_id, r.scene_id) for r in reservations}) == len(reservations)
+    assert all(
+        r.status == ReservationStatus.SPENT.value and r.reconciled_by == "not_accepted"
+        for r in reservations
+    )
+    # 実際に provider へ送った回数 = 予約の数（ゲートで止まった Episode は送っていない）
+    assert sum(g.submit_calls for g in gens) == len(reservations)
+    assert {h.episode_id for h in holds} == {uuid.UUID(e) for e in episodes}
+
+    # 開いた後の新しい submit は予約を作らない
+    late = FakeImageGenerator()
+    late_ep = await _episode(pg_session_factory)
+    with contextlib.suppress(ProviderBreakerOpenError):
+        await runner.submit(spec(late_ep), late, request)
+    assert late.submit_calls == 0
+    async with pg_session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(ProviderReservationRow))
+    assert count == len(reservations)

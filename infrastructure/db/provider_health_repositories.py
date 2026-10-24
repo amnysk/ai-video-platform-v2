@@ -72,6 +72,18 @@ class CreditHold:
     released_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class OpenHoldRecord:
+    """未解放の保留 1 件（Episode 単位）。``contracts.daily_gate.OpenHold`` と同じ5フィールド。"""
+
+    episode_id: str
+    held_since: datetime
+    #: ``HoldReason`` の値
+    reason: str
+    account_key: str
+    resumable_stage: str
+
+
 def _to_hold(row: ProviderCreditHoldRow) -> CreditHold:
     return CreditHold(
         id=str(row.id),
@@ -394,7 +406,7 @@ class PostgresProviderHealth:
             )
             return int(count or 0)
 
-    async def list_open_holds(self, *, account: ProviderAccount | None = None) -> list[CreditHold]:
+    async def list_holds(self, *, account: ProviderAccount | None = None) -> list[CreditHold]:
         async with self._session_factory() as session:
             stmt = select(ProviderCreditHoldRow).where(ProviderCreditHoldRow.released_at.is_(None))
             if account is not None:
@@ -403,6 +415,33 @@ class PostgresProviderHealth:
                 stmt.order_by(ProviderCreditHoldRow.held_at, ProviderCreditHoldRow.id)
             )
             return [_to_hold(r) for r in rows]
+
+    async def list_open_holds(self) -> list[OpenHoldRecord]:
+        """未解放の保留を Episode 単位に畳んで返す（1 回の SELECT）。
+
+        ``contracts.daily_gate.OpenHoldReader.list_open_holds`` と同じ署名（ADR-0058 の watchdog 用
+        port）。返す型は同じ5フィールドの ``OpenHoldRecord``（その契約は統合後に parent が結線する。
+        この branch には無いので、型を import せず構造だけ合わせる）。
+        """
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(ProviderCreditHoldRow)
+                .where(ProviderCreditHoldRow.released_at.is_(None))
+                .order_by(ProviderCreditHoldRow.held_at, ProviderCreditHoldRow.id)
+            )
+            first: dict[str, ProviderCreditHoldRow] = {}
+            for row in rows:
+                first.setdefault(str(row.episode_id), row)  # 最初に保留した行がその Episode の代表
+        return [
+            OpenHoldRecord(
+                episode_id=episode_id,
+                held_since=row.held_at,
+                reason=row.reason,
+                account_key=row.account_key,
+                resumable_stage=row.resumable_stage,
+            )
+            for episode_id, row in first.items()
+        ]
 
     async def held_episode_ids_oldest_first(
         self, *, account: ProviderAccount, limit: int
@@ -422,4 +461,19 @@ class PostgresProviderHealth:
             return [str(r[0]) for r in rows]
 
 
-__all__ = ["BreakerDetail", "CreditHold", "PostgresProviderHealth"]
+def build_provider_health_ports(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> PostgresProviderHealth:
+    """結線点。返す1つのオブジェクトが ``ProviderHealthReader`` / ``CreditHoldWriter`` /
+    ``OpenHoldReader`` のすべてを実装する（``GatePorts(health=h, holds=h, open_holds=h)``）。
+    """
+    return PostgresProviderHealth(session_factory)
+
+
+__all__ = [
+    "BreakerDetail",
+    "CreditHold",
+    "OpenHoldRecord",
+    "PostgresProviderHealth",
+    "build_provider_health_ports",
+]

@@ -113,3 +113,28 @@ fake / `httpx.MockTransport` だけを使い、fal・YouTube には一切到達�
 | `test_succeeded_scenes_are_reused_after_resume_not_regenerated` | 再開後の production は、成功済みシーンを再利用ゲートで再利用する（provider に何も送らない） |
 | `test_api_resume_client_calls_only_the_existing_resume_endpoint` | 再開クライアントは `POST /episodes/{id}/resume` だけを呼び、202 以外は拒否として扱う |
 | `test_script_has_no_network_or_provider_imports` | スクリプト自体は fal に接続しない（残高の確認は所有者の attestation） |
+
+## Temporal 側（`tests/unit/test_production_balance_workflow.py`、time-skipping サーバ + 本物の `raise_activity_error`）
+
+Workflow コードは変えていない。残高拒否の例外は `NeedsInputError` なので、既存の「non_retryable → 型名で needs_input →
+`record_failure` で blocked → workflow が終わる」経路に乗る。それを固定する。
+
+| テスト | 守るもの / 落ちたら何が起きているか |
+|---|---|
+| `test_balance_refusal_ends_the_workflow_blocked_without_a_retry_storm` | 1 submit = 1 attempt（Activity の retry も workflow の再 submit も無い）。結果は `blocked` + `needs_input`、失敗は1回だけ記録 |
+| `test_an_open_breaker_ends_the_workflow_the_same_way` | breaker open（`ProviderBreakerOpenError`）も同じ終わり方 |
+| `test_a_seven_day_hold_costs_no_more_activity_and_no_more_history` | **7日保留**: 終了した workflow は待機せず、7日進めても履歴は増えず（< 80 イベント）、再 submit も無い（待ち続ける workflow が履歴を伸ばす設計を排除） |
+
+2シーン（成功済み + 拒否）の workflow 試験は、兄弟 Activity の cancel を mock が受けられず試験サーバが終わらない
+（`test_production_scene_recovery_workflow.py` の既知の制約）ので置いていない。成功済みシーンを再送しない性質は
+再利用ゲートの試験（`test_succeeded_scenes_are_reused_after_resume_not_regenerated`）で見る。
+
+## 再起動・並行（追加分）
+
+| テスト | 守るもの |
+|---|---|
+| `test_breaker_and_holds_survive_a_process_restart`（unit, ファイル SQLite） | 接続を捨てて作り直しても、7日前に開いた breaker は open のまま・保留は残る（breaker が worker のメモリではなく DB にある） |
+| `test_concurrent_episodes_hitting_balance_exhaustion_open_one_breaker_and_double_nothing`（integration, 実 PostgreSQL） | 6 Episode が同時に残高拒否に当たっても breaker は1行、予約は (episode, scene) ごとに高々1つで全て `not_accepted`、provider へ送った回数 = 予約数、開いた後の submit は予約を作らない。全 Episode に保留が残る |
+| `test_open_hold_reader_folds_holds_per_episode_oldest_first` | ADR-0058 の watchdog 用 port: Episode 単位・最初の保留が代表・解放した Episode は消える |
+| `test_open_hold_record_matches_the_daily_gate_contract_once_merged` | `contracts/daily_gate.py` がある branch（統合後）でだけ走り、返す形が `OpenHold` と一致することを確かめる |
+| `test_a_daily_gate_hold_at_storyboard_ready_resumes_from_production` | 日次ゲートの保留（`storyboard_ready`・`scene_id=NULL`）も `production` から再開できる |

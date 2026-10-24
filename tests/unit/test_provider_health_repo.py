@@ -153,7 +153,7 @@ async def test_hold_is_idempotent_and_records_snapshot(health, session_factory) 
             resumable_stage="production",
             generation_profile_id="profile-v1",
         )
-    holds = await health.list_open_holds()
+    holds = await health.list_holds()
     assert len(holds) == 1
     hold = holds[0]
     assert hold.episode_id == ep and hold.scene_id == "sb2"
@@ -175,7 +175,7 @@ async def test_holds_for_different_scenes_share_one_held_episode(health, session
             resumable_stage="production",
             generation_profile_id=None,
         )
-    assert len(await health.list_open_holds()) == 3
+    assert len(await health.list_holds()) == 3
     assert await health.open_hold_count() == 1  # Episode 単位で数える
 
 
@@ -212,3 +212,97 @@ async def test_held_episodes_come_oldest_first(health, session_factory) -> None:
         await asyncio.sleep(0.01)
     assert await health.held_episode_ids_oldest_first(account=FAL, limit=1) == [second]
     assert await health.held_episode_ids_oldest_first(account=FAL, limit=5) == [second, first]
+
+
+async def test_open_hold_reader_folds_holds_per_episode_oldest_first(
+    health, session_factory
+) -> None:
+    """watchdog 用の port（``OpenHoldReader.list_open_holds``）: Episode 単位・最初の保留が代表。"""
+    first, second = await _episode(session_factory), await _episode(session_factory)
+    for ep, scene, reason in (
+        (first, "sb1", HoldReason.WAITING_FOR_CREDITS),
+        (second, None, HoldReason.PROVIDER_REFUSAL_UNKNOWN),
+        (first, "sb2", HoldReason.PROVIDER_REFUSAL_UNKNOWN),
+    ):
+        await health.hold_episode(
+            episode_id=ep,
+            scene_id=scene,
+            account=FAL,
+            reason=reason,
+            resumable_stage="production",
+            generation_profile_id=None,
+        )
+        await asyncio.sleep(0.01)
+    holds = await health.list_open_holds()
+    assert [h.episode_id for h in holds] == [first, second]
+    assert holds[0].reason == "waiting_for_credits"  # 最初の行が代表
+    assert holds[1].reason == "provider_refusal_unknown"
+    assert all(h.account_key == FAL.key and h.resumable_stage == "production" for h in holds)
+    assert holds[0].held_since <= holds[1].held_since
+    await health.release_holds(first, account=FAL, approval_fingerprint="d" * 16)
+    assert [h.episode_id for h in await health.list_open_holds()] == [second]
+
+
+async def test_breaker_and_holds_survive_a_process_restart(tmp_path) -> None:
+    """worker / Temporal の再起動を模す: DB 接続を捨てて作り直しても breaker と保留は残る。"""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from infrastructure.db.models import Base
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'restart.db'}"
+    engine = create_async_engine(url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    ep = await _episode(factory)
+    health = PostgresProviderHealth(factory)
+    await _open(health, ep, now=datetime.now(UTC) - timedelta(days=7))
+    await health.hold_episode(
+        episode_id=ep,
+        scene_id="sb1",
+        account=FAL,
+        reason=HoldReason.WAITING_FOR_CREDITS,
+        resumable_stage="production",
+        generation_profile_id="p",
+    )
+    await engine.dispose()  # プロセスの終了
+
+    engine2 = create_async_engine(url)
+    try:
+        health2 = PostgresProviderHealth(async_sessionmaker(engine2, expire_on_commit=False))
+        snap = await health2.snapshot(FAL)
+        assert snap.state is BreakerState.OPEN  # 7日経っても・再起動しても閉じない
+        assert snap.reason is RefusalKind.BALANCE_EXHAUSTED
+        assert await health2.open_hold_count() == 1
+    finally:
+        await engine2.dispose()
+
+
+def test_one_factory_object_implements_every_gate_port(session_factory) -> None:
+    from infrastructure.db.provider_health_repositories import build_provider_health_ports
+
+    ports = build_provider_health_ports(session_factory)
+    for name in ("snapshot", "open_hold_count", "hold_episode", "list_open_holds"):
+        assert callable(getattr(ports, name))
+
+
+async def test_open_hold_record_matches_the_daily_gate_contract_once_merged(
+    health, session_factory
+) -> None:
+    """統合後（``contracts/daily_gate.py`` がある branch）だけ走る: ``OpenHold`` と同じ形。"""
+    import dataclasses
+
+    daily_gate = pytest.importorskip("contracts.daily_gate")
+    ep = await _episode(session_factory)
+    await health.hold_episode(
+        episode_id=ep,
+        scene_id=None,
+        account=FAL,
+        reason=HoldReason.WAITING_FOR_CREDITS,
+        resumable_stage="production",
+        generation_profile_id=None,
+    )
+    (record,) = await health.list_open_holds()
+    expected = {f.name for f in dataclasses.fields(daily_gate.OpenHold)}
+    assert {f.name for f in dataclasses.fields(record)} == expected
+    daily_gate.OpenHold(**dataclasses.asdict(record))

@@ -111,6 +111,14 @@ CHECK 制約が無い（`provider_reservations` の CHECK は `provider` / `stat
 Activity 内で書く（image / video の submit が共通で通る）。したがって `workflow.patched()` が要る分岐の変更は
 無く、記録済みの履歴の replay に影響しない（replay テストで確認）。
 
+保留の Episode は**2つの形**を取る。再開（§5）は両方を受け付け、どちらも既存の再開 API が
+`production` から始める（`build_resume_plan` の目標工程は `production`）:
+
+| 形 | 作る側 | Episode の状態 | 保留の行 |
+|---|---|---|---|
+| production 中の保留 | 本 ADR（`PaidJobRunner`） | `blocked`（`in_progress → blocked`、`NEEDS_INPUT_FAILURE`） | シーンごと（`scene_id` あり） |
+| production 前の保留 | 日次の入口ゲート（ADR-0058） | `storyboard_ready` のまま（`storyboard_ready → blocked` は遷移表に無く、足さない） | Episode 単位（`scene_id=NULL`、`resumable_stage="production"`） |
+
 ### 5. 再開（`scripts/provider-credits.py`）
 
 - `status`: breaker・未解放の保留・未照合予約・当月の支出見積を読み取り専用で表示。
@@ -124,6 +132,15 @@ Activity 内で書く（image / video の submit が共通で通る）。した�
   （`POST /episodes/{id}/resume` = `build_resume_plan` → `EpisodePipelineWorkflow`）を呼ぶ。新しい workflow は
   作らない。成功済みシーンは再利用ゲート（INV-17 / ADR-0033）が provider へ再送せず再利用する。
 - 既定は dry-run。`--apply` でだけ書く。この CLI は provider へ接続しない。
+
+### 6. 結線（日次の入口ゲート・watchdog との境界）
+
+`contracts/provider_health.py` の `ProviderHealthReader` / `CreditHoldWriter` と、ADR-0058 の
+`OpenHoldReader`（`list_open_holds()`）を **1つのオブジェクト**が実装する:
+`infrastructure.db.provider_health_repositories.PostgresProviderHealth`。結線点は
+`build_provider_health_ports(session_factory)`（`GatePorts(health=h, holds=h, open_holds=h)`）。
+`list_open_holds()` は未解放の保留を Episode 単位に畳み（最初に保留した行が代表）、`OpenHoldRecord`
+（`OpenHold` と同じ5フィールド）を返す。保留の表の詳しい読み出し（`list_holds`）は別名。
 
 ## Alternatives
 

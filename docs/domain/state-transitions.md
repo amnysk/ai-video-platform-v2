@@ -62,6 +62,12 @@ Episode状態機械の**唯一の権威**。コード側は `domain/episode/tran
 `completed` は骨組みworkflow専用の終端であり、本番パイプラインの正常系は
 `ready_for_review` を通る（ADR-0006）。
 
+**provider の残高不足（ADR-0057）は新しい状態ではない。** production 中は既存の
+`in_progress → blocked`（`needs_input`）と `blocked → in_progress`（人の再開）だけを使い、理由は
+`provider_credit_holds` に持つ。日次の入口ゲート（ADR-0058）が production の前で止めた Episode は
+`storyboard_ready` のまま保留行だけを持つ（`storyboard_ready → blocked` は表に無く、足さない）。
+どちらの出口も `scripts/provider-credits.py resume`（既存の `POST /episodes/{id}/resume`）の人の操作。
+
 **出口の無い状態を追加してはならない。** 追加時はこの節に出口を書く。
 
 ## 遷移の実装規則
