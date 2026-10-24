@@ -68,6 +68,10 @@ x-runner: &runner
     # アプリの接続先（隔離スタック内の avp）。テストはこれと別の *_test にだけ破壊的操作をする（ADR-0021）
     DATABASE_URL: postgresql+psycopg://avp:${APPTEST_PG_PASSWORD}@postgres:5432/avp
     TEST_DATABASE_URL: postgresql+psycopg://avp:${APPTEST_PG_PASSWORD}@postgres:5432/avp_test
+    # host `postgres` は隔離スタック内の別 PostgreSQL。compose のサービス名は既定ではローカル扱いに
+    # しない（INV-69）ので、この隔離スタックだけ明示で許す。印はこの環境が自分の avp_test に付ける（INV-83）
+    AVP_ALLOW_REMOTE_TEST_DB: "1"
+    AVP_MARK_TEST_DB: "1"
     TEMPORAL_ADDRESS: temporal:7233
     TEMPORAL_NAMESPACE: default
     TEST_TEMPORAL_NAMESPACE: avp-test
