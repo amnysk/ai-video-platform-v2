@@ -54,6 +54,7 @@ from domain.errors import (
 )
 from domain.job.entities import Job
 from domain.job.transitions import JobEvent, transition_job
+from domain.provider.cost import NOT_ACCEPTED_RECONCILER
 from domain.provider.reconciliation import (
     ManualResolution,
     ProviderObservation,
@@ -1240,7 +1241,7 @@ class ProviderReservationRepository:
         """
         event = (
             ReservationEvent.EVIDENCE_RECONCILED
-            if reconciled_by in {"evidence", "conservative"}
+            if reconciled_by in {"evidence", "conservative", NOT_ACCEPTED_RECONCILER}
             else ReservationEvent.OPERATOR_CONFIRMED_SPENT
         )
         row = await self._apply(reservation_id, event)

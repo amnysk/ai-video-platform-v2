@@ -59,3 +59,30 @@ fake / `httpx.MockTransport` だけを使い、fal・YouTube には一切到達�
 |---|---|
 | `test_release_preflight_scanner_finds_nothing_in_0018` | release preflight の migration 走査（`scan_migration`）が0件。制約の drop・型変更・NOT NULL 追加が混ざると release gate が止まる |
 | `test_0018_upgrade_only_creates_tables_and_indexes` / `test_0018_creates_only_its_own_tables` | expand-only の固定。`provider_reservations` の CHECK を広げる、のような既存表への変更を紛れ込ませない |
+
+## PaidJobRunner の残高拒否・breaker・保留（`tests/unit/test_paid_job_balance.py`、unit: SQLite + fake）
+
+本物の `PaidJobRunner`・台帳・breaker を通し、provider は fake（`submit_error` / `prepare_error` を注入）。
+
+| テスト | 守るもの / 落ちたら何が起きているか |
+|---|---|
+| `test_balance_refusal_is_not_accepted_zero_cost_and_opens_the_breaker` | **事故の核**。残高拒否が `spent`+`not_accepted`・費用 0・`input_rejected_by_provider=False` で確定し（G2/G3）、認証 incident に数えられず（G1）、breaker が開き、保留に episode/scene/理由/生成 profile/予約 id の写しが残る |
+| `test_unknown_refusal_opens_the_breaker_with_the_unknown_hold_reason` | 分類不能の拒否も安全側で止まり、保留の理由は「確認待ち」（残高不足と断定しない） |
+| `test_after_the_top_up_the_same_input_is_submitted_again` | 入金（breaker を承認で閉じる）後、同じ input_hash が新ラウンドで送れる。以前は `ProviderRejectedRetryBlockedError` で恒久ブロック |
+| `test_open_breaker_stops_before_any_reservation_for_every_fal_provider` | open の間は `fal_image` / `fal_video` とも予約・prepare・submit が起きない（台帳に何も残らない）。他の Episode も保留として記録される |
+| `test_open_breaker_does_not_block_awaiting_an_already_accepted_job` | 受理済みジョブの await/再開（再 submit ではない）は breaker で止めない（課金済みの結果を取りこぼさない） |
+| `test_prepare_refusal_opens_the_breaker_and_leaves_no_reservation` | 非課金の準備（upload）の拒否でも同じ（予約の前なので台帳は空） |
+| `test_accepted_submit_in_half_open_closes_the_breaker` | 承認済みの再開で受理された submit だけが half_open を閉じる |
+| `test_ambiguous_submit_stays_unreconciled_and_is_never_resent` | 送信後の切断は曖昧: 未照合・費用 unknown・breaker は開かず、2回目の submit は `UnreconciledReservationError` で止まり provider へ再送しない |
+| `test_non_fal_providers_are_not_gated` | fal 以外（YouTube など）は breaker の影響を受けない |
+
+### 費用区分（`tests/unit/test_provider_cost_state.py`、純粋関数）
+
+| テスト | 守るもの |
+|---|---|
+| `test_not_accepted_is_not_charged_and_counts_zero` | 受理されなかった拒否は課金として数えない（G3） |
+| `test_the_five_states_are_distinguished` | 見積り済み / 受理 / 課金確認 / 課金前提 / 不明が行から区別できる |
+| `test_ambiguous_and_accepted_count_at_the_estimate_but_estimated_does_not` | 曖昧・受理は見積額を安全側で数える（予算判定が過小にならない）。未 dispatch の予約は数えない |
+
+既存テストの変更: `tests/unit/test_log_provider_calls.py` の本文なし 403 の例外型（`ProviderUnavailableError` →
+`ProviderRefusalUnknownError`。ADR-0057）。ログの `error_category=access_denied` / `http_status_only` は変えていない。

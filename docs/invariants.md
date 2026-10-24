@@ -543,3 +543,20 @@ CHECK を広げない）。
 / `tests/integration/test_provider_breaker_postgres.py::test_simultaneous_opens_leave_one_row_and_exactly_one_winner`
 / `tests/contract/test_provider_health_migration.py::test_release_preflight_scanner_finds_nothing_in_0018`
 / `tests/contract/test_provider_health_migration.py::test_0018_upgrade_only_creates_tables_and_indexes`
+/ `tests/unit/test_paid_job_balance.py::test_open_breaker_stops_before_any_reservation_for_every_fal_provider`
+/ `tests/unit/test_paid_job_balance.py::test_open_breaker_does_not_block_awaiting_an_already_accepted_job`
+/ `tests/unit/test_paid_job_balance.py::test_non_fal_providers_are_not_gated`
+/ `tests/unit/test_paid_job_balance.py::test_accepted_submit_in_half_open_closes_the_breaker`
+
+### INV-74 受理されなかったことが確実な拒否は費用 0 で、曖昧な送信は未照合のまま再送しない（ADR-0057）
+残高ロック・分類不能の拒否（`ProviderRefusalError`）で終わった予約は `spent` +
+`reconciled_by="not_accepted"` で確定し、費用は 0 として数える（`domain/provider/cost.py` の
+`not_charged`）。`input_rejected_by_provider` は立てず、入金後は同じ入力を新ラウンドで送れる
+（ADR-0034 の恒久ブロックにしない）。費用の区分は `estimated` / `provider_accepted` /
+`confirmed_charged` / `not_charged` / `assumed_charged` / `unknown` を台帳の行から導く。送信後の切断・5xx などの
+曖昧な送信は `reserved` + dispatched のまま `unknown`（見積額を安全側に数える）で残り、自動で再送しない（INV-15 / INV-67）。
+**機械検査**: `tests/unit/test_provider_cost_state.py::test_not_accepted_is_not_charged_and_counts_zero`
+/ `tests/unit/test_provider_cost_state.py::test_the_five_states_are_distinguished`
+/ `tests/unit/test_paid_job_balance.py::test_balance_refusal_is_not_accepted_zero_cost_and_opens_the_breaker`
+/ `tests/unit/test_paid_job_balance.py::test_after_the_top_up_the_same_input_is_submitted_again`
+/ `tests/unit/test_paid_job_balance.py::test_ambiguous_submit_stays_unreconciled_and_is_never_resent`
