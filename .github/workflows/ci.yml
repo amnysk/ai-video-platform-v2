@@ -300,6 +300,7 @@ jobs:
           tests/unit/test_log_workflow_replay.py
           tests/unit/test_script_evidence_workflow_opt_in.py
           tests/unit/test_pipeline_workflows.py
+          tests/unit/test_daily_watchdog_replay.py
           tests/architecture/test_research_workflow_determinism.py
 
   safety:
