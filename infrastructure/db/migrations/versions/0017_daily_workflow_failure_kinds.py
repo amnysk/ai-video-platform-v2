@@ -77,8 +77,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # 旧 CHECK は新しい kind を表現できない。先に消さないと downgrade 自体が CHECK 違反で失敗する
-    op.execute(sa.text(f"DELETE FROM operational_anomalies WHERE kind IN ({_in(_ADDED_KINDS)})"))
+    # 旧 CHECK は新しい kind を表現できない。かといって監査行を黙って消さない（0018 と同じ方針）:
+    # 新 kind の行が 1 つでもあれば何も変えずに拒否する。
+    # 消してよいと判断した所有者が、行を退避・削除してから再実行する
+    bind = op.get_bind()
+    remaining = bind.execute(
+        sa.text(f"SELECT count(*) FROM operational_anomalies WHERE kind IN ({_in(_ADDED_KINDS)})")
+    ).scalar_one()
+    if remaining:
+        raise RuntimeError(
+            f"refusing to downgrade 0017: {remaining} operational_anomalies row(s) of kind "
+            f"{', '.join(_ADDED_KINDS)} would be lost (the old CHECK cannot hold them). "
+            "Export or delete them deliberately, then run the downgrade again (ADR-0060)"
+        )
     old: tuple[str, ...] = CHECK_WIDENING["old"]  # type: ignore[assignment]
     with op.batch_alter_table("operational_anomalies") as batch:
         batch.drop_constraint("ck_operational_anomalies_kind", type_="check")

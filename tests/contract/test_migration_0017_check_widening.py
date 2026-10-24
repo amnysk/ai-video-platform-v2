@@ -139,19 +139,39 @@ def test_rows_written_by_old_code_survive_the_upgrade(at_0016: tuple[Engine, Con
     assert n == len(_widening()["old"])
 
 
-def test_downgrade_removes_only_new_kind_rows_and_restores_the_old_constraint(
+def test_downgrade_refuses_while_new_kind_rows_exist_and_changes_nothing(
     at_0016: tuple[Engine, Config],
 ) -> None:
     engine, config = at_0016
     spec = _widening()
     command.upgrade(config, "0017")
     _insert(engine, spec["old"][0], day=1)
-    for i, kind in enumerate(k for k in spec["new"] if k not in spec["old"]):
+    added = [k for k in spec["new"] if k not in spec["old"]]
+    for i, kind in enumerate(added):
         _insert(engine, kind, day=10 + i)
+    with pytest.raises(RuntimeError, match="refusing to downgrade 0017"):
+        command.downgrade(config, "0016")
+    with engine.begin() as conn:
+        kinds = sorted(r[0] for r in conn.execute(text("SELECT kind FROM operational_anomalies")))
+    assert kinds == sorted([spec["old"][0], *added])  # 1 行も消えていない
+    with engine.begin() as conn:
+        version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+    assert version == "0017"  # 版も戻っていない
+    for kind in added:
+        assert _accepts(engine, kind)  # 制約も広いまま
+
+
+def test_downgrade_keeps_old_rows_and_restores_the_old_constraint_when_no_new_rows(
+    at_0016: tuple[Engine, Config],
+) -> None:
+    engine, config = at_0016
+    spec = _widening()
+    command.upgrade(config, "0017")
+    _insert(engine, spec["old"][0], day=1)
     command.downgrade(config, "0016")
     with engine.begin() as conn:
         kinds = [r[0] for r in conn.execute(text("SELECT kind FROM operational_anomalies"))]
-    assert kinds == [spec["old"][0]]
+    assert kinds == [spec["old"][0]]  # 旧行は消さない
     for kind in spec["new"]:
         if kind not in spec["old"]:
             assert not _accepts(engine, kind)

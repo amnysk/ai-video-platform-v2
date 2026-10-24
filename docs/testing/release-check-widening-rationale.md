@@ -34,7 +34,8 @@
 | `test_new_set_is_every_AnomalyKind_the_code_can_write` | コードの enum に値を足したのに CHECK を足し忘れる／宣言が enum とずれる |
 | `test_after_upgrade_old_kinds_still_work_new_kinds_work_unknown_still_rejected` | 拡張で旧コードの書き込みが壊れる（expand-only の核心）／制約が全開になる |
 | `test_rows_written_by_old_code_survive_the_upgrade` | 制約の作り直しで既存行が消える・検証で落ちる |
-| `test_downgrade_removes_only_new_kind_rows_and_restores_the_old_constraint` | downgrade が旧行まで消す／旧制約に戻らない／往復できない |
+| `test_downgrade_refuses_while_new_kind_rows_exist_and_changes_nothing` | downgrade が新 kind の監査行を黙って消す（独立レビュー E の P2-8。旧テストは「新 kind の行を消す」を期待していたが、仕様を ADR-0060 の追記で「拒否」に変えた）／拒否したのに行・版・制約が変わる |
+| `test_downgrade_keeps_old_rows_and_restores_the_old_constraint_when_no_new_rows` | 拒否が過剰で行が無くても戻れない／旧行まで消す／旧制約に戻らない／往復できない |
 | `test_the_release_scanner_accepts_this_migration_as_a_widening_and_nothing_else` | 実ファイルを書き換えて規則から外れ、preflight が再び BLOCKED になるのを CI で検知する |
 
 ## tests/integration/test_migration_against_postgres.py
