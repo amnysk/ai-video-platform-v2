@@ -582,6 +582,11 @@ workflow は終わる）。再開（`scripts/provider-credits.py`）は、breake
 `half-open` / `close` / `resume` は構造化された所有者承認 token（`OWNER-<yyyymmdd>-<id>`。指紋だけ保存）と
 入金確認の根拠（attestation）が必須で、既定は dry-run。再開は既存の `POST /episodes/{id}/resume` だけを呼び、
 新しい workflow を作らない。成功済みシーンは再利用ゲートで再利用する（再送・再生成しない）。
+`POST /episodes/{id}/resume` は、その Episode に**有効な未解放の保留**がある間は 409 で拒否する（保留の解放は上記の
+検査をすべて通す CLI だけ。API 経由で承認・予約照合・予算を迂回して有料呼び出しを再開させない）。保留が「有効」とは
+未解放かつ Episode が `HELD_EPISODE_STATUSES`（`blocked` / `storyboard_ready`）にあること。完了・取消などで
+その状態を離れた Episode の古い行は `open_hold_count` / `list_open_holds` / `held_episode_ids_oldest_first` に
+数えない（日次が HELD_BACKLOG のまま止まらない。行は監査のため消さない。review-E P1-1）。
 **機械検査**: `tests/unit/test_provider_credits_script.py::test_resume_is_refused_for_the_production_unreconciled_reservation_state`
 / `tests/unit/test_provider_credits_script.py::test_resume_is_refused_while_the_breaker_is_open`
 / `tests/unit/test_provider_credits_script.py::test_resume_is_refused_over_budget_or_without_a_cap`
@@ -595,6 +600,8 @@ workflow は終わる）。再開（`scripts/provider-credits.py`）は、breake
 / `tests/unit/test_production_balance_workflow.py::test_a_seven_day_hold_costs_no_more_activity_and_no_more_history`
 / `tests/unit/test_production_balance_workflow.py::test_balance_refusal_ends_the_workflow_blocked_without_a_retry_storm`
 / `tests/unit/test_provider_health_repo.py::test_breaker_and_holds_survive_a_process_restart`
+/ `tests/unit/test_hold_lifecycle.py::test_only_episodes_still_in_a_held_state_count`
+/ `tests/unit/test_hold_lifecycle.py::test_api_resume_refuses_while_a_credit_hold_is_open`
 / `tests/integration/test_provider_breaker_postgres.py::test_concurrent_episodes_hitting_balance_exhaustion_open_one_breaker_and_double_nothing`
 
 ### INV-74 受理されなかったことが確実な拒否は費用 0 で、曖昧な送信は未照合のまま再送しない（ADR-0057）

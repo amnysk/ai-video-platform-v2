@@ -18,3 +18,14 @@
   結線点 `build_gate_ports` を直接検査する。
 - **未解放保留の型は契約の `OpenHold` 1つ**: 並行開発中に実装側が同じ5フィールドの複製型を持っていた。
   片方だけ項目が増えると watchdog の分類が黙って壊れるので、複製が無いことを固定する（AGENTS.md §8）。
+
+## 保留の寿命（`tests/unit/test_hold_lifecycle.py`, review-E P1-1）
+
+- **保留状態を離れた Episode の行は数えない**: 解放は CLI だけなので、API 再開・完了・取消の後も行が残り、
+  2 件で日次が HELD_BACKLOG のまま永久に止まり、watchdog の stall 検査も免除され続ける。読み取り側
+  （`open_hold_count` / `list_open_holds` / `held_episode_ids_oldest_first`）が Episode の状態を見る。
+  書き込み側の解放を足さないのは、解放は承認・予約照合・予算の検査と一体（INV-73）で、遷移フックから
+  承認なしに行うと検査の迂回になるため。blocked / storyboard_ready は今も数える（反対側の検査）。
+- **API 再開は開いた保留があれば 409**: 解放を CLI に一本化する。API が保留を無視して再開すると
+  breaker・予算・未照合予約の検査を飛ばして有料呼び出しが再開しうる。CLI が解放後に API を呼ぶ経路
+  （解放済みなら 202）と、保留状態を離れた古い行は拒否に使わないことも同じファイルで固定する。

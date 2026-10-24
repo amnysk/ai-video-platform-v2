@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from contracts.pipeline import PipelineStage
 from contracts.provider_health import (
+    HELD_EPISODE_STATUSES,
     PROVIDER_FAMILY,
     RESUME_MAX_CONCURRENCY,
     BreakerState,
@@ -56,7 +57,7 @@ DEFAULT_ACCOUNT = ProviderAccount(ProviderFamily.FAL)
 #: - ``blocked``: production の最中に残高拒否 / breaker open で止まった
 #: - ``storyboard_ready``: 日次の入口ゲートが production の前で保留した（``storyboard_ready →
 #:   blocked`` は遷移表に無いので状態は変わらず、``scene_id=NULL`` の保留行だけが残る / ADR-0058）
-RESUMABLE_HELD_STATUSES = (EpisodeStatus.BLOCKED, EpisodeStatus.STORYBOARD_READY)
+RESUMABLE_HELD_STATUSES = HELD_EPISODE_STATUSES
 
 
 class CreditsRefused(Exception):

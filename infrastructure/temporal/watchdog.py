@@ -266,23 +266,25 @@ async def _check_credit_holds(
     now: datetime,
     local_today: date,
     escalation_days: int,
-) -> tuple[list[AnomalyRecord], frozenset[uuid.UUID], frozenset[uuid.UUID], int, float]:
+) -> tuple[list[AnomalyRecord], frozenset[uuid.UUID], frozenset[uuid.UUID], int, float, bool]:
     """保留（ADR-0058）。失敗でも未納品でもない第三の状態として扱う。
 
     返り値: (通報した記録, 停滞・完成期限の検査から除く Episode, 通報中で自動 resolve させない
-    Episode, 保留数, 最古の保留日数)。猶予内の保留は異常にしない
+    Episode, 保留数, 最古の保留日数, 保留の読み取りに失敗したか)。猶予内の保留は異常にしない
     （見える形は毎時の ``HELD_EPISODES`` ログと ``WatchdogResult.held_*``）。猶予を超えたら
     **既存の** ``EPISODE_STAGE_STALLED`` を ``detail.hold`` 付きで記録する（CHECK を広げない）。
     解放されれば既存の自動 resolve で閉じる。
     保留を読めなければ何も除かない（誤報側に倒れる。確認できなかったことを健全にしない）。
+    失敗は ERROR ログ ``HOLD_READER_FAILED`` と ``WatchdogResult.hold_reader_failed`` で見せる
+    （異常の種別は増やさない: CHECK を広げない）。
     """
     if hold_reader is None:
-        return [], frozenset(), frozenset(), 0, 0.0
+        return [], frozenset(), frozenset(), 0, 0.0, False
     try:
         holds: list[OpenHold] = await hold_reader.list_open_holds()
     except Exception as exc:
-        logger.warning("watchdog: open holds unreadable: %s", type(exc).__name__)
-        return [], frozenset(), frozenset(), 0, 0.0
+        logger.error("HOLD_READER_FAILED watchdog: open holds unreadable: %s", type(exc).__name__)
+        return [], frozenset(), frozenset(), 0, 0.0, True
     by_episode: dict[str, OpenHold] = {}
     for hold in holds:  # Episode 単位に畳む（最も古い保留）
         known = by_episode.get(hold.episode_id)
@@ -328,7 +330,7 @@ async def _check_credit_holds(
             cls.oldest_days,
         )
     exempt = _as_uuid_set(cls.exempt_ids | cls.escalated_ids)
-    return records, exempt, _as_uuid_set(cls.escalated_ids), cls.count, cls.oldest_days
+    return records, exempt, _as_uuid_set(cls.escalated_ids), cls.count, cls.oldest_days, False
 
 
 async def _check_completion_deadline(
@@ -757,6 +759,7 @@ async def run_daily_watchdog(
             escalated_hold_ids,
             held_count,
             oldest_hold_days,
+            hold_reader_failed,
         ) = await _check_credit_holds(
             hold_reader,
             anomalies,
@@ -847,6 +850,7 @@ async def run_daily_watchdog(
         held_episodes=held_count,
         held_escalated=len(escalated_hold_ids),
         oldest_hold_days=round(oldest_hold_days, 2),
+        hold_reader_failed=hold_reader_failed,
     )
 
 

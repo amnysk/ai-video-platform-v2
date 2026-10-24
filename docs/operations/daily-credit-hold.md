@@ -25,6 +25,10 @@ pause しない）。
   `detail.hold`（理由・アカウント・開始時刻・再開できる工程）つきで記録され、通常の通知経路に出る。
   `psql` で見るなら `operational_anomalies` の `kind='EPISODE_STAGE_STALLED'` かつ `detail ? 'hold'`。
 - 保留が解放されれば次の検査で自動的に閉じる。
+- 保留の表を読めなかったときは ERROR `HOLD_READER_FAILED` を出し、結果の `hold_reader_failed` が true になる
+  （検査は従来の停滞判定に倒れ、保留中の Episode が誤報側に出うる。異常種別は増やさない）。
+- 保留は解放されなくても、Episode が `blocked` / `storyboard_ready` を離れた（完了・取消など）行は数えない。
+  API の `POST /episodes/{id}/resume` は開いた保留がある間 409（解放は `provider-credits.py resume` だけ）。
 
 ## 保留の解放（所有者の作業）
 

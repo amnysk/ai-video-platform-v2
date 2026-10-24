@@ -231,3 +231,5 @@ class WatchdogResult:
     #: そのうち保留が猶予日数を超えて通報したもの
     held_escalated: int = 0
     oldest_hold_days: float = 0.0
+    #: 保留の読み取りに失敗した（従来の停滞検査に倒れた。確認できなかったことを健全にしない）
+    hold_reader_failed: bool = False

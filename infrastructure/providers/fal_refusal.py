@@ -82,16 +82,27 @@ def _texts(body: Any, depth: int = 0) -> list[str]:
 
 def classify_refusal(status: int, body: Any) -> RefusalClassification:
     """401/402/403 の分類。HTTP status だけで残高不足とは決めない。"""
-    haystack = " ".join(_texts(body)).lower()
+    # 空白の連続・改行・タブは 1 個のスペースに畳んでから照合する（書式揺れで UNKNOWN にしない）
+    haystack = _WS_RE.sub(" ", " ".join(_texts(body)).lower())
     for marker in BALANCE_BODY_MARKERS:
-        if marker.text in haystack:
+        if _WS_RE.sub(" ", marker.text) in haystack:
             return RefusalClassification(RefusalKind.BALANCE_EXHAUSTED, marker.text)
     if status == 401:
         return RefusalClassification(RefusalKind.AUTH_INVALID)
     return RefusalClassification(RefusalKind.UNKNOWN)
 
 
-_URL_QUERY_RE = re.compile(r"(https?://[^\s?#\"'<>]+)\?[^\s\"'<>]*")
+_WS_RE = re.compile(r"\s+")
+
+#: query を落とす URL の形: ``scheme://host/path`` / scheme なし ``//host/path`` / 裸の
+#: ``host.tld/path``。署名付き URL は scheme が無くても query に署名を持つ。ドットを含まない
+#: 普通の文（``why?``）は URL とみなさない。
+_URL_QUERY_RE = re.compile(
+    r"((?:[a-z][a-z0-9+.-]*:)?//[^\s?#\"'<>]+"
+    r"|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:/[^\s?#\"'<>]*)?)"
+    r"\?[^\s\"'<>]*",
+    re.IGNORECASE,
+)
 
 
 def summarize_refusal_body(body: Any, *, secrets: Sequence[str] = ()) -> str:

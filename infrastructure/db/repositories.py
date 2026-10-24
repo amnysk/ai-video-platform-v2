@@ -2410,7 +2410,10 @@ class PaidReservationCost:
 
     scene_id: str | None
     provider: ProviderCall
+    #: 支出としての額（受理されなかった拒否は 0。INV-74）。復旧費用の集計に使う
     estimated_cost_usd: Decimal
+    #: 予約時の見積り額そのもの（拒否でも残る）。次の作り直しの投影に使う（review-E P2-7）
+    nominal_cost_usd: Decimal
     input_rejected_by_provider: bool
     reserved_at: datetime
 
@@ -2603,6 +2606,7 @@ class ProviderRejectionRepository:
                     if row.reconciled_by == NOT_ACCEPTED_RECONCILER
                     else row.estimated_cost_usd or Decimal("0")
                 ),
+                nominal_cost_usd=row.estimated_cost_usd or Decimal("0"),
                 input_rejected_by_provider=bool(row.input_rejected_by_provider),
                 reserved_at=row.reserved_at,
             )

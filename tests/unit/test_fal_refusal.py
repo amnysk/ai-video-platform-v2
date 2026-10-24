@@ -122,3 +122,32 @@ async def test_401_diagnostic_body_is_kept_in_the_message() -> None:
         await _client(httpx.Response(401, json={"detail": "bad key"})).submit(ENDPOINT, {})
     assert "bad key" in str(info.value)
     assert info.value.http_status == 401
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "//cdn.fal.media/f?sig=SECRETSIG",
+        "cdn.fal.media/f?sig=SECRETSIG",
+        "www.x.com/a/b.png?sig=SECRETSIG&x=1",
+        "https://cdn.fal.media/f?sig=SECRETSIG",
+        "ftp://h/f?sig=SECRETSIG#frag",
+        "see (//cdn.fal.media/f?sig=SECRETSIG) now",
+    ],
+)
+def test_summary_drops_query_strings_of_every_url_shape(text: str) -> None:
+    summary = summarize_refusal_body({"detail": f"upload to {text} failed"})
+    assert "SECRETSIG" not in summary
+    assert "failed" in summary
+
+
+def test_summary_keeps_a_question_mark_in_plain_prose() -> None:
+    assert "why?" in summarize_refusal_body({"detail": "why? because"})
+
+
+@pytest.mark.parametrize(
+    "detail",
+    ["User is locked. Reason: Exhausted  balance.", "Exhausted\nbalance", "USER\t is   LOCKED"],
+)
+def test_balance_marker_ignores_whitespace_differences(detail: str) -> None:
+    assert classify_refusal(403, {"detail": detail}).kind is RefusalKind.BALANCE_EXHAUSTED

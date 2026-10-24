@@ -460,14 +460,18 @@ def _narration(script: ScriptArtifact, script_scene_id: str) -> str:
 
 
 def _projected_rebuild_cost(costs: list[Any], scene_id: str) -> Decimal:
-    """次の作り直し（このシーンの画像 + 動画）の見積り。直近の同種予約の額を使う。"""
+    """次の作り直し（このシーンの画像 + 動画）の見積り。直近の同種予約の**見積り額**を使う。
+
+    支出（``estimated_cost_usd``）ではなく ``nominal_cost_usd``: 直近が受理されなかった拒否だと
+    支出は 0 だが、残高が戻って再生成すれば見積り額がかかる（review-E P2-7）。
+    """
     latest: dict[ProviderCall, tuple[datetime, Decimal]] = {}
     for cost in costs:
         if cost.scene_id != scene_id:
             continue
         seen = latest.get(cost.provider)
         if seen is None or cost.reserved_at > seen[0]:
-            latest[cost.provider] = (cost.reserved_at, cost.estimated_cost_usd)
+            latest[cost.provider] = (cost.reserved_at, cost.nominal_cost_usd)
     return sum((value for _, value in latest.values()), Decimal("0"))
 
 
