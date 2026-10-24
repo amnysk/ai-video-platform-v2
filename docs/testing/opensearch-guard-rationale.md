@@ -38,3 +38,13 @@ ADR-0059 / INV-79・INV-80。対象は `scripts/opensearch-guard.py` と `script
 | `test_same_alert_is_not_repeated_until_the_interval_and_resolves_once` | 30 秒毎に動かしても journal を埋めない。消えたら resolved を 1 回 |
 | `test_a_level_change_is_emitted_immediately_and_sources_are_independent` | warn から crit への悪化は間隔を待たず出る。source ごとに独立 |
 | `test_heartbeat_roundtrip_and_missing_or_corrupt_is_none` / `test_unwritable_state_dir_never_raises` | 無い・壊れた heartbeat は「生きている証拠が無い」。書けなくても監視は落ちず journal には出る |
+
+## `tests/contract/test_opensearch_guard_deploy.py`（deploy の節）
+
+| テスト | 守るもの |
+|---|---|
+| `test_check_pipeline_no_longer_stops_any_container` / `test_installed_logging_check_unit_does_not_enable_the_retired_flag` | 1 サンプルで止める旧挙動（`--enforce-memory`）を `check-pipeline.sh` に戻さない。停止は guard だけが持つ（定義は 1 箇所） |
+| `test_guard_unit_is_stop_only_by_default_auto_restart_is_a_separate_decision` | unit は `--auto-restart` を付けない。自動起動の導入は所有者の別の判断（INV-79） |
+| `test_guard_timer_samples_every_30_seconds` | N=5 サンプル・180 秒の前提（30 秒間隔）と timer が一致 |
+| `test_watch_is_a_separate_unit_and_timer_from_the_monitors_it_watches` | dead-man's switch は監視される側と別の unit・timer（INV-80） |
+| `test_units_do_not_hide_in_a_checkout_that_can_be_deleted` | ExecStart が worktree を指さない（旧 timer は worktree 内の script を指し、消すと止まる） |
