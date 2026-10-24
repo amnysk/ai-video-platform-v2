@@ -70,4 +70,5 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0051](./0051-restorable-backup-and-restore-drill.md) | 復旧できるバックアップ（pg_dump + S3 API 複写）と隔離先への restore drill | Proposed |
 | [0053](./0053-unreconciled-reservation-reconciliation.md) | 未照合予約の照合記録（5値判定）・手動確定の監査・新 key での再送ガード | Proposed |
 | [0052](./0052-temporal-container-init-and-leak-free-healthcheck.md) | Temporal コンテナを init 付きにし、healthcheck がプロセスを漏らさないようにする | Proposed |
+| [0059](./0059-opensearch-memory-guard-and-single-container-recovery.md) | OpenSearch のメモリ保護（hysteresis）・単一コンテナの自動復旧（opt-in）・OpenSearch に依存しない警報と dead-man's switch（ADR-0040 §7 を更新） | Proposed |
 | [0054](./0054-daily-workflow-failure-detection.md) | 日次 Workflow が失敗し Episode が作られない日を watchdog が検知（連続日数・unobservable・秘匿要約） | Proposed |
