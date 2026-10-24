@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import update
 
 from contracts.provider_health import (
     DEFAULT_ACCOUNT_LABEL,
@@ -15,7 +17,8 @@ from contracts.provider_health import (
     ProviderFamily,
     RefusalKind,
 )
-from contracts.states import ProviderCall
+from contracts.states import EpisodeStatus, ProviderCall
+from infrastructure.db.models import EpisodeRow
 from infrastructure.db.provider_health_repositories import PostgresProviderHealth
 from infrastructure.db.repositories import EpisodeRepository, ProviderReservationRepository
 
@@ -31,6 +34,13 @@ def health(session_factory) -> PostgresProviderHealth:
 async def _episode(session_factory) -> str:
     async with session_factory() as session:
         episode = await EpisodeRepository(session).create(topic="t")
+        # 保留は Episode が blocked（production 中の保留）の間だけ有効（review-E P1-1）。
+        # 本番では残高拒否で workflow が終わると blocked になるので、同じ状態で作る
+        await session.execute(
+            update(EpisodeRow)
+            .where(EpisodeRow.id == uuid.UUID(str(episode.id)))
+            .values(status=EpisodeStatus.BLOCKED.value)
+        )
         await session.commit()
     return str(episode.id)
 
