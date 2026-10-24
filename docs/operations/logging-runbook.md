@@ -54,7 +54,9 @@ $C --profile dashboards stop
 | < 2 GiB | Dashboards を止める |
 | < 1.5 GiB | OpenSearch を止める（Fluent Bit は buffer に溜め、上限で破棄） |
 
-`check-pipeline.sh --enforce-memory`（systemd timer）は `avp2-logging` のコンテナ**だけ**を止める。
+**ADR-0059 で変更**: 上の閾値は「連続 5 サンプルかつ 180 秒以上」で効き、止めるのは `scripts/opensearch-guard.py`
+（`avp2-logging` のコンテナ**だけ**）。`check-pipeline.sh --enforce-memory` は廃止。止まった OpenSearch の復旧は
+[opensearch-recovery.md](./opensearch-recovery.md)。
 
 ## 3. Dashboards の見方
 
