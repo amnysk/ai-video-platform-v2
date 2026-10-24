@@ -18,7 +18,7 @@ from sqlalchemy.engine import make_url
 
 from infrastructure.db.models import Base
 from infrastructure.db.urls import sync_database_url
-from tests.support.db import assert_destructive_allowed, require_test_database_url
+from tests.support.db import TEST_DB_MARKER, assert_destructive_allowed, require_test_database_url
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TEST_DATABASE_URL = require_test_database_url()
@@ -65,6 +65,8 @@ def probe_url():
     with admin.connect() as conn:
         conn.execute(text(f'DROP DATABASE IF EXISTS "{PROBE_DATABASE}"'))
         conn.execute(text(f'CREATE DATABASE "{PROBE_DATABASE}"'))
+        # 破壊的操作ガードの印（INV-83）。この DB を作ったのはこのテストなので、印を付けてよい
+        conn.execute(text(f"COMMENT ON DATABASE \"{PROBE_DATABASE}\" IS '{TEST_DB_MARKER}'"))
 
     yield url
 
@@ -606,3 +608,65 @@ def test_episode_topic_length_matches_contract_on_postgres(probe_url) -> None:
         conn.execute(text("DELETE FROM episodes"))
     engine.dispose()
     command.upgrade(config, "head")
+
+
+def test_0017_widens_the_kind_check_and_keeps_old_code_working_on_postgres(probe_url) -> None:
+    """0017（ADR-0060）: 旧集合の CHECK から、旧値が全て通ったまま新しい値が通る。
+
+    0012 は enum から CHECK を作る（凍結されていない）ので新規 DB は最初から新語彙を持つ。
+    本番は旧語彙のまま 0016 にいる、という形をここで再現してから 0017 を流す。
+    """
+    import importlib.util
+    import uuid
+
+    from sqlalchemy.exc import IntegrityError
+
+    spec_file = REPO / "infrastructure/db/migrations/versions/0017_daily_workflow_failure_kinds.py"
+    spec = importlib.util.spec_from_file_location("m0017", spec_file)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    old, new = module.CHECK_WIDENING["old"], module.CHECK_WIDENING["new"]
+
+    config = _config(probe_url)
+    command.upgrade(config, "0016")
+    engine = create_engine(probe_url)
+    values = ", ".join(f"'{v}'" for v in old)
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE operational_anomalies DROP CONSTRAINT ck_operational_anomalies_kind")
+        )
+        conn.execute(
+            text(
+                "ALTER TABLE operational_anomalies ADD CONSTRAINT ck_operational_anomalies_kind "
+                f"CHECK (kind IN ({values}))"
+            )
+        )
+
+    def accepts(kind: str) -> bool:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO operational_anomalies (id, kind, anomaly_date, detail,"
+                        " first_detected_at, last_detected_at, occurrences)"
+                        " VALUES (:id, :k, '2026-10-01', '{}', now(), now(), 1)"
+                    ),
+                    {"id": uuid.uuid4(), "k": kind},
+                )
+                conn.execute(text("DELETE FROM operational_anomalies"))
+        except IntegrityError:
+            return False
+        return True
+
+    added = [k for k in new if k not in old]
+    assert added
+    assert not any(accepts(k) for k in added)  # 前提: 本番の形
+    command.upgrade(config, "0017")
+    assert all(accepts(k) for k in old), "旧コードが書く値が通らなくなった"
+    assert all(accepts(k) for k in added)
+    assert not accepts("NOT_A_KIND")
+    command.downgrade(config, "0016")
+    assert all(accepts(k) for k in old)
+    assert not any(accepts(k) for k in added)
+    engine.dispose()

@@ -16,6 +16,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
+from contracts.daily_gate import PIPELINE_DAILY_GATE, PIPELINE_PRODUCTION_GATE
 from contracts.operations import ClaimOutcome
 from contracts.production_activities import (
     DEFAULT_AWAIT_REEXECUTIONS,
@@ -85,6 +86,8 @@ PIPELINE_ACTIVITY_NAMES: tuple[str, ...] = (
     PIPELINE_CHECK_PAUSED,
     PIPELINE_CLAIM_DAILY_SLOT,
     PIPELINE_UPLOAD_GATE,
+    PIPELINE_DAILY_GATE,
+    PIPELINE_PRODUCTION_GATE,
 )
 
 
@@ -129,6 +132,9 @@ class DailyOutcome(StrEnum):
     LIMIT_REACHED = "limit_reached"
     #: claim が返した Episode に TopicPlan が結び付いていない。pipeline を始めない（INV-21）
     NO_TOPIC_PLAN = "no_topic_plan"
+    #: 残高不足などの保留が上限に達している。新しい Episode を作らなかった（ADR-0058）。
+    #: **成功ではない**（動画は作られていない）。失敗でもない（意図した停止）
+    HELD_BACKLOG = "held_backlog"
 
 
 class PipelineOutcome(StrEnum):
@@ -137,6 +143,9 @@ class PipelineOutcome(StrEnum):
     STOPPED = "stopped"
     #: render_ready まで来たが投稿ゲートが拒否した
     UPLOAD_SKIPPED = "upload_skipped"
+    #: provider の保留（残高不足など）で production の前で止まり、保留を記録した（ADR-0058）。
+    #: **成功ではない**（Temporal 上は completed でも動画は無い）。``STOPPED``（=失敗）でもない
+    HELD = "held"
 
 
 # --------------------------------------------------------------------------- id 規約
@@ -243,6 +252,10 @@ class EpisodePipelineInput:
     #: 途中入場の開始工程（ADR-0032、統一再開エントリポイント）。既定は最初から（SCRIPT）。
     #: これより前の工程は子 workflow を起動せず、既に完了しているものとして扱う（再課金しない）。
     start_stage: str = PipelineStage.SCRIPT.value
+    #: True なら production の前で provider の breaker を確認し、閉じていなければ保留して止まる
+    #: （ADR-0058）。**日次が起動する pipeline だけ True**。API / 統一再開が起動する pipeline は
+    #: False のまま（所有者承認の再開を日次のゲートが拒否しない）。旧履歴は項目なし = False
+    credit_gate: bool = False
 
 
 @dataclass

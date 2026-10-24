@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     codex_timeout_seconds: int = 900
     #: 許可 model（カンマ区切り）。空なら未検証（contracts/codex_models.py）
     codex_allowed_models: str = ""
+    #: True なら CODEX_MODEL の固定が必須（空だと日次の入口で止まる。ADR-0058）
+    codex_require_pinned_model: bool = False
     #: codex を ``-C`` で走らせる作業ディレクトリ（sandbox は read-only）。
     codex_workspace: str = "."
 
@@ -95,6 +97,9 @@ class Settings(BaseSettings):
     #: 有料の画像・動画 provider の鍵。**secret**。未設定なら該当 worker を組めない。
     #: ``SecretStr``: repr / model_dump / ログに値を出さない。使う箇所で ``get_secret_value()``。
     fal_key: SecretStr | None = None
+    #: fal の月間予算の上限（USD、台帳の見積額の合計で判定。ADR-0057）。**未設定なら、課金を伴う
+    #: 残高不足からの再開（``provider-credits.py resume``）を拒否する**。submit 自体は止めない
+    fal_monthly_budget_usd: Decimal | None = None
     #: task queue ごとの並行 Activity 数（worker が max_concurrent_activities に使う）
     image_concurrency: int = DEFAULT_IMAGE_CONCURRENCY
     voice_concurrency: int = DEFAULT_VOICE_CONCURRENCY

@@ -54,6 +54,7 @@ from domain.errors import (
 )
 from domain.job.entities import Job
 from domain.job.transitions import JobEvent, transition_job
+from domain.provider.cost import NOT_ACCEPTED_RECONCILER
 from domain.provider.reconciliation import (
     ManualResolution,
     ProviderObservation,
@@ -1240,7 +1241,7 @@ class ProviderReservationRepository:
         """
         event = (
             ReservationEvent.EVIDENCE_RECONCILED
-            if reconciled_by in {"evidence", "conservative"}
+            if reconciled_by in {"evidence", "conservative", NOT_ACCEPTED_RECONCILER}
             else ReservationEvent.OPERATOR_CONFIRMED_SPENT
         )
         row = await self._apply(reservation_id, event)
@@ -2409,7 +2410,10 @@ class PaidReservationCost:
 
     scene_id: str | None
     provider: ProviderCall
+    #: 支出としての額（受理されなかった拒否は 0。INV-74）。復旧費用の集計に使う
     estimated_cost_usd: Decimal
+    #: 予約時の見積り額そのもの（拒否でも残る）。次の作り直しの投影に使う（review-E P2-7）
+    nominal_cost_usd: Decimal
     input_rejected_by_provider: bool
     reserved_at: datetime
 
@@ -2596,7 +2600,13 @@ class ProviderRejectionRepository:
             PaidReservationCost(
                 scene_id=row.scene_id,
                 provider=ProviderCall(row.provider),
-                estimated_cost_usd=row.estimated_cost_usd or Decimal("0"),
+                # 受理されなかった拒否（ADR-0057 / INV-74）は費用 0。復旧費用の上限に数えない
+                estimated_cost_usd=(
+                    Decimal("0")
+                    if row.reconciled_by == NOT_ACCEPTED_RECONCILER
+                    else row.estimated_cost_usd or Decimal("0")
+                ),
+                nominal_cost_usd=row.estimated_cost_usd or Decimal("0"),
                 input_rejected_by_provider=bool(row.input_rejected_by_provider),
                 reserved_at=row.reserved_at,
             )

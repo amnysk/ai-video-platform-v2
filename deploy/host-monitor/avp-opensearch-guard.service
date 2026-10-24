@@ -1,0 +1,13 @@
+# 例（インストールはしない。REQUIRES OWNER APPROVAL）。systemd --user 用。docs/operations/opensearch-recovery.md §7
+# ExecStart は ~/.local/lib/avp-host/ のコピー（avp_alerts.py と同じ dir）。
+# 既定は「持続的なメモリ逼迫で止める + 警報」だけ。自動起動は別の判断: 下の ExecStart の末尾に
+# --auto-restart を足す（所有者の承認後。§7.3）。
+# 触る docker は ps / inspect / stop / start / logs のみ（rm・run・create は使わない）。
+[Unit]
+Description=AVP OpenSearch memory guard (ADR-0059)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/lib/avp-host/opensearch-guard.py
+NoNewPrivileges=yes
+TimeoutStartSec=120

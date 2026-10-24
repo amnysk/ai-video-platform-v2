@@ -1,0 +1,13 @@
+# 例（インストールはしない。REQUIRES OWNER APPROVAL）。heartbeat の dead-man's switch（ADR-0059 / INV-80）。
+# guard / host monitor とは別の unit・別の timer。読み取り専用（docker・network に触れない）。
+# 異常（stale・missing）で exit 1 => `systemctl --user --failed` に出る。
+[Unit]
+Description=AVP monitor heartbeat watch (dead-man's switch)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/lib/avp-host/monitor-watch.py
+NoNewPrivileges=yes
+PrivateNetwork=yes
+MemoryMax=64M
+TimeoutStartSec=30

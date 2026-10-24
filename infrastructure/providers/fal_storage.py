@@ -48,6 +48,7 @@ from domain.errors import (
 )
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.logging.provider import allowed_headers, classify
+from infrastructure.providers.fal_refusal import refusal_error
 
 STORAGE_TOKEN_URL = "https://rest.fal.ai/storage/auth/token?storage_type=fal-cdn-v3"
 CDN_UPLOAD_URL = "https://v3.fal.media/files/upload"
@@ -137,17 +138,21 @@ def _log_transport_failure(exc: httpx.TransportError, *, what: str) -> None:
         )
 
 
-def _raise_for_status(response: httpx.Response, *, what: str) -> None:
+def _raise_for_status(
+    response: httpx.Response, *, what: str, secrets: tuple[str, ...] = ()
+) -> None:
     status = response.status_code
     if status < 400:
         return
-    if status in (401, 403):
+    if status in (401, 402, 403):
         _log_http_failure(response, what=what, tag="PROVIDER_AUTH_FAILURE")
-        raise ProviderUnavailableError(
-            f"fal storage {what} refused: HTTP {status}. Cause unconfirmed — see the "
-            "PROVIDER_AUTH_FAILURE diagnostic log line for this request.",
-            http_status=status,
-        )
+        try:
+            body: Any = response.json()
+        except ValueError:
+            body = None
+        # ADR-0057: 本文の印で残高不足を分け、確定できない 402/403 は UNKNOWN。HTTP status だけで
+        # 原因を断定しない方針（ADR-0030）は、印が無いときの扱いとして維持する
+        raise refusal_error(status, body, what=f"storage {what}", secrets=secrets)
     if status == 429 or status >= 500:
         _log_http_failure(response, what=what, tag="PROVIDER_TRANSIENT_FAILURE")
         raise ProviderInvocationError(f"fal storage {what} failed: HTTP {status}")
@@ -204,7 +209,7 @@ class FalStorageClient:
             ),
         }
         response = await self._post(CDN_UPLOAD_URL, what="upload", content=data, headers=headers)
-        _raise_for_status(response, what="upload")
+        _raise_for_status(response, what="upload", secrets=(self._api_key, token))
         url = _json_object(response, what="upload").get("access_url")
         if not isinstance(url, str) or urlparse(url).scheme != "https":
             raise ProviderInvocationError("fal storage upload returned no https access_url")
@@ -235,7 +240,7 @@ class FalStorageClient:
                 "Content-Type": "application/json",
             },
         )
-        _raise_for_status(response, what="token")
+        _raise_for_status(response, what="token", secrets=(self._api_key,))
         body = _json_object(response, what="token")
         token, token_type = body.get("token"), body.get("token_type")
         if not isinstance(token, str) or not token or not isinstance(token_type, str):

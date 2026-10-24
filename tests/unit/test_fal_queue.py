@@ -10,6 +10,7 @@ import pytest
 from domain.errors import (
     MediaValidationError,
     ProviderJobFailedError,
+    ProviderRefusalUnknownError,
     ProviderRejectedError,
     ProviderSubmitAmbiguousError,
     ProviderUnavailableError,
@@ -74,7 +75,8 @@ async def test_submit_sends_key_header_and_returns_resumable_ref() -> None:
     [
         (httpx.Response(429, json={"detail": "rate"}), ProviderJobFailedError),
         (httpx.Response(401, json={"detail": "no"}), ProviderUnavailableError),
-        (httpx.Response(403), ProviderUnavailableError),
+        # ADR-0057: 本文に残高の印が無い 403 は認証とも残高とも確定しない（UNKNOWN）
+        (httpx.Response(403), ProviderRefusalUnknownError),
         (
             httpx.Response(422, json={"detail": [{"type": "value_error", "msg": "bad"}]}),
             ProviderRejectedError,

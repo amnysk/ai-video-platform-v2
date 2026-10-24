@@ -115,7 +115,7 @@ pipeline:
       compress: gzip
       trace_error: off
       trace_output: off
-      retry_limit: 72
+      retry_limit: 288
       storage.total_limit_size: ${AVP_LOG_STORAGE_LIMIT}
 
     - name: opensearch
@@ -138,5 +138,5 @@ pipeline:
       compress: gzip
       trace_error: off
       trace_output: off
-      retry_limit: 72
+      retry_limit: 288
       storage.total_limit_size: ${AVP_LOG_STORAGE_LIMIT}

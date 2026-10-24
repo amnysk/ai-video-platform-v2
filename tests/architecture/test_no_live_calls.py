@@ -267,6 +267,8 @@ FAL_ADAPTER_IMPORTERS = frozenset(
         "tests/live/test_fal_image_live.py",
         "workers/production_video/run_worker.py",
         "tests/unit/test_fal_storage.py",
+        #: 401/402/403 の分類・要約（MockTransport。実ネットワークに出ない。ADR-0057）
+        "tests/unit/test_fal_refusal.py",
         "tests/unit/test_fal_seedance_video.py",
         "tests/live/test_fal_video_live.py",
         #: 本番と同じクライアント構築を preflight で使い回す（設定の再実装を避ける。ADR-0030）
