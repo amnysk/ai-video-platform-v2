@@ -147,6 +147,8 @@ jobs:
           # 破壊的なテストは *_test にだけ向く（ADR-0021）。avp_test は
           # deploy/postgres-init/01-test-db.sql が初回起動時に作る
           TEST_DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp_test
+          # この job 専用の使い捨て DB にだけ、破壊的操作ガードの印を付ける（INV-83）
+          AVP_MARK_TEST_DB: "1"
           # 本番と同じ default namespace は使わない（ADR-0021 追補）。CIのTemporalは
           # このjob専用の使い捨てコンテナだが、テストコードの隔離ガード自体をここでも検査する
           TEMPORAL_ADDRESS: localhost:7233
@@ -272,6 +274,8 @@ jobs:
         run: pytest tests/integration/test_migration_against_postgres.py -q -m integration -rs | tee pytest-alembic.log
         env:
           TEST_DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp_test
+          # この job 専用の使い捨て DB にだけ、破壊的操作ガードの印を付ける（INV-83）
+          AVP_MARK_TEST_DB: "1"
           DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
       - name: Fail if no PostgreSQL migration test passed (log must show N passed)
         run: grep -E '[0-9]+ passed' pytest-alembic.log
