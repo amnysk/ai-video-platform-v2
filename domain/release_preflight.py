@@ -715,16 +715,153 @@ def _call_findings(node: ast.Call) -> list[Finding]:
     return []
 
 
-def scan_migration(source: str) -> list[Finding]:
-    """``upgrade()`` と、そこから（同じファイル内で）呼ばれる関数だけを見る。
+_WIDEN_NAME = "CHECK_WIDENING"
+_WIDEN_KEYS = frozenset({"table", "constraint", "column", "old", "new"})
+_IDENT = re.compile(r"[a-z_][a-z0-9_]*")
+_VALUE = re.compile(r"[A-Z][A-Z0-9_]*")
+_IN_LIST = re.compile(
+    r"(?P<col>[a-z_][a-z0-9_]*) IN \((?P<vals>'[A-Z][A-Z0-9_]*'(?:, '[A-Z][A-Z0-9_]*')*)\)"
+)
 
-    downgrade の drop は expand migration でも普通にあるので見ない。**best effort**:
-    静的な走査は抜けうる。通過は「安全の証明」ではなく、人のレビューは省けない。
+
+@dataclass(frozen=True)
+class _Widening:
+    table: str
+    constraint: str
+    column: str
+    old: tuple[str, ...]
+    new: tuple[str, ...]
+
+    def describe(self) -> str:
+        return (
+            f"{self.constraint} on {self.table}: {len(self.old)} -> {len(self.new)} allowed values"
+        )
+
+
+def _widening_decl(tree: ast.Module) -> tuple[_Widening | None, list[Finding]]:
+    """モジュール直下の ``CHECK_WIDENING = {...}``（リテラルのみ）を読む。
+
+    宣言が無ければ (None, [])。宣言が不正（キー過不足・非リテラル・重複・旧集合が新集合の
+    真の部分集合でない）なら destructive の Finding を返し、拡張としては扱わない。
+    関数内・文字列・コメントの同名は無視する。
     """
+    targets = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == _WIDEN_NAME for t in n.targets)
+    ]
+    if not targets:
+        return None, []
+
+    def bad(why: str) -> tuple[None, list[Finding]]:
+        return None, [Finding("destructive", f"{_WIDEN_NAME} declaration invalid: {why}")]
+
+    if len(targets) != 1:
+        return bad("declared more than once")
+    try:
+        value = ast.literal_eval(targets[0].value)
+    except ValueError:
+        return bad("not a literal")
+    if not isinstance(value, dict) or set(value) != _WIDEN_KEYS:
+        return bad(f"keys must be exactly {sorted(_WIDEN_KEYS)}")
+    for key in ("table", "constraint", "column"):
+        if not isinstance(value[key], str) or not _IDENT.fullmatch(value[key]):
+            return bad(f"{key} must be a lowercase identifier literal")
+    sets: dict[str, tuple[str, ...]] = {}
+    for key in ("old", "new"):
+        v = value[key]
+        if (
+            not isinstance(v, tuple)
+            or not v
+            or not all(isinstance(x, str) and _VALUE.fullmatch(x) for x in v)
+        ):
+            return bad(f"{key} must be a non-empty tuple of UPPER_CASE string literals")
+        if len(set(v)) != len(v):
+            return bad(f"{key} has duplicates")
+        sets[key] = v
+    if not set(sets["old"]) < set(sets["new"]):
+        return bad("old must be a strict subset of new (every old value stays allowed)")
+    spec = _Widening(value["table"], value["constraint"], value["column"], sets["old"], sets["new"])
+    return spec, []
+
+
+def _str_const(node: ast.expr | None, expected: str | None = None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value if expected is None or node.value == expected else None
+    return None
+
+
+def _method_call(stmt: ast.stmt, var: str, attr: str) -> ast.Call | None:
+    """``var.attr(...)`` だけの文なら、その Call。"""
+    if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+        return None
+    func = stmt.value.func
+    if not (
+        isinstance(func, ast.Attribute)
+        and func.attr == attr
+        and isinstance(func.value, ast.Name)
+        and func.value.id == var
+    ):
+        return None
+    return stmt.value
+
+
+def _widening_nodes(fn: ast.FunctionDef, spec: _Widening) -> set[int] | None:
+    """``with op.batch_alter_table(T) as b:`` が drop → create の 2 文だけのときの node id。
+
+    drop は ``b.drop_constraint(C, type_="check")``、
+    create は ``b.create_check_constraint(C, "col IN (...)")``。
+    C・T・col は宣言と一致し、値の集合は宣言の ``new`` と一致すること。
+    """
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.With) or len(node.items) != 1 or len(node.body) != 2:
+            continue
+        item = node.items[0]
+        ctx = item.context_expr
+        if not (
+            isinstance(ctx, ast.Call)
+            and isinstance(ctx.func, ast.Attribute)
+            and ctx.func.attr == "batch_alter_table"
+            and isinstance(ctx.func.value, ast.Name)
+            and ctx.func.value.id == "op"
+            and len(ctx.args) == 1
+            and _str_const(ctx.args[0], spec.table) is not None
+            and isinstance(item.optional_vars, ast.Name)
+        ):
+            continue
+        var = item.optional_vars.id
+        drop = _method_call(node.body[0], var, "drop_constraint")
+        create = _method_call(node.body[1], var, "create_check_constraint")
+        if drop is None or create is None:
+            continue
+        if not (
+            len(drop.args) == 1
+            and _str_const(drop.args[0], spec.constraint) is not None
+            and len(drop.keywords) == 1
+            and drop.keywords[0].arg == "type_"
+            and _str_const(drop.keywords[0].value, "check") is not None
+            and len(create.args) == 2
+            and not create.keywords
+            and _str_const(create.args[0], spec.constraint) is not None
+        ):
+            continue
+        cond = _str_const(create.args[1])
+        match = _IN_LIST.fullmatch(cond) if cond is not None else None
+        if match is None or match.group("col") != spec.column:
+            continue
+        values = [v.strip("'") for v in match.group("vals").split(", ")]
+        if len(set(values)) != len(values) or set(values) != set(spec.new):
+            continue
+        return {id(drop), id(create), id(create.args[1])}
+    return None
+
+
+def _scan(source: str) -> tuple[list[Finding], list[str]]:
     tree = ast.parse(source)
     funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     if "upgrade" not in funcs:
-        return [Finding("unscannable", "no upgrade() found")]
+        return [Finding("unscannable", "no upgrade() found")], []
     reachable: list[ast.FunctionDef] = []
     seen: set[str] = set()
     queue = ["upgrade"]
@@ -741,13 +878,25 @@ def scan_migration(source: str) -> list[Finding]:
                 and node.func.id in funcs
             ):
                 queue.append(node.func.id)
-    findings: list[Finding] = []
+    spec, findings = _widening_decl(tree)
+    # 宣言どおりの CHECK 拡張は **1 件だけ** 免除する（ADR-0060）。それ以外の drop は従来どおり
+    exempt: set[int] = set()
+    widenings: list[str] = []
+    if spec is not None:
+        for fn in reachable:
+            nodes = _widening_nodes(fn, spec)
+            if nodes is not None:
+                exempt = nodes
+                widenings.append(spec.describe())
+                break
     for fn in reachable:
         docstring: ast.AST | None = None
         first = fn.body[0] if fn.body else None
         if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
             docstring = first.value
         for node in ast.walk(fn):
+            if id(node) in exempt:
+                continue
             if isinstance(node, ast.Call):
                 findings += _call_findings(node)
             elif (
@@ -756,7 +905,23 @@ def scan_migration(source: str) -> list[Finding]:
                 and node is not docstring
             ):
                 findings += _sql_findings(node.value, node.lineno)
-    return findings
+    return findings, widenings
+
+
+def scan_migration(source: str) -> list[Finding]:
+    """``upgrade()`` と、そこから（同じファイル内で）呼ばれる関数だけを見る。
+
+    downgrade の drop は expand migration でも普通にあるので見ない。**best effort**:
+    静的な走査は抜けうる。通過は「安全の証明」ではなく、人のレビューは省けない。
+    CHECK 語彙の拡張だけは、宣言（``CHECK_WIDENING``）と実際の 2 文が一致するときに限り
+    contract として数えない（ADR-0060）。
+    """
+    return _scan(source)[0]
+
+
+def check_widenings(source: str) -> list[str]:
+    """走査が「CHECK 語彙の拡張」として免除した宣言の説明（preflight の出力に残すため）。"""
+    return _scan(source)[1]
 
 
 def contract_marker_numbers(source: str) -> list[str]:
@@ -814,10 +979,12 @@ def _check_migration(req: Request, c: Collectors, deployed: str | None) -> Check
         return CheckResult(CHECK_MIGRATION, Status.PASS, "no new migration")
     blocked: list[str] = []
     unknown: list[str] = []
+    widened: list[str] = []
     for name, text in sorted(new.items()):
         try:
             found = scan_migration(text)
             markers = contract_marker_numbers(text)
+            widened += [f"{name}: {w}" for w in check_widenings(text)]
         except (SyntaxError, tokenize.TokenError):
             return _unknown(CHECK_MIGRATION, f"{name} cannot be parsed")
         if not found:
@@ -840,11 +1007,16 @@ def _check_migration(req: Request, c: Collectors, deployed: str | None) -> Check
         )
     if unknown:
         return _unknown(CHECK_MIGRATION, "cannot be judged statically: " + " | ".join(unknown))
+    note = (
+        f"; CHECK widening (ADR-0060, old values stay allowed): {' | '.join(widened)}"
+        if widened
+        else ""
+    )
     return CheckResult(
         CHECK_MIGRATION,
         Status.PASS,
         f"{len(new)} new migration(s), no contract change found "
-        "(best effort; human review required)",
+        f"(best effort; human review required){note}",
     )
 
 

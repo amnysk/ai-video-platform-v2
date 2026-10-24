@@ -144,7 +144,15 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
   `# contract-migration: approved ADR-NNNN` が無ければ BLOCKED。印が有効なのは、コメントとして書かれ、
   ADR が**deploy 済みの revision に在り**（その ADR を先に別 PR で入れて deploy する）、`## Status` が Accepted で、
   migration の revision id に言及しているとき。読めない書き方は UNKNOWN、本番に入った migration の書き換えは BLOCKED
-- CHECK 語彙の拡張（`drop_constraint` + 再作成）も走査上は contract なので印が要る
+- CHECK 語彙の拡張（`drop_constraint` + 再作成）も走査上は contract なので印が要る。
+  **例外**（ADR-0060 / INV-82）: migration が `CHECK_WIDENING` を宣言し（table / constraint / column / old / new、
+  `old` が `new` の真の部分集合）、`upgrade()` が `with op.batch_alter_table(table) as b:` の中で
+  `b.drop_constraint(name, type_="check")` → `b.create_check_constraint(name, "col IN ('..', ..)")` の 2 文だけで、
+  IN の集合が `new` と一致するとき、その 1 組は印なしで PASS（detail に `CHECK widening` と出る）。
+  形が 1 つでも違えば従来どおり BLOCKED。宣言の `old` が実際の旧制約と一致するかは CI の
+  `tests/contract/test_migration_0017_check_widening.py` 型のテストで migration ごとに示す
+- 新規 DB は enum から作られた CHECK を 0012 の時点で最新語彙で持つ（本番は旧語彙）。拡張 migration の検査は
+  「prod 形から流す」テストで書く
 - 走査は **best effort**（AST + SQL の語）。通過は安全の証明ではなく、最終判断は人のレビュー（ADR-0050）
 
 ## 7. リリース記録テンプレート（`docs/releases/<tag>.md`、deploy 後に別ブランチでコミット。`release/` は ignore なのでここに置く）
