@@ -73,20 +73,24 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None, collectors: Collectors | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    collectors: Collectors | None = None,
+    now: datetime | None = None,
+) -> int:
     try:
         args = _parser().parse_args(argv)
     except SystemExit as exc:
         # argparse の既定の終了コード 2 は BLOCKED と同じ。使い方の誤りは UNKNOWN(3)（--help は 0）
         return 0 if exc.code in (0, None) else EXIT_USAGE
     try:
-        return _run(args, collectors)
+        return _run(args, collectors, now)
     except Exception as exc:  # 想定外でも READY(0) や素のトレースバックにしない。詳細は出さない
         print(f"release preflight failed: {type(exc).__name__}", file=sys.stderr)
         return EXIT_USAGE
 
 
-def _run(args: argparse.Namespace, collectors: Collectors | None) -> int:
+def _run(args: argparse.Namespace, collectors: Collectors | None, now: datetime | None) -> int:
     if collectors is None:
         from infrastructure.release.collectors import RealCollectors
 
@@ -104,7 +108,7 @@ def _run(args: argparse.Namespace, collectors: Collectors | None) -> int:
         evidence_max_age_hours=args.evidence_max_age_hours,
         rollback=args.rollback,
     )
-    report = run_preflight(request, collectors, datetime.now(UTC))
+    report = run_preflight(request, collectors, now or datetime.now(UTC))
     print(report_json(report) if args.json else render_text(report))
     return exit_code(report.overall)
 

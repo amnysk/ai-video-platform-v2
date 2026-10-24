@@ -15,3 +15,11 @@ ADR-0049。`ci.yml` は branch protection の required check の元になるの�
   - 何もしない job（`true` のみ、`|| true`）の禁止。
 - `tests/contract/test_migration_single_head.py`: 並行ブランチが migration の head を2本に割る事故を PR で検出する。
   既存 migration は1 head なので最初から緑（新規の失敗を伴わないガードで、head を2本にする変異で赤になる想定）。
+
+## test_release_preflight_cli の時刻固定（時限爆弾の除去）
+
+`tests/unit/test_release_preflight_cli.py` の READY/BLOCKED 系は、`Fake` の証跡時刻を
+`NOW = 2026-10-20 12:00 UTC` に固定している一方、CLI は `datetime.now(UTC)` を使っていた。
+実時刻が 72h（証跡の最大の古さ）を過ぎた時点で backup / replay 証跡 / 承認が stale 扱いとなり
+READY を期待する 2 テストが落ちる（実装のバグではなくテストの時刻依存）。
+`main(..., now=)` を注入点として足し、テストは `NOW` を渡す。判定ロジック・閾値は変えていない。
