@@ -53,6 +53,7 @@ from infrastructure.storage.artifact_store import readback_sha256
 from infrastructure.workdir import WorkDirectory
 from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.production import (
+    ENABLED_BUDGET,
     FakeImageGenerator,
     FakeVideoGenerator,
     FakeVoiceGenerator,
@@ -252,7 +253,10 @@ class Stack:
         queues = {k: f"p4e2e-{k}-{suffix}" for k in ("production", "image", "video", "voice")}
         f, s = self.factory, self.store
         runner = PaidJobRunner(
-            session_factory=f, store=s, workdir=WorkDirectory(self.tmp_path / "work", forbidden=())
+            budget=ENABLED_BUDGET,
+            session_factory=f,
+            store=s,
+            workdir=WorkDirectory(self.tmp_path / "work", forbidden=()),
         )
         probe = PillowAvMediaProbe()
         state = ProductionActivities(session_factory=f, store=s, bucket=BUCKET)

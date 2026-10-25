@@ -27,6 +27,7 @@ from infrastructure.db.models import Base, ProviderBreakerRow, ProviderCreditHol
 from infrastructure.db.provider_health_repositories import PostgresProviderHealth
 from infrastructure.db.repositories import EpisodeRepository
 from tests.support.db import assert_destructive_allowed, require_test_database_url
+from tests.support.production import ENABLED_BUDGET
 
 TEST_DATABASE_URL = require_test_database_url()
 
@@ -124,6 +125,7 @@ async def test_concurrent_episodes_hitting_balance_exhaustion_open_one_breaker_a
     from tests.support.production import FakeImageGenerator
 
     runner = PaidJobRunner(
+        budget=ENABLED_BUDGET,
         session_factory=pg_session_factory,
         store=InMemoryArtifactStore(),
         workdir=WorkDirectory(tmp_path / "work", forbidden=()),

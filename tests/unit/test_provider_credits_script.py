@@ -27,7 +27,7 @@ from infrastructure.db.repositories import EpisodeRepository, ProviderReservatio
 from infrastructure.production.paid_job import PaidJobRunner, PaidJobSpec, Reused
 from infrastructure.production.provider_credits import ResumeRejected, ResumeStarted
 from infrastructure.workdir import WorkDirectory
-from tests.support.production import FakeImageGenerator
+from tests.support.production import ENABLED_BUDGET, FakeImageGenerator
 from tests.unit.test_paid_job import _record_reusable_scene_image
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "provider-credits.py"
@@ -311,6 +311,7 @@ async def test_succeeded_scenes_are_reused_after_resume_not_regenerated(
         session_factory, artifact_store, episode_id=ep, scene_id="sb1", input_hash="h" * 64
     )
     runner = PaidJobRunner(
+        budget=ENABLED_BUDGET,
         session_factory=session_factory,
         store=artifact_store,
         workdir=WorkDirectory(tmp_path / "work", forbidden=()),

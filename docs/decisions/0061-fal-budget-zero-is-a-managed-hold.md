@@ -116,8 +116,10 @@ watchdog は変えない（保留は Episode 単位で分類し、reason を見�
   （従来は fal へ submit していた）。意図した動作だが、`.env` に明示の `0` を置くことを推奨（`.env.example` 参照）
 - 予算は worker の起動時に 1 回読む。変更の反映にはコンテナの再作成が要る
 - 保留の理由列は `waiting_for_credits` のまま。予算由来か残高由来かは `snapshot.hold_detail` とログで見る
-- `PaidJobRunner(budget=None)` / `GatePorts.budget=None` は「結線なし」で fail-open（既存の 18 箇所の
-  テスト構築を壊さないため）。本番の入口は契約テストが結線を検査する。必須引数化は Phase 2（独立レビューの P2）
+- `PaidJobRunner(budget=None)`（省略も同じ）は「予算未設定」として **fail-closed**（有料 submit を止める。
+  2026-10 修正）。テストで生成処理を通すときは `tests.support.production.ENABLED_BUDGET` を明示する。
+  `GatePorts.budget=None` は従来どおり「結線なし」でゲート無効だが、有料 submit は必ず `PaidJobRunner` を通る
+  ので submit 自体は止まる。本番の入口は契約テストが結線を検査する
 - 旧 worker への rollback 時に新形式の Activity 結果（既定値つき追加フィールド）を読めるかは、Temporal の
   dataclass converter が未知キーを無視する前提で、未検証
 - 正の予算は Phase 1 では「ゲートを通す」だけ。累計の超過は resume の検査（既存）と fal 側のロックが守る

@@ -21,7 +21,7 @@ from infrastructure.db.repositories import (
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.production.paid_job import PaidJobRunner
 from infrastructure.workdir import WorkDirectory
-from tests.support.production import FakeImageGenerator, sample_storyboard
+from tests.support.production import ENABLED_BUDGET, FakeImageGenerator, sample_storyboard
 from workers.production_image.activities import ImageProductionActivities
 
 
@@ -31,6 +31,7 @@ async def _sleep(_: float) -> None:
 
 def make_activities(session_factory, store, generator, tmp_path) -> ImageProductionActivities:
     runner = PaidJobRunner(
+        budget=ENABLED_BUDGET,
         session_factory=session_factory,
         store=store,
         workdir=WorkDirectory(tmp_path / "work", forbidden=()),

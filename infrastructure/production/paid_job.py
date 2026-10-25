@@ -85,7 +85,7 @@ from contracts.provider_health import (
 )
 from contracts.states import ArtifactType, ProviderCall, RejectionCategory, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
-from domain.budget_gate import BudgetDecision
+from domain.budget_gate import BudgetDecision, evaluate_budget
 from domain.errors import (
     InvalidTransitionError,
     MediaValidationError,
@@ -268,8 +268,8 @@ class PaidJobRunner:
         #: provider アカウントの breaker と保留（ADR-0057）。既定は同じ DB の永続実装
         self._health = health or PostgresProviderHealth(session_factory)
         #: ローカル月間予算の判定（起動時に ``evaluate_budget`` で作る。ADR-0061）。``None`` は
-        #: 「結線していない」（テスト用）。本番の worker は必ず渡す（結線は契約テストが検査する）
-        self._budget = budget
+        #: 「予算未設定」として扱う（fail-closed）: 結線し忘れで有料 submit が通ることはない
+        self._budget = budget if budget is not None else evaluate_budget(None)
         self._store = store
         self._workdir = workdir
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
@@ -811,7 +811,7 @@ class PaidJobRunner:
         breaker の前に評価する: 予算 0 では fal へ何も送らないので、breaker の状態（過去の拒否）
         に依らず保留の理由は予算になる。保留の記録は冪等（シーンごとに 1 行）。
         """
-        if self._budget is None or self._budget.submit_allowed:
+        if self._budget.submit_allowed:
             return
         account = self._account(spec.provider)
         if account is None:

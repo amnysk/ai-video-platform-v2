@@ -185,3 +185,23 @@ async def test_a_broken_log_pipeline_does_not_change_the_held_outcome(
         assert gen.submit_calls == 0
     finally:
         root.removeHandler(handler)
+
+
+async def test_runner_built_without_a_budget_fails_closed(
+    session_factory, artifact_store, tmp_path
+) -> None:
+    """結線し忘れ（budget 省略 / None）は「未設定」として止まる。fail-open にしない。"""
+    workdir = WorkDirectory(tmp_path / "work", forbidden=())
+    for runner in (
+        PaidJobRunner(session_factory=session_factory, store=artifact_store, workdir=workdir),
+        PaidJobRunner(
+            session_factory=session_factory, store=artifact_store, workdir=workdir, budget=None
+        ),
+    ):
+        spec = await _spec(session_factory)
+        gen = FakeImageGenerator()
+
+        with pytest.raises(ProviderBudgetHeldError):
+            await runner.submit(spec, gen, REQUEST)
+
+        assert gen.submit_calls == 0 and gen.prepare_calls == 0

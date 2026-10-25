@@ -12,6 +12,7 @@ import math
 import struct
 import uuid
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 import av
@@ -26,6 +27,7 @@ from contracts.artifacts import (
     parse_storyboard_artifact,
 )
 from contracts.states import RejectionCategory
+from domain.budget_gate import evaluate_budget
 from domain.errors import ProviderRejection, ProviderSubmitAmbiguousError
 from domain.production.ports import (
     ImageRequest,
@@ -449,3 +451,8 @@ def source_ref(sha256: str = SHA_A) -> dict[str, str]:
 
 def digest_ref(sha256: str = SHA_B) -> dict[str, str]:
     return {"artifact_id": str(uuid.uuid4()), "sha256": sha256}
+
+
+#: 予算が正の判定。PaidJobRunner は budget=None を「未設定」として止める（ADR-0061）ので、
+#: 生成処理そのものを検査するテストは明示的に有効な予算を渡す
+ENABLED_BUDGET = evaluate_budget(Decimal("1"))

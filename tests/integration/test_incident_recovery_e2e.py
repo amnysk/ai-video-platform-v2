@@ -66,6 +66,7 @@ from infrastructure.temporal.daily_runs import TemporalDailyRunReader
 from infrastructure.temporal.watchdog import TemporalPipelineOutcomeChecker, run_daily_watchdog
 from tests.support.db import assert_destructive_allowed, require_test_database_url
 from tests.support.production import (
+    ENABLED_BUDGET,
     LIKENESS_REJECTION,
     FakeImageGenerator,
     FakeVideoGenerator,
@@ -286,7 +287,12 @@ class Stack:
             for k in ("production", "image", "video", "voice", "alternative")
         }
         f, s = self.factory, self.store
-        runner = PaidJobRunner(session_factory=f, store=s, workdir=_workdir(self.tmp_path / "work"))
+        runner = PaidJobRunner(
+            budget=ENABLED_BUDGET,
+            session_factory=f,
+            store=s,
+            workdir=_workdir(self.tmp_path / "work"),
+        )
         probe = PillowAvMediaProbe()
         state = ProductionActivities(session_factory=f, store=s, bucket=BUCKET)
         image = ImageProductionActivities(
@@ -564,7 +570,10 @@ async def test_auth_incident_threshold_suppresses_new_submits_for_same_provider_
 
     episode_id = await _seed(factory, store)
     runner = PaidJobRunner(
-        session_factory=factory, store=store, workdir=_workdir(tmp_path / "work")
+        budget=ENABLED_BUDGET,
+        session_factory=factory,
+        store=store,
+        workdir=_workdir(tmp_path / "work"),
     )
 
     failing_video = FaultyVideoGenerator(pending_polls=0)

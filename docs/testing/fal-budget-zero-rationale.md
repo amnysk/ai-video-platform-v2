@@ -50,7 +50,7 @@ fake / time-skipping Temporal だけを使い、fal・Codex・YouTube・OpenSear
 | テスト | 守るもの / 落ちたら何が起きているか |
 |---|---|
 | `test_budget_setting_is_read_fail_closed` | 未設定・空・不正・NaN/inf・負が全て submit 不可、0 は `DISABLED`、正は `ENABLED`。**`abc` / `nan` / `inf` は pydantic が Decimal を拒否して `Settings()` ごと落ちる実バグを実装中に捕捉した**（worker が起動しなくなる）。空文字は compose の `${VAR:-}` が渡す |
-| `test_every_paid_worker_passes_the_budget_to_its_runner` / `test_the_pipeline_worker_passes_the_budget_to_the_gates` | 結線の欠落（`budget=None` は「結線なし」＝ゲート無効）を本番の入口で検出する |
+| `test_every_paid_worker_passes_the_budget_to_its_runner` / `test_the_pipeline_worker_passes_the_budget_to_the_gates` | 結線の欠落（`PaidJobRunner` の `budget=None` は未設定＝止まる。回帰は `test_runner_built_without_a_budget_fails_closed`）を本番の入口で検出する |
 | `test_every_runner_construction_in_production_code_is_in_a_wired_worker` | `PaidJobRunner` を組む新しい入口が増えたら、結線の確認なしに通れない |
 | `tests/contract/test_compose_workers.py::test_per_worker_minimal_env` | 予算の環境変数が compose から 3 worker にだけ届く（届かないと永久に UNSET） |
 
