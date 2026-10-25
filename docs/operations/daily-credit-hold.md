@@ -10,6 +10,7 @@ pause しない）。
 |---|---|---|
 | Codex の model が必ず失敗する構成（catalog に無い / 許可リスト外 / 固定必須で未固定） | Codex を呼ばずに失敗 | `DAILY_WORKFLOW_FAILED`（原因 `CodexModelPreflightFailed` と model 名が failure_message に残る） |
 | fal の breaker が `open` / `half_open` | 企画・台本・絵コンテまで進め、production の前で保留を記録して止まる | pipeline の結果 `outcome=held`、Episode は `storyboard_ready` のまま、保留テーブルに行 |
+| `FAL_MONTHLY_BUDGET_USD` が `0` / 未設定 / 不正（ADR-0061） | 企画・台本・絵コンテまで進め、production の前で保留して止まる。fal へは何も送らない（`PaidJobRunner` も同じ判定で submit 前に止める） | pipeline の結果 `outcome=held`、保留の `snapshot.hold_detail.decision_reason` が `budget_disabled` / `budget_unset` / `budget_invalid`、構造化ログ `provider.call.suppressed` |
 | 未解放の保留が `MAX_HELD_EPISODES`（2）に達した | 何も作らない（Planner・Codex も呼ばない） | Daily の結果 `outcome=held_backlog`、watchdog の `HELD_EPISODES` ログ |
 | それ以外 | 従来どおり | |
 
@@ -55,3 +56,18 @@ pause しない）。
 起動ログに `pipeline gates: provider health / credit hold ports are not wired` が出ていれば、保留は効いて
 いない。Codex 事前診断は script worker に `codex_model_preflight` Activity があれば効く（無い旧 worker
 では 60 秒待って検査せずに進む）。
+
+## 予算 0 の運用と、予算を足すとき（ADR-0061）
+
+- `.env` に `FAL_MONTHLY_BUDGET_USD=0` を**明示**する（空・未設定も同じく有料生成はしないが、意図を残すため）。
+  予算 0 のあいだ毎朝の日次は保留で**正常終了**する。Schedule・Worker・watchdog は止めない。
+- 保留は 2 件で頭打ち。3 日目以降は `outcome=held_backlog`（新しい Episode を作らない）。「今日の動画は無い」は
+  `HELD_EPISODES` ログと `held_episodes` に残る。
+- 予算を足す手順（所有者が行う。自動では再開しない）:
+  1. `.env` の `FAL_MONTHLY_BUDGET_USD` を正の値にする。
+  2. 3 つの worker（pipeline / production-image / production-video）を再作成する（予算は起動時に 1 回読む）。
+  3. `scripts/provider-credits.py status` で保留・未照合予約を確認する。**未照合予約は残高・予算に関わらず再送されない**。
+  4. 保留した Episode を、承認 token つきの `resume`（既存。ADR-0057 §5）で再開する。保留が 2 件のままだと
+     日次は新しい Episode を作らない。
+- ログの追い方（OpenSearch が止まっていても）: `docker logs avp2-pipeline-worker-1 | grep -E 'provider.call.suppressed|daily gate'`
+  （`docker logs avp2-production-image-worker-1` も同じ）。json-file の保持機構に残る。

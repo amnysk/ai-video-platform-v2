@@ -53,7 +53,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -85,11 +85,13 @@ from contracts.provider_health import (
 )
 from contracts.states import ArtifactType, ProviderCall, RejectionCategory, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
+from domain.budget_gate import BudgetDecision
 from domain.errors import (
     InvalidTransitionError,
     MediaValidationError,
     ProviderBalanceExhaustedError,
     ProviderBreakerOpenError,
+    ProviderBudgetHeldError,
     ProviderCredentialSuspectedOutageError,
     ProviderInputFetchError,
     ProviderInputFetchRetryExhaustedError,
@@ -260,10 +262,14 @@ class PaidJobRunner:
         workdir: WorkDirectory,
         heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
         health: PostgresProviderHealth | None = None,
+        budget: BudgetDecision | None = None,
     ) -> None:
         self._session_factory = session_factory
         #: provider アカウントの breaker と保留（ADR-0057）。既定は同じ DB の永続実装
         self._health = health or PostgresProviderHealth(session_factory)
+        #: ローカル月間予算の判定（起動時に ``evaluate_budget`` で作る。ADR-0061）。``None`` は
+        #: 「結線していない」（テスト用）。本番の worker は必ず渡す（結線は契約テストが検査する）
+        self._budget = budget
         self._store = store
         self._workdir = workdir
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
@@ -366,6 +372,7 @@ class PaidJobRunner:
                 # stale-unreconciled の早期returnより後なので、provider I/O が要らない
                 # 済んだ工程の再開（sb1〜sb5 の再利用等）を抑止期間中でも止めない
                 if not prepared:
+                    await self._check_budget_gate(spec)
                     await self._check_breaker_gate(spec)
                     await self._check_auth_outage_gate(spec.provider)
                     await self._check_rejected_image_gate(spec)
@@ -798,6 +805,50 @@ class PaidJobRunner:
         family = PROVIDER_FAMILY.get(provider)
         return ProviderAccount(family) if family is not None else None
 
+    async def _check_budget_gate(self, spec: PaidJobSpec) -> None:
+        """予算が 0 / 未設定なら、予約も prepare も submit もせずに保留して止める（ADR-0061）。
+
+        breaker の前に評価する: 予算 0 では fal へ何も送らないので、breaker の状態（過去の拒否）
+        に依らず保留の理由は予算になる。保留の記録は冪等（シーンごとに 1 行）。
+        """
+        if self._budget is None or self._budget.submit_allowed:
+            return
+        account = self._account(spec.provider)
+        if account is None:
+            return
+        reason = self._budget.hold_reason
+        assert reason is not None
+        await self._record_hold(spec, account, reason, self._budget.detail)
+        with log_guard():
+            emit(
+                logger,
+                EventName.PROVIDER_CALL_SUPPRESSED,
+                logging.WARNING,
+                "holding new %s submits: %s",
+                spec.provider.value,
+                self._budget.decision_reason,
+                episode_id=str(spec.episode_id),
+                provider=spec.provider.value,
+                outcome=Outcome.BLOCKED.value,
+                error_type=ProviderBudgetHeldError.__name__,
+                error_category=ErrorCategory.SUPPRESSED_BY_INCIDENT.value,
+                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                attributes={
+                    "account": account.key,
+                    "budget_status": self._budget.status.value,
+                    "hold_reason": reason.value,
+                    "submit_allowed": False,
+                    "decision_reason": self._budget.decision_reason,
+                    "scene_id": spec.scene_id,
+                },
+            )
+        raise ProviderBudgetHeldError(
+            f"{account.key}: new submits are held ({self._budget.decision_reason}); "
+            "no paid call was made",
+            account_key=account.key,
+            reason=reason.value,
+        )
+
     async def _check_breaker_gate(self, spec: PaidJobSpec) -> None:
         """アカウントの breaker が open なら、予約を作らずに止める（台帳にも残さない）。
 
@@ -810,7 +861,7 @@ class PaidJobRunner:
         if snapshot.state is not BreakerState.OPEN:
             return
         reason = snapshot.reason or RefusalKind.UNKNOWN
-        await self._record_hold(spec, account, reason)
+        await self._record_hold(spec, account, self._hold_reason(reason))
         with log_guard():
             emit(
                 logger,
@@ -841,7 +892,11 @@ class PaidJobRunner:
         return HoldReason.PROVIDER_REFUSAL_UNKNOWN
 
     async def _record_hold(
-        self, spec: PaidJobSpec, account: ProviderAccount, kind: RefusalKind
+        self,
+        spec: PaidJobSpec,
+        account: ProviderAccount,
+        reason: HoldReason,
+        detail: Mapping[str, str] | None = None,
     ) -> None:
         """保留の記録。失敗しても元の拒否を隠さない（Episode は blocked になる）。"""
         try:
@@ -849,9 +904,10 @@ class PaidJobRunner:
                 episode_id=str(spec.episode_id),
                 scene_id=spec.scene_id,
                 account=account,
-                reason=self._hold_reason(kind),
+                reason=reason,
                 resumable_stage=PipelineStage.PRODUCTION.value,
                 generation_profile_id=spec.current_generation_profile_id,
+                detail=detail,
             )
         except Exception:
             logger.exception("could not record the credit hold for episode %s", spec.episode_id)
@@ -893,7 +949,7 @@ class PaidJobRunner:
                 classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
                 attributes={"account": account.key, "refusal_kind": kind.value},
             )
-        await self._record_hold(spec, account, kind)
+        await self._record_hold(spec, account, self._hold_reason(kind))
 
     async def _note_accepted(self, provider: ProviderCall) -> None:
         """half_open 中に submit が受理された: 承認済み再開が通ったので閉じる（時間では閉じない）"""

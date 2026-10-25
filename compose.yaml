@@ -22,6 +22,12 @@ x-codex-env: &codex-env
   CODEX_REQUIRE_PINNED_MODEL: ${CODEX_REQUIRE_PINNED_MODEL:-false}
   CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
 
+# fal の月間予算（ADR-0061 / AGENTS.md §8）。有料生成に関わる 3 つの worker だけが読む唯一の宣言元。
+# **空・未設定は無制限ではない**（新しい有料 submit をしない）。明示的な 0 は意図した停止。
+# 正の値で初めて submit を許す。変更の反映にはコンテナの再作成が要る（次の deploy-workers）
+x-fal-budget-env: &fal-budget-env
+  FAL_MONTHLY_BUDGET_USD: ${FAL_MONTHLY_BUDGET_USD:-}
+
 x-app-env: &app-env
   <<: *core-env
   MINIO_ENDPOINT: http://minio:9000
@@ -305,7 +311,7 @@ services:
     depends_on: *deps-minio
     environment:
       AVP_SERVICE_NAME: production-image-worker
-      <<: *app-env
+      <<: [*app-env, *fal-budget-env]
       FAL_KEY: ${FAL_KEY:-}
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
       IMAGE_CONCURRENCY: ${IMAGE_CONCURRENCY:-2}
@@ -343,7 +349,7 @@ services:
     depends_on: *deps-minio
     environment:
       AVP_SERVICE_NAME: production-video-worker
-      <<: *app-env
+      <<: [*app-env, *fal-budget-env]
       FAL_KEY: ${FAL_KEY:-}
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
       VIDEO_CONCURRENCY: ${VIDEO_CONCURRENCY:-1}
@@ -443,7 +449,7 @@ services:
       temporal: {condition: service_healthy}
     environment:
       AVP_SERVICE_NAME: pipeline-worker
-      <<: *core-env
+      <<: [*core-env, *fal-budget-env]
       PAUSED: ${PAUSED:-false}
       UPLOADS_PAUSED: ${UPLOADS_PAUSED:-false}
     command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.pipeline.run_worker"]

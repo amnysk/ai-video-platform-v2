@@ -18,6 +18,7 @@ watchdog）の両側が import する唯一の定義（AGENTS.md §8）。値を
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -92,6 +93,17 @@ class HoldReason(StrEnum):
     PROVIDER_REFUSAL_UNKNOWN = "provider_refusal_unknown"
 
 
+class BudgetStatus(StrEnum):
+    """ローカルの月間予算設定の状態（ADR-0061）。provider への問い合わせは含まない。"""
+
+    #: 正の上限がある。submit の可否は上限と台帳で別に判定する
+    ENABLED = "enabled"
+    #: 明示的に 0。fal へは何も送らない（残高照会も submit もしない）
+    DISABLED = "disabled"
+    #: 未設定または不正（負・非数）。安全側で submit しない
+    UNSET = "unset"
+
+
 #: 保留中（未解放）の Episode がこの数に達したら、日次は新しい Episode を作らない
 #: （企画・台本を溜め込みすぎない / ADR-0058）。
 MAX_HELD_EPISODES = 2
@@ -122,7 +134,9 @@ class CreditHoldWriter(Protocol):
     """保留を記録する port。実装（fal 障害耐性側）が予約・成功済み Artifact の写しも保存する。
 
     ``scene_id`` は Episode 全体の保留（日次の入口ゲート）なら ``None``。冪等: 同じ
-    (episode_id, scene_id, account) の未解放の保留があれば何もしない。
+    (episode_id, scene_id, account) の未解放の保留があれば何もしない。``detail`` は保留の
+    機械判定値（例: 予算由来なら ``budget_status`` / ``decision_reason``。ADR-0061）で、
+    既存の ``snapshot`` に ``hold_detail`` として保存する（列も CHECK も増やさない）。
     """
 
     async def hold_episode(
@@ -134,6 +148,7 @@ class CreditHoldWriter(Protocol):
         reason: HoldReason,
         resumable_stage: str,
         generation_profile_id: str | None,
+        detail: Mapping[str, str] | None = None,
     ) -> None: ...
 
 
@@ -144,6 +159,7 @@ __all__ = [
     "PROVIDER_FAMILY",
     "RESUME_MAX_CONCURRENCY",
     "BreakerSnapshot",
+    "BudgetStatus",
     "BreakerState",
     "CreditHoldWriter",
     "HoldReason",

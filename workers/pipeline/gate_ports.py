@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from contracts.daily_gate import OpenHoldReader
 from contracts.provider_health import CreditHoldWriter, ProviderHealthReader
+from domain.budget_gate import BudgetDecision
 from infrastructure.db.provider_health_repositories import build_provider_health_ports
 from infrastructure.db.repositories import ProviderReconciliationRepository
 
@@ -39,6 +40,8 @@ class DbUnreconciledCounter:
 @dataclass
 class GatePorts:
     health: ProviderHealthReader | None = None
+    #: ローカル月間予算の判定（ADR-0061）。``None`` は結線なし（従来どおり。テスト用）
+    budget: BudgetDecision | None = None
     holds: CreditHoldWriter | None = None
     open_holds: OpenHoldReader | None = None
     unreconciled: UnreconciledCounter | None = None
@@ -48,7 +51,9 @@ class GatePorts:
         return self.health is not None and self.holds is not None
 
 
-def build_gate_ports(session_factory: async_sessionmaker[AsyncSession]) -> GatePorts:
+def build_gate_ports(
+    session_factory: async_sessionmaker[AsyncSession], *, budget: BudgetDecision | None = None
+) -> GatePorts:
     """pipeline worker が使う port を組む。**ここが ADR-0057 の実装との結線点**。
 
     breaker・保留・未解放保留の読み出しは1つの実装（``provider_breakers`` /
@@ -60,4 +65,5 @@ def build_gate_ports(session_factory: async_sessionmaker[AsyncSession]) -> GateP
         holds=health,
         open_holds=health,
         unreconciled=DbUnreconciledCounter(session_factory),
+        budget=budget,
     )

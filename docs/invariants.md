@@ -771,3 +771,21 @@ tests の `conftest.py` は全 PostgreSQL 接続の文の入口にも同じ検�
 / `tests/unit/test_db_destructive_guard.py::test_destructive_statements_are_verified_before_they_run`
 / `tests/unit/test_db_destructive_guard.py::test_drop_database_names_must_end_with_test_even_on_a_verified_connection`
 / `tests/contract/test_ci_db_isolation.py::test_ci_steps_that_get_a_test_database_also_mark_it`
+
+## V. fal のローカル予算（ADR-0061）
+
+### INV-84 fal の月間予算が 0 / 未設定のとき、新しい有料 submit は 0 回で、日次は失敗せず正常終了する（ADR-0061）
+`FAL_MONTHLY_BUDGET_USD` が未設定・不正・0 のとき、`PaidJobRunner.submit` は予約も prepare も submit もせず
+`ProviderBudgetHeldError`（`needs_input`）で止め、日次の入口は `PAID_HELD`、production の前は保留を記録して
+`PipelineOutcome.HELD` で終える。**未設定は無制限ではない**。保留は失敗でも成功でもなく（INV-77）、上限
+`MAX_HELD_EPISODES` に達すれば 3 日目以降は新しい Episode を作らず `HELD_BACKLOG`（INV-76）。予算ゲートは
+再利用・受理済み・未照合の早期 return の後ろなので、完成済みシーンは再生成されず、未照合予約は予算が正に
+なっても再送されない（INV-17 / INV-67）。予算を足したあとの再開は所有者承認つき `resume` だけ（日次は
+再開しない / INV-78）。保留の行は `reason=waiting_for_credits` に `snapshot.hold_detail`（`budget_status` /
+`decision_reason`）を持つ。有料の入口（`PaidJobRunner` を組む worker・pipeline worker）が予算を結線している
+ことは契約テストが検査する。
+**機械検査**: `tests/unit/test_budget_gate_domain.py` / `tests/unit/test_paid_job_budget.py`
+/ `tests/unit/test_budget_zero_daily_workflows.py::test_a_month_of_zero_budget_never_fails_and_is_bounded`
+/ `tests/unit/test_budget_zero_daily_workflows.py::test_zero_or_unset_budget_plans_scripts_then_holds_and_ends_normally`
+/ `tests/contract/test_fal_budget_wiring.py` / `tests/contract/test_compose_workers.py::test_per_worker_minimal_env`
+/ `tests/unit/test_hold_watchdog_classification.py::test_budget_holds_are_held_not_failed_and_stay_visible`

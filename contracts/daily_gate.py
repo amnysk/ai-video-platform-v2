@@ -45,6 +45,8 @@ class DailyGateResult:
     open_hold_count: int = 0
     #: 未照合の予約数（情報。新しい Episode は止めない。再開は日次がしない）
     unreconciled_reservations: int = 0
+    #: ローカル月間予算の状態（``BudgetStatus`` の値）。結線前は空
+    budget_status: str = ""
     reasons: list[str] = field(default_factory=list)
 
 
@@ -57,6 +59,8 @@ class ProductionGateRequest:
 class ProductionGateResult:
     allowed: bool
     reason: str | None = None
+    #: 保留したときの ``HoldReason`` の値（通過・予算以外の保留は None）
+    hold_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

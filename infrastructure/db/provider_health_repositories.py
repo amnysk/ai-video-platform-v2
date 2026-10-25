@@ -10,7 +10,7 @@ breaker は時間では閉じない。``half_open`` / ``closed`` への遷移は
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -320,6 +320,7 @@ class PostgresProviderHealth:
         reason: HoldReason,
         resumable_stage: str,
         generation_profile_id: str | None,
+        detail: Mapping[str, str] | None = None,
     ) -> None:
         """保留を記録する（``CreditHoldWriter``）。
 
@@ -328,6 +329,8 @@ class PostgresProviderHealth:
         ep = _as_uuid(episode_id)
         async with self._session_factory() as session:
             snapshot = await self._build_snapshot(session, ep, account)
+            if detail:
+                snapshot["hold_detail"] = dict(detail)
             try:
                 async with session.begin_nested():
                     session.add(

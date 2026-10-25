@@ -8,6 +8,7 @@ fake の port（``contracts.provider_health`` の Protocol）。fal・Codex・Yo
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -74,6 +75,7 @@ class Hold:
     reason: HoldReason
     resumable_stage: str
     account_key: str
+    detail: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -105,10 +107,13 @@ class FakeProviderHealth:
         reason: HoldReason,
         resumable_stage: str,
         generation_profile_id: str | None,
+        detail: Mapping[str, str] | None = None,
     ) -> None:
         if any(h.episode_id == episode_id and h.scene_id == scene_id for h in self.holds):
             return  # 冪等
-        self.holds.append(Hold(episode_id, scene_id, reason, resumable_stage, account.key))
+        self.holds.append(
+            Hold(episode_id, scene_id, reason, resumable_stage, account.key, dict(detail or {}))
+        )
 
 
 @dataclass

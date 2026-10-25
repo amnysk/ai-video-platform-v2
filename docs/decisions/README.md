@@ -76,3 +76,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0057](./0057-fal-balance-exhaustion-managed-pause.md) | fal の残高不足を「管理された一時停止」として扱う（拒否の分類・永続 breaker・`blocked` + 保留・承認つき再開） | Proposed |
 | [0058](./0058-daily-preflight-credit-hold-and-watchdog-classification.md) | 日次の事前診断（Codex model・breaker・保留数）・残高不足の保留・watchdog の失敗/保留/未納品の分類 | Proposed |
 | [0060](./0060-check-vocabulary-widening-in-release-scan.md) | CHECK 語彙の拡張だけを、宣言と機械検査つきで release 走査の contract から外す | Proposed |
+| [0061](./0061-fal-budget-zero-is-a-managed-hold.md) | fal の月間予算が 0 / 未設定でも、日次は失敗せず有料 submit を 0 回のまま正常終了する（ローカル予算ゲート。migration なし） | Proposed |

@@ -22,6 +22,7 @@ from contracts.provider_health import (
     ProviderAccount,
     RefusalKind,
 )
+from domain.budget_gate import BudgetDecision
 
 #: 厳しい順（先頭が最も厳しい）
 _SEVERITY: tuple[BreakerState, ...] = (
@@ -40,7 +41,11 @@ def worst_breaker_state(states: Iterable[BreakerState]) -> BreakerState:
 
 
 def decide_daily_mode(
-    *, breaker_states: Sequence[BreakerState], open_hold_count: int, max_held: int
+    *,
+    breaker_states: Sequence[BreakerState],
+    open_hold_count: int,
+    max_held: int,
+    budget: BudgetDecision | None = None,
 ) -> tuple[DailyRunMode, list[str]]:
     """保留の上限が先（解放待ちが溜まっている間は breaker が閉じていても積まない）。
 
@@ -51,6 +56,9 @@ def decide_daily_mode(
         return DailyRunMode.SKIP_BACKLOG, [
             f"open holds {open_hold_count} >= MAX_HELD_EPISODES {max_held}"
         ]
+    if budget is not None and not budget.submit_allowed:
+        # 企画・台本・絵コンテ（無課金）は進め、production の前で保留する（ADR-0061）
+        return DailyRunMode.PAID_HELD, [budget.decision_reason]
     worst = worst_breaker_state(breaker_states)
     if worst is not BreakerState.CLOSED:
         return DailyRunMode.PAID_HELD, [f"provider breaker is {worst.value}"]

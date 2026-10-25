@@ -119,6 +119,14 @@ class ProviderBreakerOpenError(NeedsInputError):
         self.reason = reason
 
 
+class ProviderBudgetHeldError(ProviderBreakerOpenError):
+    """ローカルの月間予算が 0 / 未設定で、新しい有料 submit を始めなかった（ADR-0061）。
+
+    意図した運用状態であって障害ではない。台帳には何も残らず provider へは何も送らない。
+    ``reason`` は ``HoldReason`` の値（``budget_disabled`` / ``budget_unset``）。
+    """
+
+
 class UnsupportedModelError(ProviderUnavailableError):
     """指定（または config.toml 由来）の model がアカウントで使えない。設定の誤り。
 

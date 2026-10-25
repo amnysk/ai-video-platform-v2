@@ -224,3 +224,17 @@ async def test_a_day_skipped_for_backlog_is_not_a_daily_failure(session_factory)
     assert result.anomalies == []
     assert result.consecutive_daily_failures == 0
     assert notifier.kinds == []
+
+
+async def test_budget_holds_are_held_not_failed_and_stay_visible(session_factory) -> None:
+    """ADR-0061: 予算 0 / 未設定の保留も、残高不足と同じく失敗として通報しない（INV-77）。
+
+    予算由来の保留は ``reason = waiting_for_credits``（detail に budget_*）で、watchdog は
+    reason を見ず Episode 単位で分類する。
+    """
+    await _slot(session_factory)
+    ep = await _episode(session_factory, EpisodeStatus.STORYBOARD_READY, age_hours=12)
+    result, notifier = await _watch(session_factory, _Holds([_hold(ep, days=0.5)]))
+    assert await _open(session_factory, CHECK, STALL) == []
+    assert notifier.kinds == []
+    assert result.held_episodes == 1
