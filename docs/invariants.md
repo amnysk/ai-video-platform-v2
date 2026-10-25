@@ -820,6 +820,12 @@ waiver があるときだけ `WAIVED` になる。1 つでも欠ける・読め�
 / `tests/unit/test_release_reservation_waiver.py::test_waiver_must_require_zero_budget`
 / `tests/unit/test_release_reservation_waiver.py::test_missing_approver_bad_token_or_reason_blocks`
 / `tests/unit/test_release_reservation_waiver.py::test_running_workflows_block`
+/ `tests/unit/test_release_budget_setting_source.py::test_process_env_that_differs_from_dotenv_is_unavailable`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_a_valid_waiver_does_not_relax_any_other_check`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_a_waived_run_calls_only_protocol_read_methods`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_the_resubmit_guards_that_the_waiver_relies_on_still_exist`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_waiver_is_ignored_in_post_deploy_mode`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_a_waiver_bound_to_sha_a_does_not_apply_to_sha_b`
 / `tests/unit/test_release_reservation_waiver.py::test_evidence_hash_mismatch_or_missing_blocks`
 / `tests/unit/test_release_reservation_waiver.py::test_collector_failure_is_unknown`
 / `tests/unit/test_release_reservation_waiver.py::test_waived_on_a_non_waivable_check_is_blocked`

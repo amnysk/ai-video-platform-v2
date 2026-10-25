@@ -36,3 +36,24 @@
 | `test_default_waiver_path_and_fingerprint_are_stable` | 既定パスと指紋が決定的（所有者が同じ値を計算できる） |
 
 `tests/architecture/test_release_preflight_read_only.py`: 新しい SELECT（`pending_reservations`）が許可リスト内の読み取りに留まる。
+
+## 独立レビュー側の追加（`test_release_budget_setting_source.py` / `test_release_reservation_waiver_safety.py`）
+
+| テスト | 存在理由 |
+|---|---|
+| `test_dotenv_value_is_the_source` | 予算の出所は deploy が適用する repo の `.env` |
+| `test_process_env_alone_is_not_the_source` | `.env` に無く環境変数だけの 0 は採らない（UNKNOWN） |
+| `test_matching_process_env_is_accepted_after_quote_handling` | 同じ値（引用符・空白を除く）なら通す |
+| `test_process_env_that_differs_from_dotenv_is_unavailable` | 環境変数と `.env` が食い違うと、どちらが効くか不明なので READY にしない |
+| `test_production_shaped_reservation_is_waived` | 本番で実際に残っている予約の形（fal_video、dispatched 済み、raw/outcome なし）で成立する |
+| `test_production_shaped_reservation_is_not_waived_for_a_different_request_id` | その形でも request id が違えば免除しない |
+| `test_collectors_protocol_has_no_write_shaped_method` | collector の面に書き込み系の動詞が無い（台帳に触れない） |
+| `test_a_waived_run_calls_only_protocol_read_methods` | WAIVED の実行が呼ぶのは Protocol の読み取りだけ |
+| `test_the_new_collector_sql_is_one_select_and_collectors_are_in_the_read_only_scan` | 新 SQL は単一の SELECT で、read-only 走査の対象に collectors.py が入っている |
+| `test_waiver_requires_a_budget_that_forbids_submit` | waiver は submit 不可の予算（0）を前提にする。`evaluate_budget(0)` は不許可 |
+| `test_the_resubmit_guards_that_the_waiver_relies_on_still_exist` | 再送禁止を担う既存テストが消えたら落ちる（複製せず存在を固定） |
+| `test_a_valid_waiver_does_not_relax_any_other_check` | 他チェックを 1 項目ずつ壊しても、waiver の有無で結果が同一かつ READY にならない |
+| `test_the_fault_matrix_covers_several_distinct_checks` | 上のマトリクスが形だけで終わらず複数のチェックを実際に壊している |
+| `test_waiver_is_ignored_in_post_deploy_mode` | deploy 後検証に waiver は持ち越されない |
+| `test_a_waiver_bound_to_sha_a_does_not_apply_to_sha_b` | SHA 束縛 |
+| `test_the_raw_owner_token_never_appears_in_any_output` | 生の承認 token は text / JSON に出ない |
