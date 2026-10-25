@@ -207,6 +207,8 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
 `provider_reservations` が BLOCKED のとき、所有者が照合できない 1 件に限り、台帳を書かずに release を通せる。
 予約は `reserved` のまま・再送は禁止のまま。条件は 1 つでも欠けると BLOCKED（予算が明示的な 0、実行中の
 workflow 0、`reserved` がちょうど 1 件、期限 72 時間以内）。`release/` は ignore なのでコミットされない。
+予算は repo の `.env` の `FAL_MONTHLY_BUDGET_USD=0` を読む。シェルに同名の環境変数があって `.env` と
+違うと UNKNOWN になる（compose は環境変数を優先するため。`unset FAL_MONTHLY_BUDGET_USD` してから実行する）。
 
 `release/waivers/<sha>-reservations.json`（`--reservation-waiver PATH` で変更可）:
 

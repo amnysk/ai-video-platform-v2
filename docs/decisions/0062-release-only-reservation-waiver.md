@@ -20,7 +20,10 @@ preflight の `provider_reservations` に限り、所有者が書いた waiver �
 **台帳は一切書かない**（予約は `reserved` のまま、再送は禁止のまま）。waiver は次を全て満たすときだけ有効:
 SHA 束縛、`reserved` がちょうど 1 件でその id・provider request id と行の指紋（sha256）が一致、
 所有者承認参照（`OWNER-<yyyymmdd>-<id>`）、72 時間以内の期限、証跡ファイルの sha256、
-予算設定が明示的な 0（`evaluate_budget` が `DISABLED`）、実行中の workflow が 0。1 つでも欠ければ BLOCKED。
+予算設定が明示的な 0（`evaluate_budget` が `DISABLED`）、実行中の workflow が 0。
+予算設定の出所は repo の `.env`（deploy が適用する値）。プロセス環境に `FAL_MONTHLY_BUDGET_USD` があって
+`.env` と（strip・引用符を除いて）違う場合は、compose の補間で環境変数が勝ちうるためどちらが効くか確定できず、
+collector が `CollectorUnavailable` を投げて UNKNOWN になる（READY にしない）。1 つでも欠ければ BLOCKED。
 `WAIVED` は `WAIVABLE_CHECKS`（`provider_reservations` のみ）でだけ必須チェックを満たし、他のチェックの
 `WAIVED` は総合 BLOCKED。承認済みレポートも `provider_reservations` の `WAIVED` だけを許す。
 waiver は preflight の警告として出力に残り（owner 承認参照は指紋のみ）、deploy 後検証には持ち越さない。

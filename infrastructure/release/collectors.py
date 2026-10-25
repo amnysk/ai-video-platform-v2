@@ -256,10 +256,18 @@ class RealCollectors:
         ]
 
     def paid_budget_setting(self) -> str | None:
-        """``FAL_MONTHLY_BUDGET_USD`` の生の値。環境変数が先、次に repo の ``.env``。"""
-        return os.environ.get("FAL_MONTHLY_BUDGET_USD") or _dotenv_value(
-            self._repo / ".env", "FAL_MONTHLY_BUDGET_USD"
-        )
+        """``FAL_MONTHLY_BUDGET_USD`` の生の値。出所は repo の ``.env``（deploy が適用する値）。
+
+        プロセス環境に同じキーがあって ``.env`` と違う（``.env`` に無い場合を含む）なら、どちらが
+        効くか確定できないので ``CollectorUnavailable``（→ UNKNOWN。READY にしない / ADR-0062）。
+        """
+        from_file = _dotenv_value(self._repo / ".env", "FAL_MONTHLY_BUDGET_USD")
+        from_env = os.environ.get("FAL_MONTHLY_BUDGET_USD")
+        if from_env is not None and from_env.strip().strip("\"'") != from_file:
+            raise CollectorUnavailable(
+                "FAL_MONTHLY_BUDGET_USD: process environment differs from the repo .env"
+            )
+        return from_file
 
     def unhealthy_services(self) -> list[str]:
         """compose project の container で Health が unhealthy のもの（読み取りのみ）。"""
