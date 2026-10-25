@@ -82,10 +82,34 @@ CODEX_ALLOWED_MODELS=<probe で通った model>
 CODEX_REQUIRE_PINNED_MODEL=true
 ```
 
-反映: `docker compose up -d script-worker storyboard-worker scene-alternative-worker`（再作成）。
+反映（**`--no-deps --no-build --pull never` を必ず付ける**。`--no-deps` が無いと依存先まで再作成の
+対象になり、`--no-build` / `--pull never` が無いと image が変わる）:
+
+```
+docker compose up -d --no-deps --no-build --pull never --dry-run script-worker storyboard-worker scene-alternative-worker
+# dry-run の Recreate が 3 worker だけであることを確認してから --dry-run を外す
+```
+
+注意: `docker compose config --hash` で実行中の hash と比べると、`.env` と無関係に postgres / minio /
+temporal / temporal-ui が「差あり」と出ることがある（compose の過去の変更による既存のずれ）。
+`up` の対象を 3 worker に限る限り再作成されない。実行前に Running の Workflow が 0 件で、
+codex プロセスが無いこと（`temporal workflow count --query 'ExecutionStatus="Running"'`）を確かめる。
 3 つの worker は compose の `x-codex-env` から同じ値を読む。確認は読み取りだけで足りる:
 `python scripts/codex-model-preflight.py`（利用枠を使わない）。日次の入口（ADR-0058）は、
 許可リスト外の model / 未固定を Codex を呼ぶ前に止める。
+
+## 実施記録（2026-10-25）
+
+- 実測: 本番 script-worker コンテナ内 codex 0.154.0、`-m gpt-5.6-sol` で成功（6,759 tokens、
+  `model_not_found` なし）。`gpt-5.6-sol` を正式な model とする。
+- 所有者の承認のもと、本番の `.env`（`claude-production-autopilot/.env`、daily-hardening の `.env` は
+  そのシンボリックリンク）に `CODEX_MODEL=gpt-5.6-sol` / `CODEX_ALLOWED_MODELS=gpt-5.6-sol` /
+  `CODEX_REQUIRE_PINNED_MODEL=true` を追記し、3 worker だけを上記のコマンドで再作成した。
+- **本番は PR #18 より前の compose / image（80775c0）のまま**。現在のコンテナに渡るのは
+  `CODEX_MODEL` だけで、`CODEX_ALLOWED_MODELS` / `CODEX_REQUIRE_PINNED_MODEL` は compose が渡さず
+  Settings も読まない（`.env` に書いてあるだけ）。両者の強制は PR #18 の反映後に効く。
+- 再作成後の確認: 3 worker とも healthy、`CODEX_MODEL=gpt-5.6-sol`、`Settings().codex_model` も同値。
+  他のコンテナの ID・image・起動時刻は変わっていない。
 
 ## 提案する変更（承認後に実施）
 
