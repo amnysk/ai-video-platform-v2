@@ -19,6 +19,7 @@ from typing import Any
 
 from sqlalchemy.engine import make_url
 
+from domain.provider.reconciliation import request_id_from_ref
 from domain.release_preflight import (
     APP_IMAGES,
     COMPOSE_PROJECT,
@@ -27,6 +28,7 @@ from domain.release_preflight import (
     CollectorUnavailable,
     HeadState,
     Relation,
+    ReservationView,
     TargetInfo,
 )
 from infrastructure.config import Settings
@@ -204,6 +206,20 @@ class RealCollectors:
             raise CollectorUnavailable(f"database: {type(exc).__name__}") from exc
         return None if row is None else row[0]
 
+    def _select_all(self, sql: str) -> list[Any]:
+        import psycopg
+
+        url = make_url(self.settings.database_url).set(drivername="postgresql")
+        try:
+            with psycopg.connect(
+                url.render_as_string(hide_password=False),
+                connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
+                options="-c default_transaction_read_only=on",
+            ) as conn:
+                return list(conn.execute(sql).fetchall())  # type: ignore[arg-type]
+        except psycopg.Error as exc:
+            raise CollectorUnavailable(f"database: {type(exc).__name__}") from exc
+
     def db_alembic_version(self) -> str | None:
         value = self._select_one("SELECT version_num FROM alembic_version")
         return None if value is None else str(value)
@@ -211,6 +227,38 @@ class RealCollectors:
     def pending_reservation_count(self) -> int:
         return int(
             self._select_one("SELECT count(*) FROM provider_reservations WHERE status = 'reserved'")
+        )
+
+    def pending_reservations(self) -> list[ReservationView]:
+        """未照合（``reserved``）の予約行。waiver の照合用（ADR-0062）。SELECT だけ。"""
+        rows = self._select_all(
+            "SELECT id, provider, status, provider_job_ref, estimated_cost_usd, reserved_at,"
+            " dispatched_at, raw_output_key, outcome_artifact_id"
+            " FROM provider_reservations WHERE status = 'reserved' ORDER BY id"
+        )
+
+        def text(value: Any) -> str | None:
+            return None if value is None else str(value)
+
+        return [
+            ReservationView(
+                id=str(r[0]),
+                provider=str(r[1]),
+                status=str(r[2]),
+                provider_request_id=request_id_from_ref(r[3]),
+                estimated_cost_usd=text(r[4]),
+                reserved_at=r[5].isoformat(),
+                dispatched_at=None if r[6] is None else r[6].isoformat(),
+                raw_output_key=text(r[7]),
+                outcome_artifact_id=text(r[8]),
+            )
+            for r in rows
+        ]
+
+    def paid_budget_setting(self) -> str | None:
+        """``FAL_MONTHLY_BUDGET_USD`` の生の値。環境変数が先、次に repo の ``.env``。"""
+        return os.environ.get("FAL_MONTHLY_BUDGET_USD") or _dotenv_value(
+            self._repo / ".env", "FAL_MONTHLY_BUDGET_USD"
         )
 
     def unhealthy_services(self) -> list[str]:

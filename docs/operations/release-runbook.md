@@ -201,3 +201,34 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
   healthcheck の閾値を緩めて通すことはしない（ADR-0052）。docker が読めなければ UNKNOWN。
 - `provider_reservations`: 未照合が1件でもあれば現状 **BLOCKED**（一律）。対象 Episode・provider・変更範囲に基づく
   リスクベース判定は未実装（P2）。`scripts/reconcile-reservations.py list` で状態を確認する（ADR-0053）。
+
+## 未照合予約の release 限定 waiver（ADR-0062 / INV-85）
+
+`provider_reservations` が BLOCKED のとき、所有者が照合できない 1 件に限り、台帳を書かずに release を通せる。
+予約は `reserved` のまま・再送は禁止のまま。条件は 1 つでも欠けると BLOCKED（予算が明示的な 0、実行中の
+workflow 0、`reserved` がちょうど 1 件、期限 72 時間以内）。`release/` は ignore なのでコミットされない。
+
+`release/waivers/<sha>-reservations.json`（`--reservation-waiver PATH` で変更可）:
+
+```json
+{
+  "kind": "release_reservation_waiver",
+  "sha": "<40hex>",
+  "reservation_id": "<provider_reservations.id>",
+  "provider_request_id": "<provider_job_ref の request_id>",
+  "reservation_fingerprint": "<下記>",
+  "approver": "owner",
+  "owner_approval": "OWNER-<yyyymmdd>-<id>",
+  "approved_at": "<tz つき ISO>",
+  "expires_at": "<approved_at から 72 時間以内>",
+  "reason": "<なぜ課金なし・再送しないと判断したか>",
+  "required_budget_usd": "0",
+  "evidence": [{"path": "release/evidence/<file>", "sha256": "<sha256sum の値>"}]
+}
+```
+
+- 証跡のハッシュ: `sha256sum release/evidence/<file>`
+- 指紋: 一度 waiver を（指紋を仮の値にして）置いて preflight を実行すると、BLOCKED の `data`
+  （`--json`）に `expected_reservation_fingerprint` が出る。行の内容（id・request id・費用・時刻）が
+  自分の確認と一致することを見てから waiver に写す。計算は `domain.release_preflight.reservation_fingerprint`。
+- 結果は `provider_reservations: WAIVED` と警告行。承認済みレポートに含めてよいのはこのチェックの WAIVED だけ。

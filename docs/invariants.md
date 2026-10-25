@@ -789,3 +789,43 @@ tests の `conftest.py` は全 PostgreSQL 接続の文の入口にも同じ検�
 / `tests/unit/test_budget_zero_daily_workflows.py::test_zero_or_unset_budget_plans_scripts_then_holds_and_ends_normally`
 / `tests/contract/test_fal_budget_wiring.py` / `tests/contract/test_compose_workers.py::test_per_worker_minimal_env`
 / `tests/unit/test_hold_watchdog_classification.py::test_budget_holds_are_held_not_failed_and_stay_visible`
+
+## W. release の未照合予約 waiver（ADR-0062）
+
+### INV-85 未照合予約の waiver は release 限定・1 件限り・期限つきで、台帳を書かず、`provider_reservations` 以外を免除しない（ADR-0062）
+`provider_reservations` は、`reserved` がちょうど 1 件で、その id・provider request id・行の指紋と、SHA・
+所有者承認参照・72 時間以内の期限・証跡の sha256・予算設定が明示的な 0・実行中 workflow 0 が全て揃う
+waiver があるときだけ `WAIVED` になる。1 つでも欠ける・読めない・件数が読み取り中に変わる・別の `reserved`
+行がある場合は BLOCKED。waiver が無ければ従来どおり BLOCKED（detail も同じ）、件数 0 なら waiver は無視。
+`WAIVED` は `WAIVABLE_CHECKS` でだけ必須を満たし、他のチェックでは総合 BLOCKED。予約は `reserved` のまま
+で台帳・DB は書かない（再送禁止は維持）。出力に所有者承認の生 token は出さない（指紋のみ）。
+**機械検査**: `tests/unit/test_release_reservation_waiver.py::test_single_target_reservation_with_all_conditions_is_waived_and_ready`
+/ `tests/unit/test_release_reservation_waiver.py::test_explicit_zero_budget_is_accepted`
+/ `tests/unit/test_release_reservation_waiver.py::test_count_zero_ignores_the_waiver`
+/ `tests/unit/test_release_reservation_waiver.py::test_no_waiver_file_keeps_the_original_blocked_detail`
+/ `tests/unit/test_release_reservation_waiver.py::test_a_second_reserved_row_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_count_changing_during_the_read_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_expired_waiver_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_window_over_72_hours_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_expiry_not_after_approval_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_approved_in_the_future_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_naive_times_block`
+/ `tests/unit/test_release_reservation_waiver.py::test_request_id_mismatch_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_reservation_id_mismatch_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_wrong_sha_and_wrong_kind_block`
+/ `tests/unit/test_release_reservation_waiver.py::test_unparseable_waiver_is_blocked_not_unknown`
+/ `tests/unit/test_release_reservation_waiver.py::test_fingerprint_mismatch_blocks_when_the_row_changed`
+/ `tests/unit/test_release_reservation_waiver.py::test_row_that_is_not_reserved_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_only_an_explicit_zero_budget_is_accepted`
+/ `tests/unit/test_release_reservation_waiver.py::test_waiver_must_require_zero_budget`
+/ `tests/unit/test_release_reservation_waiver.py::test_missing_approver_bad_token_or_reason_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_running_workflows_block`
+/ `tests/unit/test_release_reservation_waiver.py::test_evidence_hash_mismatch_or_missing_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_collector_failure_is_unknown`
+/ `tests/unit/test_release_reservation_waiver.py::test_waived_on_a_non_waivable_check_is_blocked`
+/ `tests/unit/test_release_reservation_waiver.py::test_waived_counts_as_satisfied_only_for_reservations`
+/ `tests/unit/test_release_reservation_waiver.py::test_approved_report_accepts_waived_reservations_only`
+/ `tests/unit/test_release_reservation_waiver.py::test_other_checks_are_identical_with_and_without_the_waiver_file`
+/ `tests/unit/test_release_reservation_waiver.py::test_text_and_json_show_waived_with_a_warning`
+/ `tests/unit/test_release_reservation_waiver.py::test_default_waiver_path_and_fingerprint_are_stable`
+/ `tests/architecture/test_release_preflight_read_only.py`

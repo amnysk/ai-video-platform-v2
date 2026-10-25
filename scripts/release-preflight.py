@@ -65,6 +65,10 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="前の SHA へ戻す preflight / 事後検証（DB が先でも expand-only なら判定する）",
     )
+    p.add_argument(
+        "--reservation-waiver",
+        help="未照合予約の release 限定 waiver（既定 release/waivers/<sha>-reservations.json）",
+    )
     p.add_argument("--verify-post-deploy", action="store_true")
     p.add_argument(
         "--pre-report", help="--verify-post-deploy: deploy 前の preflight の --json 出力"
@@ -107,6 +111,7 @@ def _run(args: argparse.Namespace, collectors: Collectors | None, now: datetime 
         approved_report=args.approved_report,
         evidence_max_age_hours=args.evidence_max_age_hours,
         rollback=args.rollback,
+        reservation_waiver=args.reservation_waiver,
     )
     report = run_preflight(request, collectors, now or datetime.now(UTC))
     print(report_json(report) if args.json else render_text(report))

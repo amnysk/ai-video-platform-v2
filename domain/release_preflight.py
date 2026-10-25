@@ -15,12 +15,14 @@ import json
 import re
 import tokenize
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Protocol
 
 from contracts.ci import CI_GATE_JOB_NAME
+from contracts.provider_health import BudgetStatus
 from contracts.release import (
     STAGING_DB_NAME,
     STAGING_ENVIRONMENT_MARK,
@@ -28,6 +30,8 @@ from contracts.release import (
     TEST_DB_SUFFIX,
 )
 from domain.backup.manifest import drill_problems
+from domain.budget_gate import evaluate_budget
+from domain.provider.reconciliation import is_owner_approval_reference
 
 # ------------------------------------------------------------------ 語彙
 
@@ -36,6 +40,8 @@ class Status(StrEnum):
     PASS = "PASS"
     BLOCKED = "BLOCKED"
     UNKNOWN = "UNKNOWN"
+    #: 所有者が期限つきで認めた例外（ADR-0062）。``WAIVABLE_CHECKS`` のチェックでだけ成立する
+    WAIVED = "WAIVED"
 
 
 class Overall(StrEnum):
@@ -133,6 +139,11 @@ TARGET_BOUND_CHECKS = frozenset(
     }
 )
 
+#: WAIVED を認めるチェック。他のチェックの WAIVED は BLOCKED（ADR-0062 / INV-85）
+WAIVABLE_CHECKS = frozenset({CHECK_RESERVATIONS})
+WAIVER_KIND = "release_reservation_waiver"
+MAX_WAIVER_HOURS = 72.0
+
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -183,6 +194,23 @@ class Request:
     evidence_max_age_hours: float = DEFAULT_EVIDENCE_MAX_AGE_HOURS
     #: 前の SHA へ戻す preflight / 事後検証（DB が target より先に進んでいることを明示的に判定する）
     rollback: bool = False
+    #: 未照合予約の release 限定 waiver（ADR-0062）。既定は default_waiver_path
+    reservation_waiver: str | None = None
+
+
+@dataclass(frozen=True)
+class ReservationView:
+    """``provider_reservations`` の ``reserved`` 行の読み取りビュー（waiver 照合用。ADR-0062）。"""
+
+    id: str
+    provider: str
+    status: str
+    provider_request_id: str | None
+    estimated_cost_usd: str | None
+    reserved_at: str
+    dispatched_at: str | None
+    raw_output_key: str | None
+    outcome_artifact_id: str | None
 
 
 @dataclass(frozen=True)
@@ -209,6 +237,8 @@ class Collectors(Protocol):
     def adr_text(self, rev: str, number: str) -> str | None: ...
     def running_workflow_count(self) -> int: ...
     def pending_reservation_count(self) -> int: ...
+    def pending_reservations(self) -> Sequence[ReservationView]: ...
+    def paid_budget_setting(self) -> str | None: ...
     def unhealthy_services(self) -> Sequence[str]: ...
     def schedule_states(self) -> Mapping[str, Mapping[str, object]]: ...
     def required_queues(self) -> Sequence[str]: ...
@@ -225,12 +255,20 @@ def aggregate(results: Sequence[CheckResult], required: Sequence[str]) -> Overal
     """BLOCKED > UNKNOWN > READY。必須が欠けたら UNKNOWN。READY は必須が全て PASS のときだけ。"""
     if any(r.status is Status.BLOCKED for r in results):
         return Overall.BLOCKED
+    if any(r.status is Status.WAIVED and r.name not in WAIVABLE_CHECKS for r in results):
+        return Overall.BLOCKED
     by_name = {r.name: r.status for r in results}
     if any(r.status is Status.UNKNOWN for r in results):
         return Overall.UNKNOWN
-    if any(by_name.get(name) is not Status.PASS for name in required):
+    if any(_unsatisfied(name, by_name.get(name)) for name in required):
         return Overall.UNKNOWN
     return Overall.READY
+
+
+def _unsatisfied(name: str, status: Status | None) -> bool:
+    if status is Status.WAIVED:
+        return name not in WAIVABLE_CHECKS
+    return status is not Status.PASS
 
 
 def exit_code(overall: Overall) -> int:
@@ -239,6 +277,10 @@ def exit_code(overall: Overall) -> int:
 
 def default_approval_path(sha: str) -> str:
     return f"release/approvals/{sha}.json"
+
+
+def default_waiver_path(sha: str) -> str:
+    return f"release/waivers/{sha}-reservations.json"
 
 
 def default_replay_path(sha: str) -> str:
@@ -305,7 +347,7 @@ def run_preflight(req: Request, c: Collectors, now: datetime) -> Report:
         dependent(CHECK_ALEMBIC, lambda: _check_alembic(req, c, deployed_box[0]))
         dependent(CHECK_MIGRATION, lambda: _check_migration(req, c, deployed_box[0]))
         results.append(_guard(CHECK_RUNNING, lambda: _check_running(c)))
-        results.append(_guard(CHECK_RESERVATIONS, lambda: _check_reservations(c)))
+        results.append(_guard(CHECK_RESERVATIONS, lambda: _check_reservations(req, c, now)))
         results.append(_guard(CHECK_SCHEDULES, lambda: _check_schedule_snapshot(c)))
         results.append(_guard(CHECK_SERVICE_HEALTH, lambda: _check_service_health(c)))
         results.append(_guard(CHECK_BACKUP, lambda: _check_backup(req, c, now)))
@@ -1042,16 +1084,155 @@ def _check_running(c: Collectors) -> CheckResult:
     )
 
 
-def _check_reservations(c: Collectors) -> CheckResult:
+def reservation_fingerprint(view: ReservationView) -> str:
+    """予約行の正規 JSON の sha256。waiver が「この行」に束縛されていることの証明（ADR-0062）。"""
+    canonical = json.dumps(asdict(view), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return _sha256(canonical)
+
+
+def _check_reservations(req: Request, c: Collectors, now: datetime) -> CheckResult:
     n = c.pending_reservation_count()
-    if n > 0:
-        return CheckResult(
-            CHECK_RESERVATIONS,
-            Status.BLOCKED,
-            f"{n} unreconciled provider reservation(s) (resend risk, ADR-0013)",
-            {"count": n},
-        )
-    return CheckResult(CHECK_RESERVATIONS, Status.PASS, "no pending reservation", {"count": 0})
+    if n == 0:
+        return CheckResult(CHECK_RESERVATIONS, Status.PASS, "no pending reservation", {"count": 0})
+    blocked = CheckResult(
+        CHECK_RESERVATIONS,
+        Status.BLOCKED,
+        f"{n} unreconciled provider reservation(s) (resend risk, ADR-0013)",
+        {"count": n},
+    )
+    path = req.reservation_waiver or default_waiver_path(req.target_sha)
+    text = c.read_text(path)
+    if text is None:
+        return blocked
+    waiver = _load_json(text)
+    if waiver is None:
+        return _waiver_blocked(blocked, n, "waiver is not a JSON object")
+    problem = _waiver_problem(waiver, req, c, now, n)
+    if problem is not None:
+        reason, extra = problem
+        return _waiver_blocked(blocked, n, reason, extra)
+    token = str(waiver["owner_approval"])
+    warning = (
+        f"1 unreconciled reservation {waiver['reservation_id']} remains reserved "
+        "(not reconciled; resubmit forbidden)"
+    )
+    return CheckResult(
+        CHECK_RESERVATIONS,
+        Status.WAIVED,
+        f"WAIVED for release {req.target_sha[:12]} until {waiver['expires_at']}: {warning}"
+        " (warning)",
+        {
+            "count": n,
+            "waived": True,
+            "warning": warning,
+            "reservation_id": waiver["reservation_id"],
+            "provider_request_id": waiver["provider_request_id"],
+            "expires_at": waiver["expires_at"],
+            "approver": waiver["approver"],
+            "owner_approval_fingerprint": _sha256(token)[:16],
+        },
+    )
+
+
+def _waiver_blocked(
+    base: CheckResult, n: int, reason: str, extra: Mapping[str, Any] | None = None
+) -> CheckResult:
+    return CheckResult(
+        CHECK_RESERVATIONS,
+        Status.BLOCKED,
+        f"{base.detail}; waiver rejected: {reason}",
+        {"count": n, "waiver_problem": reason, **(extra or {})},
+    )
+
+
+def _nonempty(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _waiver_problem(
+    w: Mapping[str, Any], req: Request, c: Collectors, now: datetime, n: int
+) -> tuple[str, Mapping[str, Any]] | None:
+    """waiver が全条件を満たさなければ (理由, 補助データ)。満たせば None（ADR-0062）。"""
+    reason = _waiver_identity(w, req) or _waiver_dates(w, now) or _waiver_environment(w, c)
+    if reason:
+        return reason, {}
+    rows = list(c.pending_reservations())
+    if len(rows) != n:
+        return f"pending reservation count changed during the read ({n} -> {len(rows)})", {}
+    if len(rows) != 1:
+        return f"{len(rows)} reserved rows; a waiver covers exactly one", {}
+    row = rows[0]
+    if row.id != w["reservation_id"] or row.provider_request_id != w["provider_request_id"]:
+        return "reservation id / provider request id do not match the only reserved row", {}
+    if row.status != "reserved":
+        return f"reservation is {row.status!r}, not 'reserved'", {}
+    expected = reservation_fingerprint(row)
+    if w.get("reservation_fingerprint") != expected:
+        return "reservation_fingerprint does not match the current row", {
+            "expected_reservation_fingerprint": expected
+        }
+    return _waiver_evidence(w, c)
+
+
+def _waiver_identity(w: Mapping[str, Any], req: Request) -> str | None:
+    if w.get("kind") != WAIVER_KIND:
+        return f"kind must be {WAIVER_KIND!r}"
+    if w.get("sha") != req.target_sha:
+        return "waiver is for a different SHA"
+    for key in ("reservation_id", "provider_request_id", "approver", "reason"):
+        if not _nonempty(w.get(key)):
+            return f"{key} must be a non-empty string"
+    token = w.get("owner_approval")
+    if not isinstance(token, str) or not is_owner_approval_reference(token):
+        return "owner_approval must be OWNER-<yyyymmdd>-<id>"
+    return None
+
+
+def _waiver_dates(w: Mapping[str, Any], now: datetime) -> str | None:
+    approved = _parse_time(w.get("approved_at"))
+    expires = _parse_time(w.get("expires_at"))
+    if approved is None or approved.tzinfo is None or expires is None or expires.tzinfo is None:
+        return "approved_at / expires_at must be timezone-aware ISO times"
+    if approved - now > CLOCK_SKEW:
+        return "approved_at is in the future"
+    if expires <= approved:
+        return "expires_at must be after approved_at"
+    if expires - approved > timedelta(hours=MAX_WAIVER_HOURS):
+        return f"waiver window exceeds {MAX_WAIVER_HOURS:g}h"
+    if now >= expires:
+        return "waiver has expired"
+    return None
+
+
+def _waiver_environment(w: Mapping[str, Any], c: Collectors) -> str | None:
+    if w.get("required_budget_usd") != "0":
+        return 'required_budget_usd must be "0"'
+    raw = c.paid_budget_setting()
+    try:
+        budget = Decimal(raw.strip()) if raw is not None and raw.strip() else None
+    except InvalidOperation:
+        budget = None
+    if budget is None or evaluate_budget(budget).status is not BudgetStatus.DISABLED:
+        return "the paid-provider monthly budget setting must be an explicit 0"
+    running = c.running_workflow_count()
+    if running != 0:
+        return f"{running} workflow(s) running (in-flight paid work)"
+    return None
+
+
+def _waiver_evidence(w: Mapping[str, Any], c: Collectors) -> tuple[str, Mapping[str, Any]] | None:
+    evidence = w.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        return "evidence must be a non-empty list of {path, sha256}", {}
+    for item in evidence:
+        if not isinstance(item, dict) or not _nonempty(item.get("path")):
+            return "evidence entries need a path", {}
+        body = c.read_text(item["path"])
+        if body is None:
+            return f"evidence file missing: {item['path']}", {}
+        if _sha256(body) != item.get("sha256"):
+            return f"evidence sha256 mismatch: {item['path']}", {}
+    return None
 
 
 def _check_service_health(c: Collectors) -> CheckResult:
@@ -1226,7 +1407,9 @@ def _approved_report_problem(text: str, req: Request) -> CheckResult | None:
     not_pass = [
         n
         for n in PRE_DEPLOY_REQUIRED
-        if n != CHECK_APPROVAL and by_name.get(n) != Status.PASS.value
+        if n != CHECK_APPROVAL
+        and by_name.get(n) != Status.PASS.value
+        and not (n in WAIVABLE_CHECKS and by_name.get(n) == Status.WAIVED.value)
     ]
     if not_pass:
         return CheckResult(
@@ -1444,6 +1627,10 @@ def render_text(report: Report) -> str:
     for name in report.required:
         if name not in have:
             lines.append(f"[UNKNOWN] {name}: not evaluated")
+    for r in report.results:
+        if r.status is Status.WAIVED:
+            warning = _printable(str(r.data.get("warning", "")))
+            lines.append(f"WARNING: {_printable(r.name)} WAIVED: {warning}")
     lines.append("")
     lines.append(f"OVERALL: {report.overall.value}")
     return "\n".join(lines)
