@@ -78,3 +78,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0060](./0060-check-vocabulary-widening-in-release-scan.md) | CHECK 語彙の拡張だけを、宣言と機械検査つきで release 走査の contract から外す | Proposed |
 | [0061](./0061-fal-budget-zero-is-a-managed-hold.md) | fal の月間予算が 0 / 未設定でも、日次は失敗せず有料 submit を 0 回のまま正常終了する（ローカル予算ゲート。migration なし） | Proposed |
 | [0062](./0062-release-only-reservation-waiver.md) | 未照合の provider 予約を、release に限り期限つき・1 件限りで waive する（台帳は書かない。migration なし） | Proposed |
+| [0063](./0063-fal-monthly-hard-cap.md) | `FAL_MONTHLY_BUDGET_USD` を月間のハードキャップにする（予約と同じトランザクションで強制。migration なし） | Proposed |

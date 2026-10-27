@@ -13,7 +13,8 @@ Episode 再開 API（``POST /episodes/{id}/resume`` = ``build_resume_plan`` → 
 3. 対象に未解放の保留が無い / Episode が ``blocked`` でない
 4. 対象に未照合の予約がある（``reserved`` で evidence なし。dispatched で provider 参照がある
    ものも含む。自動で再送しない / INV-15・INV-67）。既存の再開計画も同じ述語で拒否する
-5. 当月の費用（台帳の見積額。受理されなかった拒否は 0）+ 追加の見積が予算の上限を超える。
+5. 当月の費用（台帳の見積額。受理されなかった拒否は 0。月間ハードキャップと同じ定義 / ADR-0063）
+   + 追加の見積が予算の上限を超える。
    上限が未設定なら拒否（課金を伴う再開を上限なしで通さない）
 6. 承認 token（``OWNER-<yyyymmdd>-<id>``。認証ではない）または根拠（evidence）が無い
 
@@ -37,19 +38,22 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from contracts.pipeline import PipelineStage
 from contracts.provider_health import (
     HELD_EPISODE_STATUSES,
-    PROVIDER_FAMILY,
     RESUME_MAX_CONCURRENCY,
     BreakerState,
     ProviderAccount,
     ProviderFamily,
 )
 from contracts.states import EpisodeStatus, ProviderCall, ReservationStatus
+from domain.budget_gate import month_start_utc
 from domain.pipeline.resume_plan import ReservationSummary, build_resume_plan
-from domain.provider.cost import cost_state, counted_cost_usd
 from domain.provider.reconciliation import is_owner_approval_reference
 from infrastructure.db.models import EpisodeRow, ProviderReservationRow
 from infrastructure.db.provider_health_repositories import PostgresProviderHealth
-from infrastructure.db.repositories import EpisodeRepository, ProviderReservationRepository
+from infrastructure.db.repositories import (
+    EpisodeRepository,
+    ProviderReservationRepository,
+    month_counted,
+)
 
 DEFAULT_ACCOUNT = ProviderAccount(ProviderFamily.FAL)
 
@@ -123,33 +127,19 @@ class ApiResumeClient:
         return ResumeStarted(str(body.get("workflow_id", "")), str(body.get("target_stage", "")))
 
 
-def month_start(now: datetime) -> datetime:
-    return now.astimezone(UTC).replace(
-        day=1, hour=0, minute=0, second=0, microsecond=0, tzinfo=None
-    )
+#: 月初の境界は ``domain.budget_gate.month_start_utc`` の 1 箇所（上限検査と共有 / ADR-0063）
+month_start = month_start_utc
 
 
-async def month_spend_usd(session: AsyncSession, account: ProviderAccount, *, now: datetime):
-    """当月（UTC）にこのアカウントで数える費用。受理されなかった拒否は 0、曖昧は見積額。"""
-    providers = [p.value for p, family in PROVIDER_FAMILY.items() if family is account.family]
-    since = month_start(now)
-    rows = await session.scalars(
-        select(ProviderReservationRow).where(
-            ProviderReservationRow.provider.in_(providers),
-            ProviderReservationRow.reserved_at >= since,
-        )
-    )
-    total = Decimal("0")
-    for row in rows:
-        state = cost_state(
-            status=ReservationStatus(row.status),
-            dispatched=row.dispatched_at is not None,
-            has_job_ref=row.provider_job_ref is not None,
-            has_raw_output=row.raw_output_key is not None,
-            reconciled_by=row.reconciled_by,
-        )
-        total += counted_cost_usd(state, row.estimated_cost_usd)
-    return total
+async def month_spend_usd(
+    session: AsyncSession, account: ProviderAccount, *, now: datetime
+) -> Decimal:
+    """当月（UTC）にこのアカウントで数える費用。月間ハードキャップと**同じ定義**（ADR-0063）。
+
+    ``infrastructure.db.repositories.month_counted`` を呼ぶだけ（定義を 2 箇所に書かない）。
+    受理されなかったと確定した拒否だけ 0、それ以外は見積額（未 dispatch の予約・曖昧を含む）。
+    """
+    return (await month_counted(session, now=now, family=account.family)).total
 
 
 async def unreconciled_for_episode(

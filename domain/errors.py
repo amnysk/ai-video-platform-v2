@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 from contracts.states import FailureClass, RejectedInput, RejectionCategory
+from domain.budget_gate import CapDecision
 
 
 class DomainError(Exception):
@@ -125,6 +127,52 @@ class ProviderBudgetHeldError(ProviderBreakerOpenError):
     意図した運用状態であって障害ではない。台帳には何も残らず provider へは何も送らない。
     ``reason`` は ``HoldReason`` の値（``budget_disabled`` / ``budget_unset``）。
     """
+
+
+class ProviderMonthlyBudgetExceededError(ProviderBudgetHeldError):
+    """月間のハードキャップ（ローカル月間予算）を超える新規予約を作らなかった（ADR-0063）。
+
+    予約行は作られず、provider へは何も送らない。クラッシュではなく管理された保留
+    （``needs_input`` → ``WAITING_FOR_CREDITS``）。数値は ``CapDecision`` と同じ（secret 無し）。
+    ``reason`` は ``HoldReason`` の値、``decision_reason`` は ``monthly_cap_exceeded`` /
+    ``unknown_cost`` / ``invalid_input``。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        account_key: str = "",
+        reason: str = "",
+        decision_reason: str = "monthly_cap_exceeded",
+        month_counted: Decimal = Decimal("0"),
+        estimate: Decimal = Decimal("0"),
+        cap: Decimal = Decimal("0"),
+        remaining: Decimal = Decimal("0"),
+    ) -> None:
+        super().__init__(message, account_key=account_key, reason=reason)
+        self.decision_reason = decision_reason
+        self.month_counted = month_counted
+        self.estimate = estimate
+        self.cap = cap
+        self.remaining = remaining
+
+    @classmethod
+    def from_decision(
+        cls, decision: CapDecision, *, account_key: str, reason: str
+    ) -> ProviderMonthlyBudgetExceededError:
+        return cls(
+            f"{account_key}: new reservation refused by the monthly cap ({decision.reason}): "
+            f"counted {decision.month_counted} + estimate {decision.estimate} "
+            f"vs cap {decision.cap}; no reservation was created and no paid call was made",
+            account_key=account_key,
+            reason=reason,
+            decision_reason=decision.reason,
+            month_counted=decision.month_counted,
+            estimate=decision.estimate,
+            cap=decision.cap,
+            remaining=decision.remaining,
+        )
 
 
 class UnsupportedModelError(ProviderUnavailableError):
