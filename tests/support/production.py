@@ -454,5 +454,6 @@ def digest_ref(sha256: str = SHA_B) -> dict[str, str]:
 
 
 #: 予算が正の判定。PaidJobRunner は budget=None を「未設定」として止める（ADR-0061）ので、
-#: 生成処理そのものを検査するテストは明示的に有効な予算を渡す
-ENABLED_BUDGET = evaluate_budget(Decimal("1"))
+#: 生成処理そのものを検査するテストは明示的に有効な予算を渡す。月間ハードキャップ（ADR-0063）
+#: が効くので、上限は 1 エピソードの見積（画像 6 枚 + 動画）より十分大きい値にする
+ENABLED_BUDGET = evaluate_budget(Decimal("1000"))

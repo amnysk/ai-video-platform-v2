@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, func, select, text, update
+from sqlalchemy import ColumnElement, Select, case, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,12 @@ from contracts.operations import (
     DailyEpisodeSlot,
     DailySlotClaim,
     OperationalSwitch,
+)
+from contracts.provider_health import (
+    PROVIDER_FAMILY,
+    HoldReason,
+    ProviderAccount,
+    ProviderFamily,
 )
 from contracts.schedule_guard import AnomalyKind
 from contracts.states import (
@@ -44,10 +50,18 @@ from contracts.topic_planning import (
     TopicPlanStatus,
 )
 from domain.artifact.entities import ArtifactMetadata
+from domain.budget_gate import (
+    CapDecision,
+    evaluate_cap,
+    month_key,
+    month_start_utc,
+    unknown_cost_decision,
+)
 from domain.episode.entities import Episode
 from domain.episode.transitions import EpisodeEvent, Rejected, transition_episode
 from domain.errors import (
     InvalidTransitionError,
+    ProviderMonthlyBudgetExceededError,
     ProviderRejection,
     ResubmitRejectedError,
     UnreconciledReservationError,
@@ -714,6 +728,55 @@ def input_lock_key(
     return int.from_bytes(digest[:8], "big", signed=True)
 
 
+def monthly_cap_lock_key(now: datetime) -> int:
+    """月間ハードキャップの advisory lock の鍵（符号付き 64bit。ADR-0063）。
+
+    ``sha256("fal-monthly-cap|YYYY-MM")``（UTC の月）。取る順序は固定: **月ロック → 入力ロック**。
+    """
+    digest = hashlib.sha256(f"fal-monthly-cap|{month_key(now)}".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+@dataclass(frozen=True, slots=True)
+class MonthCounted:
+    """当月（UTC）に fal 族で数える額（ADR-0063）。"""
+
+    total: Decimal
+    #: 数える行のうち見積が NULL のもの（費用が不明 = 上限の判定は拒否側）
+    unknown_rows: int
+
+
+async def month_counted(
+    session: AsyncSession, *, now: datetime, family: ProviderFamily = ProviderFamily.FAL
+) -> MonthCounted:
+    """当月の ``month_counted``。status / resume / 上限検査が共有する**唯一の定義**。
+
+    ``reserved_at >= 月初`` の ``family`` の全行（reserved / spent / abandoned）を数える。
+    除くのは費用区分が ``NOT_CHARGED`` の行だけ（``domain.provider.cost.cost_state`` が
+    ``reconciled_by == NOT_ACCEPTED_RECONCILER`` で決める区分を SQL に写したもの）。
+    集計は SQL の ``SUM``。
+    """
+    providers = [p.value for p, f in PROVIDER_FAMILY.items() if f is family]
+    table = ProviderReservationRow
+    estimate_missing = table.estimated_cost_usd.is_(None)
+    row = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(table.estimated_cost_usd), 0),
+                func.coalesce(func.sum(case((estimate_missing, 1), else_=0)), 0),
+            ).where(
+                table.provider.in_(providers),
+                table.reserved_at >= month_start_utc(now),
+                or_(
+                    table.reconciled_by.is_(None),
+                    table.reconciled_by != NOT_ACCEPTED_RECONCILER,
+                ),
+            )
+        )
+    ).one()
+    return MonthCounted(Decimal(str(row[0])), int(row[1]))
+
+
 class ProviderReservationRepository:
     """予約台帳（ADR-0013）。commit は呼び出し側の責務。
 
@@ -860,13 +923,26 @@ class ProviderReservationRepository:
         job_id: uuid.UUID | str | None = None,
         scene_id: str | None = None,
         estimated_cost_usd: Decimal | None = None,
+        monthly_cap_usd: Decimal | None = None,
+        now: datetime | None = None,
     ) -> ProviderReservation:
         """予約を INSERT する。呼び出し側がこの直後に commit すること。
+
+        **月間ハードキャップ（ADR-0063 / INV-86）**: ``monthly_cap_usd`` があり、``provider`` が
+        fal 族で、同じ ``idempotency_key`` の行がまだ無い（= 本当に新しい行）なら、INSERT と同じ
+        トランザクションで月ロックを取り（月ロック → 入力ロックの固定順序）、当月の
+        ``month_counted + estimate <= cap`` のときだけ INSERT する。超える・見積が不明なら
+        ``ProviderMonthlyBudgetExceededError``（行は作らない）。``None`` は検査なし（後方互換）。
 
         **再送ガード（ADR-0053 / INV-67）**: 同じ入力に、provider が成功を確認した（課金済み）
         予約、または未照合で結果が分からない予約が既にあれば、新しい idempotency key での
         予約を作らず ``ResubmitRejectedError``。provider に冪等キーは無いので、ここが最後の砦。
         """
+        moment = now or _now()
+        cap_applies = monthly_cap_usd is not None and PROVIDER_FAMILY.get(provider) is not None
+        if cap_applies:
+            # 月ロックは入力ロックより先（固定順序。逆順を作らない）
+            await self._lock_month(moment)
         # 同じ入力への「検査 → INSERT」を直列化する（PostgreSQL のみ。トランザクション終了で解放）。
         # 呼び出し側は reserve の直後に commit する規約なので、保持は短い
         await self._lock_input(episode_id, provider, scene_id, input_hash)
@@ -877,6 +953,14 @@ class ProviderReservationRepository:
             input_hash=input_hash,
             idempotency_key=idempotency_key,
         )
+        if cap_applies and monthly_cap_usd is not None:
+            await self._enforce_monthly_cap(
+                provider=provider,
+                idempotency_key=idempotency_key,
+                estimate=estimated_cost_usd,
+                cap=monthly_cap_usd,
+                now=moment,
+            )
         row = ProviderReservationRow(
             scene_id=scene_id,
             estimated_cost_usd=estimated_cost_usd,
@@ -888,13 +972,53 @@ class ProviderReservationRepository:
             input_hash=input_hash,
             round=round,
             status=ReservationStatus.RESERVED.value,
-            reserved_at=_now(),
+            reserved_at=moment,
         )
         self._session.add(row)
         await self._session.flush()
         reservation = _to_reservation(row)
         _defer_reservation(self._session, EventName.RESERVATION_RESERVED, "reserved", reservation)
         return reservation
+
+    async def _lock_month(self, now: datetime) -> None:
+        if self._session.get_bind().dialect.name != "postgresql":
+            return
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"), {"k": monthly_cap_lock_key(now)}
+        )
+
+    async def _enforce_monthly_cap(
+        self,
+        *,
+        provider: ProviderCall,
+        idempotency_key: str,
+        estimate: Decimal | None,
+        cap: Decimal,
+        now: datetime,
+    ) -> None:
+        """月ロックを持った状態で合計を読み、純粋関数で判定する。許可なら何もしない。"""
+        existing = await self._session.scalar(
+            select(ProviderReservationRow.id).where(
+                ProviderReservationRow.idempotency_key == idempotency_key
+            )
+        )
+        if existing is not None:
+            # 再試行 / replay / 再起動: 既存の冪等の経路に任せる。見積は既に月の合計に入っている
+            return
+        family = PROVIDER_FAMILY[provider]
+        counted = await month_counted(self._session, now=now, family=family)
+        decision: CapDecision
+        if estimate is None or counted.unknown_rows > 0:
+            decision = unknown_cost_decision(cap, counted.total, estimate)
+        else:
+            decision = evaluate_cap(cap, counted.total, estimate)
+        if decision.allowed:
+            return
+        raise ProviderMonthlyBudgetExceededError.from_decision(
+            decision,
+            account_key=ProviderAccount(family).key,
+            reason=HoldReason.WAITING_FOR_CREDITS.value,
+        )
 
     async def _lock_input(
         self,

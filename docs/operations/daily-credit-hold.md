@@ -71,3 +71,28 @@ pause しない）。
      日次は新しい Episode を作らない。
 - ログの追い方（OpenSearch が止まっていても）: `docker logs avp2-pipeline-worker-1 | grep -E 'provider.call.suppressed|daily gate'`
   （`docker logs avp2-production-image-worker-1` も同じ）。json-file の保持機構に残る。
+
+## 月間ハードキャップ（ADR-0063 / INV-86）
+
+正の `FAL_MONTHLY_BUDGET_USD` は**月間の上限**（USD）。新しい有料予約は `当月の合計 + その見積 <= 上限`
+（ちょうど等しいなら許可）のときだけ作られる。判定は予約の INSERT と同じトランザクションで行うので、
+並行する Episode / ブランドでも超えない（上限は fal 族で 1 つ。全ブランド共通）。
+
+- **当月の合計**: UTC の月初以降の fal の予約の見積の合計。状態は問わず数える（未 dispatch の `reserved`・曖昧・
+  課金前提を含む）。除くのは「受理されなかったことが確実」と確定した行だけ。実額の列は無いので見積で数える
+  （実際より多めに出る = 安全側）。実額は fal の請求画面で確認する。
+- **上限に達したとき**: 新しい予約は作られず fal へも何も送られない。保留（`WAITING_FOR_CREDITS`、Episode は `needs_input` の
+  保留）になり、保留の `snapshot.hold_detail.decision_reason` が `monthly_cap_exceeded`（`month_counted` / `estimate` /
+  `cap` / `remaining` つき）。ログは `provider.call.suppressed`（`decision_reason=monthly_cap_exceeded`）。
+  見積が不明（`unknown_cost`）のときも同じ経路で止まる。
+- **上限を上げる手順**（所有者が行う）: `.env` の `FAL_MONTHLY_BUDGET_USD` を上げる → 3 つの worker
+  （pipeline / production-image / production-video）を**再作成**する（予算は起動時に 1 回だけ読む）
+  → `scripts/provider-credits.py status` で `month_spend_usd` と保留を確認 → 承認 token つきの `resume`。
+  翌月（UTC）になれば合計は 0 から数え直すが、保留は自動では再開しない（`resume` が要る）。
+- **予算を 0 にしたとき**: 新規は止まる。進行中の予約（すでに作られた行）は取り消されず、照合は従来どおり。
+- **`unknown_cost` で止まったとき**: 当月に見積が NULL の予約行がある。`scripts/reconcile-reservations.py` で
+  照合するか、行の見積を所有者が確認して直すまで、上限の下でも新規は通らない。
+- **ログで見る**: `docker logs avp2-production-image-worker-1 | grep -E 'fal monthly hard cap|provider.call.suppressed'`
+  （起動時に上限を 1 回記録する）。
+- **競合・待ち**: 月ロックは予約の INSERT と commit の間だけ保持する（fal の呼び出し中は保持しない）。
+  同時の予約は直列化されるだけで失敗しない。ロック待ちが長いときは `pg_locks`（advisory）と長いトランザクションを確認する。

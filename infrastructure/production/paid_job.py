@@ -85,7 +85,7 @@ from contracts.provider_health import (
 )
 from contracts.states import ArtifactType, ProviderCall, RejectionCategory, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
-from domain.budget_gate import BudgetDecision, evaluate_budget
+from domain.budget_gate import BudgetDecision, evaluate_budget, evaluate_cap
 from domain.errors import (
     InvalidTransitionError,
     MediaValidationError,
@@ -96,6 +96,7 @@ from domain.errors import (
     ProviderInputFetchError,
     ProviderInputFetchRetryExhaustedError,
     ProviderJobFailedError,
+    ProviderMonthlyBudgetExceededError,
     ProviderPollDeadlineError,
     ProviderRefusalError,
     ProviderRejectedError,
@@ -117,6 +118,7 @@ from infrastructure.db.repositories import (
     ProviderRejectionRepository,
     ProviderReservation,
     ProviderReservationRepository,
+    month_counted,
 )
 from infrastructure.logging.context import log_context
 from infrastructure.logging.emit import emit, log_guard
@@ -270,6 +272,12 @@ class PaidJobRunner:
         #: ローカル月間予算の判定（起動時に ``evaluate_budget`` で作る。ADR-0061）。``None`` は
         #: 「予算未設定」として扱う（fail-closed）: 結線し忘れで有料 submit が通ることはない
         self._budget = budget if budget is not None else evaluate_budget(None)
+        # 月間ハードキャップ（ADR-0063）を起動時に 1 回記録する（変更には再作成が要る）
+        logger.info(
+            "fal monthly hard cap: budget_status=%s cap_usd=%s (read once at start)",
+            self._budget.status.value,
+            self._budget.cap_usd,
+        )
         self._store = store
         self._workdir = workdir
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
@@ -373,6 +381,8 @@ class PaidJobRunner:
                 # 済んだ工程の再開（sb1〜sb5 の再利用等）を抑止期間中でも止めない
                 if not prepared:
                     await self._check_budget_gate(spec)
+                    if candidate is None:  # 既存の予約の再開は新しい枠を使わない（見積は計上済み）
+                        await self._precheck_monthly_cap(spec, generator, request)
                     await self._check_breaker_gate(spec)
                     await self._check_auth_outage_gate(spec.provider)
                     await self._check_rejected_image_gate(spec)
@@ -392,6 +402,8 @@ class PaidJobRunner:
                     prepared = True
                 if candidate is None:
                     try:
+                        # 見積が出せなければ ``None``（reserve が unknown_cost で拒否）
+                        estimate = self._safe_estimate(generator, request)
                         candidate = await reservations.reserve(
                             episode_id=spec.episode_id,
                             job_id=spec.job_id,
@@ -400,9 +412,16 @@ class PaidJobRunner:
                             input_hash=spec.input_hash,
                             round=ledger_round,
                             scene_id=spec.scene_id,
-                            estimated_cost_usd=estimated_cost(generator.estimate_cost_usd(request)),
+                            estimated_cost_usd=estimate,
+                            # 月間ハードキャップ（ADR-0063）: INSERT と同じトランザクションで強制。
+                            # ENABLED 以外はここへ来る前に予算ゲートが止めている
+                            monthly_cap_usd=self._budget.cap_usd,
                         )
                         await session.commit()
+                    except ProviderMonthlyBudgetExceededError as exc:
+                        await session.rollback()  # 月ロックを放す。予約行は作られていない
+                        await self._deny_monthly_cap(spec, exc)
+                        raise
                     except IntegrityError:
                         # 並行する試行が同じラウンドを先に INSERT した。読み直して再開する
                         await session.rollback()
@@ -848,6 +867,89 @@ class PaidJobRunner:
             account_key=account.key,
             reason=reason.value,
         )
+
+    @staticmethod
+    def _safe_estimate(generator: AsyncJobGenerator, request: Any) -> Decimal | None:
+        try:
+            return estimated_cost(generator.estimate_cost_usd(request))
+        except Exception:
+            logger.exception("could not compute the cost estimate; the monthly cap fails closed")
+            return None
+
+    async def _precheck_monthly_cap(
+        self, spec: PaidJobSpec, generator: AsyncJobGenerator, request: Any
+    ) -> None:
+        """``prepare``（fal CDN へのアップロード）の前の、非原子的な早期検査（ADR-0063）。
+
+        権威は ``reserve`` の中の検査。ここは無駄なアップロードを避けるだけなので、
+        読めない・見積れないときは黙って通し、判断を ``reserve`` に任せる。
+        """
+        cap = self._budget.cap_usd
+        account = self._account(spec.provider)
+        if cap is None or account is None:
+            return
+        estimate = self._safe_estimate(generator, request)
+        if estimate is None:
+            return
+        try:
+            async with self._session_factory() as session:
+                counted = await month_counted(session, now=datetime.now(UTC), family=account.family)
+                await session.rollback()
+        except Exception:
+            logger.exception("monthly cap pre-check could not read the ledger; deferring")
+            return
+        if counted.unknown_rows:
+            return  # 不明は reserve が拒否する
+        decision = evaluate_cap(cap, counted.total, estimate)
+        if decision.allowed:
+            return
+        exc = ProviderMonthlyBudgetExceededError.from_decision(
+            decision, account_key=account.key, reason=HoldReason.WAITING_FOR_CREDITS.value
+        )
+        await self._deny_monthly_cap(spec, exc)
+        raise exc
+
+    async def _deny_monthly_cap(
+        self, spec: PaidJobSpec, exc: ProviderMonthlyBudgetExceededError
+    ) -> None:
+        """月間キャップによる拒否を既存の保留の経路に流す（クラッシュにしない / ADR-0063）。"""
+        account = self._account(spec.provider)
+        if account is None:
+            return
+        numbers = {
+            "month_counted": str(exc.month_counted),
+            "estimate": str(exc.estimate),
+            "cap": str(exc.cap),
+            "remaining": str(exc.remaining),
+        }
+        detail = {
+            "budget_status": self._budget.status.value,
+            "decision_reason": exc.decision_reason,
+            **numbers,
+        }
+        await self._record_hold(spec, account, HoldReason.WAITING_FOR_CREDITS, detail)
+        with log_guard():
+            emit(
+                logger,
+                EventName.PROVIDER_CALL_SUPPRESSED,
+                logging.WARNING,
+                "holding new %s submits: %s",
+                spec.provider.value,
+                exc.decision_reason,
+                episode_id=str(spec.episode_id),
+                provider=spec.provider.value,
+                outcome=Outcome.BLOCKED.value,
+                error_type=ProviderMonthlyBudgetExceededError.__name__,
+                error_category=ErrorCategory.SUPPRESSED_BY_INCIDENT.value,
+                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                attributes={
+                    "account": account.key,
+                    "decision_reason": exc.decision_reason,
+                    "hold_reason": HoldReason.WAITING_FOR_CREDITS.value,
+                    "scene_id": spec.scene_id,
+                    **numbers,
+                },
+            )
 
     async def _check_breaker_gate(self, spec: PaidJobSpec) -> None:
         """アカウントの breaker が open なら、予約を作らずに止める（台帳にも残さない）。

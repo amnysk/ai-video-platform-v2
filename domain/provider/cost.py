@@ -38,6 +38,12 @@ class CostState(StrEnum):
 UNCOUNTED_COST_STATES = frozenset({CostState.ESTIMATED, CostState.NOT_CHARGED})
 
 
+#: 月間ハードキャップ（ADR-0063）で数えない区分。``UNCOUNTED_COST_STATES`` より狭い:
+#: 未 dispatch の ``reserved``（``ESTIMATED``）は「これから使う枠」なので上限では数える。
+#: **受理されなかったことが確実**な行だけ解放する。
+CAP_UNCOUNTED_COST_STATES = frozenset({CostState.NOT_CHARGED})
+
+
 def cost_state(
     *,
     status: ReservationStatus,
@@ -64,10 +70,22 @@ def counted_cost_usd(state: CostState, estimated: Decimal | None) -> Decimal:
     return estimated
 
 
+def cap_counted_cost_usd(state: CostState, estimated: Decimal | None) -> Decimal | None:
+    """月間ハードキャップで数える額。``None`` は「数えるのに見積が無い」（= 不明。拒否側）。
+
+    SQL 側の集計（``infrastructure.db`` の ``month_counted``）はこの定義を SQL に写したもの。
+    """
+    if state in CAP_UNCOUNTED_COST_STATES:
+        return Decimal("0")
+    return estimated
+
+
 __all__ = [
+    "CAP_UNCOUNTED_COST_STATES",
     "NOT_ACCEPTED_RECONCILER",
     "UNCOUNTED_COST_STATES",
     "CostState",
+    "cap_counted_cost_usd",
     "cost_state",
     "counted_cost_usd",
 ]

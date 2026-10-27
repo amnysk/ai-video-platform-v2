@@ -835,3 +835,23 @@ waiver があるときだけ `WAIVED` になる。1 つでも欠ける・読め�
 / `tests/unit/test_release_reservation_waiver.py::test_text_and_json_show_waived_with_a_warning`
 / `tests/unit/test_release_reservation_waiver.py::test_default_waiver_path_and_fingerprint_are_stable`
 / `tests/architecture/test_release_preflight_read_only.py`
+
+## X. fal の月間ハードキャップ（ADR-0063）
+
+### INV-86 fal 族の新しい有料予約は、予約と同じトランザクションで `month_counted + estimate <= FAL_MONTHLY_BUDGET_USD` を満たすときだけ作られる（ADR-0063）
+`FAL_MONTHLY_BUDGET_USD`（正の値）は fal 族（`PROVIDER_FAMILY` の `FAL_IMAGE` / `FAL_VIDEO`）の**当月（UTC）合計の上限**。
+`ProviderReservationRepository.reserve` が INSERT と同じ DB トランザクションで `pg_advisory_xact_lock`
+（`sha256("fal-monthly-cap|YYYY-MM")` の 64bit。**月ロック → 入力ロック**の固定順序）を取り、SQL の `SUM` で
+`month_counted`（`reserved_at >= UTC 月初` の全行の見積。除くのは費用区分 `NOT_CHARGED` の行だけ。曖昧・未 dispatch の
+`reserved`・課金前提は見積額で数える）を読み、純粋関数 `evaluate_cap` で判定する。ちょうど等しいなら許可、超えれば
+`ProviderMonthlyBudgetExceededError`（予約行なし・fal 呼び出し 0・クラッシュではなく `WAITING_FOR_CREDITS` の保留で
+`decision_reason=monthly_cap_exceeded`。再開は承認つき `resume` だけ）。見積が出せない・数える行に見積 NULL があるときは
+`unknown_cost` で拒否（fail closed）。負・非有限の入力も拒否。同じ `idempotency_key` の既存予約（再試行・replay・再起動）は
+二重に数えず、上限でも拒否しない（検査は本当に新しい行にだけ効く）。月初は `month_start_utc` の 1 関数で、
+`provider-credits.py` の status / resume も同じ `month_counted` を使う。`reserve` の本番の fal 呼び出し元は
+`paid_job.py` の 1 箇所で、`PaidJobRunner` は ENABLED のとき必ず上限を渡す（契約テストが固定）。予算を 0 にしても進行中の
+予約は取り消さず、新規だけ止まる。上限の変更には worker の再作成が要る（ADR-0061）。上限は全ブランド・全 Episode で 1 つ。
+**機械検査**: `tests/unit/test_budget_cap_domain.py` / `tests/unit/test_monthly_cap_ledger.py`
+/ `tests/unit/test_paid_job_monthly_cap.py` / `tests/contract/test_fal_monthly_cap_wiring.py`
+/ `tests/integration/test_monthly_cap_concurrency.py::test_concurrent_reservations_never_exceed_the_cap`
+/ `tests/integration/test_monthly_cap_concurrency.py::test_mixed_input_and_month_locks_do_not_deadlock`
