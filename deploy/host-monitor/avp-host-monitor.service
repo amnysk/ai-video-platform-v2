@@ -1,0 +1,14 @@
+# 例（インストールはしない）。systemd --user 用。docs/operations/host-process-monitor.md
+# ExecStart は ~/.local/lib/avp-host/ に置いたコピー（avp_alerts.py と同じ dir。checkout / worktree を消しても止まらない）。
+# 結果は journal: journalctl --user -u avp-host-monitor。0 以外の終了は unit を failed にする
+# （systemctl --user --failed で見える）。何も止めない・kill しない読み取り専用。
+[Unit]
+Description=AVP host PID / zombie monitor (read-only)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/lib/avp-host/host-process-monitor.py
+NoNewPrivileges=yes
+PrivateNetwork=yes
+MemoryMax=64M
+TimeoutStartSec=30

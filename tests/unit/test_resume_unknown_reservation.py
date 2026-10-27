@@ -19,7 +19,7 @@ from infrastructure.db.repositories import (
 )
 from infrastructure.production.paid_job import PaidJobRunner, PaidJobSpec, Submitted
 from infrastructure.workdir import WorkDirectory
-from tests.support.production import FakeImageGenerator
+from tests.support.production import ENABLED_BUDGET, FakeImageGenerator
 
 REQUEST = ImageRequest(prompt="p", width=1080, height=1920, aspect="9:16")
 
@@ -36,6 +36,7 @@ class _Result403Generator(FakeImageGenerator):
 @pytest.fixture
 def runner(session_factory, artifact_store, tmp_path) -> PaidJobRunner:
     return PaidJobRunner(
+        budget=ENABLED_BUDGET,
         session_factory=session_factory,
         store=artifact_store,
         workdir=WorkDirectory(tmp_path / "work", forbidden=()),

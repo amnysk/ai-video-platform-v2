@@ -70,4 +70,11 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0051](./0051-restorable-backup-and-restore-drill.md) | 復旧できるバックアップ（pg_dump + S3 API 複写）と隔離先への restore drill | Proposed |
 | [0053](./0053-unreconciled-reservation-reconciliation.md) | 未照合予約の照合記録（5値判定）・手動確定の監査・新 key での再送ガード | Proposed |
 | [0052](./0052-temporal-container-init-and-leak-free-healthcheck.md) | Temporal コンテナを init 付きにし、healthcheck がプロセスを漏らさないようにする | Proposed |
+| [0059](./0059-opensearch-memory-guard-and-single-container-recovery.md) | OpenSearch のメモリ保護（hysteresis）・単一コンテナの自動復旧（opt-in）・OpenSearch に依存しない警報と dead-man's switch（ADR-0040 §7 を更新） | Proposed |
 | [0054](./0054-daily-workflow-failure-detection.md) | 日次 Workflow が失敗し Episode が作られない日を watchdog が検知（連続日数・unobservable・秘匿要約） | Proposed |
+| [0055](./0055-destructive-schema-op-guard-and-db-role-separation.md) | 破壊的スキーマ操作の単一ガード（INV-69）と DB ロール分離の設計 | Proposed |
+| [0057](./0057-fal-balance-exhaustion-managed-pause.md) | fal の残高不足を「管理された一時停止」として扱う（拒否の分類・永続 breaker・`blocked` + 保留・承認つき再開） | Proposed |
+| [0058](./0058-daily-preflight-credit-hold-and-watchdog-classification.md) | 日次の事前診断（Codex model・breaker・保留数）・残高不足の保留・watchdog の失敗/保留/未納品の分類 | Proposed |
+| [0060](./0060-check-vocabulary-widening-in-release-scan.md) | CHECK 語彙の拡張だけを、宣言と機械検査つきで release 走査の contract から外す | Proposed |
+| [0061](./0061-fal-budget-zero-is-a-managed-hold.md) | fal の月間予算が 0 / 未設定でも、日次は失敗せず有料 submit を 0 回のまま正常終了する（ローカル予算ゲート。migration なし） | Proposed |
+| [0062](./0062-release-only-reservation-waiver.md) | 未照合の provider 予約を、release に限り期限つき・1 件限りで waive する（台帳は書かない。migration なし） | Proposed |

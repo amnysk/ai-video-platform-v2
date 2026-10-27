@@ -1,0 +1,12 @@
+# 例（インストールはしない）。avp-host-monitor.service を 1 分ごとに動かす。
+# 通常は黙る（状態が変わったときと 6 時間ごとの heartbeat だけ出す）ので 1 分でも journal は増えない。
+[Unit]
+Description=Run the AVP host PID / zombie monitor every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

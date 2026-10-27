@@ -26,6 +26,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine  # noqa: E402
 
+from domain.provider.cost import NOT_ACCEPTED_RECONCILER  # noqa: E402
+
 PAID_PROVIDERS = ("fal_image", "fal_video")
 
 
@@ -90,12 +92,13 @@ async def collect(session: AsyncSession, since: datetime | None = None) -> dict[
         await session.execute(
             text(
                 "SELECT r.episode_id AS episode_id, e.status AS status, "
-                "coalesce(sum(r.estimated_cost_usd), 0) AS cost "
+                "coalesce(sum(CASE WHEN coalesce(r.reconciled_by, '') = :not_accepted "
+                "THEN 0 ELSE r.estimated_cost_usd END), 0) AS cost "
                 "FROM provider_reservations r JOIN episodes e ON e.id = r.episode_id "
                 "WHERE r.provider IN ('fal_image', 'fal_video') AND e.created_at >= :since "
                 "GROUP BY r.episode_id, e.status"
             ),
-            params,
+            {**params, "not_accepted": NOT_ACCEPTED_RECONCILER},
         )
     ).all()
     costs = [Decimal(str(r.cost)) for r in cost_rows]

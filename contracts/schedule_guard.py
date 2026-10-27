@@ -226,3 +226,10 @@ class WatchdogResult:
     episode_anomaly_count: int = 0
     #: 最新の slot 日で終わる、日次 workflow 失敗の連続日数（ADR-0054。0 = 失敗ではない）
     consecutive_daily_failures: int = 0
+    #: 未解放の保留 Episode 数（ADR-0058。失敗でも成功でもない。0 = 保留なし）
+    held_episodes: int = 0
+    #: そのうち保留が猶予日数を超えて通報したもの
+    held_escalated: int = 0
+    oldest_hold_days: float = 0.0
+    #: 保留の読み取りに失敗した（従来の停滞検査に倒れた。確認できなかったことを健全にしない）
+    hold_reader_failed: bool = False

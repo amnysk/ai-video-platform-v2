@@ -39,6 +39,78 @@ gpt-6-astra / gpt-6.1-sol を列挙するが、どちらも利用可否の保証
 候補（根拠の強さ順、いずれも未検証）: `gpt-5.6-sol`（CLI が gpt-5.5 の移行先に指定）、`gpt-6.1-sol`。
 gpt-6-sol が拒否された原因がアカウントか 0.154.0 という古い client かも切り分けられていない。
 
+## 追加調査（2026-10-25、読み取りのみ・利用枠は使っていない）
+
+- `codex debug models`（カタログ取得のみ、prompt なし）= `models_cache.json` と同じ 9 件。
+  **gpt-6-sol は今もカタログにある**のに本番では 400。カタログは利用権の証拠にならない（再確認）。
+- 同アカウントの**ホスト対話セッションの記録**（`~/.codex/state_5.sqlite` の `threads`、
+  rollout の `task_complete`）: 10-18 22:13〜22:21（codex 0.163.0, VS Code）に **gpt-6-sol が 2 スレッドで
+  完了**（計 8.2M tokens）、**gpt-5.6-terra が 1 スレッドで完了**（2.6M tokens）。gpt-5.5 は 0 tokens。
+  => アカウントは gpt-6-sol / gpt-5.6-terra を使える。コンテナ（codex 0.154.0）だけが 400 になる。
+  原因の第一候補は **client 版**（0.154.0 → 0.163.0 以上）。**未証明**（probe で切り分ける）。
+- 推奨 model（脚本の品質順、**未実測**）: `gpt-6.1-sol`（カタログ上の最新・「GPT-6.1-Sol: near-Astra 性能を
+  低コストで」）> `gpt-6-sol`（ホストで実績あり）> `gpt-5.6-terra`（ホストで実績あり）。
+  `gpt-6-astra` は最上位だが利用枠の消費が大きい（日次の台本に必要な水準を超える）。**どれも設定しない**:
+  probe を所有者が承認してから、通った最上位を固定する。
+
+### 所有者承認が要る probe（利用枠を 1 回ずつ使う。承認前は実行しない）
+
+判定したいのは**本番のコンテナの codex（0.154.0）**で通るかなので、まずコンテナで行う
+（`docker exec` は実行中の worker に対する読み取り的な操作で、再作成はしない）:
+
+```bash
+# 1) コンテナ版 0.154.0 で、推奨順に 1 回ずつ（通ったら止める。read-only sandbox、一時 session）
+for m in gpt-6.1-sol gpt-6-sol gpt-5.6-terra; do
+  echo "== $m"; docker exec avp2-script-worker-1 \
+    codex exec --ephemeral -s read-only -m "$m" "reply with the single word: ok" 2>&1 | tail -3
+done
+# 2) 全部 400 なら、client 版の切り分け: ホスト 0.163.0 で同じ 1 回（gpt-6-sol は対話で実績がある）
+codex exec --ephemeral -s read-only -m gpt-6-sol "reply with the single word: ok"
+```
+
+結果の読み方: コンテナで通った最上位 = 固定する model。コンテナは全部 400・ホストは通る = 版ずれ
+（`Dockerfile` の `CODEX_VERSION` を上げる別 PR が先）。両方 400 = 認証・アカウント（再ログインが先）。
+
+### 設定変更（probe の後。所有者が実施。共有の config.toml には触れない）
+
+`.env`（リポジトリ直下、本番ホスト）に model を**明示**する。config.toml は対話の codex と共有なので
+本番の model の出所にしない:
+
+```
+CODEX_MODEL=<probe で通った model>
+CODEX_ALLOWED_MODELS=<probe で通った model>
+CODEX_REQUIRE_PINNED_MODEL=true
+```
+
+反映（**`--no-deps --no-build --pull never` を必ず付ける**。`--no-deps` が無いと依存先まで再作成の
+対象になり、`--no-build` / `--pull never` が無いと image が変わる）:
+
+```
+docker compose up -d --no-deps --no-build --pull never --dry-run script-worker storyboard-worker scene-alternative-worker
+# dry-run の Recreate が 3 worker だけであることを確認してから --dry-run を外す
+```
+
+注意: `docker compose config --hash` で実行中の hash と比べると、`.env` と無関係に postgres / minio /
+temporal / temporal-ui が「差あり」と出ることがある（compose の過去の変更による既存のずれ）。
+`up` の対象を 3 worker に限る限り再作成されない。実行前に Running の Workflow が 0 件で、
+codex プロセスが無いこと（`temporal workflow count --query 'ExecutionStatus="Running"'`）を確かめる。
+3 つの worker は compose の `x-codex-env` から同じ値を読む。確認は読み取りだけで足りる:
+`python scripts/codex-model-preflight.py`（利用枠を使わない）。日次の入口（ADR-0058）は、
+許可リスト外の model / 未固定を Codex を呼ぶ前に止める。
+
+## 実施記録（2026-10-25）
+
+- 実測: 本番 script-worker コンテナ内 codex 0.154.0、`-m gpt-5.6-sol` で成功（6,759 tokens、
+  `model_not_found` なし）。`gpt-5.6-sol` を正式な model とする。
+- 所有者の承認のもと、本番の `.env`（`claude-production-autopilot/.env`、daily-hardening の `.env` は
+  そのシンボリックリンク）に `CODEX_MODEL=gpt-5.6-sol` / `CODEX_ALLOWED_MODELS=gpt-5.6-sol` /
+  `CODEX_REQUIRE_PINNED_MODEL=true` を追記し、3 worker だけを上記のコマンドで再作成した。
+- **本番は PR #18 より前の compose / image（80775c0）のまま**。現在のコンテナに渡るのは
+  `CODEX_MODEL` だけで、`CODEX_ALLOWED_MODELS` / `CODEX_REQUIRE_PINNED_MODEL` は compose が渡さず
+  Settings も読まない（`.env` に書いてあるだけ）。両者の強制は PR #18 の反映後に効く。
+- 再作成後の確認: 3 worker とも healthy、`CODEX_MODEL=gpt-5.6-sol`、`Settings().codex_model` も同値。
+  他のコンテナの ID・image・起動時刻は変わっていない。
+
 ## 提案する変更（承認後に実施）
 
 1. （先に実測）承認のもと、ホストで 1 回だけ最小の実呼び出しで判定する:

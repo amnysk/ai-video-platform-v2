@@ -1,0 +1,10 @@
+# 例（インストールはしない。REQUIRES OWNER APPROVAL）。5 分ごと。
+[Unit]
+Description=Run the AVP monitor heartbeat watch every 5 minutes
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

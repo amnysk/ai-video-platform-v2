@@ -74,7 +74,7 @@ ADR-0040 の §4〜§7 を、`deploy/logging/` の実装に落としたもの。
 | `suppress_type_name` | on | OpenSearch 3.x は `_type` を 400 |
 | `tls.verify` / `tls.verify_hostname` | on / on | `verify_hostname` は既定 off |
 | `buffer_size` | 4M | 応答が溢れると item ごとの判定ができず chunk 全体を再送する |
-| `retry_limit` / `scheduler.base` / `scheduler.cap` | 72 / 5 / 300 | 有限。§7 の許容停止時間 |
+| `retry_limit` / `scheduler.base` / `scheduler.cap` | 288 / 5 / 300 | 有限（無限にしない: 永久に 400 になる chunk が buffer を埋める）。§7 の許容停止時間。**72 -> 288 は ADR-0059（2026-10-25）**。旧値 72 は約 2h49m で尽き、4 日の停止で 105 chunk を破棄した |
 | `trace_error` / `trace_output` | off | エラー応答に値のプレビューが入る |
 | `storage.total_limit_size` | 1G（`AVP_LOG_STORAGE_LIMIT`） | 超えたら古い chunk から破棄 |
 
@@ -261,8 +261,8 @@ json-file の行を照合する。
 - 資格情報は viewer のパスワードを 0600 の一時 config で `curl -K` に渡す（argv に出さない）
 - 証明書: CA・ノード証明書の残り 30日未満
 - ホスト: Docker root のディスク（90% 以上で異常）、MemAvailable
-- `--enforce-memory`: MemAvailable < 2GiB で Dashboards、< 1.5GiB で OpenSearch を止める
-  （`--project` のコンテナだけ。アプリの project 名を渡すと拒否する）
+- `--enforce-memory`: **廃止（ADR-0059）**。受け付けるが何も止めない。停止・復旧は `scripts/opensearch-guard.py`
+  （連続 5 サンプル・180 秒以上。docs/operations/opensearch-recovery.md）
 
 systemd user timer の例: `deploy/logging/systemd/avp-logging-check.{service,timer}`（5分ごと。インストールは
 しない。手順はファイルの先頭）。結果は `journalctl --user -u avp-logging-check`。通知先の接続は範囲外。
@@ -338,11 +338,11 @@ CHECK=deploy/logging/scripts/check-pipeline.sh                  # --env prod が
   Fluent Bit 256MiB。`oom_score_adj` は Dashboards 900 > OpenSearch 800 > Fluent Bit 600（本番 worker より先に落ちる）。
 - 実測（隔離環境、2026-10-05、heap 512m）: OpenSearch RSS 約 1.03GiB、Dashboards 約 230MiB、Fluent Bit 約 6MiB。
   heap 1GiB では 1.6〜2GiB 程度を見込む（本番の値は導入時に実測して更新する）。
-- 共存の条件（ADR-0040 §7）: MemAvailable < 2GiB で Dashboards を、< 1.5GiB で OpenSearch を止める
-  （`check-pipeline.sh --enforce-memory`）。満たせなければ `deploy/logging` を別ホストで動かし、本番ホストには
+- 共存の条件（ADR-0040 §7。**ADR-0059 で「連続 5 サンプルかつ 180 秒以上」に変更、止めるのは `opensearch-guard.py`**）:
+  MemAvailable < 2GiB で Dashboards を、< 1.5GiB で OpenSearch を止める。満たせなければ `deploy/logging` を別ホストで動かし、本番ホストには
   Fluent Bit だけを置く（`AVP_LOGGING_OPENSEARCH_HOST` を差し替え、Fluent Bit を外へ出られる network にも
   繋ぐ override を足す）。
-- **許容できる OpenSearch 停止時間**: retry の上限（72回）と buffer の上限（1GiB）の短い方。
+- **許容できる OpenSearch 停止時間**: retry の上限と buffer の上限（1GiB）の短い方。**ADR-0059 で retry_limit を 72 から 288 に上げた（約 11 時間。以下の 72 回の実測は旧値の根拠として残す）**。
   **実測: 72回の再送は約 2時間49分で尽きた**（隔離環境、2026-09-30 03:37 → 06:26。backoff は base 5秒〜cap 300秒の
   乱数で、平均 約140秒/回）。ADR-0040 §5 の「約6時間」は cap × 回数の上限で、実際はその半分程度になる。
   これを超える停止では、その間に溜まった chunk が再送上限で破棄される（`retries_failed_total`・

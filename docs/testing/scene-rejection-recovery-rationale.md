@@ -144,3 +144,8 @@ upgrade 0014 の往復も通る。
 | `test_migration_frozen_vocabulary.py::test_0014_rejection_categories_match_the_contract`（contract） | DB の CHECK と契約の語彙が一致 |
 | `test_production_workflow.py::test_input_fetch_failure_retries_once_with_a_new_round_and_succeeds` ほか3件（integration、mock Activity） | workflow の分岐: 取得失敗で1回だけ次のラウンドへ、2回目で停止、ラウンド予算1でも1回は取り直す、台帳が使い切りを返したらその型で止まる。いずれも planner を呼ばない |
 | `test_input_fetch_retry_e2e.py` の4件（integration、本物の Production・Render・Upload） | fault injection の連続シナリオ: 一時的な取得失敗 → 新しい URL で再試行 → private Upload 1回・二重投稿なし・日次枠1行・他シーン不変／2回とも取得失敗 → 構造化した停止理由・**入場した** resume でも追加 submit なし（最初の版は resume が別 workflow id で入場できず空振りで合格していたので `admitted` を検査に加えた）／型なし 422 → planner なしで停止／代替案の上限（設定値1）で停止。**変異確認**: `INPUT_FETCH_RETRIES_PER_SCENE` を 0 にすると再試行成功のシナリオが落ちる |
+
+## 復旧上限への投影と受理されなかった拒否（review-E P2-7, `tests/unit/test_recovery_projection_not_accepted.py`）
+
+- 支出は 0 でも投影は見積り額: `not_accepted` の拒否は支出 0（INV-74）だが、「次の作り直し」の投影に最新予約の支出額を使うと、最新が拒否のとき 0 になり、残高が戻った後の実費が復旧上限（INV-34）の判定から消える。`PaidReservationCost.nominal_cost_usd`（予約時の見積り額）を投影だけに使い、支出の集計（`estimated_cost_usd`）は 0 のまま。両方を `test_not_accepted_refusal_adds_nothing_to_the_recovery_cost` が固定する。
+- `test_paid_job_balance.py` の `_spec` は Episode を `blocked` にする: 保留は blocked / storyboard_ready の間だけ数える（P1-1）ようになったため、本番と同じ状態（残高拒否で workflow が終わると blocked）に合わせた。アサーションは変えていない。

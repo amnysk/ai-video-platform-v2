@@ -28,10 +28,30 @@ from typing import Any
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy, SearchAttributeKey, WorkflowIDReusePolicy
-from temporalio.exceptions import ApplicationError, ChildWorkflowError, WorkflowAlreadyStartedError
+from temporalio.exceptions import (
+    ActivityError,
+    ApplicationError,
+    ChildWorkflowError,
+    WorkflowAlreadyStartedError,
+)
 from temporalio.workflow import ParentClosePolicy
 
 with workflow.unsafe.imports_passed_through():
+    from contracts.codex_models import (
+        CODEX_MODEL_PREFLIGHT_ACTIVITY,
+        CodexPreflightRequest,
+        CodexPreflightResult,
+    )
+    from contracts.daily_gate import (
+        DAILY_PREFLIGHT_PATCH_ID,
+        PIPELINE_DAILY_GATE,
+        PIPELINE_PRODUCTION_GATE,
+        DailyGateRequest,
+        DailyGateResult,
+        DailyRunMode,
+        ProductionGateRequest,
+        ProductionGateResult,
+    )
     from contracts.log_contract import EventName, Outcome
     from contracts.pipeline import (
         DAILY_EPISODE_WORKFLOW,
@@ -135,6 +155,20 @@ class DailyEpisodeWorkflow:
                 outcome=DailyOutcome.PAUSED, slot_date=slot, reason=paused.reason
             )
 
+        # ADR-0058: 入口の事前診断。旧履歴（marker 無し）は通らない
+        gated = workflow.patched(DAILY_PREFLIGHT_PATCH_ID)
+        if gated:
+            gate: DailyGateResult = await _state_activity(
+                PIPELINE_DAILY_GATE, DailyGateRequest(slot_date=slot), DailyGateResult
+            )
+            if gate.mode == DailyRunMode.SKIP_BACKLOG:
+                reason = "; ".join(gate.reasons) or "held episodes at the cap"
+                _slot_skipped(slot, DailyOutcome.HELD_BACKLOG, reason)
+                return DailyEpisodeResult(
+                    outcome=DailyOutcome.HELD_BACKLOG, slot_date=slot, reason=reason
+                )
+            await self._codex_preflight(request, slot)
+
         # ADR-0025 より前に始まった実行（marker の無い履歴）は旧経路で replay する:
         # Planner を呼ばず request.topic で claim し、plan の有無を見ずに pipeline を起動する。
         # 旧経路の実行が残っていないことを確かめたら（docs/operations/pipeline-worker.md）
@@ -179,7 +213,9 @@ class DailyEpisodeWorkflow:
             # 再起動しない。クラッシュで failed になった pipeline だけ再起動できる。
             await workflow.start_child_workflow(
                 EPISODE_PIPELINE_WORKFLOW[0],
-                EpisodePipelineInput(episode_id=claim.episode_id, options=request.options),
+                EpisodePipelineInput(
+                    episode_id=claim.episode_id, options=request.options, credit_gate=gated
+                ),
                 id=child_id,
                 task_queue=request.options.pipeline_task_queue,
                 parent_close_policy=ParentClosePolicy.ABANDON,
@@ -216,6 +252,33 @@ class DailyEpisodeWorkflow:
             topic_plan_id=claim.topic_plan_id,
             reason=f"claim {claim.outcome}",
         )
+
+    @staticmethod
+    async def _codex_preflight(request: DailyEpisodeInput, slot: str) -> None:
+        """script worker に Codex の model を確認させる（読み取りのみ。ADR-0058 / INV-75）。
+
+        必ず失敗する構成なら Planner / Codex を呼ばずに失敗する。応答できない（旧 worker・停止中）
+        ときは確認できなかっただけなので進む（止める根拠が無い）。
+        """
+        queue = request.options.topic_planner_workflow[1]
+        try:
+            check: CodexPreflightResult = await workflow.execute_activity(
+                CODEX_MODEL_PREFLIGHT_ACTIVITY,
+                CodexPreflightRequest(slot_date=slot),
+                result_type=CodexPreflightResult,
+                task_queue=queue,
+                start_to_close_timeout=timedelta(seconds=30),
+                schedule_to_start_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
+        except ActivityError:
+            return
+        if check.blocking:
+            raise ApplicationError(
+                f"codex preflight {check.verdict}: {check.message}",
+                type="CodexModelPreflightFailed",
+                non_retryable=True,
+            )
 
     @staticmethod
     async def _plan_topic(request: DailyEpisodeInput, slot: str) -> TopicPlannerResult:
@@ -359,6 +422,29 @@ class EpisodePipelineWorkflow:
                     result.stopped_stage = stage.value
                     result.reason = gate.reason
                     result.status = gate.status or result.status
+                    return result
+
+            if stage is PipelineStage.PRODUCTION and request.credit_gate:
+                held: ProductionGateResult = await _state_activity(
+                    PIPELINE_PRODUCTION_GATE,
+                    ProductionGateRequest(episode_id=ep),
+                    ProductionGateResult,
+                )
+                if not held.allowed:
+                    _event(
+                        logging.WARNING,
+                        EventName.STAGE_SKIPPED,
+                        "production held episode=%s: %s",
+                        ep,
+                        held.reason,
+                        stage=stage.value,
+                        episode_id=ep,
+                        outcome=Outcome.SKIPPED.value,
+                        attributes={"reason": held.reason, "held": True},
+                    )
+                    result.outcome = PipelineOutcome.HELD
+                    result.stopped_stage = stage.value
+                    result.reason = held.reason
                     return result
 
             (name, queue), child_id, payload = _stage_request(stage, ep, request.options)

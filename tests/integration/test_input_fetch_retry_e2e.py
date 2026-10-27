@@ -62,6 +62,7 @@ from tests.support.db import assert_destructive_allowed, require_test_database_u
 from tests.support.fake_render_engine import FakeFinalVideoProbe, FakeRenderEngine
 from tests.support.fake_youtube import FakeVideoUploader
 from tests.support.production import (
+    ENABLED_BUDGET,
     LIKENESS_REJECTION,
     FakeSceneAlternativePlanner,
     FakeVideoGenerator,
@@ -221,7 +222,10 @@ async def _produce(
     suffix = uuid.uuid4().hex[:10]
     q = {k: f"fetch-e2e-{k}-{suffix}" for k in ("prod", "image", "video", "voice", "alt")}
     runner = PaidJobRunner(
-        session_factory=factory, store=store, workdir=WorkDirectory(tmp_path / "w", forbidden=())
+        budget=ENABLED_BUDGET,
+        session_factory=factory,
+        store=store,
+        workdir=WorkDirectory(tmp_path / "w", forbidden=()),
     )
     probe = PillowAvMediaProbe()
     workers = [

@@ -25,7 +25,12 @@ from tests.integration.test_production_activities import (  # noqa: F401
     store,
 )
 from tests.support.db import require_test_database_url
-from tests.support.production import FakeImageGenerator, FakeVideoGenerator, FakeVoiceGenerator
+from tests.support.production import (
+    ENABLED_BUDGET,
+    FakeImageGenerator,
+    FakeVideoGenerator,
+    FakeVoiceGenerator,
+)
 from tests.support.storyboard import BUCKET
 from workers.production.activities import ProductionActivities
 from workers.production.run_inspector import TemporalWorkflowRunInspector
@@ -72,6 +77,7 @@ async def test_failed_production_resumes_on_post_without_new_paid_submits(
 
     def runner(sub: str) -> PaidJobRunner:
         return PaidJobRunner(
+            budget=ENABLED_BUDGET,
             session_factory=factory,
             store=store,
             workdir=WorkDirectory(tmp_path / sub, forbidden=()),

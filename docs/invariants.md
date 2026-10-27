@@ -515,3 +515,323 @@ message の要約（secret・UUID・URL query を伏せ、長さを制限）と 
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_unreadable_temporal_records_unobservable_not_ok`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_recorded_failure_survives_retention_expiry`
 / `tests/unit/test_daily_workflow_failure_watchdog.py::test_failure_outside_window_is_not_recorded`
+
+## P. 破壊的スキーマ操作の隔離（ADR-0055）
+
+### INV-69 `drop_all` / `create_all` / `DROP TABLE|SCHEMA|DATABASE` / `TRUNCATE` は、URL が接続先を完全に決めた `_test` DB にしか実行されず、静的判定は接続を作る前に行う（ADR-0055）
+判定は `infrastructure/db/safety.py` の1か所。次の URL は `UnsafeDatabaseError`: DB名が `_test` で終わらない・
+**host または DB 名が URL に無い**（libpq が `PGHOST` / `PGDATABASE` / `PGSERVICE` で決める）・
+`PGHOSTADDR` / `PGSERVICE` / `PGSERVICEFILE` が環境にある・host が `localhost` / `127.0.0.1` / `::1` 以外
+（`AVP_ALLOW_REMOTE_TEST_DB=1` 無し。**compose のサービス名 `postgres` と `0.0.0.0` はローカル扱いしない**）・
+アプリの `DATABASE_URL` / `Settings().database_url` と同じDB（`postgres` / `0.0.0.0` も「同じサーバの別名」として
+同一性の判定にだけ使い、host 別名・末尾ドット・DB名の大文字小文字・`?options` を畳んで比較）・query が接続先を
+上書きする（`host` / `dbname` / `port` ...）。allowlist を渡しても、アプリのDBと同一のDBは通らない。
+tests/support/db.py は再公開のみで規則を持たない。実際に繋がっている接続の検査は INV-83。
+破壊的な呼び出しは **箇所ごと** に、囲む関数の中で先行するガード呼び出しを持つ（SQLite のインメモリだけを
+自分で作る tests の関数を除く）。ファイルに1か所ガードがあれば他の関数が通る、という抜け穴は無い。
+**機械検査**: `tests/unit/test_db_destructive_guard.py::test_protected_database_is_refused_before_any_connection`
+/ `tests/unit/test_db_destructive_guard.py::test_a_url_that_does_not_fix_the_target_is_refused`
+/ `tests/unit/test_db_destructive_guard.py::test_libpq_environment_that_can_redirect_the_connection_is_refused`
+/ `tests/unit/test_db_destructive_guard.py::test_only_loopback_names_are_local`
+/ `tests/unit/test_db_destructive_guard.py::test_same_database_is_detected_through_url_variations`
+/ `tests/unit/test_db_destructive_guard.py::test_libpq_override_in_query_is_refused`
+/ `tests/unit/test_db_destructive_guard.py::test_explicit_allowlist_admits_a_non_test_name_but_never_the_app_database`
+/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_every_destructive_call_site_is_guarded`
+/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_checker_flags_only_the_unguarded_function_in_a_file_with_a_guard`
+/ `tests/architecture/test_destructive_schema_ops_guarded.py::test_checker_covers_every_destructive_form`
+/ `tests/contract/test_ci_db_isolation.py::test_ci_test_database_urls_are_isolated`
+
+## Q. provider の残高不足（ADR-0057）
+
+### INV-71 残高不足・分類不能の拒否は、入力の拒否でも認証障害でもなく、provider アカウントの状態として扱う（ADR-0057）
+fal の 401/402/403 は、本文の文書化された印（`fal_refusal.BALANCE_BODY_MARKERS`、出所つき・1表だけ）が
+あるときだけ `BALANCE_EXHAUSTED`、印が無い 401 は `AUTH_INVALID`、印が無い 402/403 は `UNKNOWN`。
+**HTTP status だけで残高不足と決めない**（公式文書に残高の構造化コードは無い）。
+`ProviderBalanceExhaustedError` / `ProviderRefusalUnknownError` は `ProviderUnavailableError`
+（ADR-0030 の認証 incident）の子でも `ProviderRejectedError`（ADR-0034 の恒久ブロック）の子でもない。
+応答本文の要約を残す（secret・署名付き URL・query を除く。300 文字まで）。
+**機械検査**: `tests/unit/test_fal_refusal.py::test_status_alone_never_decides_balance`
+/ `tests/unit/test_fal_refusal.py::test_three_statuses_map_to_three_different_kinds`
+/ `tests/unit/test_fal_refusal.py::test_markers_live_in_one_place_with_provenance`
+/ `tests/unit/test_fal_refusal.py::test_summary_redacts_secrets_urls_and_truncates`
+/ `tests/unit/test_fal_refusal.py::test_submit_refusals_use_distinct_error_types`
+
+### INV-72 breaker は provider アカウント単位で永続し、時間では閉じず、予約の前に止める（ADR-0057）
+breaker は PostgreSQL（`provider_breakers`）に持つ。鍵は `ProviderAccount.key`。`open` は残高不足・分類不能の
+拒否の最初の1件で開き、冪等かつ並行安全（一意制約と条件付き UPDATE。同時に開いても行は1つ・勝者は1人）。
+**時間経過では閉じない**。`half_open` / `closed` への遷移は所有者承認つきの操作だけ（`half_open` で
+provider が submit を受理したときの `closed` を除く）。migration 0018 は expand-only（新しい表だけ。既存の
+CHECK を広げない）。
+**機械検査**: `tests/unit/test_provider_health_repo.py::test_breaker_never_closes_with_time`
+/ `tests/unit/test_provider_health_repo.py::test_open_is_idempotent_and_keeps_the_first_reason`
+/ `tests/unit/test_provider_health_repo.py::test_half_open_needs_open_then_accepted_submit_closes_it`
+/ `tests/integration/test_provider_breaker_postgres.py::test_simultaneous_opens_leave_one_row_and_exactly_one_winner`
+/ `tests/contract/test_provider_health_migration.py::test_release_preflight_scanner_finds_nothing_in_0018`
+/ `tests/contract/test_provider_health_migration.py::test_0018_upgrade_only_creates_tables_and_indexes`
+/ `tests/unit/test_paid_job_balance.py::test_open_breaker_stops_before_any_reservation_for_every_fal_provider`
+/ `tests/unit/test_paid_job_balance.py::test_open_breaker_does_not_block_awaiting_an_already_accepted_job`
+/ `tests/unit/test_paid_job_balance.py::test_non_fal_providers_are_not_gated`
+/ `tests/unit/test_paid_job_balance.py::test_accepted_submit_in_half_open_closes_the_breaker`
+
+### INV-73 保留した Episode の再開は、所有者の承認・未照合予約なし・予算内・同時1件の下で、既存の再開経路だけを通る（ADR-0057）
+残高不足で止まった Episode は `blocked` のまま `provider_credit_holds` に理由を持つ（新しい EpisodeStatus は無い。
+workflow は終わる）。再開（`scripts/provider-credits.py`）は、breaker が `open` のとき・未照合の予約
+（`reserved` で evidence なし。dispatched で provider 参照があるもの＝本番の `591d1a8b…` と同じ状態を含む）が
+あるとき・当月の見積支出 + 追加見積が `fal_monthly_budget_usd` を超える（または未設定）とき・対象が
+`RESUME_MAX_CONCURRENCY` を超える（実行中の再開済みも数える）ときは**拒否**し、何も書かない。
+`half-open` / `close` / `resume` は構造化された所有者承認 token（`OWNER-<yyyymmdd>-<id>`。指紋だけ保存）と
+入金確認の根拠（attestation）が必須で、既定は dry-run。再開は既存の `POST /episodes/{id}/resume` だけを呼び、
+新しい workflow を作らない。成功済みシーンは再利用ゲートで再利用する（再送・再生成しない）。
+`POST /episodes/{id}/resume` は、その Episode に**有効な未解放の保留**がある間は 409 で拒否する（保留の解放は上記の
+検査をすべて通す CLI だけ。API 経由で承認・予約照合・予算を迂回して有料呼び出しを再開させない）。保留が「有効」とは
+未解放かつ Episode が `HELD_EPISODE_STATUSES`（`blocked` / `storyboard_ready`）にあること。完了・取消などで
+その状態を離れた Episode の古い行は `open_hold_count` / `list_open_holds` / `held_episode_ids_oldest_first` に
+数えない（日次が HELD_BACKLOG のまま止まらない。行は監査のため消さない。review-E P1-1）。
+**機械検査**: `tests/unit/test_provider_credits_script.py::test_resume_is_refused_for_the_production_unreconciled_reservation_state`
+/ `tests/unit/test_provider_credits_script.py::test_resume_is_refused_while_the_breaker_is_open`
+/ `tests/unit/test_provider_credits_script.py::test_resume_is_refused_over_budget_or_without_a_cap`
+/ `tests/unit/test_provider_credits_script.py::test_resume_concurrency_is_capped`
+/ `tests/unit/test_provider_credits_script.py::test_a_resumed_episode_still_running_counts_toward_the_cap`
+/ `tests/unit/test_provider_credits_script.py::test_half_open_needs_a_structured_approval_and_evidence`
+/ `tests/unit/test_provider_credits_script.py::test_api_resume_client_calls_only_the_existing_resume_endpoint`
+/ `tests/unit/test_provider_credits_script.py::test_succeeded_scenes_are_reused_after_resume_not_regenerated`
+/ `tests/unit/test_provider_credits_script.py::test_script_has_no_network_or_provider_imports`
+/ `tests/unit/test_provider_credits_script.py::test_a_daily_gate_hold_at_storyboard_ready_resumes_from_production`
+/ `tests/unit/test_production_balance_workflow.py::test_a_seven_day_hold_costs_no_more_activity_and_no_more_history`
+/ `tests/unit/test_production_balance_workflow.py::test_balance_refusal_ends_the_workflow_blocked_without_a_retry_storm`
+/ `tests/unit/test_provider_health_repo.py::test_breaker_and_holds_survive_a_process_restart`
+/ `tests/unit/test_hold_lifecycle.py::test_only_episodes_still_in_a_held_state_count`
+/ `tests/unit/test_hold_lifecycle.py::test_api_resume_refuses_while_a_credit_hold_is_open`
+/ `tests/integration/test_provider_breaker_postgres.py::test_concurrent_episodes_hitting_balance_exhaustion_open_one_breaker_and_double_nothing`
+
+### INV-74 受理されなかったことが確実な拒否は費用 0 で、曖昧な送信は未照合のまま再送しない（ADR-0057）
+残高ロック・分類不能の拒否（`ProviderRefusalError`）で終わった予約は `spent` +
+`reconciled_by="not_accepted"` で確定し、費用は 0 として数える（`domain/provider/cost.py` の
+`not_charged`）。`input_rejected_by_provider` は立てず、入金後は同じ入力を新ラウンドで送れる
+（ADR-0034 の恒久ブロックにしない）。費用の区分は `estimated` / `provider_accepted` /
+`confirmed_charged` / `not_charged` / `assumed_charged` / `unknown` を台帳の行から導く。送信後の切断・5xx などの
+曖昧な送信は `reserved` + dispatched のまま `unknown`（見積額を安全側に数える）で残り、自動で再送しない（INV-15 / INV-67）。
+**機械検査**: `tests/unit/test_provider_cost_state.py::test_not_accepted_is_not_charged_and_counts_zero`
+/ `tests/unit/test_provider_cost_state.py::test_the_five_states_are_distinguished`
+/ `tests/unit/test_paid_job_balance.py::test_balance_refusal_is_not_accepted_zero_cost_and_opens_the_breaker`
+/ `tests/unit/test_paid_job_balance.py::test_after_the_top_up_the_same_input_is_submitted_again`
+/ `tests/unit/test_paid_job_balance.py::test_ambiguous_submit_stays_unreconciled_and_is_never_resent`
+/ `tests/unit/test_paid_job_balance.py::test_not_accepted_refusal_adds_nothing_to_the_recovery_cost`
+/ `tests/unit/test_production_metrics_script.py::test_not_accepted_refusals_do_not_count_as_cost`
+
+## R. 日次の事前診断・保留（ADR-0058）
+
+### INV-75 設定された Codex model が必ず失敗する構成は、日次が Codex を呼ぶ前に・prompt を送らずに検知する（ADR-0058）
+実効 model（`CODEX_MODEL` > config.toml）が、アカウントの model catalog（`models_cache.json`）に無い・
+許可リスト（`CODEX_ALLOWED_MODELS`）に無い・固定が必須（`CODEX_REQUIRE_PINNED_MODEL`）なのに未固定のとき、
+`DailyEpisodeWorkflow` は Planner / Codex を呼ばずに non-retryable で失敗し、原因（verdict と model 名）を
+失敗に残す。検査は設定ファイルの読み取りだけで利用枠を使わない。**catalog に載っていることは「使える」の
+証拠にしない**（`OK` は許可リストにもある場合だけ。許可リストが空なら `UNVERIFIED`）。読めない・古い
+catalog は「無い」の根拠にしない。3 つの Codex worker は model 設定を compose の `x-codex-env` 1 箇所から読む。
+**機械検査**: `tests/unit/test_codex_model_preflight.py::test_model_missing_from_the_catalog_blocks_before_any_prompt`
+/ `tests/unit/test_codex_model_preflight.py::test_a_catalogued_model_is_never_reported_as_verified_without_an_allowlist`
+/ `tests/unit/test_codex_model_preflight.py::test_a_model_outside_the_allowlist_blocks`
+/ `tests/unit/test_codex_model_preflight.py::test_unreadable_or_stale_catalog_never_blocks_and_never_verifies`
+/ `tests/unit/test_codex_model_preflight.py::test_run_preflight_reads_files_only`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_a_blocking_codex_preflight_fails_the_daily_run_before_any_codex_call`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_an_unverified_codex_model_does_not_stop_the_run`
+/ `tests/contract/test_codex_env_single_source.py`
+
+### INV-76 provider の breaker が閉じていない間、日次は新しい有料生成を始めず、保留を記録する（ADR-0058）
+`DailyEpisodeWorkflow` は Schedule が発火したら必ず走り、入口ゲート（読み取り専用）でモードを決める。
+breaker が `open` / `half_open` なら企画・台本・絵コンテ（Codex、無課金）は進めるが、production の前で
+`CreditHoldWriter` に保留（`resumable_stage="production"`、Episode 全体）を記録して止まり、有料の
+provider を呼ばない。理由は残高不足と確定できたときだけ `WAITING_FOR_CREDITS`、それ以外は
+`PROVIDER_REFUSAL_UNKNOWN`。未解放の保留が `MAX_HELD_EPISODES` に達したら新しい Episode を作らない
+（Planner も Codex も呼ばない）。したがって breaker が開いたまま 7 日経っても Episode は高々
+`MAX_HELD_EPISODES`、有料呼び出しは 0。所有者承認の再開（API / 統一再開が起動する pipeline）は
+このゲートに止められない（`credit_gate` は日次が起動したものだけ）。
+**機械検査**: `tests/unit/test_daily_credit_hold_workflows.py::test_open_breaker_keeps_planning_and_script_but_starts_no_paid_work`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_an_unconfirmed_refusal_is_not_called_waiting_for_credits`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_half_open_breaker_is_not_used_by_the_daily_run`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_backlog_at_the_cap_creates_no_episode_and_calls_no_codex`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_seven_days_of_open_breaker_are_bounded_and_repeat_no_paid_attempt`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_a_pipeline_not_started_by_daily_is_never_stopped_by_the_gate`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_open_breaker_without_a_hold_writer_refuses_instead_of_going_on_to_paid_work`
+/ `tests/unit/test_daily_gate_domain.py`
+
+### INV-77 保留は失敗でも成功でもない。watchdog は失敗・保留・未納品を区別し、保留を見えなくしない（ADR-0058）
+保留で止まった pipeline は `PipelineOutcome.HELD`、保留で Episode を作らなかった日次は
+`DailyOutcome.HELD_BACKLOG`。どちらも `COMPLETED` / `STARTED`（成功）ではなく、`STOPPED`（失敗）でもない。
+watchdog は猶予内（`DEFAULT_HOLD_ESCALATION_DAYS`）の保留を停滞・完成期限の通報から除くが、毎時の
+`WatchdogResult.held_*` と `HELD_EPISODES` ログに出す。猶予を超えたら**既存の** `EPISODE_STAGE_STALLED`
+を `detail.hold` 付きで記録し（新しい kind・CHECK の拡張をしない）、解放されれば閉じる。保留と無関係の
+本物の失敗は保留があっても通報され、保留を読めないときは何も除かない。保留で Episode を作らなかった
+日は日次失敗（ADR-0054）にならない。
+**機械検査**: `tests/unit/test_hold_watchdog_classification.py`（全テスト）
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_backlog_at_the_cap_creates_no_episode_and_calls_no_codex`
+/ `tests/unit/test_daily_gate_domain.py::test_recent_holds_are_exempt_and_long_holds_are_escalated`
+
+### INV-78 日次は過去の Episode や有料の仕事を再開せず、変えた分岐は旧履歴を replay できる（ADR-0058）
+日次は常に新しい slot の新しい Episode を `SCRIPT` から始める。未完了・保留の Episode の再開は
+再開経路（ADR-0032 / ADR-0057）だけが行い、日次の入口ゲートは `half_open`（所有者承認の枠）も使わない。
+`DailyEpisodeWorkflow` の新分岐は `workflow.patched("daily-preflight-0058")`、`EpisodePipelineWorkflow` の
+新分岐は入力フラグ（旧履歴は False）で振り分け、`DailyWatchdogWorkflow` は変更しない。ADR-0058 より前に
+記録した履歴が replay できること。
+**機械検査**: `tests/unit/test_daily_credit_hold_workflows.py::test_seven_days_of_open_breaker_are_bounded_and_repeat_no_paid_attempt`
+/ `tests/unit/test_daily_credit_hold_workflows.py::test_histories_recorded_before_adr_0058_replay_without_nondeterminism`
+/ `tests/unit/test_pipeline_workflows.py::test_history_from_before_the_topic_planner_replays_without_nondeterminism`
+
+## S. ログ基盤の保護・復旧・監視（ADR-0059）
+
+### INV-79 メモリ逼迫での OpenSearch 停止は一時的な低下では起きず、復旧は guard が止めた OpenSearch 1 コンテナだけを条件が揃ったときだけ行う（ADR-0059）
+MemAvailable が停止線（1.5GiB）未満の**連続 5 サンプルかつ 180 秒以上**でだけ OpenSearch / Dashboards を止め
+（サンプル間 150 秒超は連続でない）、止めるのは `avp2-logging` のコンテナだけ。停止の理由・時刻・サンプル・復旧条件・
+試行は state に残る。自動起動は `--auto-restart` を付けたときだけで、`docker start <その 1 コンテナ>` のみ
+（compose・rm・run・recreate を呼ばない）。条件は MemAvailable >= 4096MiB の連続 3 サンプル・avp2 の全コンテナが
+healthy・停止から 10 分以上・backoff・24 時間 3 回未満。上限後は止めたまま警報。guard が止めていない停止は起こさない。
+`check-pipeline.sh` は何も止めない。
+**機械検査**: `tests/unit/test_opensearch_guard.py::test_transient_dip_below_threshold_stops_nothing`
+/ `tests/unit/test_opensearch_guard.py::test_oscillating_memory_never_starts_a_stop_start_loop`
+/ `tests/unit/test_opensearch_guard.py::test_sustained_pressure_still_stops_opensearch_and_dashboards_only`
+/ `tests/unit/test_opensearch_guard.py::test_opensearch_stop_raises_alert_records_state_and_spares_others`
+/ `tests/unit/test_opensearch_guard.py::test_auto_restart_is_off_unless_the_flag_is_given`
+/ `tests/unit/test_opensearch_guard.py::test_auto_restart_starts_only_the_opensearch_container`
+/ `tests/unit/test_opensearch_guard.py::test_restart_requires_all_workers_healthy`
+/ `tests/unit/test_opensearch_guard.py::test_never_restarts_an_opensearch_the_guard_did_not_stop`
+/ `tests/unit/test_opensearch_guard.py::test_flap_cap_stays_stopped_and_alerts_after_max_restarts`
+/ `tests/unit/test_opensearch_guard.py::test_guard_source_never_uses_compose_or_destructive_docker_verbs`
+/ `tests/unit/test_opensearch_guard.py::test_guard_constants_match_the_fluent_bit_config_and_documented_conditions`
+/ `tests/contract/test_opensearch_guard_deploy.py::test_check_pipeline_no_longer_stops_any_container`
+/ `tests/contract/test_opensearch_guard_deploy.py::test_guard_unit_is_stop_only_by_default_auto_restart_is_a_separate_decision`
+
+### INV-80 ログ基盤・ホスト監視の警報と heartbeat は OpenSearch に依存せず、監視が止まったことを別の timer が検知する（ADR-0059）
+警報は journal 向けの stderr 行・`alerts.jsonl`・`alerts-current.json` に出る（OpenSearch・Temporal・DB を経由しない）。
+guard と host-process-monitor（PID/zombie）は毎回 heartbeat を書き、**別の unit・別の timer** の `monitor-watch.py` が
+古い・無い heartbeat を crit にする。無い heartbeat を OK にしない。watcher は読み取り専用。
+**機械検査**: `tests/unit/test_avp_alerts.py::test_same_alert_is_not_repeated_until_the_interval_and_resolves_once`
+/ `tests/unit/test_opensearch_guard.py::test_alert_is_written_to_stderr_with_a_journal_priority`
+/ `tests/unit/test_opensearch_guard.py::test_heartbeat_is_written_every_run_even_when_everything_is_fine`
+/ `tests/unit/test_monitor_watch.py::test_a_stopped_guard_is_flagged_while_the_other_monitor_stays_quiet`
+/ `tests/unit/test_monitor_watch.py::test_a_missing_heartbeat_is_critical_not_ok`
+/ `tests/unit/test_monitor_watch.py::test_host_process_monitor_writes_heartbeat_and_pid_alerts_to_the_shared_path`
+/ `tests/unit/test_monitor_watch.py::test_watcher_never_touches_docker_network_or_other_processes`
+/ `tests/contract/test_opensearch_guard_deploy.py::test_watch_is_a_separate_unit_and_timer_from_the_monitors_it_watches`
+
+### INV-81 ログ収集の欠損（buffer 上限・retry 窓の接近・破棄）は黙らず、取り戻せる範囲の調査は読み取り専用（ADR-0059）
+Fluent Bit の filesystem buffer が上限の 70% / 90%、最古の chunk が retry 窓（retry_limit x 平均 backoff）の 50% / 80% に
+達したら破棄の**前**に、chunk の破棄（`cannot be retried`）は**後**に警報になる。停止窓のログの recoverable /
+unrecoverable は `log-recoverability.py` が出し、元の json-file には書かない。
+**機械検査**: `tests/unit/test_opensearch_guard.py::test_buffer_near_its_limit_alerts_before_any_drop`
+/ `tests/unit/test_opensearch_guard.py::test_oldest_chunk_nearing_the_retry_window_alerts_before_drops`
+/ `tests/unit/test_opensearch_guard.py::test_dropped_chunks_in_fluent_bit_log_raise_a_crit_alert`
+/ `tests/unit/test_log_recoverability.py::test_rotated_away_start_of_the_window_is_unrecoverable`
+/ `tests/unit/test_log_recoverability.py::test_backfill_copies_only_window_lines_verbatim_and_never_writes_the_source`
+/ `tests/unit/test_log_recoverability.py::test_source_only_uses_read_only_docker_verbs`
+
+## T. migration の走査（ADR-0060）
+
+### INV-82 CHECK 語彙の拡張だけが release 走査の contract から外れ、その免除は宣言と機械検査で縛られる（ADR-0060）
+`migration_compat` は `drop*` を contract として扱い続ける。例外は 1 つだけ: migration が
+`CHECK_WIDENING`（table / constraint / column / old / new。リテラル、`old` ⊊ `new`、重複なし）を宣言し、
+`upgrade()` が `with op.batch_alter_table(table) as b:` の本体にちょうど
+`b.drop_constraint(constraint, type_="check")` → `b.create_check_constraint(constraint, "column IN ('..', ..)")`
+だけを持ち（`batch_alter_table` にキーワード引数〔recreate / copy_from / table_args / reflect_args / schema〕が
+あれば免除しない。`constraint` は CHECK の命名規約 `ck_*` で、`*_pkey` / `*_fkey` / `*_key` / `uq_*` / `fk_*` /
+`pk_*` など PK/FK/UNIQUE の名前は宣言不正として BLOCKED。2026-10-25 追記: 宣言を信用せず名前と引数で絞る）、IN の集合が `new` と一致するとき、その 1 組だけが contract と数えられない（免除は preflight の
+detail に残る）。宣言の不正・不一致・別名・別の制約種別・別の表・順序違い・with の外・2 回目の drop・
+同じファイルの他の drop / 破壊的 SQL は BLOCKED のまま。宣言の `old` が実際の旧制約と一致することと、
+旧コードの値が拡張後も通ることは、prod 形から流す実 INSERT のテストが示す。
+**機械検査**: `tests/unit/test_release_check_widening.py`（宣言どおりは PASS、否定例は全て BLOCKED、
+実 0017 の認識）
+/ `tests/contract/test_migration_0017_check_widening.py`（old が 0016 の実制約と一致・旧値は拡張後も通る・
+新値が通る・未知値は拒否・downgrade で新値の行だけ消えて旧制約に戻る・`new` = `AnomalyKind`）
+/ `tests/integration/test_migration_against_postgres.py::test_0017_widens_the_kind_check_and_keeps_old_code_working_on_postgres`
+/ `tests/unit/test_release_migration_scan.py`（既存の bypass 例は従来どおり BLOCKED）
+
+## U. 破壊的操作の接続先検証（ADR-0055）
+
+### INV-83 破壊的な DB 操作は、実際に繋がっている接続が印のある `_test` DB であると確認できたときだけ実行される（ADR-0055）
+URL は `connect_args` / `creator` / 環境変数で実際の接続先と食い違いうる。破壊的な文（`DROP TABLE|SCHEMA|DATABASE` /
+`TRUNCATE`）は、PostgreSQL では実行直前に `current_database()` と DB コメントの印（`avp-test-database`）を
+読み、DB 名が `_test` で終わらない・URL の DB と違う・印が無いなら `UnsafeDatabaseError`（DDL は走らない）。
+`DROP DATABASE` は消す対象の名前も `_test` で終わること。
+**文の判定**（2026-10-25 追記、独立レビュー E の P2-4）: `;` の分割はコメント（`--`・入れ子の `/* */`）と引用
+（`'..'` `E'..'` `".."` `$tag$..$tag$`）を正しく読んだ上で行う（`/* ; */ DROP TABLE x` が漏れない）。
+`DO` ブロックで `EXECUTE` または `DROP`/`TRUNCATE` の語を含むものは動的 SQL として破壊的扱い（安全側）。
+`ALTER TABLE .. DROP [COLUMN] c` は破壊的（列のデータが消える）、`DROP CONSTRAINT` / `DROP DEFAULT|NOT NULL` は
+対象外（データを消さず、CHECK 作り直しの migration が日常的に行う）。`WHERE` 無しの `DELETE FROM` は実行時の
+守衛（conftest）だけが破壊的扱いにする（architecture テストが拾うリテラルには数えない）。
+範囲外のまま: `CALL`/`SELECT fn()` が中で行う DDL、文字列連結で組み立てた動的 SQL を `DO` 以外から実行する経路、
+SQLAlchemy Engine を通らない生 psycopg 接続、サブプロセスの alembic。
+`guarded_drop_all` / `guarded_create_all` は同じ検査を明示で行い、
+tests の `conftest.py` は全 PostgreSQL 接続の文の入口にも同じ検査を入れる（`drop_all` も生 SQL も止まる）。
+本番と `avp_test` が同じインスタンスにあるときは、サーバのアドレスでは区別できないので DB 名と印で区別する
+（印の付与は CI の使い捨て DB か所有者の手作業。別インスタンスへの分離が最終形）。
+**機械検査**: `tests/integration/test_destructive_db_mistake.py`（失敗注入12: 本番に見立てた DB・`connect_args`・
+`creator`・libpq 環境変数・印の無い `_test` DB・`DROP DATABASE` のどれでも拒否され、実 DB の表と行が残る。
+印のある DB は通る対照つき）
+/ `tests/unit/test_db_destructive_guard.py::test_a_connect_args_style_override_is_stopped_by_the_live_check`
+/ `tests/unit/test_db_destructive_guard.py::test_live_check_refuses_everything_else`
+/ `tests/unit/test_db_destructive_guard.py::test_destructive_statements_are_verified_before_they_run`
+/ `tests/unit/test_db_destructive_guard.py::test_drop_database_names_must_end_with_test_even_on_a_verified_connection`
+/ `tests/contract/test_ci_db_isolation.py::test_ci_steps_that_get_a_test_database_also_mark_it`
+
+## V. fal のローカル予算（ADR-0061）
+
+### INV-84 fal の月間予算が 0 / 未設定のとき、新しい有料 submit は 0 回で、日次は失敗せず正常終了する（ADR-0061）
+`FAL_MONTHLY_BUDGET_USD` が未設定・不正・0 のとき、`PaidJobRunner.submit` は予約も prepare も submit もせず
+`ProviderBudgetHeldError`（`needs_input`）で止め、日次の入口は `PAID_HELD`、production の前は保留を記録して
+`PipelineOutcome.HELD` で終える。**未設定は無制限ではない**。保留は失敗でも成功でもなく（INV-77）、上限
+`MAX_HELD_EPISODES` に達すれば 3 日目以降は新しい Episode を作らず `HELD_BACKLOG`（INV-76）。予算ゲートは
+再利用・受理済み・未照合の早期 return の後ろなので、完成済みシーンは再生成されず、未照合予約は予算が正に
+なっても再送されない（INV-17 / INV-67）。予算を足したあとの再開は所有者承認つき `resume` だけ（日次は
+再開しない / INV-78）。保留の行は `reason=waiting_for_credits` に `snapshot.hold_detail`（`budget_status` /
+`decision_reason`）を持つ。有料の入口（`PaidJobRunner` を組む worker・pipeline worker）が予算を結線している
+ことは契約テストが検査する。
+**機械検査**: `tests/unit/test_budget_gate_domain.py` / `tests/unit/test_paid_job_budget.py`
+/ `tests/unit/test_budget_zero_daily_workflows.py::test_a_month_of_zero_budget_never_fails_and_is_bounded`
+/ `tests/unit/test_budget_zero_daily_workflows.py::test_zero_or_unset_budget_plans_scripts_then_holds_and_ends_normally`
+/ `tests/contract/test_fal_budget_wiring.py` / `tests/contract/test_compose_workers.py::test_per_worker_minimal_env`
+/ `tests/unit/test_hold_watchdog_classification.py::test_budget_holds_are_held_not_failed_and_stay_visible`
+
+## W. release の未照合予約 waiver（ADR-0062）
+
+### INV-85 未照合予約の waiver は release 限定・1 件限り・期限つきで、台帳を書かず、`provider_reservations` 以外を免除しない（ADR-0062）
+`provider_reservations` は、`reserved` がちょうど 1 件で、その id・provider request id・行の指紋と、SHA・
+所有者承認参照・72 時間以内の期限・証跡の sha256・予算設定が明示的な 0・実行中 workflow 0 が全て揃う
+waiver があるときだけ `WAIVED` になる。1 つでも欠ける・読めない・件数が読み取り中に変わる・別の `reserved`
+行がある場合は BLOCKED。waiver が無ければ従来どおり BLOCKED（detail も同じ）、件数 0 なら waiver は無視。
+`WAIVED` は `WAIVABLE_CHECKS` でだけ必須を満たし、他のチェックでは総合 BLOCKED。予約は `reserved` のまま
+で台帳・DB は書かない（再送禁止は維持）。出力に所有者承認の生 token は出さない（指紋のみ）。
+**機械検査**: `tests/unit/test_release_reservation_waiver.py::test_single_target_reservation_with_all_conditions_is_waived_and_ready`
+/ `tests/unit/test_release_reservation_waiver.py::test_explicit_zero_budget_is_accepted`
+/ `tests/unit/test_release_reservation_waiver.py::test_count_zero_ignores_the_waiver`
+/ `tests/unit/test_release_reservation_waiver.py::test_no_waiver_file_keeps_the_original_blocked_detail`
+/ `tests/unit/test_release_reservation_waiver.py::test_a_second_reserved_row_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_count_changing_during_the_read_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_expired_waiver_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_window_over_72_hours_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_expiry_not_after_approval_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_approved_in_the_future_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_naive_times_block`
+/ `tests/unit/test_release_reservation_waiver.py::test_request_id_mismatch_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_reservation_id_mismatch_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_wrong_sha_and_wrong_kind_block`
+/ `tests/unit/test_release_reservation_waiver.py::test_unparseable_waiver_is_blocked_not_unknown`
+/ `tests/unit/test_release_reservation_waiver.py::test_fingerprint_mismatch_blocks_when_the_row_changed`
+/ `tests/unit/test_release_reservation_waiver.py::test_row_that_is_not_reserved_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_only_an_explicit_zero_budget_is_accepted`
+/ `tests/unit/test_release_reservation_waiver.py::test_waiver_must_require_zero_budget`
+/ `tests/unit/test_release_reservation_waiver.py::test_missing_approver_bad_token_or_reason_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_running_workflows_block`
+/ `tests/unit/test_release_budget_setting_source.py::test_process_env_that_differs_from_dotenv_is_unavailable`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_a_valid_waiver_does_not_relax_any_other_check`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_a_waived_run_calls_only_protocol_read_methods`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_the_resubmit_guards_that_the_waiver_relies_on_still_exist`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_waiver_is_ignored_in_post_deploy_mode`
+/ `tests/unit/test_release_reservation_waiver_safety.py::test_a_waiver_bound_to_sha_a_does_not_apply_to_sha_b`
+/ `tests/unit/test_release_reservation_waiver.py::test_evidence_hash_mismatch_or_missing_blocks`
+/ `tests/unit/test_release_reservation_waiver.py::test_collector_failure_is_unknown`
+/ `tests/unit/test_release_reservation_waiver.py::test_waived_on_a_non_waivable_check_is_blocked`
+/ `tests/unit/test_release_reservation_waiver.py::test_waived_counts_as_satisfied_only_for_reservations`
+/ `tests/unit/test_release_reservation_waiver.py::test_approved_report_accepts_waived_reservations_only`
+/ `tests/unit/test_release_reservation_waiver.py::test_other_checks_are_identical_with_and_without_the_waiver_file`
+/ `tests/unit/test_release_reservation_waiver.py::test_text_and_json_show_waived_with_a_warning`
+/ `tests/unit/test_release_reservation_waiver.py::test_default_waiver_path_and_fingerprint_are_stable`
+/ `tests/architecture/test_release_preflight_read_only.py`

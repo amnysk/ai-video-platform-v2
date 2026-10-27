@@ -54,6 +54,7 @@ from contracts.topic_planning import (
     STRATEGY_PROFILES,
 )
 from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
+from domain.budget_gate import BudgetDecision, evaluate_budget
 
 
 class Settings(BaseSettings):
@@ -79,6 +80,8 @@ class Settings(BaseSettings):
     codex_timeout_seconds: int = 900
     #: 許可 model（カンマ区切り）。空なら未検証（contracts/codex_models.py）
     codex_allowed_models: str = ""
+    #: True なら CODEX_MODEL の固定が必須（空だと日次の入口で止まる。ADR-0058）
+    codex_require_pinned_model: bool = False
     #: codex を ``-C`` で走らせる作業ディレクトリ（sandbox は read-only）。
     codex_workspace: str = "."
 
@@ -95,6 +98,11 @@ class Settings(BaseSettings):
     #: 有料の画像・動画 provider の鍵。**secret**。未設定なら該当 worker を組めない。
     #: ``SecretStr``: repr / model_dump / ログに値を出さない。使う箇所で ``get_secret_value()``。
     fal_key: SecretStr | None = None
+    #: fal の月間予算の上限（USD。ADR-0057 / ADR-0061）。**未設定は無制限ではない**: 未設定・不正は
+    #: 新しい有料 submit をしない（``BUDGET_UNSET``）。明示的な 0 は意図した停止
+    #: （``BUDGET_DISABLED``）。正の値だけが submit を許す。課金を伴う再開
+    #: （``provider-credits.py resume``）も上限が要る
+    fal_monthly_budget_usd: Decimal | None = None
     #: task queue ごとの並行 Activity 数（worker が max_concurrent_activities に使う）
     image_concurrency: int = DEFAULT_IMAGE_CONCURRENCY
     voice_concurrency: int = DEFAULT_VOICE_CONCURRENCY
@@ -206,6 +214,27 @@ class Settings(BaseSettings):
     planner_trend_enabled: bool = False
     #: 台本の後に Evidence を依頼して照合する（助言だけ。結果で Episode を止めない）
     script_evidence_enabled: bool = False
+
+    @field_validator("fal_monthly_budget_usd", mode="before")
+    @classmethod
+    def _budget_fails_closed(cls, value: object) -> object:
+        """空文字は未設定。読めない・有限でない値は負にして、起動を落とさず未設定扱いにする。
+
+        pydantic は Decimal の NaN / Infinity を拒否して ``Settings()`` ごと落ちるので、
+        ここで ``-1``（``evaluate_budget`` が不正として扱う）に寄せる。
+        """
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        try:
+            parsed = Decimal(str(value).strip())
+        except Exception:
+            return Decimal(-1)
+        return parsed if parsed.is_finite() else Decimal(-1)
+
+    @property
+    def fal_budget(self) -> BudgetDecision:
+        """ローカル月間予算の判定（ADR-0061）。worker は起動時に 1 回だけ読む。"""
+        return evaluate_budget(self.fal_monthly_budget_usd)
 
     @field_validator("research_provider", mode="before")
     @classmethod

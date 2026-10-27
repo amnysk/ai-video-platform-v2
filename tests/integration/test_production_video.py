@@ -28,7 +28,7 @@ from infrastructure.production.paid_job import PaidJobRunner
 from infrastructure.storage.artifact_store import readback_sha256
 from infrastructure.workdir import WorkDirectory
 from tests.support.db import assert_destructive_allowed, require_test_database_url
-from tests.support.production import FakeVideoGenerator
+from tests.support.production import ENABLED_BUDGET, FakeVideoGenerator
 from tests.unit.test_production_video_activities import DURATIONS, seed
 from workers.production_video.activities import VideoProductionActivities
 
@@ -90,7 +90,10 @@ async def test_scene_video_end_to_end_on_postgres_and_minio(
         generator=gen,
         probe=PillowAvMediaProbe(),
         runner=PaidJobRunner(
-            session_factory=f, store=minio_store, workdir=WorkDirectory(tmp_path, forbidden=())
+            budget=ENABLED_BUDGET,
+            session_factory=f,
+            store=minio_store,
+            workdir=WorkDirectory(tmp_path, forbidden=()),
         ),
         bucket=minio_store.bucket,
         poll_interval_seconds=0,

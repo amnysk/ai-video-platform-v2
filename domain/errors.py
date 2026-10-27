@@ -78,6 +78,55 @@ class ProviderUnavailableError(NeedsInputError):
         self.http_status = http_status
 
 
+class ProviderRefusalError(NeedsInputError):
+    """provider が有料呼び出しを**受理しなかった**ことが確実な拒否の基底（ADR-0057）。
+
+    ``ProviderUnavailableError`` の子ではない: ADR-0030 の認証 incident（10分窓・閾値3）に
+    数えない。入力の内容拒否（``ProviderRejectedError``）でもない: ``input_rejected_by_provider``
+    を立てず、入金・復旧後に同じ入力をそのまま再送できる。課金は発生していない（費用 0）。
+
+    ``summary`` は adapter が secret・署名付き URL を除いた応答本文の要約（診断用）。
+    """
+
+    def __init__(
+        self, message: str, *, http_status: int | None = None, summary: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+        self.summary = summary
+
+
+class ProviderBalanceExhaustedError(ProviderRefusalError):
+    """provider アカウントの残高不足（ロック）による拒否。管理された一時停止（ADR-0057）。"""
+
+
+class ProviderRefusalUnknownError(ProviderRefusalError):
+    """401/402/403 だが、残高不足とも認証失敗とも文書化された根拠で確定できない拒否（ADR-0057）。
+
+    安全側: breaker を開き、人が原因を確認するまで新規の有料 submit を止める。
+    """
+
+
+class ProviderBreakerOpenError(NeedsInputError):
+    """provider アカウントの circuit breaker が open。予約を作る前に止めた（ADR-0057）。
+
+    台帳には何も残らない・provider へは何も送らない。時間では解除されない。
+    """
+
+    def __init__(self, message: str, *, account_key: str = "", reason: str = "") -> None:
+        super().__init__(message)
+        self.account_key = account_key
+        self.reason = reason
+
+
+class ProviderBudgetHeldError(ProviderBreakerOpenError):
+    """ローカルの月間予算が 0 / 未設定で、新しい有料 submit を始めなかった（ADR-0061）。
+
+    意図した運用状態であって障害ではない。台帳には何も残らず provider へは何も送らない。
+    ``reason`` は ``HoldReason`` の値（``budget_disabled`` / ``budget_unset``）。
+    """
+
+
 class UnsupportedModelError(ProviderUnavailableError):
     """指定（または config.toml 由来）の model がアカウントで使えない。設定の誤り。
 

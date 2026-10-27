@@ -40,6 +40,7 @@ from contracts.states import (
     ProviderCall,
 )
 from domain.pipeline.resume_plan import ReservationSummary, ResumePlan, build_resume_plan
+from infrastructure.db.provider_health_repositories import PostgresProviderHealth
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -401,6 +402,16 @@ async def resume_episode(
             status_code=status.HTTP_409_CONFLICT,
             detail=plan.reason or f"episode {episode_id} is not resumable",
         )
+
+    # 信用保留（ADR-0057）の解放は承認・未照合予約・予算を検査する CLI だけが行う。API 再開が
+    # 保留を迂回して再開すると、残高が戻っていないまま有料呼び出しが再開しうる（review-E P1-1）。
+    if await PostgresProviderHealth(session_factory).has_live_hold(episode_id):
+        reason = (
+            f"episode {episode_id} has an open provider credit hold: resume it with "
+            "scripts/provider-credits.py resume (owner approval, reservation check, budget)"
+        )
+        _resume_rejected(ep, status.HTTP_409_CONFLICT, reason)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
 
     try:
         workflow_id = await starter.start_pipeline_workflow(

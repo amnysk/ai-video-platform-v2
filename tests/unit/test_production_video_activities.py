@@ -25,7 +25,13 @@ from infrastructure.db.repositories import (
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.production.paid_job import PaidJobRunner
 from infrastructure.workdir import WorkDirectory
-from tests.support.production import FakeVideoGenerator, make_mp4, make_png, sample_storyboard
+from tests.support.production import (
+    ENABLED_BUDGET,
+    FakeVideoGenerator,
+    make_mp4,
+    make_png,
+    sample_storyboard,
+)
 from workers.production_video.activities import VideoProductionActivities
 
 
@@ -33,6 +39,7 @@ def make_activities(
     session_factory, store, generator, tmp_path, **kwargs
 ) -> VideoProductionActivities:
     runner = PaidJobRunner(
+        budget=ENABLED_BUDGET,
         session_factory=session_factory,
         store=store,
         workdir=WorkDirectory(tmp_path / "work", forbidden=()),
@@ -345,6 +352,7 @@ async def test_await_time_content_rejection_records_the_input_image_and_blocks_i
     assert rejection.source_media_sha256 == image_sha
 
     runner = PaidJobRunner(
+        budget=ENABLED_BUDGET,
         session_factory=session_factory,
         store=artifact_store,
         workdir=WorkDirectory(tmp_path / "work2", forbidden=()),
