@@ -1,0 +1,18 @@
+# Release 2026-10-27-fal-monthly-cap
+- target SHA: 303f33ec7d0430009bd7d25e15e7bfbd813971d9 (merge of PR #19; includes PR #18 merge c9d9fd0)
+- previous (production) SHA: 1227e2601b0542bb01c42b916a5b859be010db24   deploy-state: deploy-state/20261027T142951Z-pre-303f33ec7d0430009bd7d25e15e7bfbd813971d9.txt
+- approver / approved_at: amnysk / 2026-10-27T14:29:39+00:00   approval file: release/approvals/<sha>.json (ignored; not committed)
+- preflight: READY (exit 0) at 2026-10-27T14:29Z   report sha256 bound by the approval (stage-a report: release/records/cap-preflight.json, ignored)
+- migrations: none (alembic 0018 -> 0018)   classification: expand-only (no schema change)
+- backup manifest: /mnt/minio-hdd/avp-backups/20261027T142232Z/manifest.json   restore-drill: restore_verified=true (2026-10-27T14:23Z)
+- replay evidence: release/evidence/<sha>-replay.json (65 passed; CI "Temporal replay" also success)
+- schedule snapshot (before): avp-daily-episode paused=true (operator), avp-daily-watchdog paused=false
+- deploy: finished ~2026-10-27T14:31Z / result: success (14 app services recreated at the target revision; DB/MinIO/Temporal untouched)
+- post-deploy verify: READY at ~2026-10-27T14:32Z (13 containers at target, 12 queues with pollers, schedules unchanged, alembic head)
+- schedules after: daily unpaused by operator-approved step at ~15:4xZ after the E2E below; watchdog unchanged
+- rollback: not needed (rollback target = 1227e26 via `--rollback`; `.env` pre-change copy kept outside git)
+- notes / deviations:
+  - Change: FAL_MONTHLY_BUDGET_USD 0 -> 60 (hard cap, ADR-0063 / INV-86). Reservation 591d1a8b reconciled as failure (OWNER-20261027-FAL001, actor amnysk; owner checked the fal dashboard: not charged). The PR #18 waiver (budget must be 0) no longer applies.
+  - `make deploy-workers` needs the repo venv on PATH (first attempt failed before changing anything: `python: command not found`).
+  - Limited E2E (one manual `temporal schedule trigger`): Episode 48f4eddb-5924-4d03-add0-c705eb41f5f0 -> uploaded, YouTube private (single upload), 24 ledger rows all spent, no duplicate fal charge. Estimated cost 11.5274 USD; month counted 52.9571 / 60 afterwards.
+  - Known: remaining headroom (~7.04 USD) is below one episode (~11.5 USD): the next daily run is expected to hit the cap and hold (`needs_input`, resumable), not fail.
