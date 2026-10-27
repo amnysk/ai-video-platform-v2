@@ -12,12 +12,18 @@
 | `test_terminal_verdicts_never_flip_to_another_terminal` | success と failed の食い違いを黙って上書きする（通報されない） |
 | `test_blocks_new_round` | 課金済み／未確定の入力に新ラウンドを許す条件の取り違え（failed は許す側も固定） |
 | `test_manual_resolution_requires_evidence_and_owner_approval` | 根拠も承認も無い手動確定（「緑にするための確定」） |
+| `test_owner_approval_must_be_a_structured_reference` | `tok` のような非空なら何でも通る承認（形骸化）。形式（`OWNER-<yyyymmdd>-<id>`・実在日付・長さ・空白）を固定。認証ではない |
 | `test_owner_approval_is_stored_as_a_fingerprint_not_the_token` | 承認 token が DB・ログに残る |
 | `test_summary_is_collector_friendly` | preflight が provider 別・Episode 別に見られず、一律の止め／通しになる |
 | `test_observation_is_idempotent_and_leaves_the_ledger_untouched` | 観測だけで `reserved` が自動で出る（INV-15 違反） |
 | `test_manual_resolve_*` | 監査行が残らない／再実行で二重に書く／確定済みを別の結論へ変える |
 | `test_confirmed_success_can_never_be_resubmitted_under_a_new_key` | 課金済み・結果ありの予約を、新 key で再送して二重課金する（`spent` で取得物が無いと `_plan_round` は次ラウンドを選ぶ） |
 | `test_unknown_reservation_can_never_be_resubmitted_under_a_new_key` | 「分からない」を理由に再送する |
+| `test_dispatched_reserved_without_any_verdict_blocks_a_new_key` / `test_blocks_new_round_treats_a_dispatched_reserved_without_verdict_as_unknown` | 観測ゼロの dispatched な reserved（本番の sb4 の形）を「記録なし = 無事」と読み、新 key で二重 submit する（独立レビュー P2-a） |
+| `test_never_dispatched_reserved_does_not_block_a_new_key` / `test_terminal_reservations_without_verdict_do_not_block` / `test_same_key_is_not_a_resubmit_even_if_dispatched` | 新ガードが強すぎて、呼んでいない予約・spent・abandoned の通常 retry や同一 key の再開まで止める |
+| `test_reservation_row_lock_statement_uses_for_update` / `test_resolve_manual_locks_the_reservation_row` | 並行する `resolve_manual` が行ロック無しで走り、別 outcome が両方監査行を残して last-writer-wins になる（P2-b）。**文の形までの検査**で、実競合は未実行の PG 統合試験 |
+| `test_input_lock_key_*` / `test_reserve_takes_the_input_advisory_lock_only_on_postgresql` | 入力ごとの advisory lock の鍵が衝突・桁あふれする／SQLite で PG 専用文を出す／PG で出さない |
+| `test_a_403_on_the_result_leaves_the_reservation_reserved_and_resume_awaits_it` / `test_after_manual_success_resume_cannot_submit_again` / `test_after_manual_failure_resume_opens_the_next_round` | 再開（運用者の unblock）が UNKNOWN の予約から fal へ再 submit する。403 を `spent` に読み替えて次ラウンドへ進む。failure 確定だけが意図して次ラウンドを開くことの固定 |
 | `test_confirmed_failure_may_start_a_new_round` | ガードが強すぎて failed の通常 retry まで止める |
 | `test_a_different_input_is_not_blocked` | ガードが入力を区別せず、プロンプトを直した新入力まで止める |
 | `test_reconcile_is_dry_run_by_default_and_writes_nothing` | dry-run のつもりで台帳に書く |

@@ -96,6 +96,11 @@ class AnomalyKind(StrEnum):
     #: pipeline workflow が Temporal 上は completed なのに outcome=stopped で、
     #: DB 側の他のどの検査にも引っかからない食い違い（ADR-0031、episode_id 付き）
     PIPELINE_OUTCOME_MISMATCH = "PIPELINE_OUTCOME_MISMATCH"
+    #: 日次 workflow が失敗・タイムアウト・terminate で閉じ、その日の slot（Episode）が無い
+    #: （ADR-0054。Schedule 系 = episode_id なし、slot 日ごとに1行）
+    DAILY_WORKFLOW_FAILED = "DAILY_WORKFLOW_FAILED"
+    #: 日次 workflow の終了状態を確認できなかった日（読み取り失敗・保持期間切れ。ADR-0054）
+    DAILY_WORKFLOW_UNOBSERVABLE = "DAILY_WORKFLOW_UNOBSERVABLE"
 
 
 #: ``ScheduleHealth`` → 記録する異常（無ければ異常ではない）
@@ -124,6 +129,45 @@ class DailyStartStatus(StrEnum):
     UNSUPPORTED_CRON = "unsupported_cron"
 
 
+# --------------------------------------------- 日次 workflow の失敗検知（ADR-0054、単一宣言元）
+
+#: 何日前の slot 日まで終了状態を見るか。Temporal の履歴保持（既定1〜3日）を超えて遡らない
+DEFAULT_DAILY_FAILURE_LOOKBACK_DAYS = 3
+MAX_DAILY_FAILURE_LOOKBACK_DAYS = 7
+#: detail に残す失敗の型名・message の最大文字数（secret を残さないため短く切る）
+DAILY_FAILURE_TYPE_LIMIT = 80
+DAILY_FAILURE_MESSAGE_LIMIT = 200
+
+
+class DailyRunStatus(StrEnum):
+    """日次 workflow 1実行の終了状態（Temporal の ``WorkflowExecutionStatus`` を畳んだもの）。"""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    CONTINUED_AS_NEW = "continued_as_new"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    TERMINATED = "terminated"
+    CANCELED = "canceled"
+    #: 読めた状態が上のどれでもない
+    OTHER = "other"
+
+
+#: 「失敗で閉じた」状態。Completed / Running / ContinuedAsNew は失敗ではない
+DAILY_RUN_FAILED_STATUSES = frozenset(
+    {
+        DailyRunStatus.FAILED,
+        DailyRunStatus.TIMED_OUT,
+        DailyRunStatus.TERMINATED,
+        DailyRunStatus.CANCELED,
+    }
+)
+#: 成功した、または進行中の状態（あればその日は失敗日にしない）
+DAILY_RUN_OK_STATUSES = frozenset(
+    {DailyRunStatus.COMPLETED, DailyRunStatus.RUNNING, DailyRunStatus.CONTINUED_AS_NEW}
+)
+
+
 @dataclass(frozen=True, slots=True)
 class MaintenanceMarker:
     """Schedule の pause note に載せる maintenance の印。"""
@@ -148,6 +192,7 @@ class WatchdogRequest:
     blocked_grace_minutes: int = DEFAULT_BLOCKED_GRACE_MINUTES
     completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
     upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
+    daily_failure_lookback_days: int = DEFAULT_DAILY_FAILURE_LOOKBACK_DAYS
 
 
 @dataclass
@@ -165,6 +210,7 @@ class WatchdogCheckRequest:
     blocked_grace_minutes: int = DEFAULT_BLOCKED_GRACE_MINUTES
     completion_deadline_hours: float = DEFAULT_COMPLETION_DEADLINE_HOURS
     upload_deadline_hours: float = DEFAULT_UPLOAD_DEADLINE_HOURS
+    daily_failure_lookback_days: int = DEFAULT_DAILY_FAILURE_LOOKBACK_DAYS
 
 
 @dataclass
@@ -178,3 +224,12 @@ class WatchdogResult:
     slot_date: str = ""
     #: 今回検査した Episode 進行・完成・投稿の異常件数（起動系と別集計。監視の可視化用）
     episode_anomaly_count: int = 0
+    #: 最新の slot 日で終わる、日次 workflow 失敗の連続日数（ADR-0054。0 = 失敗ではない）
+    consecutive_daily_failures: int = 0
+    #: 未解放の保留 Episode 数（ADR-0058。失敗でも成功でもない。0 = 保留なし）
+    held_episodes: int = 0
+    #: そのうち保留が猶予日数を超えて通報したもの
+    held_escalated: int = 0
+    oldest_hold_days: float = 0.0
+    #: 保留の読み取りに失敗した（従来の停滞検査に倒れた。確認できなかったことを健全にしない）
+    hold_reader_failed: bool = False

@@ -78,6 +78,8 @@ ACTIVITY_INPUT_FIELDS: dict[str, Mapping[str, str]] = {
     "contracts.pipeline.CheckPausedRequest": {},
     "contracts.pipeline.ClaimDailySlotRequest": {"slot_date": "attributes.slot_date"},
     "contracts.pipeline.UploadGateRequest": {_E: _E},
+    "contracts.daily_gate.DailyGateRequest": {"slot_date": "attributes.slot_date"},
+    "contracts.daily_gate.ProductionGateRequest": {_E: _E},
     "contracts.schedule_guard.WatchdogCheckRequest": {},
     # planning（台本・企画・台本の根拠確認）
     "workers.planning.activities.EpisodeRef": {_E: _E},

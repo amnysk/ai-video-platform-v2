@@ -45,6 +45,7 @@ class DailyWatchdogWorkflow:
                 blocked_grace_minutes=request.blocked_grace_minutes,
                 completion_deadline_hours=request.completion_deadline_hours,
                 upload_deadline_hours=request.upload_deadline_hours,
+                daily_failure_lookback_days=request.daily_failure_lookback_days,
             ),
             result_type=WatchdogResult,
             start_to_close_timeout=_CHECK_TIMEOUT,

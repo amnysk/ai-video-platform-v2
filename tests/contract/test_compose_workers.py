@@ -294,6 +294,10 @@ def test_no_service_registers_schedule(services) -> None:
     ("prefix", "owners"),
     [
         ("FAL_KEY", {"production-image-worker", "production-video-worker"}),
+        (
+            "FAL_MONTHLY_BUDGET_USD",
+            {"production-image-worker", "production-video-worker", "pipeline-worker"},
+        ),
         ("YOUTUBE_", {"upload-worker", "script-worker"}),
         ("CODEX_", {"script-worker", "storyboard-worker", "scene-alternative-worker"}),
     ],

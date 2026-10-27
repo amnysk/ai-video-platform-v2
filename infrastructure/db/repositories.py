@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections.abc import Iterable, Sequence
@@ -10,7 +11,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, Select, case, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,12 @@ from contracts.operations import (
     DailyEpisodeSlot,
     DailySlotClaim,
     OperationalSwitch,
+)
+from contracts.provider_health import (
+    PROVIDER_FAMILY,
+    HoldReason,
+    ProviderAccount,
+    ProviderFamily,
 )
 from contracts.schedule_guard import AnomalyKind
 from contracts.states import (
@@ -43,16 +50,25 @@ from contracts.topic_planning import (
     TopicPlanStatus,
 )
 from domain.artifact.entities import ArtifactMetadata
+from domain.budget_gate import (
+    CapDecision,
+    evaluate_cap,
+    month_key,
+    month_start_utc,
+    unknown_cost_decision,
+)
 from domain.episode.entities import Episode
 from domain.episode.transitions import EpisodeEvent, Rejected, transition_episode
 from domain.errors import (
     InvalidTransitionError,
+    ProviderMonthlyBudgetExceededError,
     ProviderRejection,
     ResubmitRejectedError,
     UnreconciledReservationError,
 )
 from domain.job.entities import Job
 from domain.job.transitions import JobEvent, transition_job
+from domain.provider.cost import NOT_ACCEPTED_RECONCILER
 from domain.provider.reconciliation import (
     ManualResolution,
     ProviderObservation,
@@ -688,6 +704,79 @@ def _to_reservation(row: ProviderReservationRow) -> ProviderReservation:
     )
 
 
+def reservation_for_update_stmt(reservation_id: uuid.UUID | str) -> Select[Any]:
+    """予約行を ``SELECT ... FOR UPDATE`` で読む文（ADR-0053）。
+
+    同じ予約への並行する ``resolve_manual`` を直列化する。ロックは呼び出し側の commit /
+    rollback まで。SQLite は ``FOR UPDATE`` を出さない（書き込みが直列なので不要）。
+    ``populate_existing`` で、待った後に identity map の古い値を使わず最新を読む。
+    """
+    return (
+        select(ProviderReservationRow)
+        .where(ProviderReservationRow.id == _as_uuid(reservation_id))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+def input_lock_key(
+    episode_id: uuid.UUID | str, provider: ProviderCall, scene_id: str | None, input_hash: str
+) -> int:
+    """入力（Episode・provider・シーン・input_hash）の advisory lock の鍵（符号付き 64bit）。"""
+    material = "\x1f".join((str(episode_id), provider.value, scene_id or "", input_hash))
+    digest = hashlib.sha256(material.encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+def monthly_cap_lock_key(now: datetime) -> int:
+    """月間ハードキャップの advisory lock の鍵（符号付き 64bit。ADR-0063）。
+
+    ``sha256("fal-monthly-cap|YYYY-MM")``（UTC の月）。取る順序は固定: **月ロック → 入力ロック**。
+    """
+    digest = hashlib.sha256(f"fal-monthly-cap|{month_key(now)}".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+@dataclass(frozen=True, slots=True)
+class MonthCounted:
+    """当月（UTC）に fal 族で数える額（ADR-0063）。"""
+
+    total: Decimal
+    #: 数える行のうち見積が NULL のもの（費用が不明 = 上限の判定は拒否側）
+    unknown_rows: int
+
+
+async def month_counted(
+    session: AsyncSession, *, now: datetime, family: ProviderFamily = ProviderFamily.FAL
+) -> MonthCounted:
+    """当月の ``month_counted``。status / resume / 上限検査が共有する**唯一の定義**。
+
+    ``reserved_at >= 月初`` の ``family`` の全行（reserved / spent / abandoned）を数える。
+    除くのは費用区分が ``NOT_CHARGED`` の行だけ（``domain.provider.cost.cost_state`` が
+    ``reconciled_by == NOT_ACCEPTED_RECONCILER`` で決める区分を SQL に写したもの）。
+    集計は SQL の ``SUM``。
+    """
+    providers = [p.value for p, f in PROVIDER_FAMILY.items() if f is family]
+    table = ProviderReservationRow
+    estimate_missing = table.estimated_cost_usd.is_(None)
+    row = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(table.estimated_cost_usd), 0),
+                func.coalesce(func.sum(case((estimate_missing, 1), else_=0)), 0),
+            ).where(
+                table.provider.in_(providers),
+                table.reserved_at >= month_start_utc(now),
+                or_(
+                    table.reconciled_by.is_(None),
+                    table.reconciled_by != NOT_ACCEPTED_RECONCILER,
+                ),
+            )
+        )
+    ).one()
+    return MonthCounted(Decimal(str(row[0])), int(row[1]))
+
+
 class ProviderReservationRepository:
     """予約台帳（ADR-0013）。commit は呼び出し側の責務。
 
@@ -834,13 +923,29 @@ class ProviderReservationRepository:
         job_id: uuid.UUID | str | None = None,
         scene_id: str | None = None,
         estimated_cost_usd: Decimal | None = None,
+        monthly_cap_usd: Decimal | None = None,
+        now: datetime | None = None,
     ) -> ProviderReservation:
         """予約を INSERT する。呼び出し側がこの直後に commit すること。
+
+        **月間ハードキャップ（ADR-0063 / INV-86）**: ``monthly_cap_usd`` があり、``provider`` が
+        fal 族で、同じ ``idempotency_key`` の行がまだ無い（= 本当に新しい行）なら、INSERT と同じ
+        トランザクションで月ロックを取り（月ロック → 入力ロックの固定順序）、当月の
+        ``month_counted + estimate <= cap`` のときだけ INSERT する。超える・見積が不明なら
+        ``ProviderMonthlyBudgetExceededError``（行は作らない）。``None`` は検査なし（後方互換）。
 
         **再送ガード（ADR-0053 / INV-67）**: 同じ入力に、provider が成功を確認した（課金済み）
         予約、または未照合で結果が分からない予約が既にあれば、新しい idempotency key での
         予約を作らず ``ResubmitRejectedError``。provider に冪等キーは無いので、ここが最後の砦。
         """
+        moment = now or _now()
+        cap_applies = monthly_cap_usd is not None and PROVIDER_FAMILY.get(provider) is not None
+        if cap_applies:
+            # 月ロックは入力ロックより先（固定順序。逆順を作らない）
+            await self._lock_month(moment)
+        # 同じ入力への「検査 → INSERT」を直列化する（PostgreSQL のみ。トランザクション終了で解放）。
+        # 呼び出し側は reserve の直後に commit する規約なので、保持は短い
+        await self._lock_input(episode_id, provider, scene_id, input_hash)
         await self._reject_resubmit(
             episode_id=episode_id,
             provider=provider,
@@ -848,6 +953,14 @@ class ProviderReservationRepository:
             input_hash=input_hash,
             idempotency_key=idempotency_key,
         )
+        if cap_applies and monthly_cap_usd is not None:
+            await self._enforce_monthly_cap(
+                provider=provider,
+                idempotency_key=idempotency_key,
+                estimate=estimated_cost_usd,
+                cap=monthly_cap_usd,
+                now=moment,
+            )
         row = ProviderReservationRow(
             scene_id=scene_id,
             estimated_cost_usd=estimated_cost_usd,
@@ -859,13 +972,67 @@ class ProviderReservationRepository:
             input_hash=input_hash,
             round=round,
             status=ReservationStatus.RESERVED.value,
-            reserved_at=_now(),
+            reserved_at=moment,
         )
         self._session.add(row)
         await self._session.flush()
         reservation = _to_reservation(row)
         _defer_reservation(self._session, EventName.RESERVATION_RESERVED, "reserved", reservation)
         return reservation
+
+    async def _lock_month(self, now: datetime) -> None:
+        if self._session.get_bind().dialect.name != "postgresql":
+            return
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"), {"k": monthly_cap_lock_key(now)}
+        )
+
+    async def _enforce_monthly_cap(
+        self,
+        *,
+        provider: ProviderCall,
+        idempotency_key: str,
+        estimate: Decimal | None,
+        cap: Decimal,
+        now: datetime,
+    ) -> None:
+        """月ロックを持った状態で合計を読み、純粋関数で判定する。許可なら何もしない。"""
+        existing = await self._session.scalar(
+            select(ProviderReservationRow.id).where(
+                ProviderReservationRow.idempotency_key == idempotency_key
+            )
+        )
+        if existing is not None:
+            # 再試行 / replay / 再起動: 既存の冪等の経路に任せる。見積は既に月の合計に入っている
+            return
+        family = PROVIDER_FAMILY[provider]
+        counted = await month_counted(self._session, now=now, family=family)
+        decision: CapDecision
+        if estimate is None or counted.unknown_rows > 0:
+            decision = unknown_cost_decision(cap, counted.total, estimate)
+        else:
+            decision = evaluate_cap(cap, counted.total, estimate)
+        if decision.allowed:
+            return
+        raise ProviderMonthlyBudgetExceededError.from_decision(
+            decision,
+            account_key=ProviderAccount(family).key,
+            reason=HoldReason.WAITING_FOR_CREDITS.value,
+        )
+
+    async def _lock_input(
+        self,
+        episode_id: uuid.UUID | str,
+        provider: ProviderCall,
+        scene_id: str | None,
+        input_hash: str,
+    ) -> None:
+        if self._session.get_bind().dialect.name != "postgresql":
+            return
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"),
+            {"k": input_lock_key(episode_id, provider, scene_id, input_hash)},
+        )
 
     async def _reject_resubmit(
         self,
@@ -891,9 +1058,11 @@ class ProviderReservationRepository:
         recon = ProviderReconciliationRepository(self._session)
         for row in (await self._session.scalars(stmt)).all():
             verdict = await recon.latest_verdict(row.id)
-            if verdict is None:
-                continue  # 照合記録の無い行は従来の経路（find_unreconciled 等）が扱う
-            reason = blocks_new_round(ReservationStatus(row.status), verdict)
+            # 照合記録の無い dispatched な reserved は UNKNOWN 扱い（blocks_new_round が決める）。
+            # 未 dispatch の reserved は従来の経路（find_unreconciled 等）が扱う
+            reason = blocks_new_round(
+                ReservationStatus(row.status), verdict, dispatched=row.dispatched_at is not None
+            )
             if reason is not None:
                 raise ResubmitRejectedError(f"reservation {row.id}: {reason}")
 
@@ -1196,7 +1365,7 @@ class ProviderReservationRepository:
         """
         event = (
             ReservationEvent.EVIDENCE_RECONCILED
-            if reconciled_by in {"evidence", "conservative"}
+            if reconciled_by in {"evidence", "conservative", NOT_ACCEPTED_RECONCILER}
             else ReservationEvent.OPERATOR_CONFIRMED_SPENT
         )
         row = await self._apply(reservation_id, event)
@@ -1411,7 +1580,8 @@ class ProviderReconciliationRepository:
         return True
 
     async def _row_for_update(self, reservation_id: uuid.UUID | str) -> ProviderReservationRow:
-        row = await self._session.get(ProviderReservationRow, _as_uuid(reservation_id))
+        """行ロックつきで読む。以降の判定（最新の判定・status）はこのロックの下で行う。"""
+        row = (await self._session.scalars(reservation_for_update_stmt(reservation_id))).first()
         if row is None:
             raise InvalidTransitionError(f"unknown reservation {reservation_id}")
         return row
@@ -1869,6 +2039,12 @@ class DailyEpisodeSlotRepository:
         except IntegrityError:
             return False  # 同じ plan を別の Episode が先に取った。読み直すと holder が見える
         return True
+
+    async def earliest_slot_date(self) -> date | None:
+        """最初の slot の日。これより前の日は「日次運用が始まる前」で、失敗検知の対象にしない。"""
+        return (
+            await self._session.execute(select(func.min(DailyEpisodeSlotRow.slot_date)))
+        ).scalar_one_or_none()
 
     async def list_for_date(self, slot_date: date) -> list[DailyEpisodeSlot]:
         return [
@@ -2358,7 +2534,10 @@ class PaidReservationCost:
 
     scene_id: str | None
     provider: ProviderCall
+    #: 支出としての額（受理されなかった拒否は 0。INV-74）。復旧費用の集計に使う
     estimated_cost_usd: Decimal
+    #: 予約時の見積り額そのもの（拒否でも残る）。次の作り直しの投影に使う（review-E P2-7）
+    nominal_cost_usd: Decimal
     input_rejected_by_provider: bool
     reserved_at: datetime
 
@@ -2545,7 +2724,13 @@ class ProviderRejectionRepository:
             PaidReservationCost(
                 scene_id=row.scene_id,
                 provider=ProviderCall(row.provider),
-                estimated_cost_usd=row.estimated_cost_usd or Decimal("0"),
+                # 受理されなかった拒否（ADR-0057 / INV-74）は費用 0。復旧費用の上限に数えない
+                estimated_cost_usd=(
+                    Decimal("0")
+                    if row.reconciled_by == NOT_ACCEPTED_RECONCILER
+                    else row.estimated_cost_usd or Decimal("0")
+                ),
+                nominal_cost_usd=row.estimated_cost_usd or Decimal("0"),
                 input_rejected_by_provider=bool(row.input_rejected_by_provider),
                 reserved_at=row.reserved_at,
             )

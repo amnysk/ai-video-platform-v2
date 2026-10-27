@@ -185,6 +185,12 @@ class Fake:
     def pending_reservation_count(self) -> int:
         return self._get(self.pending)
 
+    def pending_reservations(self) -> list[rp.ReservationView]:
+        return []
+
+    def paid_budget_setting(self) -> str | None:
+        return None
+
     def unhealthy_services(self) -> list[str]:
         return self._get(self.unhealthy)
 

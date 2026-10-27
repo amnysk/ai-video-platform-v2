@@ -216,7 +216,9 @@ class RestoreRunner:
             self.running.discard(a[-1])
             return CmdResult(0, "", "")
         assert a[1] == "exec", a
-        i = 3 if a[2] == "-i" else 2
+        i = 2
+        while a[i].startswith("-"):  # docker exec のオプション（-i / -e KEY=VAL）を読み飛ばす
+            i += 2 if a[i] == "-e" else 1
         name, tool = a[i], a[i + 1]
         assert name in self.running, f"exec into a container this drill did not start: {name}"
         if tool == "pg_isready":

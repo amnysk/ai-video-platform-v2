@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 
 import pytest
@@ -8,6 +9,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from infrastructure.db.models import Base
+from tests.support.db import install_destructive_statement_guard, mark_test_database
+
+# 破壊的な文（DROP TABLE|SCHEMA|DATABASE / TRUNCATE）は、PostgreSQL では実行直前に
+# **実際の接続先** を検証する（INV-83）。drop_all も生 SQL も connect_args を上書きした
+# engine もここを通る。SQLite は対象外
+install_destructive_statement_guard()
+
+# 印の付与は CI など明示した環境だけ（`AVP_MARK_TEST_DB=1`）。本番インスタンス上の
+# avp_test への付与は所有者の手作業（docs/operations/db-role-separation.md）
+if os.environ.get("AVP_MARK_TEST_DB") == "1" and os.environ.get("TEST_DATABASE_URL"):
+    mark_test_database(os.environ["TEST_DATABASE_URL"])
 
 
 @pytest_asyncio.fixture

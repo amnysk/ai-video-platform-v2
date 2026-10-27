@@ -144,7 +144,15 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
   `# contract-migration: approved ADR-NNNN` が無ければ BLOCKED。印が有効なのは、コメントとして書かれ、
   ADR が**deploy 済みの revision に在り**（その ADR を先に別 PR で入れて deploy する）、`## Status` が Accepted で、
   migration の revision id に言及しているとき。読めない書き方は UNKNOWN、本番に入った migration の書き換えは BLOCKED
-- CHECK 語彙の拡張（`drop_constraint` + 再作成）も走査上は contract なので印が要る
+- CHECK 語彙の拡張（`drop_constraint` + 再作成）も走査上は contract なので印が要る。
+  **例外**（ADR-0060 / INV-82）: migration が `CHECK_WIDENING` を宣言し（table / constraint / column / old / new、
+  `old` が `new` の真の部分集合）、`upgrade()` が `with op.batch_alter_table(table) as b:` の中で
+  `b.drop_constraint(name, type_="check")` → `b.create_check_constraint(name, "col IN ('..', ..)")` の 2 文だけで、
+  IN の集合が `new` と一致するとき、その 1 組は印なしで PASS（detail に `CHECK widening` と出る）。
+  形が 1 つでも違えば従来どおり BLOCKED。宣言の `old` が実際の旧制約と一致するかは CI の
+  `tests/contract/test_migration_0017_check_widening.py` 型のテストで migration ごとに示す
+- 新規 DB は enum から作られた CHECK を 0012 の時点で最新語彙で持つ（本番は旧語彙）。拡張 migration の検査は
+  「prod 形から流す」テストで書く
 - 走査は **best effort**（AST + SQL の語）。通過は安全の証明ではなく、最終判断は人のレビュー（ADR-0050）
 
 ## 7. リリース記録テンプレート（`docs/releases/<tag>.md`、deploy 後に別ブランチでコミット。`release/` は ignore なのでここに置く）
@@ -193,3 +201,36 @@ UNKNOWN も「まだ成功と言えない」。その後 `python scripts/schedul
   healthcheck の閾値を緩めて通すことはしない（ADR-0052）。docker が読めなければ UNKNOWN。
 - `provider_reservations`: 未照合が1件でもあれば現状 **BLOCKED**（一律）。対象 Episode・provider・変更範囲に基づく
   リスクベース判定は未実装（P2）。`scripts/reconcile-reservations.py list` で状態を確認する（ADR-0053）。
+
+## 未照合予約の release 限定 waiver（ADR-0062 / INV-85）
+
+`provider_reservations` が BLOCKED のとき、所有者が照合できない 1 件に限り、台帳を書かずに release を通せる。
+予約は `reserved` のまま・再送は禁止のまま。条件は 1 つでも欠けると BLOCKED（予算が明示的な 0、実行中の
+workflow 0、`reserved` がちょうど 1 件、期限 72 時間以内）。`release/` は ignore なのでコミットされない。
+予算は repo の `.env` の `FAL_MONTHLY_BUDGET_USD=0` を読む。シェルに同名の環境変数があって `.env` と
+違うと UNKNOWN になる（compose は環境変数を優先するため。`unset FAL_MONTHLY_BUDGET_USD` してから実行する）。
+
+`release/waivers/<sha>-reservations.json`（`--reservation-waiver PATH` で変更可）:
+
+```json
+{
+  "kind": "release_reservation_waiver",
+  "sha": "<40hex>",
+  "reservation_id": "<provider_reservations.id>",
+  "provider_request_id": "<provider_job_ref の request_id>",
+  "reservation_fingerprint": "<下記>",
+  "approver": "owner",
+  "owner_approval": "OWNER-<yyyymmdd>-<id>",
+  "approved_at": "<tz つき ISO>",
+  "expires_at": "<approved_at から 72 時間以内>",
+  "reason": "<なぜ課金なし・再送しないと判断したか>",
+  "required_budget_usd": "0",
+  "evidence": [{"path": "release/evidence/<file>", "sha256": "<sha256sum の値>"}]
+}
+```
+
+- 証跡のハッシュ: `sha256sum release/evidence/<file>`
+- 指紋: 一度 waiver を（指紋を仮の値にして）置いて preflight を実行すると、BLOCKED の `data`
+  （`--json`）に `expected_reservation_fingerprint` が出る。行の内容（id・request id・費用・時刻）が
+  自分の確認と一致することを見てから waiver に写す。計算は `domain.release_preflight.reservation_fingerprint`。
+- 結果は `provider_reservations: WAIVED` と警告行。承認済みレポートに含めてよいのはこのチェックの WAIVED だけ。

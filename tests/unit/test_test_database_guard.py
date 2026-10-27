@@ -35,7 +35,8 @@ def test_remote_host_is_accepted_only_with_explicit_opt_in() -> None:
     assert validate_test_database_url(url, forbidden_urls=(), allow_remote=True) == url
 
 
-@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1", "postgres"])
+# "postgres"（compose のサービス名）は本番スタックの DB と同名なので許可しない（ADR-0055、INV-69）。
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1"])
 def test_local_test_database_is_accepted(host: str) -> None:
     url = (
         f"postgresql+psycopg://avp:pw@[{host}]:5432/avp_test"

@@ -40,6 +40,8 @@ UNKNOWN を READY として扱わない。staging は本番と何も共有しな
    （文字列・docstring 内の同じ文面、target にだけ在る ADR、Proposed の ADR では通らない）。
    **best effort**: 静的走査は抜けうる。通過は安全の証明ではなく、人のレビューは省けない。
    CHECK 語彙の拡張（`drop_constraint` + 再作成）も走査上は contract なので、印が要る
+   （例外: ADR-0060 の `CHECK_WIDENING` 宣言と 2 文が一致し、旧集合が新集合の真の部分集合である 1 件だけは contract と
+   数えない。それ以外は従来どおり）
 4. rollback は「前の SHA のイメージで再 deploy」。alembic downgrade に依存しない。contract migration が
    既に流れた後は、バックアップからの復旧＋所有者の判断（自動化しない）。
    旧イメージの `migrate`（`alembic upgrade head`）は DB が先にいると `Can't locate revision` で失敗するので、

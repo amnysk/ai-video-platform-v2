@@ -228,7 +228,7 @@ def test_opensearch_outputs(fb, alias) -> None:
     assert out["tls"] is True and out["tls.verify"] is True
     assert out["tls.verify_hostname"] is True, "既定 off"
     assert out["buffer_size"] == "4M"
-    assert out["retry_limit"] == 72
+    assert out["retry_limit"] == 288  # ADR-0059: 72 (約 2h49m) から 288 (約 11h) へ
     assert out["trace_error"] is False and out["trace_output"] is False
     assert out["storage.total_limit_size"] == "${AVP_LOG_STORAGE_LIMIT}"
     assert out["http_passwd"] == "${AVP_OS_WRITER_PASSWORD}"

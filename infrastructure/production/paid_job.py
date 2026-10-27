@@ -39,6 +39,10 @@ submit の失敗:
   ``spent`` + ``reconciled_by="conservative"``。
   台帳に「受理されなかった」辺は無く、``abandoned`` は人手専用なので、課金された前提で確定して
   次ラウンドを進める（安全側。見積もり額は過大計上になりうる / ADR-0017 負債）
+- ``ProviderRefusalError``（残高ロック・分類不能の拒否。ADR-0057）: 受理されていないことが確実。
+  ``spent`` + ``reconciled_by="not_accepted"``（費用 0）で確定し、``input_rejected_by_provider`` は
+  立てない。breaker を開き、Episode/シーンの保留を記録する。breaker が open の間は予約の**前**
+  （認可障害ゲートと同じ位置）で ``ProviderBreakerOpenError``。受理済みジョブの await は止めない
 - それ以外の例外はすべて曖昧扱い（``ProviderSubmitAmbiguousError`` として送出し、予約は残す）
 """
 
@@ -49,7 +53,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -66,21 +70,35 @@ from contracts.log_contract import (
     Outcome,
     ProviderOperation,
 )
+from contracts.pipeline import PipelineStage
 from contracts.production_activities import (
     AUTH_INCIDENT_SUPPRESSION_THRESHOLD,
     AUTH_INCIDENT_WINDOW_MINUTES,
     INPUT_FETCH_RETRIES_PER_SCENE,
 )
+from contracts.provider_health import (
+    PROVIDER_FAMILY,
+    BreakerState,
+    HoldReason,
+    ProviderAccount,
+    RefusalKind,
+)
 from contracts.states import ArtifactType, ProviderCall, RejectionCategory, ReservationStatus
 from domain.artifact.entities import ArtifactMetadata
+from domain.budget_gate import BudgetDecision, evaluate_budget, evaluate_cap
 from domain.errors import (
     InvalidTransitionError,
     MediaValidationError,
+    ProviderBalanceExhaustedError,
+    ProviderBreakerOpenError,
+    ProviderBudgetHeldError,
     ProviderCredentialSuspectedOutageError,
     ProviderInputFetchError,
     ProviderInputFetchRetryExhaustedError,
     ProviderJobFailedError,
+    ProviderMonthlyBudgetExceededError,
     ProviderPollDeadlineError,
+    ProviderRefusalError,
     ProviderRejectedError,
     ProviderRejectedRetryBlockedError,
     ProviderRejection,
@@ -91,13 +109,16 @@ from domain.errors import (
 )
 from domain.production.identity import idempotency_key
 from domain.production.ports import JobFailed, JobPending, JobStatus, ProviderJobRef
+from domain.provider.cost import NOT_ACCEPTED_RECONCILER
 from infrastructure.artifact.verify import ArtifactVerdict, find_and_verify_current, verify_artifact
+from infrastructure.db.provider_health_repositories import PostgresProviderHealth
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     ProviderAuthIncidentRepository,
     ProviderRejectionRepository,
     ProviderReservation,
     ProviderReservationRepository,
+    month_counted,
 )
 from infrastructure.logging.context import log_context
 from infrastructure.logging.emit import emit, log_guard
@@ -242,8 +263,21 @@ class PaidJobRunner:
         store: ArtifactStore,
         workdir: WorkDirectory,
         heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        health: PostgresProviderHealth | None = None,
+        budget: BudgetDecision | None = None,
     ) -> None:
         self._session_factory = session_factory
+        #: provider アカウントの breaker と保留（ADR-0057）。既定は同じ DB の永続実装
+        self._health = health or PostgresProviderHealth(session_factory)
+        #: ローカル月間予算の判定（起動時に ``evaluate_budget`` で作る。ADR-0061）。``None`` は
+        #: 「予算未設定」として扱う（fail-closed）: 結線し忘れで有料 submit が通ることはない
+        self._budget = budget if budget is not None else evaluate_budget(None)
+        # 月間ハードキャップ（ADR-0063）を起動時に 1 回記録する（変更には再作成が要る）
+        logger.info(
+            "fal monthly hard cap: budget_status=%s cap_usd=%s (read once at start)",
+            self._budget.status.value,
+            self._budget.cap_usd,
+        )
         self._store = store
         self._workdir = workdir
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
@@ -346,6 +380,10 @@ class PaidJobRunner:
                 # stale-unreconciled の早期returnより後なので、provider I/O が要らない
                 # 済んだ工程の再開（sb1〜sb5 の再利用等）を抑止期間中でも止めない
                 if not prepared:
+                    await self._check_budget_gate(spec)
+                    if candidate is None:  # 既存の予約の再開は新しい枠を使わない（見積は計上済み）
+                        await self._precheck_monthly_cap(spec, generator, request)
+                    await self._check_breaker_gate(spec)
                     await self._check_auth_outage_gate(spec.provider)
                     await self._check_rejected_image_gate(spec)
                     prepare = getattr(generator, "prepare", None)
@@ -355,11 +393,17 @@ class PaidJobRunner:
                         except ProviderUnavailableError as exc:
                             await self._record_auth_incident(spec, exc)
                             raise
+                        except ProviderRefusalError as exc:
+                            # 非課金の準備で残高ロック・分類不能の拒否（予約の前。台帳に残さない）
+                            await self._on_refusal(spec, exc)
+                            raise
                         else:
                             await self._resolve_auth_incidents(spec.provider)
                     prepared = True
                 if candidate is None:
                     try:
+                        # 見積が出せなければ ``None``（reserve が unknown_cost で拒否）
+                        estimate = self._safe_estimate(generator, request)
                         candidate = await reservations.reserve(
                             episode_id=spec.episode_id,
                             job_id=spec.job_id,
@@ -368,9 +412,16 @@ class PaidJobRunner:
                             input_hash=spec.input_hash,
                             round=ledger_round,
                             scene_id=spec.scene_id,
-                            estimated_cost_usd=estimated_cost(generator.estimate_cost_usd(request)),
+                            estimated_cost_usd=estimate,
+                            # 月間ハードキャップ（ADR-0063）: INSERT と同じトランザクションで強制。
+                            # ENABLED 以外はここへ来る前に予算ゲートが止めている
+                            monthly_cap_usd=self._budget.cap_usd,
                         )
                         await session.commit()
+                    except ProviderMonthlyBudgetExceededError as exc:
+                        await session.rollback()  # 月ロックを放す。予約行は作られていない
+                        await self._deny_monthly_cap(spec, exc)
+                        raise
                     except IntegrityError:
                         # 並行する試行が同じラウンドを先に INSERT した。読み直して再開する
                         await session.rollback()
@@ -404,6 +455,12 @@ class PaidJobRunner:
 
         try:
             ref = await generator.submit(request)
+        except ProviderRefusalError as exc:
+            # 残高ロック・分類不能の拒否: 受理されていないことが確実（費用 0 で確定）。
+            # 入力の拒否ではないので次ラウンドは止めない。breaker を開いて保留を記録する
+            await self._spend_not_accepted(reservation.id, exc)
+            await self._on_refusal(spec, exc)
+            raise
         except NOT_ACCEPTED_SUBMIT_ERRORS as exc:
             await self._spend_conservatively(
                 reservation.id, exc, source_media_sha256=spec.source_media_sha256
@@ -454,6 +511,7 @@ class PaidJobRunner:
                 reservation.id, ref
             )
             await session.commit()
+        await self._note_accepted(spec.provider)
         return Submitted(
             reservation_id=reservation.id, newly_submitted=True, round=reservation.round
         )
@@ -758,6 +816,270 @@ class PaidJobRunner:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+    # ------------------------------ provider アカウントの breaker と保留（ADR-0057 / INV-72）
+
+    @staticmethod
+    def _account(provider: ProviderCall) -> ProviderAccount | None:
+        family = PROVIDER_FAMILY.get(provider)
+        return ProviderAccount(family) if family is not None else None
+
+    async def _check_budget_gate(self, spec: PaidJobSpec) -> None:
+        """予算が 0 / 未設定なら、予約も prepare も submit もせずに保留して止める（ADR-0061）。
+
+        breaker の前に評価する: 予算 0 では fal へ何も送らないので、breaker の状態（過去の拒否）
+        に依らず保留の理由は予算になる。保留の記録は冪等（シーンごとに 1 行）。
+        """
+        if self._budget.submit_allowed:
+            return
+        account = self._account(spec.provider)
+        if account is None:
+            return
+        reason = self._budget.hold_reason
+        assert reason is not None
+        await self._record_hold(spec, account, reason, self._budget.detail)
+        with log_guard():
+            emit(
+                logger,
+                EventName.PROVIDER_CALL_SUPPRESSED,
+                logging.WARNING,
+                "holding new %s submits: %s",
+                spec.provider.value,
+                self._budget.decision_reason,
+                episode_id=str(spec.episode_id),
+                provider=spec.provider.value,
+                outcome=Outcome.BLOCKED.value,
+                error_type=ProviderBudgetHeldError.__name__,
+                error_category=ErrorCategory.SUPPRESSED_BY_INCIDENT.value,
+                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                attributes={
+                    "account": account.key,
+                    "budget_status": self._budget.status.value,
+                    "hold_reason": reason.value,
+                    "submit_allowed": False,
+                    "decision_reason": self._budget.decision_reason,
+                    "scene_id": spec.scene_id,
+                },
+            )
+        raise ProviderBudgetHeldError(
+            f"{account.key}: new submits are held ({self._budget.decision_reason}); "
+            "no paid call was made",
+            account_key=account.key,
+            reason=reason.value,
+        )
+
+    @staticmethod
+    def _safe_estimate(generator: AsyncJobGenerator, request: Any) -> Decimal | None:
+        try:
+            return estimated_cost(generator.estimate_cost_usd(request))
+        except Exception:
+            logger.exception("could not compute the cost estimate; the monthly cap fails closed")
+            return None
+
+    async def _precheck_monthly_cap(
+        self, spec: PaidJobSpec, generator: AsyncJobGenerator, request: Any
+    ) -> None:
+        """``prepare``（fal CDN へのアップロード）の前の、非原子的な早期検査（ADR-0063）。
+
+        権威は ``reserve`` の中の検査。ここは無駄なアップロードを避けるだけなので、
+        読めない・見積れないときは黙って通し、判断を ``reserve`` に任せる。
+        """
+        cap = self._budget.cap_usd
+        account = self._account(spec.provider)
+        if cap is None or account is None:
+            return
+        estimate = self._safe_estimate(generator, request)
+        if estimate is None:
+            return
+        try:
+            async with self._session_factory() as session:
+                counted = await month_counted(session, now=datetime.now(UTC), family=account.family)
+                await session.rollback()
+        except Exception:
+            logger.exception("monthly cap pre-check could not read the ledger; deferring")
+            return
+        if counted.unknown_rows:
+            return  # 不明は reserve が拒否する
+        decision = evaluate_cap(cap, counted.total, estimate)
+        if decision.allowed:
+            return
+        exc = ProviderMonthlyBudgetExceededError.from_decision(
+            decision, account_key=account.key, reason=HoldReason.WAITING_FOR_CREDITS.value
+        )
+        await self._deny_monthly_cap(spec, exc)
+        raise exc
+
+    async def _deny_monthly_cap(
+        self, spec: PaidJobSpec, exc: ProviderMonthlyBudgetExceededError
+    ) -> None:
+        """月間キャップによる拒否を既存の保留の経路に流す（クラッシュにしない / ADR-0063）。"""
+        account = self._account(spec.provider)
+        if account is None:
+            return
+        numbers = {
+            "month_counted": str(exc.month_counted),
+            "estimate": str(exc.estimate),
+            "cap": str(exc.cap),
+            "remaining": str(exc.remaining),
+        }
+        detail = {
+            "budget_status": self._budget.status.value,
+            "decision_reason": exc.decision_reason,
+            **numbers,
+        }
+        await self._record_hold(spec, account, HoldReason.WAITING_FOR_CREDITS, detail)
+        with log_guard():
+            emit(
+                logger,
+                EventName.PROVIDER_CALL_SUPPRESSED,
+                logging.WARNING,
+                "holding new %s submits: %s",
+                spec.provider.value,
+                exc.decision_reason,
+                episode_id=str(spec.episode_id),
+                provider=spec.provider.value,
+                outcome=Outcome.BLOCKED.value,
+                error_type=ProviderMonthlyBudgetExceededError.__name__,
+                error_category=ErrorCategory.SUPPRESSED_BY_INCIDENT.value,
+                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                attributes={
+                    "account": account.key,
+                    "decision_reason": exc.decision_reason,
+                    "hold_reason": HoldReason.WAITING_FOR_CREDITS.value,
+                    "scene_id": spec.scene_id,
+                    **numbers,
+                },
+            )
+
+    async def _check_breaker_gate(self, spec: PaidJobSpec) -> None:
+        """アカウントの breaker が open なら、予約を作らずに止める（台帳にも残さない）。
+
+        ``half_open`` は人が承認した上限つき再開なので通す。時間では解除されない。
+        """
+        account = self._account(spec.provider)
+        if account is None:
+            return
+        snapshot = await self._health.snapshot(account)
+        if snapshot.state is not BreakerState.OPEN:
+            return
+        reason = snapshot.reason or RefusalKind.UNKNOWN
+        await self._record_hold(spec, account, self._hold_reason(reason))
+        with log_guard():
+            emit(
+                logger,
+                EventName.PROVIDER_CALL_SUPPRESSED,
+                logging.WARNING,
+                "suppressing new %s submits: breaker %s is open (%s)",
+                spec.provider.value,
+                account.key,
+                reason.value,
+                provider=spec.provider.value,
+                outcome=Outcome.BLOCKED.value,
+                error_type=ProviderBreakerOpenError.__name__,
+                error_category=ErrorCategory.SUPPRESSED_BY_INCIDENT.value,
+                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                attributes={"account": account.key, "refusal_kind": reason.value},
+            )
+        raise ProviderBreakerOpenError(
+            f"{account.key}: provider breaker is open ({reason.value}); new submits are held "
+            "until the owner approves a resume",
+            account_key=account.key,
+            reason=reason.value,
+        )
+
+    @staticmethod
+    def _hold_reason(kind: RefusalKind) -> HoldReason:
+        if kind is RefusalKind.BALANCE_EXHAUSTED:
+            return HoldReason.WAITING_FOR_CREDITS
+        return HoldReason.PROVIDER_REFUSAL_UNKNOWN
+
+    async def _record_hold(
+        self,
+        spec: PaidJobSpec,
+        account: ProviderAccount,
+        reason: HoldReason,
+        detail: Mapping[str, str] | None = None,
+    ) -> None:
+        """保留の記録。失敗しても元の拒否を隠さない（Episode は blocked になる）。"""
+        try:
+            await self._health.hold_episode(
+                episode_id=str(spec.episode_id),
+                scene_id=spec.scene_id,
+                account=account,
+                reason=reason,
+                resumable_stage=PipelineStage.PRODUCTION.value,
+                generation_profile_id=spec.current_generation_profile_id,
+                detail=detail,
+            )
+        except Exception:
+            logger.exception("could not record the credit hold for episode %s", spec.episode_id)
+
+    async def _on_refusal(self, spec: PaidJobSpec, exc: ProviderRefusalError) -> None:
+        """残高ロック・分類不能の拒否: breaker を開き（冪等）、この Episode/シーンの保留を残す。"""
+        account = self._account(spec.provider)
+        if account is None:
+            return
+        kind = (
+            RefusalKind.BALANCE_EXHAUSTED
+            if isinstance(exc, ProviderBalanceExhaustedError)
+            else RefusalKind.UNKNOWN
+        )
+        try:
+            opened = await self._health.open_breaker(
+                account,
+                reason=kind,
+                http_status=exc.http_status,
+                evidence=exc.summary,
+                episode_id=spec.episode_id,
+            )
+        except Exception:
+            logger.exception("could not open the breaker for %s", account.key)
+            opened = False
+        with log_guard():
+            emit(
+                logger,
+                EventName.PROVIDER_CALL_SUPPRESSED,
+                logging.WARNING,
+                "provider %s refused a paid call (%s); breaker %s%s",
+                spec.provider.value,
+                kind.value,
+                account.key,
+                " opened" if opened else " already open",
+                provider=spec.provider.value,
+                outcome=Outcome.BLOCKED.value,
+                error_type=type(exc).__name__,
+                classification_basis=ClassificationBasis.EXCEPTION_TYPE.value,
+                attributes={"account": account.key, "refusal_kind": kind.value},
+            )
+        await self._record_hold(spec, account, self._hold_reason(kind))
+
+    async def _note_accepted(self, provider: ProviderCall) -> None:
+        """half_open 中に submit が受理された: 承認済み再開が通ったので閉じる（時間では閉じない）"""
+        account = self._account(provider)
+        if account is None:
+            return
+        try:
+            await self._health.record_accepted(account)
+        except Exception:
+            logger.exception("could not record the accepted submit on breaker %s", account.key)
+
+    async def _spend_not_accepted(self, reservation_id: str, exc: ProviderRefusalError) -> None:
+        """受理されなかったことが確実な拒否で予約を確定する（費用 0 / INV-74）。
+
+        ``spent`` の自由文字列 ``reconciled_by`` に ``not_accepted`` を記録する。
+        入力の拒否ではない: ``input_rejected_by_provider`` は立てず、入金後は同じ入力を新ラウンドで
+        そのまま送れる。
+        """
+        async with self._session_factory() as session:
+            await ProviderReservationRepository(session).mark_spent(
+                reservation_id,
+                raw_output_key=None,
+                reconciled_by=NOT_ACCEPTED_RECONCILER,
+                failure_class=classify_failure(exc),
+                error_summary=f"{type(exc).__name__}: {exc}",
+                input_rejected_by_provider=False,
+            )
+            await session.commit()
 
     # ---------------------------------------------------- provider 認可障害の抑止（ADR-0030）
 

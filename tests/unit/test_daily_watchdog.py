@@ -63,6 +63,13 @@ class FakeCounter:
         return self.count
 
 
+class FakeRunReader:
+    """``DailyRunReader`` の fake。実行が見つからない（空）を返す = 既存の検査に影響しない。"""
+
+    async def read_runs(self, **_kwargs):  # type: ignore[no-untyped-def]
+        return []
+
+
 class FakeOutcomeChecker:
     """``PipelineOutcomeChecker`` の fake。あらかじめ与えた stopped 実行だけを返す。"""
 
@@ -97,6 +104,7 @@ async def _run(  # type: ignore[no-untyped-def]
         notifier=notifier,
         request=_request(now, **overrides),
         pipeline_outcome_checker=outcome_checker or FakeOutcomeChecker(),
+        daily_run_reader=FakeRunReader(),
     )
     return result, notifier
 
@@ -310,6 +318,7 @@ async def test_a_cron_that_is_not_plain_daily_is_reported_but_not_judged(session
         notifier=RecordingNotifier(),
         request=request,
         pipeline_outcome_checker=FakeOutcomeChecker(),
+        daily_run_reader=FakeRunReader(),
     )
     assert result.daily_start == DailyStartStatus.UNSUPPORTED_CRON.value
     assert await _open(session_factory) == []

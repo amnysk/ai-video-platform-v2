@@ -12,7 +12,10 @@
 6. Episode が投稿期限を超えても uploaded に達していないか（投稿、ADR-0031。paused は除く）
 7. 今日 close した ``EpisodePipelineWorkflow`` が outcome=stopped なのに 4〜6 のどれにも
    引っかからない食い違いが無いか（整合性、ADR-0031。Temporal の completed を成功と見なさない）
-8. まだ通知していない異常を ``AnomalyNotifier`` へ渡す（既定はログ。失敗は次回再送）
+8. 直近 N 日の日次 workflow が失敗・タイムアウト・terminate で閉じたのに Episode（slot）が無い日、
+   および終了状態を確認できない日（``DAILY_WORKFLOW_FAILED`` / ``DAILY_WORKFLOW_UNOBSERVABLE``、
+   ADR-0054。Episode が作られる前の失敗は 4〜7 のどれにも映らない）
+9. まだ通知していない異常を ``AnomalyNotifier`` へ渡す（既定はログ。失敗は次回再送）
 
 watchdog は検出・記録するだけで、Episode の状態を変更しない。
 Schedule が pause されていても watchdog は動く（別 Schedule だから）。
@@ -28,6 +31,7 @@ from typing import Protocol
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.client import Client
 
+from contracts.daily_gate import DEFAULT_HOLD_ESCALATION_DAYS, OpenHold, OpenHoldReader
 from contracts.operations import OperationalSwitch
 from contracts.pipeline import EpisodePipelineResult, PipelineOutcome
 from contracts.schedule_guard import (
@@ -39,6 +43,15 @@ from contracts.schedule_guard import (
     WatchdogResult,
 )
 from contracts.states import EpisodeStatus
+from domain.daily_failure import (
+    DailyRunObservation,
+    DayVerdict,
+    failure_streaks,
+    judge_day,
+    lookback_dates,
+    summarize_failure,
+)
+from domain.daily_gate import classify_holds
 from domain.schedule_guard import daily_start_status, latest_daily_fire
 from infrastructure.db.repositories import (
     AnomalyRecord,
@@ -95,6 +108,17 @@ class TemporalWorkflowStartCounter:
         stamp = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         query = f'WorkflowType = "{workflow_type}" AND StartTime >= "{stamp}"'
         return (await self._client.count_workflows(query)).count
+
+
+class DailyRunReader(Protocol):
+    """``since`` 以降に始まった日次 workflow の実行を、終了状態つきで返す（ADR-0054）。
+
+    読めなければ例外を投げる（呼び出し側が UNOBSERVABLE にする。空リストは「実行が見つからない」）。
+    """
+
+    async def read_runs(
+        self, *, workflow_type: str, schedule_id: str, since: datetime, timezone: str
+    ) -> list[DailyRunObservation]: ...
 
 
 class PipelineOutcomeChecker(Protocol):
@@ -170,6 +194,8 @@ async def _check_stalled_episodes(
     local_today: date,
     grace_minutes: int,
     blocked_grace_minutes: int,
+    held_ids: frozenset[uuid.UUID] = frozenset(),
+    keep_open_ids: frozenset[uuid.UUID] = frozenset(),
 ) -> tuple[list[AnomalyRecord], set[uuid.UUID]]:
     """進行（ADR-0031）: blocked / needs_work のまま停滞猶予を超えた Episode。
 
@@ -187,6 +213,8 @@ async def _check_stalled_episodes(
     stalled_ids: set[uuid.UUID] = set()
     records: list[AnomalyRecord] = []
     for snap in snapshots:
+        if snap.id in held_ids or snap.id in keep_open_ids:
+            continue  # 保留中（意図した停止）/ 保留の通報で既に扱っている（ADR-0058）
         threshold = thresholds[EpisodeStatus(snap.status)]
         if snap.status_changed_at > threshold:
             continue
@@ -210,13 +238,99 @@ async def _check_stalled_episodes(
     recovered = [
         r.episode_id
         for r in open_stalled
-        if r.episode_id is not None and r.episode_id not in stalled_ids
+        if r.episode_id is not None
+        and r.episode_id not in stalled_ids
+        and r.episode_id not in keep_open_ids
     ]
     if recovered:
         await anomalies.resolve_open(
             [AnomalyKind.EPISODE_STAGE_STALLED], now=now, episode_ids=recovered
         )
     return records, stalled_ids
+
+
+def _as_uuid_set(ids: set[str]) -> frozenset[uuid.UUID]:
+    out: set[uuid.UUID] = set()
+    for value in ids:
+        try:
+            out.add(uuid.UUID(value))
+        except ValueError:
+            continue
+    return frozenset(out)
+
+
+async def _check_credit_holds(
+    hold_reader: OpenHoldReader | None,
+    anomalies: OperationalAnomalyRepository,
+    *,
+    now: datetime,
+    local_today: date,
+    escalation_days: int,
+) -> tuple[list[AnomalyRecord], frozenset[uuid.UUID], frozenset[uuid.UUID], int, float, bool]:
+    """保留（ADR-0058）。失敗でも未納品でもない第三の状態として扱う。
+
+    返り値: (通報した記録, 停滞・完成期限の検査から除く Episode, 通報中で自動 resolve させない
+    Episode, 保留数, 最古の保留日数, 保留の読み取りに失敗したか)。猶予内の保留は異常にしない
+    （見える形は毎時の ``HELD_EPISODES`` ログと ``WatchdogResult.held_*``）。猶予を超えたら
+    **既存の** ``EPISODE_STAGE_STALLED`` を ``detail.hold`` 付きで記録する（CHECK を広げない）。
+    解放されれば既存の自動 resolve で閉じる。
+    保留を読めなければ何も除かない（誤報側に倒れる。確認できなかったことを健全にしない）。
+    失敗は ERROR ログ ``HOLD_READER_FAILED`` と ``WatchdogResult.hold_reader_failed`` で見せる
+    （異常の種別は増やさない: CHECK を広げない）。
+    """
+    if hold_reader is None:
+        return [], frozenset(), frozenset(), 0, 0.0, False
+    try:
+        holds: list[OpenHold] = await hold_reader.list_open_holds()
+    except Exception as exc:
+        logger.error("HOLD_READER_FAILED watchdog: open holds unreadable: %s", type(exc).__name__)
+        return [], frozenset(), frozenset(), 0, 0.0, True
+    by_episode: dict[str, OpenHold] = {}
+    for hold in holds:  # Episode 単位に畳む（最も古い保留）
+        known = by_episode.get(hold.episode_id)
+        if known is None or hold.held_since < known.held_since:
+            by_episode[hold.episode_id] = hold
+    collapsed = list(by_episode.values())
+    cls = classify_holds(collapsed, now, escalation_days)
+    records: list[AnomalyRecord] = []
+    for hold in collapsed:
+        if hold.episode_id not in cls.escalated_ids:
+            continue
+        try:
+            episode_uuid = uuid.UUID(hold.episode_id)
+        except ValueError:
+            continue
+        days = (now - hold.held_since).total_seconds() / 86400
+        records.append(
+            await anomalies.record(
+                AnomalyKind.EPISODE_STAGE_STALLED,
+                local_today,
+                {
+                    "episode_id": hold.episode_id,
+                    "current_status": "held",
+                    "reason": f"held ({hold.reason}) for {days:.1f} days "
+                    f"(escalation after {escalation_days})",
+                    "resumable": True,
+                    "hold": {
+                        "reason": hold.reason,
+                        "account": hold.account_key,
+                        "since": hold.held_since.isoformat(),
+                        "resumable_stage": hold.resumable_stage,
+                    },
+                },
+                now=now,
+                episode_id=episode_uuid,
+            )
+        )
+    if cls.count:
+        logger.warning(
+            "HELD_EPISODES count=%d escalated=%d oldest_days=%.1f",
+            cls.count,
+            len(cls.escalated_ids),
+            cls.oldest_days,
+        )
+    exempt = _as_uuid_set(cls.exempt_ids | cls.escalated_ids)
+    return records, exempt, _as_uuid_set(cls.escalated_ids), cls.count, cls.oldest_days, False
 
 
 async def _check_completion_deadline(
@@ -226,6 +340,7 @@ async def _check_completion_deadline(
     now: datetime,
     local_today: date,
     deadline_hours: float,
+    held_ids: frozenset[uuid.UUID] = frozenset(),
 ) -> tuple[list[AnomalyRecord], set[uuid.UUID]]:
     """完成（ADR-0031）: 作成から完成期限を超えても render_ready 以降に達していない Episode。"""
     threshold = timedelta(hours=deadline_hours)
@@ -233,6 +348,8 @@ async def _check_completion_deadline(
     overdue_ids: set[uuid.UUID] = set()
     records: list[AnomalyRecord] = []
     for snap in snapshots:
+        if snap.id in held_ids:
+            continue  # 保留中: 期限超過ではなく保留として扱う（ADR-0058）
         if now - snap.created_at < threshold:
             continue
         overdue_ids.add(snap.id)
@@ -403,6 +520,118 @@ async def _check_outcome_mismatch(
     return records
 
 
+_DAILY_FAILURE_KINDS = (AnomalyKind.DAILY_WORKFLOW_FAILED, AnomalyKind.DAILY_WORKFLOW_UNOBSERVABLE)
+
+
+async def _check_daily_workflow_failures(
+    reader: DailyRunReader,
+    anomalies: OperationalAnomalyRepository,
+    slots: DailyEpisodeSlotRepository,
+    *,
+    now: datetime,
+    slot_date: date,
+    request: WatchdogCheckRequest,
+) -> tuple[list[AnomalyRecord], int]:
+    """日次 workflow の失敗（ADR-0054）。返り値は (今回触れた記録, 最新 slot 日の連続失敗日数)。
+
+    判定は ``domain.daily_failure``。ここは読み取りと記録の配線だけ。
+    """
+    days = lookback_dates(slot_date, request.daily_failure_lookback_days)
+    earliest = await slots.earliest_slot_date()
+    # 日次運用が始まる前の日は判定しない。slot がまだ1つも無ければ最新の slot 日だけ見る
+    days = [d for d in days if earliest is not None and d >= earliest] or [slot_date]
+
+    runs: list[DailyRunObservation] = []
+    read_error: str | None = None
+    try:
+        runs = await reader.read_runs(
+            workflow_type=request.workflow_type,
+            schedule_id=request.schedule_id,
+            since=_local_midnight_utc(days[0], request.timezone),
+            timezone=request.timezone,
+        )
+    except Exception as exc:  # 読めないことを OK にしない（UNOBSERVABLE として残す）
+        read_error = type(exc).__name__
+        logger.warning("watchdog: daily workflow runs unreadable: %s", read_error)
+    by_day: dict[date, list[DailyRunObservation]] = {}
+    for run in runs:
+        by_day.setdefault(run.slot_date, []).append(run)
+
+    open_failed = {
+        r.anomaly_date: r
+        for r in await anomalies.list_open([AnomalyKind.DAILY_WORKFLOW_FAILED])
+        if r.episode_id is None
+    }
+    judged: dict[date, tuple[DayVerdict, DailyRunObservation | None]] = {}
+    for day in days:
+        has_slot = bool(await slots.list_for_date(day))
+        judged[day] = judge_day(
+            has_slot=has_slot,
+            runs=by_day.get(day, []),
+            readable=read_error is None,
+            is_latest_slot_day=day == slot_date,
+        )
+    prior = open_failed.get(days[0] - timedelta(days=1))
+    prior_streak = int(prior.detail.get("consecutive_failures", 0)) if prior is not None else 0
+    streaks = failure_streaks(
+        days,
+        {d for d, (verdict, _) in judged.items() if verdict is DayVerdict.FAILED},
+        prior_streak=prior_streak,
+    )
+
+    records: list[AnomalyRecord] = []
+    for day in days:
+        verdict, run = judged[day]
+        if verdict is DayVerdict.FAILED and run is not None:
+            kind_, message = summarize_failure(run.failure_type, run.failure_message)
+            records.append(
+                await anomalies.record(
+                    AnomalyKind.DAILY_WORKFLOW_FAILED,
+                    day,
+                    {
+                        "slot_date": day.isoformat(),
+                        "schedule_id": request.schedule_id,
+                        "status": run.status.value,
+                        "workflow_id": run.workflow_id,
+                        "failure_type": kind_,
+                        "failure_message": message,
+                        "consecutive_failures": streaks[day],
+                        "lookback_days": request.daily_failure_lookback_days,
+                    },
+                    now=now,
+                )
+            )
+            await anomalies.resolve(AnomalyKind.DAILY_WORKFLOW_UNOBSERVABLE, day, now=now)
+        elif verdict is DayVerdict.UNOBSERVABLE:
+            if day in open_failed:
+                continue  # 確定した失敗を「確認できない」へ劣化させない
+            records.append(
+                await anomalies.record(
+                    AnomalyKind.DAILY_WORKFLOW_UNOBSERVABLE,
+                    day,
+                    {
+                        "slot_date": day.isoformat(),
+                        "schedule_id": request.schedule_id,
+                        "reason": "reader_error" if read_error else "no_execution_in_retention",
+                        "error_type": read_error,
+                        "lookback_days": request.daily_failure_lookback_days,
+                    },
+                    now=now,
+                )
+            )
+        elif verdict is DayVerdict.OK:
+            for kind in _DAILY_FAILURE_KINDS:
+                await anomalies.resolve(kind, day, now=now)
+
+    # 窓の外の未解決行は、slot（Episode）が現れたときだけ閉じる（読めない日を OK にしない）
+    in_window = set(days)
+    for row in await anomalies.list_open(_DAILY_FAILURE_KINDS):
+        outside = row.episode_id is None and row.anomaly_date not in in_window
+        if outside and await slots.list_for_date(row.anomaly_date):
+            await anomalies.resolve(AnomalyKind(row.kind), row.anomaly_date, now=now)
+    return records, streaks[slot_date]
+
+
 async def run_daily_watchdog(
     *,
     control: ScheduleControl,
@@ -411,6 +640,8 @@ async def run_daily_watchdog(
     notifier: AnomalyNotifier,
     request: WatchdogCheckRequest,
     pipeline_outcome_checker: PipelineOutcomeChecker,
+    daily_run_reader: DailyRunReader,
+    hold_reader: OpenHoldReader | None = None,
 ) -> WatchdogResult:
     now = datetime.fromisoformat(request.now)
     if now.tzinfo is None:
@@ -502,6 +733,18 @@ async def run_daily_watchdog(
                     AnomalyKind.DAILY_AUTOMATION_NOT_STARTED, slot_date, now=now
                 )
 
+        consecutive_daily_failures = 0
+        if slot_date is not None:
+            failure_records, consecutive_daily_failures = await _check_daily_workflow_failures(
+                daily_run_reader,
+                anomalies,
+                DailyEpisodeSlotRepository(session),
+                now=now,
+                slot_date=slot_date,
+                request=request,
+            )
+            new_records.extend(failure_records)
+
         for record in new_records:
             if record.is_new:
                 logger.error(
@@ -510,6 +753,20 @@ async def run_daily_watchdog(
         await session.commit()
 
         # --------------------------------------------------- Episode 進行・完成・投稿（ADR-0031）
+        (
+            hold_records,
+            held_ids,
+            escalated_hold_ids,
+            held_count,
+            oldest_hold_days,
+            hold_reader_failed,
+        ) = await _check_credit_holds(
+            hold_reader,
+            anomalies,
+            now=now,
+            local_today=local_today,
+            escalation_days=DEFAULT_HOLD_ESCALATION_DAYS,
+        )
         stalled_records, stalled_ids = await _check_stalled_episodes(
             episodes,
             anomalies,
@@ -517,13 +774,17 @@ async def run_daily_watchdog(
             local_today=local_today,
             grace_minutes=request.stage_stall_grace_minutes,
             blocked_grace_minutes=request.blocked_grace_minutes,
+            held_ids=held_ids,
+            keep_open_ids=escalated_hold_ids,
         )
+        stalled_ids = stalled_ids | set(escalated_hold_ids)
         completion_records, overdue_completion_ids = await _check_completion_deadline(
             episodes,
             anomalies,
             now=now,
             local_today=local_today,
             deadline_hours=request.completion_deadline_hours,
+            held_ids=held_ids,
         )
         upload_records, overdue_upload_ids = await _check_upload_deadline(
             episodes,
@@ -546,6 +807,7 @@ async def run_daily_watchdog(
             covered_episode_ids=covered_ids,
         )
         episode_new_records = [
+            *hold_records,
             *stalled_records,
             *completion_records,
             *upload_records,
@@ -584,6 +846,11 @@ async def run_daily_watchdog(
         released_maintenance=reconciled.released,
         slot_date=slot_date.isoformat() if slot_date else "",
         episode_anomaly_count=len(episode_new_records),
+        consecutive_daily_failures=consecutive_daily_failures,
+        held_episodes=held_count,
+        held_escalated=len(escalated_hold_ids),
+        oldest_hold_days=round(oldest_hold_days, 2),
+        hold_reader_failed=hold_reader_failed,
     )
 
 

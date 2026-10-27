@@ -31,7 +31,7 @@ from infrastructure.production.paid_job import PaidJobRunner
 from infrastructure.storage.artifact_store import readback_sha256
 from infrastructure.workdir import WorkDirectory
 from tests.support.db import assert_destructive_allowed, require_test_database_url
-from tests.support.production import FakeImageGenerator, sample_storyboard
+from tests.support.production import ENABLED_BUDGET, FakeImageGenerator, sample_storyboard
 from workers.production_image.activities import ImageProductionActivities
 
 TEST_DATABASE_URL = require_test_database_url()
@@ -99,6 +99,7 @@ def _activities(factory, store, generator, tmp_path) -> ImageProductionActivitie
         generator=generator,
         probe=PillowAvMediaProbe(),
         runner=PaidJobRunner(
+            budget=ENABLED_BUDGET,
             session_factory=factory,
             store=store,
             workdir=WorkDirectory(tmp_path / "work", forbidden=()),

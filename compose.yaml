@@ -13,6 +13,21 @@ x-core-env: &core-env
   AVP_ENVIRONMENT: ${AVP_ENVIRONMENT:-}
   AVP_LOG_FORMAT: ${AVP_LOG_FORMAT:-json}
 
+# Codex を使う worker 共通の model 設定（ADR-0058 / AGENTS.md §8）。3 つの worker が同じ
+# CODEX_MODEL / CODEX_ALLOWED_MODELS / CODEX_REQUIRE_PINNED_MODEL を読む唯一の宣言元
+x-codex-env: &codex-env
+  CODEX_BINARY: /usr/local/bin/codex
+  CODEX_MODEL: ${CODEX_MODEL:-}
+  CODEX_ALLOWED_MODELS: ${CODEX_ALLOWED_MODELS:-}
+  CODEX_REQUIRE_PINNED_MODEL: ${CODEX_REQUIRE_PINNED_MODEL:-false}
+  CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
+
+# fal の月間予算（ADR-0061 / AGENTS.md §8）。有料生成に関わる 3 つの worker だけが読む唯一の宣言元。
+# **空・未設定は無制限ではない**（新しい有料 submit をしない）。明示的な 0 は意図した停止。
+# 正の値で初めて submit を許す。変更の反映にはコンテナの再作成が要る（次の deploy-workers）
+x-fal-budget-env: &fal-budget-env
+  FAL_MONTHLY_BUDGET_USD: ${FAL_MONTHLY_BUDGET_USD:-}
+
 x-app-env: &app-env
   <<: *core-env
   MINIO_ENDPOINT: http://minio:9000
@@ -221,11 +236,8 @@ services:
     depends_on: *deps-minio
     environment:
       AVP_SERVICE_NAME: script-worker
-      <<: *app-env
+      <<: [*app-env, *codex-env]
       HOME: /home/avp
-      CODEX_BINARY: /usr/local/bin/codex
-      CODEX_MODEL: ${CODEX_MODEL:-}
-      CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
       # Topic Planner の live Analytics（ADR-0025）。既定は無効。upload-worker と同じ OAuth client・token
       YOUTUBE_ANALYTICS_ENABLED: ${YOUTUBE_ANALYTICS_ENABLED:-false}
       YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
@@ -262,11 +274,8 @@ services:
     depends_on: *deps-minio
     environment:
       AVP_SERVICE_NAME: storyboard-worker
-      <<: *app-env
+      <<: [*app-env, *codex-env]
       HOME: /home/avp
-      CODEX_BINARY: /usr/local/bin/codex
-      CODEX_MODEL: ${CODEX_MODEL:-}
-      CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
       # コンテナ内の固定パス。host 側は OPENMONTAGE_HOST_PATH
       OPENMONTAGE_REPO_PATH: /opt/openmontage
@@ -302,7 +311,7 @@ services:
     depends_on: *deps-minio
     environment:
       AVP_SERVICE_NAME: production-image-worker
-      <<: *app-env
+      <<: [*app-env, *fal-budget-env]
       FAL_KEY: ${FAL_KEY:-}
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
       IMAGE_CONCURRENCY: ${IMAGE_CONCURRENCY:-2}
@@ -340,7 +349,7 @@ services:
     depends_on: *deps-minio
     environment:
       AVP_SERVICE_NAME: production-video-worker
-      <<: *app-env
+      <<: [*app-env, *fal-budget-env]
       FAL_KEY: ${FAL_KEY:-}
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
       VIDEO_CONCURRENCY: ${VIDEO_CONCURRENCY:-1}
@@ -360,11 +369,8 @@ services:
     depends_on: *deps-minio
     environment:
       AVP_SERVICE_NAME: scene-alternative-worker
-      <<: *app-env
+      <<: [*app-env, *codex-env]
       HOME: /home/avp
-      CODEX_BINARY: /usr/local/bin/codex
-      CODEX_MODEL: ${CODEX_MODEL:-}
-      CODEX_TIMEOUT_SECONDS: ${CODEX_TIMEOUT_SECONDS:-900}
     volumes:
       - type: bind
         source: ${CODEX_HOME_HOST_DIR:-${HOME}/.codex}
@@ -443,7 +449,7 @@ services:
       temporal: {condition: service_healthy}
     environment:
       AVP_SERVICE_NAME: pipeline-worker
-      <<: *core-env
+      <<: [*core-env, *fal-budget-env]
       PAUSED: ${PAUSED:-false}
       UPLOADS_PAUSED: ${UPLOADS_PAUSED:-false}
     command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.pipeline.run_worker"]

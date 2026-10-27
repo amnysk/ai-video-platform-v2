@@ -24,6 +24,21 @@ from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
+from contracts.codex_models import (
+    CODEX_MODEL_PREFLIGHT_ACTIVITY,
+    CodexModelVerdict,
+    CodexPreflightRequest,
+    CodexPreflightResult,
+)
+from contracts.daily_gate import (
+    PIPELINE_DAILY_GATE,
+    PIPELINE_PRODUCTION_GATE,
+    DailyGateRequest,
+    DailyGateResult,
+    DailyRunMode,
+    ProductionGateRequest,
+    ProductionGateResult,
+)
 from contracts.pipeline import (
     PIPELINE_CHECK_PAUSED,
     PIPELINE_CLAIM_DAILY_SLOT,
@@ -203,6 +218,22 @@ async def fake_gate(req: UploadGateRequest) -> UploadGateResult:
     return UploadGateResult(allowed=True, status="render_ready")
 
 
+@activity.defn(name=PIPELINE_DAILY_GATE)
+async def fake_daily_gate(req: DailyGateRequest) -> DailyGateResult:
+    """ADR-0058 の入口ゲート。この file の関心（編成）では常に通常モード。"""
+    return DailyGateResult(mode=DailyRunMode.NORMAL.value)
+
+
+@activity.defn(name=CODEX_MODEL_PREFLIGHT_ACTIVITY)
+async def fake_codex_preflight(req: CodexPreflightRequest) -> CodexPreflightResult:
+    return CodexPreflightResult(verdict=CodexModelVerdict.UNVERIFIED.value, blocking=False)
+
+
+@activity.defn(name=PIPELINE_PRODUCTION_GATE)
+async def fake_production_gate(req: ProductionGateRequest) -> ProductionGateResult:
+    return ProductionGateResult(allowed=True)
+
+
 @dataclass
 class Env:
     client: Client
@@ -249,12 +280,19 @@ async def env():
             wf_env.client,
             task_queue=queue,
             workflows=[DailyEpisodeWorkflow, EpisodePipelineWorkflow],
-            activities=[fake_check_paused, fake_claim, fake_gate],
+            activities=[
+                fake_check_paused,
+                fake_claim,
+                fake_gate,
+                fake_daily_gate,
+                fake_production_gate,
+            ],
         )
         stages = Worker(
             wf_env.client,
             task_queue=stage_queue,
             workflows=FAKE_STAGES,
+            activities=[fake_codex_preflight],
             workflow_runner=UnsandboxedWorkflowRunner(),
         )
         async with main, stages:

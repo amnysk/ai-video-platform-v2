@@ -52,6 +52,7 @@ async def main() -> None:
         probe=PillowAvMediaProbe(),
         runner=PaidJobRunner(
             session_factory=session_factory,
+            budget=settings.fal_budget,
             store=store,
             workdir=WorkDirectory(settings.ai_video_work_root),
         ),
