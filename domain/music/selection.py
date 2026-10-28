@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from contracts.music import BgmTrack, Platform, VideoFormat
+from contracts.music import BgmTrack, Platform, VideoFormat, is_blank_text
 
 
 class RejectReason(StrEnum):
@@ -61,7 +61,7 @@ def reject_reasons(
     if fmt not in track.allowed_formats:
         out.append(RejectReason.FORMAT_NOT_ALLOWED)
     # 契約が弾く不整合だが、model_construct 等で迂回された値も選ばない（多層防御）。
-    if track.attribution_required and not (track.exact_attribution_text or "").strip():
+    if track.attribution_required and is_blank_text(track.exact_attribution_text or ""):
         out.append(RejectReason.ATTRIBUTION_TEXT_MISSING)
     return tuple(out)
 

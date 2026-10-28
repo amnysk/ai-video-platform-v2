@@ -126,3 +126,53 @@ def test_usage_record() -> None:
             license_evidence_hash=sha("e"),
             final_video_sha256=sha("9"),
         )
+
+
+@pytest.mark.parametrize("text", ["Music <by> X", "a > b", "<", "x<y"])
+def test_attribution_text_with_chars_the_description_sanitizer_rewrites_is_rejected(
+    text: str,
+) -> None:
+    """sanitize_youtube_text が < > を書き換え、指定文が原文のまま載らなくなる（INV-98）。"""
+    with pytest.raises(ValidationError):
+        make_track(attribution_required=True, exact_attribution_text=text)
+
+
+@pytest.mark.parametrize(
+    "blank", ["\u200b", " \u200b\u200d\ufeff ", "\u00a0\u3000", "\u2060", "\ufeff\t\n"]
+)
+def test_attribution_text_blank_after_removing_whitespace_and_format_chars_is_rejected(
+    blank: str,
+) -> None:
+    """ゼロ幅文字だけの指定文は strip() では空にならず、見えないクレジットが通ってしまう。"""
+    with pytest.raises(ValidationError):
+        make_track(attribution_required=True, exact_attribution_text=blank)
+
+
+def test_attribution_text_blank_check_uses_nfkc() -> None:
+    with pytest.raises(ValidationError):
+        make_track(attribution_required=True, exact_attribution_text="\u2003\u200b")
+
+
+def test_cue_sheet_rejects_overlapping_cues_in_the_same_scene() -> None:
+    with pytest.raises(ValidationError):
+        MusicCueSheet(cues=(cue(start_ms=0, end_ms=10_000), cue(start_ms=5_000, end_ms=15_000)))
+
+
+def test_cue_sheet_rejects_duplicate_cues() -> None:
+    with pytest.raises(ValidationError):
+        MusicCueSheet(cues=(cue(), cue()))
+
+
+def test_cue_sheet_rejects_non_monotonic_order() -> None:
+    later = cue(scene_id="s2", start_ms=10_000, end_ms=20_000)
+    earlier = cue(scene_id="s1", start_ms=0, end_ms=10_000)
+    with pytest.raises(ValidationError):
+        MusicCueSheet(cues=(later, earlier))
+
+
+def test_cue_sheet_allows_adjacent_cues_and_cross_scene_overlap_is_not_a_same_scene_overlap() -> (
+    None
+):
+    a = cue(scene_id="s1", start_ms=0, end_ms=10_000)
+    b = cue(scene_id="s1", start_ms=10_000, end_ms=20_000)
+    assert MusicCueSheet(cues=(a, b))

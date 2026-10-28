@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 from typing import Literal
 
@@ -22,6 +23,7 @@ from contracts.artifact_refs import (
     FrozenModel,
     check_canonical_uuid,
 )
+from contracts.upload import YOUTUBE_FORBIDDEN_CHARS
 
 MUSIC_CONTRACT_SCHEMA_VERSION = "1.0"
 
@@ -46,6 +48,15 @@ def _require_aware(value: datetime | None) -> datetime | None:
     if value is not None and (value.tzinfo is None or value.utcoffset() is None):
         raise ValueError("datetime must be timezone-aware")
     return value
+
+
+def is_blank_text(value: str) -> bool:
+    """NFKC 正規化のうえ、空白・制御・書式文字（U+200B 等のゼロ幅文字）を除くと空になるか。"""
+    normalized = unicodedata.normalize("NFKC", value)
+    return all(
+        ch.isspace() or unicodedata.category(ch) in {"Cf", "Cc", "Zs", "Zl", "Zp"}
+        for ch in normalized
+    )
 
 
 class BgmTrack(FrozenModel):
@@ -92,8 +103,14 @@ class BgmTrack(FrozenModel):
     def _consistent(self) -> BgmTrack:
         text = self.exact_attribution_text
         if self.attribution_required:
-            if text is None or not text.strip():
+            if text is None or is_blank_text(text):
                 raise ValueError("attribution_required needs a non-empty exact_attribution_text")
+            if YOUTUBE_FORBIDDEN_CHARS & set(text):
+                # 説明欄への送信時に sanitize_youtube_text が書き換え、指定文が原文でなくなる。
+                raise ValueError(
+                    "exact_attribution_text must not contain characters rewritten "
+                    "by the description sanitizer (INV-98)"
+                )
         elif text is not None:
             raise ValueError("exact_attribution_text must be None unless attribution_required")
         if self.license_status == "approved" and (
@@ -129,6 +146,23 @@ class MusicCueSheet(FrozenModel):
     schema_version: Literal["1.0"] = MUSIC_CONTRACT_SCHEMA_VERSION
     cues: tuple[MusicCue, ...] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _ordered_and_non_overlapping(self) -> MusicCueSheet:
+        """cue は start_ms の昇順。同じ scene の cue は重ならない（重複 cue も重なり）。
+
+        別 scene の cue どうしの重なり（クロスフェード）は許す。
+        """
+        last_end_by_scene: dict[str, int] = {}
+        previous_start = -1
+        for cue in self.cues:
+            if cue.start_ms < previous_start:
+                raise ValueError("cues must be ordered by start_ms")
+            previous_start = cue.start_ms
+            if cue.start_ms < last_end_by_scene.get(cue.scene_id, 0):
+                raise ValueError(f"cues overlap within scene {cue.scene_id!r}")
+            last_end_by_scene[cue.scene_id] = cue.end_ms
+        return self
+
 
 class BgmUsage(FrozenModel):
     """Episode ごとの BGM 使用証跡。同じ曲を複数 Episode で使っても別々に残る（T12）。"""
@@ -153,4 +187,5 @@ __all__ = [
     "BgmUsage",
     "MusicCue",
     "MusicCueSheet",
+    "is_blank_text",
 ]

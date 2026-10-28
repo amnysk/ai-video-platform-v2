@@ -33,7 +33,9 @@ FORBIDDEN_IMPORTERS = [
 ]
 
 #: cue sheet 契約が依存してよい contracts（共有の型・パターンだけ）。
-CONTRACT_ALLOWED = {"contracts.artifact_refs"}
+#: contracts.upload は説明欄の sanitize / 禁止文字の唯一の定義（AGENTS.md §8）。production の
+#: Artifact 本体の契約ではない。
+CONTRACT_ALLOWED = {"contracts.artifact_refs", "contracts.upload"}
 
 
 def _files(rel: str) -> list[pathlib.Path]:

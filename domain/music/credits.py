@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from contracts.music import BgmTrack, MusicCueSheet
+from contracts.music import BgmTrack, MusicCueSheet, is_blank_text
+from contracts.upload import sanitize_youtube_text
 
 #: クレジット行どうしの区切り（説明欄に置く形。バイト数の計算に含める）。
 CREDIT_SEPARATOR = "\n"
@@ -27,8 +28,10 @@ def credits_for(cue_sheet: MusicCueSheet, catalog: Iterable[BgmTrack]) -> tuple[
             raise CreditsError(f"cue source_sha256 does not match catalog for {cue.track_id!r}")
         if track.attribution_required:
             text = track.exact_attribution_text
-            if not text or not text.strip():
+            if not text or is_blank_text(text):
                 raise CreditsError(f"{cue.track_id!r} requires attribution but has no text")
+            if sanitize_youtube_text(text) != text:
+                raise CreditsError(f"{cue.track_id!r} text would be rewritten when sent")
             if cue.credits_text != text:
                 raise CreditsError(
                     f"cue credits_text differs from the catalog for {cue.track_id!r}"
@@ -46,13 +49,21 @@ class CreditsFit:
 
     ok: bool
     credits: tuple[str, ...]
+    #: 説明欄へ実際に送る文字列（sanitize 後）。``required_bytes`` はこれの UTF-8 バイト数。
+    rendered: str
     required_bytes: int
     budget_bytes: int
 
 
 def fit_credits(description_budget_bytes: int, credits: tuple[str, ...]) -> CreditsFit:
-    required = len(CREDIT_SEPARATOR.join(credits).encode("utf-8"))
+    # 送信時と同じ sanitize（contracts.upload の唯一の定義）の後で測る。生のバイト数では足りない。
+    rendered = sanitize_youtube_text(CREDIT_SEPARATOR.join(credits))
+    required = len(rendered.encode("utf-8"))
     ok = required == 0 or required <= description_budget_bytes
     return CreditsFit(
-        ok=ok, credits=credits, required_bytes=required, budget_bytes=description_budget_bytes
+        ok=ok,
+        credits=credits,
+        rendered=rendered,
+        required_bytes=required,
+        budget_bytes=description_budget_bytes,
     )

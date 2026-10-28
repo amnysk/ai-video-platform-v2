@@ -61,3 +61,13 @@ fixture（`tests/support/bgm_catalog.py`）の値は架空であり、実在曲�
 | `test_music_contract_does_not_depend_on_production_artifacts` | cue sheet 契約が production Artifact の型に依存し、BGM だけの変更で production の hash が動くこと（INV-100） |
 
 違反を入れて落ちることは手元で確認した（`import os` / `datetime.now()` / production から `contracts.music`）。
+
+## レビュー指摘の修正（M1 / m3 / m4）
+
+| テスト | 止めるもの |
+|---|---|
+| `test_music_contracts.py::test_attribution_text_with_chars_the_description_sanitizer_rewrites_is_rejected` | 指定文の `<` `>` が説明欄送信時に全角へ書き換えられ、原文のまま載せるという INV-98 が破れること（禁止文字は `contracts.upload.YOUTUBE_FORBIDDEN_CHARS` の唯一の定義を使う） |
+| `test_music_credits.py::test_fitted_credits_are_byte_identical_to_what_is_sent` / `test_fit_measures_after_sanitization_not_raw_bytes` | 生のバイト数で収まると判定したのに、sanitize 後（全角は 3 bytes）で 5000 bytes を超えること |
+| `test_music_credits.py::test_fit_uses_the_shared_description_limit_not_a_literal` | 上限を literal で複製し、`YOUTUBE_DESCRIPTION_MAX_BYTES` とずれること |
+| `test_music_contracts.py::test_attribution_text_blank_after_removing_whitespace_and_format_chars_is_rejected` / `..._uses_nfkc` | ゼロ幅文字・NBSP だけの指定文が `strip()` を通り、見えないクレジットで INV-98 を満たしたことになること |
+| `test_music_contracts.py::test_cue_sheet_rejects_*` / `..._allows_adjacent_...` | 同じ scene で重なる・重複する cue、start_ms が逆順の cue（Render が曖昧な mix を作る）。別 scene どうしの重なり（クロスフェード）は許す |

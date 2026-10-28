@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from contracts.music import MusicCue, MusicCueSheet
+from contracts.upload import YOUTUBE_DESCRIPTION_MAX_BYTES, sanitize_youtube_text
 from domain.music import CreditsError, credits_for, fit_credits
 from tests.support.bgm_catalog import catalog, sha
 
@@ -106,3 +107,24 @@ def test_empty_credits_always_fit_even_with_zero_budget() -> None:
 
 def test_negative_budget_blocks() -> None:
     assert not fit_credits(-1, (CREDIT,)).ok
+
+
+def test_fitted_credits_are_byte_identical_to_what_is_sent() -> None:
+    """fit が測った文字列 = 説明欄へ実際に送る文字列（sanitize 後）。"""
+    credits = (CREDIT, "Music: Other by Someone")
+    fit = fit_credits(YOUTUBE_DESCRIPTION_MAX_BYTES, credits)
+    sent = sanitize_youtube_text("\n".join(credits))
+    assert fit.rendered == sent
+    assert fit.required_bytes == len(sent.encode("utf-8"))
+
+
+def test_fit_measures_after_sanitization_not_raw_bytes() -> None:
+    raw = "<<<"  # 生は 3 bytes、全角化後は 9 bytes
+    assert not fit_credits(3, (raw,)).ok
+    assert fit_credits(9, (raw,)).ok
+
+
+def test_fit_uses_the_shared_description_limit_not_a_literal() -> None:
+    at_limit = "A" * YOUTUBE_DESCRIPTION_MAX_BYTES
+    assert fit_credits(YOUTUBE_DESCRIPTION_MAX_BYTES, (at_limit,)).ok
+    assert not fit_credits(YOUTUBE_DESCRIPTION_MAX_BYTES, (at_limit + "A",)).ok
