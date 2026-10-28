@@ -1089,3 +1089,65 @@ DB 上の承認記録・技術 QA / 説明欄の gate 時点での読み出し�
 / `tests/architecture/test_quality_clock_injected.py::test_quality_modules_never_read_the_clock`
 （`upload_gate` への配線は INV-104。規則版の「現行値」は `contracts.quality.QUALITY_RULE_VERSION`）
 
+## AD. 歴史地図の正確さと描画（ADR-0078。INV-117〜120 は本枝の予約。純関数と描画部品のみ・未接続）
+
+### INV-117 歴史地図の誤り（位置・時代・国境・根拠の欠落）は理由コード付きの BLOCK になり、緩む経路が無い
+`domain.geo.map_accuracy.check_map_accuracy` は Wave 1 の検証結果を `MapAccuracyResult`
+（verdict + `MapReasonCode` + 対象 id + claim / source の参照。**自由文なし**）に写す。位置のずれ・軸順の取り違え、
+歴史地図でのアナクロな地点・名前・ラベル、現代国境、根拠（claim / 取得済み資料）に結びつかない地点は BLOCK。
+同名異所・参照なし・時間基準不明は REVIEW のまま（自動で 1 つに決めない）。verdict は finding の最悪値と
+一致しなければ作れず、`escalate` は REVIEW → BLOCK の一方向。
+**機械検査**: `tests/unit/test_geo_map_accuracy.py::test_misplaced_coordinates_are_blocked_with_the_place_as_target`
+/ `tests/unit/test_geo_map_accuracy.py::test_an_anachronistic_place_name_on_a_historical_map_is_blocked`
+/ `tests/unit/test_geo_map_accuracy.py::test_modern_borders_on_a_historical_map_are_blocked`
+/ `tests/unit/test_geo_map_accuracy.py::test_a_place_whose_claim_does_not_resolve_is_blocked_as_missing_evidence`
+/ `tests/unit/test_geo_map_accuracy.py::test_a_place_whose_source_was_not_fetched_is_blocked_as_missing_evidence`
+/ `tests/unit/test_geo_map_accuracy.py::test_a_homonym_stays_a_review_and_is_never_auto_picked`
+/ `tests/unit/test_geo_map_accuracy.py::test_the_result_verdict_cannot_be_milder_than_its_worst_finding`
+/ `tests/unit/test_geo_map_accuracy.py::test_escalation_never_relaxes_any_verdict`
+`check_map_accuracy` は全域関数: 指摘が上限を超える・検証器の結果が契約の上限で作れないときも例外にせず
+`TOO_MANY_FINDINGS` の BLOCK を返す:
+`tests/unit/test_geo_map_accuracy.py::test_too_many_findings_are_capped_with_a_block_reason`
+（QualityGate が呼ぶ配線は未実装。呼び出し側が `evidence_sources` を渡さないと資料の解決は検査されない）
+
+### INV-118 見た目の品質は正確さと別の結果で、正確さを緩めない
+`domain.geo.map_presentation.check_map_presentation` は `MapLayout`（幾何）だけを読み、ラベルの重なり・
+最小フォント px・コントラスト比・キャンバス内収まりを別の理由コード（`PresentationReasonCode`）で返す。
+`combine_map_results` は `stricter` でしか合流せず、`CombinedMapResult` は正確さより緩い verdict を作れない。
+模式図の免責が読めない・画面外・無いときだけ見た目で BLOCK（INV-96 の表示要件）。
+**機械検査**: `tests/unit/test_geo_map_presentation.py::test_good_presentation_never_upgrades_accuracy`
+/ `tests/unit/test_geo_map_presentation.py::test_a_perfectly_legible_inaccurate_map_is_still_blocked`
+/ `tests/unit/test_geo_map_presentation.py::test_a_combined_result_cannot_be_milder_than_accuracy`
+/ `tests/unit/test_geo_map_presentation.py::test_presentation_findings_use_presentation_codes_not_accuracy_codes`
+/ `tests/unit/test_geo_map_presentation.py::test_a_disclaimer_off_canvas_or_unreadable_is_blocked`
+（QualityGate が呼ぶ配線は未実装。画像を読み戻した検査はしない: 幾何は描画器の申告。
+接続は `combine_map_results(..., manifest_sha256=, render_sha256=)` に `RenderedMap` の値を渡し、
+結果が今の画像に結びつくことを確認すること。結びつけの強制は接続する枝で検査する）
+
+### INV-119 同じ GeoManifest は同じ画像のバイト列になり、地図の部品は有料 provider に触れない
+`infrastructure/media/map_render.render_map` は manifest・`MapRenderSpec`・フォントのバイト列だけから PNG を作る
+（投影は `domain.geo.map_projection`、描画順は place_id 昇順、PNG にメタデータ・時刻なし、乱数なし）。
+地図の部品（`contracts/geo_map.py`・`domain/geo/map_*.py`・`infrastructure/media/map_*.py`）は
+`infrastructure.providers`・httpx・socket・subprocess・時計・乱数を import せず、描画で fal の module も読み込まれない。
+**機械検査**: `tests/unit/test_geo_map_render.py::test_the_same_manifest_renders_to_identical_bytes`
+/ `tests/unit/test_geo_map_render.py::test_rendering_in_a_fresh_process_gives_the_same_hash`
+/ `tests/unit/test_geo_map_render.py::test_the_order_of_places_and_labels_does_not_change_the_image`
+/ `tests/unit/test_geo_map_render.py::test_rendering_makes_no_network_or_fal_calls`
+/ `tests/unit/test_geo_map_render.py::test_a_fresh_process_that_renders_a_map_never_loads_a_provider_module`
+/ `tests/architecture/test_geo_maps_boundaries.py::test_map_modules_import_no_paid_provider_network_clock_or_random`
+/ `tests/architecture/test_geo_maps_boundaries.py::test_the_detector_catches_violating_fixtures`
+（Pillow / FreeType の版を上げたら同一性は再確認が要る。バイト列の固定値 golden は版依存なので持たず、
+同一入力の再現性で検査する）
+グリフ欠落: 選んだフォントに無い字（日本語ラベルを既定フォントで描く等）は `glyphs_missing` として申告され、
+見た目の検査が BLOCK（`FONT_MISSING_GLYPHS`）。`tests/unit/test_geo_map_render.py::test_a_non_latin_label_without_a_capable_font_is_not_a_pass`
+
+### INV-120 flag `GEO_MAPS_ENABLED` が OFF（既定）なら、render / storyboard / production の出力は接続前と同じ
+`Settings.geo_maps_enabled` の既定は False。OFF の `render_map_scene_visual` は何も描かず `None`。地図の部品は
+workflow・Activity・storyboard・production・render の計画側から import されず（Activity の追加・並べ替えと
+dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph は接続前と byte 単位で同じ。
+**機械検査**: `tests/unit/test_geo_maps_flag_off.py::test_the_flag_defaults_to_off_and_is_read_from_the_environment`
+/ `tests/unit/test_geo_maps_flag_off.py::test_with_the_flag_off_nothing_is_rendered`
+/ `tests/unit/test_geo_maps_flag_off.py::test_the_flag_is_not_exposed_in_any_deployment_file`
+/ `tests/unit/test_geo_maps_flag_off.py::test_render_identity_and_filtergraph_are_byte_identical_to_before`
+/ `tests/architecture/test_geo_maps_boundaries.py::test_production_side_does_not_import_the_map_parts`
+（flag ON の挙動は部品の呼び出しまで。ON にしても workflow には何も起きない。接続は後続）

@@ -138,7 +138,9 @@ def _finish(checks: list[GeoCheck]) -> GeoVerification:
     return GeoVerification(verdict=worst, checks=tuple(checks))
 
 
-def _resolve(place: GeoPlace, references: Sequence[ReferencePlace]) -> list[ReferencePlace]:
+def resolve_reference_candidates(
+    place: GeoPlace, references: Sequence[ReferencePlace]
+) -> list[ReferencePlace]:
     """参照候補。place_id が参照の id と一致すれば、それが明示された 1 件。なければ名前で照合。"""
     by_id = [r for r in references if r.ref_id == place.place_id]
     if len(by_id) == 1:
@@ -243,7 +245,7 @@ def verify_manifest(
     for place in manifest.places:
         if schematic:
             continue  # 模式図は実在の位置を主張しない
-        candidates = _resolve(place, reference_places)
+        candidates = resolve_reference_candidates(place, reference_places)
         resolved[place.place_id] = candidates
         checks.extend(
             _place_checks(manifest, place, candidates, year, claims, sources, reference_places)

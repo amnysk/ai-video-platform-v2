@@ -218,6 +218,11 @@ class Settings(BaseSettings):
     #: 台本の後に Evidence を依頼して照合する（助言だけ。結果で Episode を止めない）
     script_evidence_enabled: bool = False
 
+    # --- 歴史地図（ADR-0078。部品のみ・workflow 未接続） ---
+    #: True のときだけ ``map_scene_visual`` が地図を描く。既定 OFF では何も描かず、
+    #: storyboard / render / production の identity と出力は接続前と同じ（INV-120）
+    geo_maps_enabled: bool = False
+
     @field_validator("fal_monthly_budget_usd", mode="before")
     @classmethod
     def _budget_fails_closed(cls, value: object) -> object:

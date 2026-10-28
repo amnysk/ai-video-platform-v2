@@ -85,3 +85,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0073](./0073-quality-report-contract-and-fail-closed-gate.md) | 品質レポートの契約と fail-closed の投稿可否判定（契約層のみ・配線は後続） | Accepted |
 | [0074](./0074-v3-phase2-shared-contract-fixes.md) | v3 Phase 2 の共有契約の是正（verdict 統一・入力保護・品質レポートの鮮度） | Accepted |
 | [0076](./0076-quality-gate-wiring-in-upload-gate.md) | 品質ゲートを `upload_gate` に結線する（既定 OFF・状態を足さない・Phase 2 は決定論の検査のみ。LLM レビューは未実装） | Accepted |
+| [0078](./0078-historical-map-accuracy-gate-and-deterministic-render.md) | 歴史地図の正確さの関門（理由コード・BLOCK 引き上げ）と決定論的な地図描画（既定 OFF・未接続） | Accepted |
