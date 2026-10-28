@@ -54,6 +54,16 @@ dataclass の変更は workflow replay を壊す（INV-1x、既存 replay テス
 純関数と描画ビルダーを flag OFF で置き、production identity・storyboard・render の出力が
 **1 バイトも変わらない**ことを golden で固定する（INV-120）。
 
+### 接続する枝への要求
+
+- 入口は `check_scene_map_accuracy`（INV-93: 実在の位置を主張するシーンに manifest が無ければ BLOCK）。
+  manifest を持つ場合のみを扱う `check_map_accuracy` を直接呼ぶと、manifest の欠落を見逃す。
+- `evidence_sources` を必ず渡す（渡さないと `source_ids` が取得済みの資料に解決するかを検査しない）。
+- `combine_map_results` に `RenderedMap.manifest_sha256` と `RenderedMap.sha256` を渡し、結果が
+  今の manifest・画像に結びつくことを確認してから使う（別の画像への流用の防止）。
+- 日本語ラベルは CJK フォントのバイト列を渡す。フォントに無い字は見た目の BLOCK になる。
+- 配線時に `GEO_MAPS_ENABLED` を compose / `.env.example` へ足す（現状は 0 件を機械検査している）。
+
 ### §8 grep（flag 名）
 
 `grep -rniE "geo_maps|GEO_MAPS_ENABLED" apps workers domain infrastructure contracts docs tests compose*.yaml`

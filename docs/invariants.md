@@ -1095,6 +1095,7 @@ workflow・Activity・storyboard・production・render の計画側から import
 dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph は接続前と byte 単位で同じ。
 **機械検査**: `tests/unit/test_geo_maps_flag_off.py::test_the_flag_defaults_to_off_and_is_read_from_the_environment`
 / `tests/unit/test_geo_maps_flag_off.py::test_with_the_flag_off_nothing_is_rendered`
+/ `tests/unit/test_geo_maps_flag_off.py::test_the_flag_is_not_exposed_in_any_deployment_file`
 / `tests/unit/test_geo_maps_flag_off.py::test_render_identity_and_filtergraph_are_byte_identical_to_before`
 / `tests/architecture/test_geo_maps_boundaries.py::test_production_side_does_not_import_the_map_parts`
 （flag ON の挙動は部品の呼び出しまで。ON にしても workflow には何も起きない。接続は後続）

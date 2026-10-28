@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import pathlib
 
 import pytest
 
@@ -70,3 +71,24 @@ def test_render_identity_and_filtergraph_are_byte_identical_to_before(profile: s
     plan_sha, graph_sha = GOLDEN[profile]
     assert render_plan_sha256(plan) == plan_sha
     assert hashlib.sha256(build_filtergraph(plan).encode()).hexdigest() == graph_sha
+
+
+def test_the_flag_is_not_exposed_in_any_deployment_file() -> None:
+    """未接続の flag を本番の env に出さない（ADR-0078）。接続する枝が変えるまで 0 件。"""
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    candidates = [
+        *repo.glob("compose*.yaml"),
+        *repo.glob("compose*.yml"),
+        *repo.glob(".env*"),
+        repo / "Dockerfile",
+        repo / "Makefile",
+        *(p for p in (repo / "deploy").rglob("*") if p.is_file()),
+        *(p for p in (repo / "scripts").rglob("*") if p.is_file()),
+    ]
+    assert repo / "compose.yaml" in candidates and repo / "Makefile" in candidates
+    hits = [
+        str(p.relative_to(repo))
+        for p in candidates
+        if "geo_maps_enabled" in p.read_text(encoding="utf-8", errors="ignore").lower()
+    ]
+    assert not hits, hits
