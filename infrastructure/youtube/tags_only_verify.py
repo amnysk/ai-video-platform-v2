@@ -264,8 +264,10 @@ def _sample(video_id: str, video: Mapping[str, Any] | None) -> VideoSample:
     if video is None:
         # 一覧に出たのに videos.list が返さない（削除・非公開化）。private としては数えない
         return VideoSample(video_id=video_id, privacy="unavailable")
-    snippet = video.get("snippet") if isinstance(video.get("snippet"), dict) else {}
-    status = video.get("status") if isinstance(video.get("status"), dict) else {}
+    raw_snippet = video.get("snippet")
+    raw_status = video.get("status")
+    snippet: Mapping[str, Any] = raw_snippet if isinstance(raw_snippet, dict) else {}
+    status: Mapping[str, Any] = raw_status if isinstance(raw_status, dict) else {}
     tags = snippet.get("tags")
     description = snippet.get("description")
     return VideoSample(
