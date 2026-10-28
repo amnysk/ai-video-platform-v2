@@ -1038,7 +1038,7 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 見ない**（本ブランチは Activity / workflow を変更しない。ADR-0073 §6）。保存先・遷移表の変更は別 ADR で先に承認する。
 **機械検査**: 未検査（配線の承認・実装まで。INV-101 の純粋な判定だけが検査済み）
 
-## AC. v3 Phase 2 の共有契約（ADR-0074。INV-105〜108）
+## AC. v3 Phase 2 の共有契約（ADR-0074。INV-105〜107）
 
 ### INV-105 判定語彙 PASS/WARN/REVIEW/BLOCK と厳しさの順序は `contracts/verdict.py` だけが定義する
 `Verdict`・`VERDICT_ORDER`・`VERDICT_SEVERITY`・`stricter`・`worst` が唯一の定義。`GeoVerdict` / `QualityVerdict` は

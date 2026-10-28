@@ -73,3 +73,15 @@ DB・Temporal・provider・ネットワークには触れない純粋なテス�
 （`rule_version` / `expires_at` / `model` / `schema_version` 2、`current_rule_version`）に合わせて**入力の組み立てだけ**を
 更新した。assert は一切変えていない。
 
+
+## 独立レビュー（F）の MINOR に対する追加テスト（INV-107）
+
+- `test_a_hash_with_a_trailing_newline_is_refused_even_when_both_sides_match` —
+  `re.match` と `$` の組み合わせは末尾の `\n` を許す。呼び出し側が同じ不正な hash を両側に渡すと一致して
+  許可されていた（レビューで実証）。形式検査は `fullmatch` で行う。unit で十分（純関数・入力だけで再現）。
+- `test_an_unbounded_rule_version_is_refused_even_when_both_sides_match` /
+  `test_an_unbounded_episode_id_is_refused` — 識別子に長さ上限が無く、100万文字が通っていた。
+  ログ・理由文に載る可能性のある識別子は `SAFE_ID_PATTERN`（128 文字）で縛る。
+- 残リスク（未修正・記録のみ）: `QualityCheck.detail` は印字可能 ASCII 500 文字まで任意文を許す。
+  ADR-0076 の Phase 2 ではレポートを gate 内で自前生成するので外部入力は入らないが、LLM レビューを
+  有効にする前に「固定文の allowlist」か「取り込み時 detail を捨てる」に改めること。

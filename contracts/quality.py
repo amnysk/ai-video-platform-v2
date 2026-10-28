@@ -337,7 +337,7 @@ def parse_quality_report(raw: object) -> QualityReport:
             f"schema_version mismatch: {describe(version)}",
         )
     sha = _str(data, "final_video_sha256")
-    if not _SHA256.match(sha):
+    if not _SHA256.fullmatch(sha):
         raise _unparsable("final_video_sha256 must be 64 lowercase hex chars")
     generated_at = _aware_datetime(data, "generated_at")
     expires_at = _aware_datetime(data, "expires_at")
@@ -380,7 +380,10 @@ def validate_quality_report(report: object) -> None:
         value = getattr(report, name)
         if not isinstance(value, str) or not value.strip():
             raise _unparsable(f"{name} must be a non-empty string")
-    if not isinstance(report.final_video_sha256, str) or not _SHA256.match(
+    for name in ("episode_id", "rule_version"):
+        if not is_safe_id(getattr(report, name)):
+            raise _unparsable(f"{name} must be a bounded identifier")
+    if not isinstance(report.final_video_sha256, str) or not _SHA256.fullmatch(
         report.final_video_sha256
     ):
         raise _unparsable("final_video_sha256 must be 64 lowercase hex chars")
