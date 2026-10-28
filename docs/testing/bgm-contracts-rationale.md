@@ -29,3 +29,25 @@ fixture（`tests/support/bgm_catalog.py`）の値は架空であり、実在曲�
 | `test_empty_catalog_gives_no_candidates_so_caller_can_request_acquisition` | 候補なしを例外にせず、呼び出し側が収集依頼を積めること |
 
 注: `modification_allowed=false` の曲も除外した。cue sheet はフェード・ducking（=改変）を前提とするため、設計 v3 §4.2 の項目を保守側に倒した（ADR-0072 に記録）。
+
+## クレジット（`tests/unit/test_music_credits.py`、INV-98 / T14）
+
+| テスト | 止めるもの |
+|---|---|
+| `test_credit_required_track_yields_exact_text` / `..._credited_once_in_first_use_order` | 指定文の改変・重複記載・順序の揺れ |
+| `test_cue_for_a_track_missing_from_the_catalog_is_an_error` / `test_source_sha_must_match_the_catalog_file` | カタログに無い曲・別ファイルの cue から帰属表記を推測で作ること |
+| `test_stale_or_altered_credit_copy_in_cue_is_an_error_not_silently_replaced` / `..._missing_credit_copy_...` | cue 側のコピーが古い・欠けているのに黙ってカタログ原文で上書きし、食い違いが見えなくなること |
+| `test_fit_credits_blocks_instead_of_truncating` | 説明欄に入らないクレジットの切り捨て（BLOCK にせず短縮版を返す退行） |
+| `test_fit_credits_counts_utf8_bytes_not_characters` / `..._counts_the_newline_separators` | 5000 UTF-8 bytes 制限を文字数や区切り抜きで数え、日本語の指定文で溢れること |
+| `test_empty_credits_always_fit_even_with_zero_budget` / `test_negative_budget_blocks` | 帰属不要の曲だけの動画が BLOCK になること・負の予算の素通り |
+
+## 取込検査（`tests/unit/test_music_ingest.py`、INV-99 / T12 / T27）
+
+| テスト | 止めるもの |
+|---|---|
+| `test_sha_mismatch_is_rejected_as_tampered` / `test_malformed_actual_sha_is_rejected` | 申告と実ファイルの sha256 が違う（変造・取り違え）取込 |
+| `test_same_file_is_deduplicated_to_the_existing_track` | 同じ音源の再収集・二重登録（T12） |
+| `test_duplicate_never_upgrades_the_existing_license_facts` | 再取込の申告で既存の未確認曲が承認済みになること |
+| `test_same_track_id_with_different_bytes_is_rejected` | 同じ track_id の中身の差し替え（immutable 違反） |
+| `test_object_key_must_be_content_addressed_by_the_sha` | sha と無関係な object_key（上書き可能な配置） |
+| `test_ingest_check_does_not_mutate_the_catalog` | 判定関数が副作用を持つこと |
