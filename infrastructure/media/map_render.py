@@ -55,6 +55,8 @@ class RenderedMap:
     font_id: str
     #: 入力（manifest・spec・フォント）の指紋。画像の sha256 とは別
     identity_sha256: str
+    #: manifest だけの指紋（判定結果を manifest に結びつける。``combine_map_results`` へ渡す）
+    manifest_sha256: str
 
 
 def _rgb(c: Rgb) -> Color:
@@ -186,6 +188,7 @@ def render_map(
             }
         )
     )
+    manifest_sha256 = sha256_hex(canonical_json_bytes(manifest.model_dump(mode="json")))
     return RenderedMap(
         png=png,
         sha256=sha256_hex(png),
@@ -193,6 +196,7 @@ def render_map(
         marker_px=marker_px,
         font_id=font_id,
         identity_sha256=identity,
+        manifest_sha256=manifest_sha256,
     )
 
 

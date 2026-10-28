@@ -1065,7 +1065,9 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/unit/test_geo_map_presentation.py::test_a_combined_result_cannot_be_milder_than_accuracy`
 / `tests/unit/test_geo_map_presentation.py::test_presentation_findings_use_presentation_codes_not_accuracy_codes`
 / `tests/unit/test_geo_map_presentation.py::test_a_disclaimer_off_canvas_or_unreadable_is_blocked`
-（QualityGate が呼ぶ配線は未実装。画像を読み戻した検査はしない: 幾何は描画器の申告）
+（QualityGate が呼ぶ配線は未実装。画像を読み戻した検査はしない: 幾何は描画器の申告。
+接続は `combine_map_results(..., manifest_sha256=, render_sha256=)` に `RenderedMap` の値を渡し、
+結果が今の画像に結びつくことを確認すること。結びつけの強制は接続する枝で検査する）
 
 ### INV-119 同じ GeoManifest は同じ画像のバイト列になり、地図の部品は有料 provider に触れない
 `infrastructure/media/map_render.render_map` は manifest・`MapRenderSpec`・フォントのバイト列だけから PNG を作る

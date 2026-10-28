@@ -18,7 +18,7 @@ from typing import Annotated
 
 from pydantic import Field, model_validator
 
-from contracts.artifact_refs import SCRIPT_SCENE_ID_PATTERN, FrozenModel
+from contracts.artifact_refs import SCRIPT_SCENE_ID_PATTERN, SHA256_HEX_PATTERN, FrozenModel
 from contracts.geo import MAX_CHECKS, PLACE_ID_PATTERN, GeoVerdict, stricter
 from contracts.research_evidence import CLAIM_ID_PATTERN, SOURCE_ID_PATTERN
 
@@ -204,6 +204,9 @@ class CombinedMapResult(FrozenModel):
     verdict: GeoVerdict
     accuracy: MapAccuracyResult
     presentation: MapPresentationResult
+    #: 判定した manifest / 画像への結びつけ（任意）。接続時は必ず渡し、別の画像への流用を防ぐ
+    manifest_sha256: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
+    render_sha256: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
 
     @model_validator(mode="after")
     def _never_milder_than_accuracy(self) -> CombinedMapResult:

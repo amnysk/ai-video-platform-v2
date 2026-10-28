@@ -255,3 +255,12 @@ def test_a_disclaimer_with_missing_glyphs_is_blocked() -> None:
     )
     rendered = render_map(m, SPEC)
     assert check_map_presentation(rendered.layout).verdict is GeoVerdict.BLOCK
+
+
+def test_the_rendered_map_exposes_the_hashes_a_result_is_bound_to() -> None:
+    m = _manifest()
+    rendered = render_map(m, SPEC)
+    assert len(rendered.manifest_sha256) == 64
+    assert rendered.manifest_sha256 == render_map(m, SPEC).manifest_sha256
+    other = m.model_copy(update={"as_of": "1601"})
+    assert render_map(other, SPEC).manifest_sha256 != rendered.manifest_sha256

@@ -121,7 +121,11 @@ def check_map_presentation(layout: MapLayout) -> MapPresentationResult:
 
 
 def combine_map_results(
-    accuracy: MapAccuracyResult, presentation: MapPresentationResult
+    accuracy: MapAccuracyResult,
+    presentation: MapPresentationResult,
+    *,
+    manifest_sha256: str | None = None,
+    render_sha256: str | None = None,
 ) -> CombinedMapResult:
     """正確さと見た目の合流。結果は両者の厳しい側。点数・verdict 単体は受け取らない。"""
     if not isinstance(accuracy, MapAccuracyResult) or not isinstance(
@@ -133,6 +137,8 @@ def combine_map_results(
         verdict=stricter(accuracy.verdict, presentation.verdict),
         accuracy=accuracy,
         presentation=presentation,
+        manifest_sha256=manifest_sha256,
+        render_sha256=render_sha256,
     )
 
 

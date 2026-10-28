@@ -93,3 +93,11 @@
 | テスト | なぜ必要か |
 |---|---|
 | `test_a_label_covering_the_disclaimer_is_an_overlap` | 免責の板を重なり検査から外すと、ラベルが免責を隠しても PASS になる |
+
+## 判定と画像の結びつけ（独立レビュー MINOR 4）
+
+| テスト | なぜ必要か |
+|---|---|
+| `test_the_combined_result_can_be_bound_to_the_rendered_image` | 合流結果が manifest / 画像の sha256 を持てる（別の画像への流用を接続側が検査できる） |
+| `test_the_binding_is_optional_but_must_be_a_sha256_when_given` | 任意だが、入れるなら sha256 の形 |
+| `test_the_rendered_map_exposes_the_hashes_a_result_is_bound_to` | 描画器が結びつけ用の manifest 指紋を返し、manifest が変われば変わる |

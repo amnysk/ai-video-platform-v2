@@ -250,3 +250,27 @@ def test_a_label_covering_the_disclaimer_is_an_overlap() -> None:
         "p1",
         "s1",
     }
+
+
+def test_the_combined_result_can_be_bound_to_the_rendered_image() -> None:
+    combined = combine_map_results(
+        _accuracy(GeoVerdict.PASS),
+        _presentation(GeoVerdict.PASS),
+        manifest_sha256="a" * 64,
+        render_sha256="b" * 64,
+    )
+    assert (combined.manifest_sha256, combined.render_sha256) == ("a" * 64, "b" * 64)
+    assert CombinedMapResult.model_validate_json(combined.model_dump_json()) == combined
+
+
+def test_the_binding_is_optional_but_must_be_a_sha256_when_given() -> None:
+    assert (
+        combine_map_results(
+            _accuracy(GeoVerdict.PASS), _presentation(GeoVerdict.PASS)
+        ).render_sha256
+        is None
+    )
+    with pytest.raises(ValidationError):
+        combine_map_results(
+            _accuracy(GeoVerdict.PASS), _presentation(GeoVerdict.PASS), render_sha256="nope"
+        )
