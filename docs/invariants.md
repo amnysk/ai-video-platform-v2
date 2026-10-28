@@ -1070,3 +1070,34 @@ delete の呼び出しを持たない。出力は件数と不一致の video id 
 / `tests/unit/test_verify_tags_only_match.py::test_a_truncated_listing_is_never_a_conclusion`
 / `tests/unit/test_verify_tags_only_match.py::test_the_description_without_marker_flag_defaults_off`
 / `tests/unit/test_verify_tags_only_match.py::test_no_deploy_artifact_turns_the_description_without_marker_flag_on`
+
+### INV-111 構成 flag OFF の description は、導入前と byte 単位で同じ
+`AVP_UPLOAD_DESCRIPTION_COMPOSED`（`contracts/upload.py::UPLOAD_DESCRIPTION_COMPOSITION_ENV`）は既定 OFF で、
+`1` / `true` 以外は OFF。OFF、または `composition` を渡さない `build_youtube_metadata` は、台本の全文を使う従来の
+description（marker あり・なし、必須部分あり、長文の切り詰め、空本文）と byte 単位で同じ。
+**機械検査**: `tests/contract/test_upload_description_golden.py::test_the_composition_flag_is_off_by_default_and_by_any_non_truthy_value`
+/ `tests/contract/test_upload_description_golden.py::test_short_with_and_without_marker`
+/ `tests/contract/test_upload_description_golden.py::test_japanese_body_is_sanitized_the_same_way`
+/ `tests/contract/test_upload_description_golden.py::test_long_body_is_truncated_to_the_same_bytes`
+/ `tests/contract/test_upload_description_golden.py::test_required_parts_layout_is_unchanged`
+/ `tests/contract/test_upload_description_golden.py::test_empty_body_shapes_are_unchanged`
+/ `tests/contract/test_upload_description_golden.py::test_flag_on_without_a_composition_input_is_still_the_legacy_description`
+/ `tests/contract/test_upload_description_composition.py::test_flag_off_ignores_the_composition`
+
+### INV-112 構成された description は必須部分（参照・クレジット）を黙って切らず、内部 ID を出さない
+`compose_description` は 導入文 → 補足 → 参照 → クレジット → （marker flag OFF のとき）マーカー の順に組む。参照・
+クレジット・マーカーを先に確保し、入らなければ `DescriptionBlocked`（`REQUIRED_PARTS_TOO_LONG` / `INTRO_NO_ROOM` /
+`REFERENCES_MISSING` / `CREDIT_NOT_REPRESENTABLE` / `INTERNAL_ID`）を返す。切り詰めるのは導入文と補足だけで、
+補足はまるごと落とす。帰属文は書き換えない（`<` `>` を含めば BLOCK）。いずれかの部分に内部 ID があれば BLOCK
+（marker 行自体は対象外）。`build_youtube_metadata` は BLOCK を `DescriptionBlockedError` で送出する。
+**機械検査**: `tests/contract/test_upload_description_composition.py::test_order_is_intro_supplement_references_credits_marker`
+/ `tests/contract/test_upload_description_composition.py::test_credit_lines_are_kept_verbatim`
+/ `tests/contract/test_upload_description_composition.py::test_credit_with_angle_brackets_blocks_instead_of_being_rewritten`
+/ `tests/contract/test_upload_description_composition.py::test_required_references_missing_blocks`
+/ `tests/contract/test_upload_description_composition.py::test_required_parts_over_the_limit_block_and_never_truncate`
+/ `tests/contract/test_upload_description_composition.py::test_not_enough_room_for_the_intro_blocks`
+/ `tests/contract/test_upload_description_composition.py::test_long_optional_parts_are_trimmed_but_required_parts_survive`
+/ `tests/contract/test_upload_description_composition.py::test_whole_supplements_are_dropped_from_the_end_not_cut`
+/ `tests/contract/test_upload_description_composition.py::test_internal_ids_in_any_part_block`
+/ `tests/contract/test_upload_description_composition.py::test_flag_on_blocked_composition_raises_instead_of_truncating`
+/ `tests/contract/test_upload_description_composition.py::test_flag_on_with_marker_removed_keeps_the_lint_and_the_tag`

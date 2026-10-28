@@ -155,6 +155,12 @@ API が復旧してから POST で再開する。「見つからなかった」�
 いずれも `WHERE ... status = 'reserved'` で1行だけ更新されたことを確かめる（0 行なら状態が変わっている。読み直す）。
 自動の処理が `abandoned` や承認を書くことは無い（ADR-0013 / INV-15）。
 
+### 構成された description（`AVP_UPLOAD_DESCRIPTION_COMPOSED`。ADR-0075）
+
+既定 OFF（現行は台本の全文）。ON にしても、Activity が構成の入力（導入文・出典・クレジット）を渡す配線ができるまでは
+何も変わらない。入力を渡すようになった後は、必須部分（参照・クレジット）が入らないと投稿は `DescriptionBlockedError`
+で止まる（切り詰めない）。有効化は所有者の判断。
+
 ### marker なし description への切替（`AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER`。ADR-0070 / ADR-0075）
 
 **本番で ON にしてはならない。** 所有者が次を実行し、`result: AGREE (100%)`（終了コード 0）と出るまで禁止。
