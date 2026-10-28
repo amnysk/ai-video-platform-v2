@@ -61,3 +61,12 @@
 | `test_the_clip_argv_…` | 既存 render 線の fps・収め方・bitexact を再利用した静止画→mp4 の argv が決定論的 |
 | `test_map_modules_import_no_paid_provider_network_clock_or_random` / `test_the_detector_catches_violating_fixtures` / `test_the_map_modules_do_not_call_…` | INV-18 型の構造的保証。検出器自身が違反 fixture を検出できる |
 | `test_production_side_does_not_import_the_map_parts` | 地図の部品を本番側が import しない（未接続・INV-120 の前提） |
+
+## `tests/unit/test_geo_maps_flag_off.py`（INV-120）
+
+| テスト | なぜ必要か |
+|---|---|
+| `test_the_flag_defaults_to_off_and_is_read_from_the_environment` | 既定 OFF と環境変数名 `GEO_MAPS_ENABLED`（Settings の既存慣習）の確認。既定が ON に変わる事故を止める |
+| `test_with_the_flag_off_nothing_is_rendered` | OFF で描画関数が呼ばれない（spy で 0 回） |
+| `test_with_the_flag_on_a_map_is_rendered` | OFF が常に None を返すだけの退化でない |
+| `test_render_identity_and_filtergraph_are_byte_identical_to_before` | golden: 接続前の系統（6d14c30 / audit 枝）で計算した `render_plan_sha256` と filtergraph の sha256。ffmpeg_graph の `fit_filter` 改名など本枝の変更が既存の出力を変えていない証明（2 profile） |

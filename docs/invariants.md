@@ -1081,3 +1081,13 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/architecture/test_geo_maps_boundaries.py::test_the_detector_catches_violating_fixtures`
 （Pillow / FreeType の版を上げたら同一性は再確認が要る。バイト列の固定値 golden は版依存なので持たず、
 同一入力の再現性で検査する。フォントのグリフ欠落は未検査）
+
+### INV-120 flag `GEO_MAPS_ENABLED` が OFF（既定）なら、render / storyboard / production の出力は接続前と同じ
+`Settings.geo_maps_enabled` の既定は False。OFF の `render_map_scene_visual` は何も描かず `None`。地図の部品は
+workflow・Activity・storyboard・production・render の計画側から import されず（Activity の追加・並べ替えと
+dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph は接続前と byte 単位で同じ。
+**機械検査**: `tests/unit/test_geo_maps_flag_off.py::test_the_flag_defaults_to_off_and_is_read_from_the_environment`
+/ `tests/unit/test_geo_maps_flag_off.py::test_with_the_flag_off_nothing_is_rendered`
+/ `tests/unit/test_geo_maps_flag_off.py::test_render_identity_and_filtergraph_are_byte_identical_to_before`
+/ `tests/architecture/test_geo_maps_boundaries.py::test_production_side_does_not_import_the_map_parts`
+（flag ON の挙動は部品の呼び出しまで。ON にしても workflow には何も起きない。接続は後続）

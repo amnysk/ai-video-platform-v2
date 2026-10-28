@@ -21,6 +21,7 @@ MAP_MODULES: tuple[pathlib.Path, ...] = (
     REPO / "domain" / "geo" / "map_projection.py",
     REPO / "infrastructure" / "media" / "map_render.py",
     REPO / "infrastructure" / "media" / "map_clip.py",
+    REPO / "infrastructure" / "media" / "map_scene_visual.py",
 )
 #: 有料 provider・ネットワーク・時計・乱数・子プロセス・並行。
 FORBIDDEN_ROOTS = frozenset(

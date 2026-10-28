@@ -22,6 +22,7 @@ GEO_PREFIXES = ("domain.geo", "contracts.geo", "contracts.geo_map")
 GEO_CONSUMER_EXEMPT = (
     REPO / "infrastructure" / "media" / "map_render.py",
     REPO / "infrastructure" / "media" / "map_clip.py",
+    REPO / "infrastructure" / "media" / "map_scene_visual.py",
 )
 
 #: 純関数に不要な標準・外部のモジュール（I/O・時計・乱数・ネットワーク・並行）。
