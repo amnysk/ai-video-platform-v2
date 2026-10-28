@@ -438,3 +438,264 @@ def test_the_verifier_does_not_mutate_its_inputs() -> None:
     before = [r.model_dump() for r in refs]
     _verify(fg.manifest())
     assert [r.model_dump() for r in refs] == before
+
+
+# ==== レビュー指摘（B1 / M1〜M4 / m1 / m2 / m5）
+# 各テストはレビュアーの再現手順そのもの。
+
+
+def _all(r: GeoVerification, suffix: str) -> list[GeoVerdict]:
+    return [c.outcome for c in r.checks if c.name.endswith(suffix)]
+
+
+# ---- B1: 自己申告の不確かさで許容を無制限に広げられない
+
+
+def test_a_declared_uncertainty_cannot_launder_a_place_900_km_off() -> None:
+    """B1 の再現: 関ヶ原を約 900 km 離れた地点に置き、不確かさを最大まで申告しても BLOCK。"""
+    far = fg.place(lat=43.0, lon=141.3, uncertainty_radius_km=1000.0, location_confidence="low")
+    result = _verify(fg.manifest(places=[far]))
+    assert _outcome(result, "gz:sekigahara.distance") is GeoVerdict.BLOCK
+    assert result.verdict is GeoVerdict.BLOCK
+
+
+def test_a_radius_beyond_the_cap_is_itself_a_review() -> None:
+    from domain.geo.tolerance import BASE_TOLERANCE_KM, PLACE_UNCERTAINTY_CAP_FACTOR
+
+    cap = BASE_TOLERANCE_KM[fg.GeoFeatureType.BATTLEFIELD] * PLACE_UNCERTAINTY_CAP_FACTOR
+    at_cap = _verify(fg.manifest(places=[fg.place(uncertainty_radius_km=cap)]))
+    over = _verify(fg.manifest(places=[fg.place(uncertainty_radius_km=cap + 0.1)]))
+    assert _outcome(at_cap, "gz:sekigahara.uncertainty") is GeoVerdict.PASS
+    assert _outcome(over, "gz:sekigahara.uncertainty") is GeoVerdict.REVIEW
+    assert over.verdict is GeoVerdict.REVIEW
+
+
+def test_the_tolerance_never_exceeds_the_ceiling_of_its_feature_type() -> None:
+    from contracts.geo import GeoFeatureType, LocationConfidence
+    from domain.geo.tolerance import CEILING_TOLERANCE_KM, tolerance_km
+
+    for ftype in GeoFeatureType:
+        for conf in LocationConfidence:
+            for unc in (None, 0.0, 1.0, 50.0, 1000.0):
+                for ref_unc in (0.0, 5.0, 1000.0):
+                    tol = tolerance_km(ftype, conf, unc, ref_unc)
+                    assert tol <= CEILING_TOLERANCE_KM[ftype], (ftype, conf, unc, ref_unc)
+
+
+def test_every_feature_type_has_a_ceiling_above_its_base() -> None:
+    from contracts.geo import GeoFeatureType
+    from domain.geo.tolerance import BASE_TOLERANCE_KM, CEILING_TOLERANCE_KM
+
+    for ftype in GeoFeatureType:
+        assert CEILING_TOLERANCE_KM[ftype] >= BASE_TOLERANCE_KM[ftype]
+
+
+def test_the_ceiling_holds_at_the_boundary_distance() -> None:
+    """低信頼・最大の申告でも、戦場の許容上限（60 km）の 3 倍を超えたら BLOCK。"""
+    from contracts.geo import GeoFeatureType
+    from domain.geo.tolerance import CEILING_TOLERANCE_KM
+
+    ceiling = CEILING_TOLERANCE_KM[GeoFeatureType.BATTLEFIELD]
+    km_per_deg = 111.19
+    inside = fg.place(
+        lat=35.3667 + (ceiling * 3 - 5) / km_per_deg,
+        uncertainty_radius_km=30.0,
+        location_confidence="low",
+    )
+    outside = fg.place(
+        lat=35.3667 + (ceiling * 3 + 5) / km_per_deg,
+        uncertainty_radius_km=30.0,
+        location_confidence="low",
+    )
+    assert _outcome(_verify(fg.manifest(places=[inside])), "gz:sekigahara.distance") is (
+        GeoVerdict.REVIEW
+    )
+    assert _outcome(_verify(fg.manifest(places=[outside])), "gz:sekigahara.distance") is (
+        GeoVerdict.BLOCK
+    )
+
+
+# ---- M1: ラベルの名前も時代を見る
+
+
+def test_a_modern_label_on_an_old_map_needs_review() -> None:
+    """M1 の再現: as_of=1600、地点名 Edo、ラベル Tokyo は PASS にならない。"""
+    edo = fg.place(
+        place_id="gz:edo-tokyo",
+        display_name="Edo",
+        feature_type="settlement",
+        lat=35.6895,
+        lon=139.6917,
+        valid_start_year=1457,
+    )
+    m = fg.manifest(places=[edo], labels=[{"place_id": "gz:edo-tokyo", "text": "Tokyo"}])
+    result = _verify(m)
+    assert _outcome(result, "label[gz:edo-tokyo]") is GeoVerdict.REVIEW
+    assert result.verdict is GeoVerdict.REVIEW
+
+
+def test_a_modern_label_is_fine_on_a_modern_context_map() -> None:
+    edo = fg.place(
+        place_id="gz:edo-tokyo",
+        display_name="Edo",
+        feature_type="settlement",
+        lat=35.6895,
+        lon=139.6917,
+        valid_start_year=1457,
+    )
+    m = fg.manifest(
+        map_kind="modern_context",
+        as_of="2026",
+        places=[edo],
+        labels=[{"place_id": "gz:edo-tokyo", "text": "Tokyo"}],
+    )
+    assert _outcome(_verify(m), "label[gz:edo-tokyo]") is GeoVerdict.PASS
+
+
+# ---- M2: 作者が選んだ id が名前の検査を迂回しない
+
+
+def test_an_explicit_id_does_not_bypass_a_name_that_belongs_elsewhere() -> None:
+    """M2 の再現: id は関ヶ原、名前は Kyoto（別の参照の名前）、座標は関ヶ原 => BLOCK。"""
+    liar = fg.place(display_name="Kyoto")
+    m = fg.manifest(places=[liar], labels=[{"place_id": "gz:sekigahara", "text": "Kyoto"}])
+    result = _verify(m)
+    assert _outcome(result, "gz:sekigahara.name") is GeoVerdict.BLOCK
+    assert result.verdict is GeoVerdict.BLOCK
+
+
+def test_an_explicit_id_with_an_unknown_name_needs_review() -> None:
+    odd = fg.place(display_name="Nowhereville")
+    m = fg.manifest(places=[odd], labels=[{"place_id": "gz:sekigahara", "text": "Nowhereville"}])
+    result = _verify(m)
+    assert _outcome(result, "gz:sekigahara.name") is GeoVerdict.REVIEW
+
+
+def test_a_known_name_passes_the_name_check() -> None:
+    assert _outcome(_verify(fg.manifest()), "gz:sekigahara.name") is GeoVerdict.PASS
+
+
+# ---- M3: 模式図の表示は「縮尺が正確でない」ことを述べるものだけ
+
+
+@pytest.mark.parametrize(
+    "disclaimer",
+    [
+        "縮尺通り",
+        "This is to scale (縮尺は正確)",
+        "Schematic, drawn to scale",
+        "Schematic",
+        "Accurate map",
+        "to scale",
+    ],
+)
+def test_a_schematic_that_claims_accuracy_or_omits_the_phrase_is_blocked(disclaimer: str) -> None:
+    result = _verify(_schematic(schematic_disclaimer=disclaimer))
+    assert _outcome(result, "schematic_disclaimer") is GeoVerdict.BLOCK
+
+
+@pytest.mark.parametrize(
+    "disclaimer",
+    [
+        "Schematic / Not to scale",
+        "ＮＯＴ　ＴＯ　ＳＣＡＬＥ",
+        "模式図（縮尺不同）",
+        "縮尺は正確ではありません",
+        "Not  to   Scale",
+    ],
+)
+def test_accepted_disclaimers_are_normalized(disclaimer: str) -> None:
+    result = _verify(_schematic(schematic_disclaimer=disclaimer))
+    assert _outcome(result, "schematic_disclaimer") is GeoVerdict.PASS
+
+
+# ---- M4: claim / source の解決
+
+
+def test_duplicate_claim_ids_never_resolve_last_wins() -> None:
+    """M4: 同じ claim_id が 2 件あり、片方が insufficient。後ろが supported でも REVIEW。"""
+    bad = fg.claim("C-001", ClaimAssessment.INSUFFICIENT)
+    good = fg.claim("C-001")
+    for claims in ((bad, good), (good, bad)):
+        result = verify_manifest(fg.manifest(), fg.ALL_REFERENCES, claims)
+        assert _outcome(result, "gz:sekigahara.claim") is GeoVerdict.REVIEW
+        assert _outcome(result, "claims.duplicate") is GeoVerdict.REVIEW
+
+
+def test_a_claim_of_another_kind_does_not_back_a_place() -> None:
+    from contracts.research import ClaimKind
+
+    claims = (fg.claim("C-001", kind=ClaimKind.YEAR),)
+    result = verify_manifest(fg.manifest(), fg.ALL_REFERENCES, claims)
+    assert _outcome(result, "gz:sekigahara.claim") is GeoVerdict.REVIEW
+
+
+def test_a_claim_that_does_not_mention_the_place_is_a_warning() -> None:
+    claims = (fg.claim("C-001", text="The tea ceremony spread among warriors"),)
+    result = verify_manifest(fg.manifest(), fg.ALL_REFERENCES, claims)
+    assert _outcome(result, "gz:sekigahara.claim_relevance") is GeoVerdict.WARN
+
+
+def test_sources_are_resolved_against_the_evidence_when_provided() -> None:
+    ok = verify_manifest(fg.manifest(), fg.ALL_REFERENCES, fg.GOOD_CLAIMS, fg.GOOD_SOURCES)
+    assert _outcome(ok, "gz:sekigahara.sources") is GeoVerdict.PASS
+    missing = verify_manifest(fg.manifest(), fg.ALL_REFERENCES, fg.GOOD_CLAIMS, ())
+    assert _outcome(missing, "gz:sekigahara.sources") is GeoVerdict.REVIEW
+
+
+def test_an_unfetched_source_does_not_resolve() -> None:
+    from contracts.research_evidence import SourceFetchStatus
+
+    sources = (fg.source("S-001", SourceFetchStatus.TRUNCATED),)
+    result = verify_manifest(fg.manifest(), fg.ALL_REFERENCES, fg.GOOD_CLAIMS, sources)
+    assert _outcome(result, "gz:sekigahara.sources") is GeoVerdict.REVIEW
+
+
+def test_without_evidence_sources_no_source_check_is_claimed() -> None:
+    """渡されなければ資料の解決は検査しない（検査したふりの check を作らない）。"""
+    result = _verify(fg.manifest())
+    assert _all(result, ".sources") == []
+
+
+# ---- m1: 時間基準の厳格な解釈
+
+
+@pytest.mark.parametrize(
+    "as_of",
+    [
+        "9999",
+        "0000",
+        "1600-02-31",
+        "1601-02-29",
+        "12-05",
+        "１６００",
+        "1600-00",
+        "1600-10-32",
+        "3001",
+    ],
+)
+def test_impossible_or_ambiguous_time_bases_are_rejected(as_of: str) -> None:
+    from domain.geo.verify import parse_as_of_year
+
+    assert parse_as_of_year(as_of) is None
+    assert _outcome(_verify(fg.manifest(as_of=as_of)), "as_of") is GeoVerdict.REVIEW
+
+
+def test_valid_leap_day_and_boundaries_parse() -> None:
+    from domain.geo.verify import parse_as_of_year
+
+    assert parse_as_of_year("1600-02-29") == 1600
+    assert parse_as_of_year("-0200") == -200
+    assert parse_as_of_year("3000") == 3000
+
+
+# ---- m5: 国境の語
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["The kingdom extended to the river", "Mori territory", "毛利の領地", "薩摩藩の範囲", "国境線"],
+)
+def test_more_border_words_are_recognised(text: str) -> None:
+    m = fg.manifest(spatial_assertions=[text])
+    assert _outcome(_verify(m), "borders") is GeoVerdict.REVIEW

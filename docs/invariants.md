@@ -425,7 +425,10 @@ Replayer で replay。非決定にならず1件も発行しない）
 模式図（schematic）を実在の位置として提示することも BLOCK。
 **機械検査**: `tests/unit/test_geo_verify.py::test_a_scene_claiming_a_real_location_without_a_manifest_is_blocked`
 / `tests/unit/test_geo_verify.py::test_a_schematic_cannot_back_a_real_location_claim`
-（純関数 `verify_scene` の段階まで。**どの workflow・render もまだ検証を呼ばない**ので、「全ての地図シーンが
+（純関数 `verify_scene` の段階まで。距離の許容は自己申告で広げられない:
+`tests/unit/test_geo_verify.py::test_a_declared_uncertainty_cannot_launder_a_place_900_km_off`
+/ `tests/unit/test_geo_verify.py::test_the_tolerance_never_exceeds_the_ceiling_of_its_feature_type`。
+claim の era / region の一致、資料が位置を支持するかは未検査。**どの workflow・render もまだ検証を呼ばない**ので、「全ての地図シーンが
 検証を通る」ことは未検査。接続する枝で検査する）
 
 ### INV-94 地図の検証で BLOCK / REVIEW になったものは、LLM の評価で PASS にならない
@@ -445,6 +448,7 @@ Replayer で replay。非決定にならず1件も発行しない）
 **機械検査**: `tests/contract/test_geo_contracts.py::test_coordinates_outside_epsg4326_ranges_are_rejected`
 / `tests/contract/test_geo_contracts.py::test_coordinates_are_named_fields_not_a_positional_pair`
 / `tests/contract/test_geo_contracts.py::test_only_epsg4326_is_accepted`
+/ `tests/contract/test_geo_contracts.py::test_coordinates_reject_bool_and_string_coercion`
 / `tests/contract/test_geo_contracts.py::test_bbox_is_named_ordered_and_in_range`
 
 ### INV-96 模式図は「縮尺不同（Not to scale）」の表示を持ち、無ければ BLOCK
@@ -452,4 +456,8 @@ Replayer で replay。非決定にならず1件も発行しない）
 無いものは BLOCK。
 **機械検査**: `tests/unit/test_geo_verify.py::test_a_schematic_without_the_disclaimer_is_blocked`
 / `tests/unit/test_geo_verify.py::test_a_schematic_with_the_disclaimer_passes`
-（manifest の検査まで。動画フレームに実際に表示されているかは未検査 — 描画後の照合は後続）
+/ `tests/unit/test_geo_verify.py::test_a_schematic_that_claims_accuracy_or_omits_the_phrase_is_blocked`
+/ `tests/unit/test_geo_verify.py::test_accepted_disclaimers_are_normalized`
+/ `tests/contract/test_geo_contracts.py::test_the_disclaimer_vocabulary_is_defined_once_in_contracts`
+（受け付けるのは縮尺が正確でないと述べる句だけ。manifest の検査まで。動画フレームに実際に表示されて
+いるかは未検査 — 描画後の照合は後続）

@@ -32,7 +32,7 @@ fake gazetteer（メモリ上の固定データ。ネットワークに出ない
 | `test_the_verdict_order_is_pass_warn_review_block` | 厳しさの順序の唯一の定義（`stricter`）が 4 値すべてで正しい |
 | `test_a_verification_cannot_be_milder_than_its_worst_check` | BLOCK の check を持つ記録に PASS / REVIEW を付けられない。verdict は check から導く値（INV-94 の契約側） |
 | `test_a_verification_needs_at_least_one_check` | 何も検査していない PASS を作れない |
-| `test_disclaimer_markers_include_not_to_scale` | 模式図の表示語の定義が空にならない（INV-96 が空集合で自明に通るのを防ぐ） |
+| `test_disclaimer_vocabulary_includes_not_to_scale` | 模式図の表示語の定義が空にならない（INV-96 が空集合で自明に通るのを防ぐ） |
 
 ## `tests/unit/test_geo_verify.py`（決定論的検証。fake gazetteer: `tests/support/fake_gazetteer.py`）
 
@@ -86,3 +86,27 @@ fake gazetteer はメモリ上の固定データ（関ヶ原・大坂城・江�
 | `test_the_geo_domain_imports_no_io_clock_or_network_modules` / `test_the_geo_domain_does_not_call_io_builtins` | 検証器が時計・乱数・ファイル・ネットワークに触れると「同じ入力から同じ結果」が崩れ、テストが fake を使う意味が無くなる |
 | `test_the_geo_domain_imports_only_contracts_and_itself` | INV-6（domain は contracts のみ）を geo について名指しで固定 |
 | `test_production_billing_and_entrypoints_do_not_import_geo` | 未接続の保証。本番の課金・Episode 工程・API・workflow から geo が使われない（接続は後続の枝が ADR とともに決める） |
+
+## 独立レビューの指摘への追加テスト（B1 / M1〜M4 / m1 / m2 / m5）
+
+各テストはレビュアーの再現手順そのもの（`tests/unit/test_geo_verify.py` 末尾、`tests/contract/test_geo_contracts.py` 末尾）。
+
+| テスト | なぜ必要か / 落ちたら何が起きているか |
+|---|---|
+| `test_a_declared_uncertainty_cannot_launder_a_place_900_km_off` | B1。作者（LLM）が不確かさを最大に申告して約 900 km のずれを PASS にできた。許容の上限で BLOCK |
+| `test_a_radius_beyond_the_cap_is_itself_a_review` | 申告が基準の 2 倍を超えたら、それ自体を REVIEW（境界値: 上限ちょうどは PASS、+0.1 で REVIEW） |
+| `test_the_tolerance_never_exceeds_the_ceiling_of_its_feature_type` / `test_every_feature_type_has_a_ceiling_above_its_base` | どの種類・信頼度・申告でも許容が地物ごとの上限を超えない（低信頼の倍率が無制限の和に掛かる退行） |
+| `test_the_ceiling_holds_at_the_boundary_distance` | 上限の 3 倍の手前は REVIEW・先は BLOCK（上限が実際の判定に効く） |
+| `test_the_declared_uncertainty_radius_has_a_hard_upper_bound`（契約） | 20000 km の申告を契約で作れない |
+| `test_a_modern_label_on_an_old_map_needs_review` / `test_a_modern_label_is_fine_on_a_modern_context_map` | M1。地点名は Edo でラベルが Tokyo の歴史地図が PASS した。現代文脈は止めない |
+| `test_an_explicit_id_does_not_bypass_a_name_that_belongs_elsewhere` / `test_an_explicit_id_with_an_unknown_name_needs_review` / `test_a_known_name_passes_the_name_check` | M2。id が関ヶ原・名前が Kyoto で WARN 止まりだった。別の参照の名前なら BLOCK、未知なら REVIEW |
+| `test_a_schematic_that_claims_accuracy_or_omits_the_phrase_is_blocked` / `test_accepted_disclaimers_are_normalized` | M3。「縮尺通り」「to scale」が PASS した。縮尺が正確でないと述べる句だけ受け付け、全角・空白・大小を畳む |
+| `test_the_disclaimer_vocabulary_is_defined_once_in_contracts` | 受け付ける語の定義が contracts の 1 か所（AGENTS.md §8） |
+| `test_duplicate_claim_ids_never_resolve_last_wins` | M4。同じ claim_id の insufficient が後ろの supported に上書きされた。最も弱い評価を採り REVIEW（順序を入れ替えても同じ） |
+| `test_a_claim_of_another_kind_does_not_back_a_place` / `test_a_claim_that_does_not_mention_the_place_is_a_warning` | 無関係な supported claim が地点の根拠になった。kind が place でなければ REVIEW、地名に触れなければ WARN |
+| `test_sources_are_resolved_against_the_evidence_when_provided` / `test_an_unfetched_source_does_not_resolve` / `test_without_evidence_sources_no_source_check_is_claimed` | source_ids が解決されなかった。渡されたときだけ検査し、取得済みでなければ REVIEW。渡さなければ検査したふりをしない |
+| `test_impossible_or_ambiguous_time_bases_are_rejected` / `test_valid_leap_day_and_boundaries_parse` | m1。9999・年 0・1600-02-31・12-05・全角数字などを REVIEW。うるう日と境界値は通す |
+| `test_coordinates_reject_bool_and_string_coercion`（契約） | m2。`True` や `"35.3"` が座標になる |
+| `test_more_border_words_are_recognised` | m5。territory / kingdom / 領地 / 藩 などの国境の語 |
+
+`tests/support/fake_gazetteer.py` の claim の既定文は fixture の全地名に触れる（claim と地点の関係の検査のため）。

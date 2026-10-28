@@ -9,7 +9,6 @@ import pytest
 from pydantic import ValidationError
 
 from contracts.geo import (
-    SCHEMATIC_DISCLAIMER_MARKERS,
     GeoBBox,
     GeoCheck,
     GeoLabel,
@@ -194,5 +193,37 @@ def test_a_verification_needs_at_least_one_check() -> None:
         GeoVerification(verdict=GeoVerdict.PASS, checks=())
 
 
-def test_disclaimer_markers_include_not_to_scale() -> None:
-    assert "not to scale" in SCHEMATIC_DISCLAIMER_MARKERS
+def test_disclaimer_vocabulary_includes_not_to_scale() -> None:
+    from contracts.geo import SCHEMATIC_DISCLAIMER_PHRASES
+
+    assert "not to scale" in SCHEMATIC_DISCLAIMER_PHRASES
+
+
+# ---- レビュー指摘: m2 厳格な数値、B1 申告の上限、M3 表示語の定義
+
+
+@pytest.mark.parametrize("value", [True, False, "35.3667", "35"])
+def test_coordinates_reject_bool_and_string_coercion(value: object) -> None:
+    with pytest.raises(ValidationError):
+        GeoPlace.model_validate(_place(lat=value))
+    with pytest.raises(ValidationError):
+        GeoPlace.model_validate(_place(lon=value))
+
+
+def test_the_declared_uncertainty_radius_has_a_hard_upper_bound() -> None:
+    """B1: 自己申告の半径は契約でも上限を持つ（20000 km は作れない）。"""
+    from contracts.geo import UNCERTAINTY_RADIUS_MAX_KM
+
+    with pytest.raises(ValidationError):
+        GeoPlace.model_validate(_place(uncertainty_radius_km=20000.0))
+    with pytest.raises(ValidationError):
+        GeoPlace.model_validate(_place(uncertainty_radius_km=UNCERTAINTY_RADIUS_MAX_KM + 0.1))
+    GeoPlace.model_validate(_place(uncertainty_radius_km=UNCERTAINTY_RADIUS_MAX_KM))
+
+
+def test_the_disclaimer_vocabulary_is_defined_once_in_contracts() -> None:
+    from contracts.geo import schematic_disclaimer_ok
+
+    assert schematic_disclaimer_ok("Not to scale")
+    assert not schematic_disclaimer_ok("to scale")
+    assert not schematic_disclaimer_ok(None)

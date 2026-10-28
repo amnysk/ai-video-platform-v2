@@ -10,7 +10,13 @@ from typing import Any
 
 from contracts.geo import GeoFeatureType, GeoManifest, ReferenceName, ReferencePlace
 from contracts.research import ClaimImportance, ClaimKind
-from contracts.research_evidence import ClaimAssessment, EvidenceClaim
+from contracts.research_evidence import (
+    ClaimAssessment,
+    EvidenceClaim,
+    EvidenceSource,
+    SourceFetchStatus,
+    SourceKind,
+)
 
 SEKIGAHARA = ReferencePlace(
     ref_id="gz:sekigahara",
@@ -95,15 +101,25 @@ ALL_REFERENCES: tuple[ReferencePlace, ...] = (
 )
 
 
+#: 既定の claim 文が触れる地名（fixture の全地点）。claim が地点に関係するかの検査に使う。
+CLAIM_TEXT = (
+    "Locations of Sekigahara, Osaka Castle, Edo, Tokyo, Kyoto, Fuchu, Constantinople and Honshu"
+)
+
+
 def claim(
-    claim_id: str = "C-001", assessment: ClaimAssessment = ClaimAssessment.SUPPORTED
+    claim_id: str = "C-001",
+    assessment: ClaimAssessment = ClaimAssessment.SUPPORTED,
+    *,
+    kind: ClaimKind = ClaimKind.PLACE,
+    text: str = CLAIM_TEXT,
 ) -> EvidenceClaim:
     """地点の主張。``supported`` / ``qualified`` だけが根拠として解決する。"""
     insufficient = assessment is ClaimAssessment.INSUFFICIENT
     return EvidenceClaim(
         claim_id=claim_id,
-        text=f"place claim {claim_id}",
-        kind=ClaimKind.PLACE,
+        text=text,
+        kind=kind,
         importance=ClaimImportance.CENTRAL,
         strong=False,
         assessed=not insufficient,
@@ -112,6 +128,25 @@ def claim(
         usable_expression="" if insufficient else "fixture expression",
     )
 
+
+def source(
+    source_id: str = "S-001", status: SourceFetchStatus = SourceFetchStatus.FETCHED
+) -> EvidenceSource:
+    fetched = status is SourceFetchStatus.FETCHED
+    return EvidenceSource(
+        source_id=source_id,
+        url=f"https://example.test/{source_id}",
+        title="fixture source",
+        language="en",
+        retrieved_at="2026-10-01T00:00:00+00:00",  # type: ignore[arg-type]
+        content_sha256="a" * 64 if fetched else None,
+        fetch_status=status,
+        origin_key=f"origin-{source_id}",
+        source_kind=SourceKind.REFERENCE,
+    )
+
+
+GOOD_SOURCES: tuple[EvidenceSource, ...] = (source("S-001"),)
 
 GOOD_CLAIMS: tuple[EvidenceClaim, ...] = (claim("C-001"), claim("C-002"))
 

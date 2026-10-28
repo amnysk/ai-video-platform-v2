@@ -28,6 +28,7 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 
 from contracts.artifact_refs import SCRIPT_SCENE_ID_PATTERN, SHA256_HEX_PATTERN, FrozenModel
+from contracts.research import normalize_claim_text
 from contracts.research_evidence import CLAIM_ID_PATTERN, SOURCE_ID_PATTERN
 
 GEO_SCHEMA_VERSION = "1.0"
@@ -40,13 +41,47 @@ MAX_LABELS = 400
 MAX_ASSERTIONS = 50
 MAX_CHECKS = 2000
 
-Latitude = Annotated[float, Field(ge=-90.0, le=90.0, allow_inf_nan=False)]
-Longitude = Annotated[float, Field(ge=-180.0, le=180.0, allow_inf_nan=False)]
+#: 座標は strict: bool・文字列を数値として受け取らない（``True`` が 1.0 度になる等を防ぐ）。
+Latitude = Annotated[float, Field(strict=True, ge=-90.0, le=90.0, allow_inf_nan=False)]
+Longitude = Annotated[float, Field(strict=True, ge=-180.0, le=180.0, allow_inf_nan=False)]
 Year = Annotated[int, Field(ge=YEAR_MIN, le=YEAR_MAX)]
 Crs = Literal["EPSG:4326"]
 
-#: 模式図の表示文に含まれていなければならない語（小文字化して部分一致）。INV-96。
-SCHEMATIC_DISCLAIMER_MARKERS: tuple[str, ...] = ("not to scale", "縮尺")
+#: 自己申告の不確かさ半径の上限（km）。manifest の作者（LLM）が書く値なので契約でも有界にする。
+#: 許容へ効く量はさらに ``domain.geo.tolerance`` が地物ごとに頭打ちにする（ADR-0071）。
+UNCERTAINTY_RADIUS_MAX_KM = 1000.0
+
+#: 模式図の表示として受け付ける句（NFKC・小文字化・空白畳みの後の部分一致）。INV-96。
+#: **縮尺が正確でないと述べる句だけ**。``Schematic`` だけ・``縮尺`` を含むだけでは足りない。
+SCHEMATIC_DISCLAIMER_PHRASES: tuple[str, ...] = (
+    "not to scale",
+    "縮尺不同",
+    "縮尺は正確ではありません",
+    "縮尺は正確ではない",
+    "縮尺通りではありません",
+    "縮尺通りではない",
+)
+#: 受け付ける句を取り除いた残りにあってはならない、縮尺の正確さを主張する語。
+SCHEMATIC_AFFIRMATIVE_SCALE_MARKERS: tuple[str, ...] = (
+    "to scale",
+    "縮尺通り",
+    "縮尺は正確",
+    "accurate",
+    "正確",
+)
+
+
+def schematic_disclaimer_ok(text: str | None) -> bool:
+    """模式図の表示文が INV-96 を満たすか（**定義はここだけ**）。"""
+    if text is None:
+        return False
+    folded = normalize_claim_text(text)
+    if not any(phrase in folded for phrase in SCHEMATIC_DISCLAIMER_PHRASES):
+        return False
+    remaining = folded
+    for phrase in sorted(SCHEMATIC_DISCLAIMER_PHRASES, key=len, reverse=True):
+        remaining = remaining.replace(phrase, " ")
+    return not any(marker in remaining for marker in SCHEMATIC_AFFIRMATIVE_SCALE_MARKERS)
 
 
 class GeoVerdict(StrEnum):
@@ -129,7 +164,7 @@ class GeoPlace(FrozenModel):
     location_confidence: LocationConfidence
     #: 資料自体の位置の不確かさ（km）。``None`` は不明（許容は広げない）
     uncertainty_radius_km: float | None = Field(
-        default=None, ge=0.0, le=20000.0, allow_inf_nan=False
+        default=None, strict=True, ge=0.0, le=UNCERTAINTY_RADIUS_MAX_KM, allow_inf_nan=False
     )
     #: この地物が存在した期間（西暦。紀元前は負）。``None`` は不明
     valid_start_year: Year | None = None
@@ -228,7 +263,9 @@ class ReferencePlace(FrozenModel):
     lat: Latitude
     lon: Longitude
     feature_type: GeoFeatureType
-    uncertainty_radius_km: float = Field(default=0.0, ge=0.0, le=20000.0, allow_inf_nan=False)
+    uncertainty_radius_km: float = Field(
+        default=0.0, strict=True, ge=0.0, le=UNCERTAINTY_RADIUS_MAX_KM, allow_inf_nan=False
+    )
     valid_start_year: Year | None = None
     valid_end_year: Year | None = None
 
@@ -264,7 +301,9 @@ __all__ = [
     "GEO_SCHEMA_VERSION",
     "GEO_VERDICT_ORDER",
     "PLACE_ID_PATTERN",
-    "SCHEMATIC_DISCLAIMER_MARKERS",
+    "SCHEMATIC_AFFIRMATIVE_SCALE_MARKERS",
+    "SCHEMATIC_DISCLAIMER_PHRASES",
+    "UNCERTAINTY_RADIUS_MAX_KM",
     "BorderBasis",
     "GeoBBox",
     "GeoCheck",
@@ -278,5 +317,6 @@ __all__ = [
     "MapKind",
     "ReferenceName",
     "ReferencePlace",
+    "schematic_disclaimer_ok",
     "stricter",
 ]
