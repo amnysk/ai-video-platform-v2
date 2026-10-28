@@ -37,10 +37,10 @@ ADR-0071 は GeoManifest と検証器（Wave 1）を決めたが、(a) 検証の
    **正確さとは別の関数・別の結果**。`combine_map_results` は `stricter` でしか合流せず、見た目が
    良くても正確さの BLOCK / REVIEW は変わらない。見た目の最悪は REVIEW（読めない地図は人が見る）。
    例外は模式図の免責が画面外・不可視の場合で、INV-96 の表示要件なので BLOCK。
-3. **決定論的描画**（`infrastructure/maps/`）。同じ GeoManifest・同じ `MapRenderSpec`・同じ
+3. **決定論的描画**（`infrastructure/media/map_render.py` / `map_clip.py`。Pillow は ADR-0017 により infrastructure/media に限る）。同じ GeoManifest・同じ `MapRenderSpec`・同じ
    フォントのバイト列から**同じ PNG のバイト列**を作る。Pillow（既存依存、`constraints.txt` で
    固定）の `ImageDraw` のみ。投影・フォント・サイズ・色・描画順（place_id 昇順）を固定し、乱数・時刻・
-   PNG の text chunk を持たない。出力は ffmpeg の静止画入力で、`infrastructure/maps/clip.py` が
+   PNG の text chunk を持たない。出力は ffmpeg の静止画入力で、`infrastructure/media/map_clip.py` が
    既存の `ffmpeg_graph` の「収め方」「seconds」を再利用した argv を組み、既存 render 線の
    シーン映像として使える mp4 にする。**fal・画像生成 provider を import しない**（architecture test、
    INV-119）。描画しない国境: `borders != none` でも国境線は描かない（データを持たない。
@@ -57,7 +57,7 @@ dataclass の変更は workflow replay を壊す（INV-1x、既存 replay テス
 ### §8 grep（flag 名）
 
 `grep -rniE "geo_maps|GEO_MAPS_ENABLED" apps workers domain infrastructure contracts docs tests compose*.yaml`
-→ 本 ADR 前: 0 件。読み手 0 / 書き手 0 / 無関係 0。追加後の読み手は `infrastructure/maps/scene_visual.py`
+→ 本 ADR 前: 0 件。読み手 0 / 書き手 0 / 無関係 0。追加後の読み手は `infrastructure/media/map_scene_visual.py`
 の 1 箇所（flag を引数で受ける純関数）、書き手は `infrastructure/config.py` の 1 箇所、compose へは
 **追加しない**（未接続の flag を本番 env に露出しない）。
 環境変数名は既存の慣習（接頭辞なし。例 `PLANNER_TREND_ENABLED`）に合わせ `GEO_MAPS_ENABLED`

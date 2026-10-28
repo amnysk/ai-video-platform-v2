@@ -43,7 +43,7 @@ def should_burn_subtitles(plan: RenderPlan) -> bool:
     return plan.profile.subtitles.enabled and bool(plan.subtitle_cues)
 
 
-def _fit(profile: RenderProfile) -> str:
+def fit_filter(profile: RenderProfile) -> str:
     w, h = profile.width, profile.height
     if profile.fit == "cover":
         return f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
@@ -58,7 +58,7 @@ def _scene_chain(index: int, scene: RenderTimelineScene, profile: RenderProfile)
     hold_ms = scene.reconciliation.freeze_ms + SCENE_SAFETY_PAD_MS
     return (
         f"[{index}:v:0]trim=start=0:duration={seconds(used_ms)},setpts=PTS-STARTPTS,"
-        f"fps={fps_expr(profile)},{_fit(profile)},setsar=1,format=yuv420p,"
+        f"fps={fps_expr(profile)},{fit_filter(profile)},setsar=1,format=yuv420p,"
         f"tpad=stop_mode=clone:stop_duration={seconds(hold_ms)},"
         f"trim=duration={seconds(scene.timeline_duration_ms)},setpts=PTS-STARTPTS[v{index}]"
     )
@@ -137,6 +137,7 @@ def build_argv(
 
 
 __all__ = [
+    "fit_filter",
     "FILTERGRAPH_FILE_NAME",
     "FONTS_DIR_NAME",
     "SCENE_SAFETY_PAD_MS",

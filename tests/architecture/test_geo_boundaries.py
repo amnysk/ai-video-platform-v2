@@ -16,7 +16,13 @@ import pathlib
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
 GEO_DOMAIN = REPO / "domain" / "geo"
-GEO_PREFIXES = ("domain.geo", "contracts.geo")
+GEO_PREFIXES = ("domain.geo", "contracts.geo", "contracts.geo_map")
+
+#: geo を import してよい infrastructure の唯一の場所（ADR-0078。描画部品。workflow からは未接続）。
+GEO_CONSUMER_EXEMPT = (
+    REPO / "infrastructure" / "media" / "map_render.py",
+    REPO / "infrastructure" / "media" / "map_clip.py",
+)
 
 #: 純関数に不要な標準・外部のモジュール（I/O・時計・乱数・ネットワーク・並行）。
 IMPURE_MODULES = frozenset(
@@ -130,6 +136,8 @@ def test_production_billing_and_entrypoints_do_not_import_geo() -> None:
     violations: list[str] = []
     for rel in CONSUMERS_FORBIDDEN:
         for p in _py(REPO / rel):
+            if any(p.is_relative_to(exempt) for exempt in GEO_CONSUMER_EXEMPT):
+                continue
             for module in _modules(p):
                 if any(module == g or module.startswith(g + ".") for g in GEO_PREFIXES):
                     violations.append(f"{p.relative_to(REPO)}: imports {module}")

@@ -42,3 +42,22 @@
 | `test_good_presentation_never_upgrades_accuracy` / `test_every_pair_of_verdicts_is_monotone` | 全 verdict の組み合わせで、合流が正確さより緩くならない |
 | `test_a_perfectly_legible_inaccurate_map_is_still_blocked` / `test_poor_presentation_alone_does_not_block_an_accurate_map` | 見た目は正確さを救わず、見た目だけで BLOCK にもしない |
 | `test_a_combined_result_cannot_be_milder_than_accuracy` / `test_results_for_different_scenes_do_not_combine` / `test_the_combiner_accepts_only_results_never_a_verdict_or_score` | 契約が緩い合流・別シーンの合流・点数の入力を作れない |
+
+## `tests/unit/test_geo_map_render.py` と `tests/architecture/test_geo_maps_boundaries.py`（INV-119）
+
+| テスト | なぜ必要か |
+|---|---|
+| `test_the_same_manifest_renders_to_identical_bytes` | 再描画で画像が変わると、artifact の sha256・再利用判定が揺れる |
+| `test_rendering_in_a_fresh_process_gives_the_same_hash` | 同一プロセス内の偶然の一致ではなく、ハッシュシード・import 順の違う別プロセスでも同じ |
+| `test_the_order_of_places_and_labels_does_not_change_the_image` | 入力配列の順（LLM の出力順）が画像に漏れない |
+| `test_a_different_manifest_gives_a_different_image` | 何を渡しても同じ画像、という退化を防ぐ |
+| `test_the_png_is_a_plain_rgb_image_…` | 時刻等を埋めうるメタデータ chunk が無い |
+| `test_the_image_actually_draws_something` / `test_a_marker_lands_where_the_projection_says` | 空画像で決定論が自明に通るのを防ぐ。東が右・北が上で投影の向きを固定 |
+| `test_the_font_identity_is_part_of_the_render_identity` | フォントが変われば画像が変わるので同一性の入力に入れる |
+| `test_the_layout_of_a_clean_map_passes_the_presentation_check` / `test_crowded_labels_are_reported_…` | 描画器が返す幾何が見た目の検査に実際に使える。重なりを隠さず報告する |
+| `test_a_schematic_draws_its_disclaimer_…` / `test_a_schematic_without_a_disclaimer_is_blocked_…` | 模式図の免責が画像に描かれ、無ければ見た目の検査が BLOCK |
+| `test_a_font_must_be_supplied_as_bytes_…` | 壊れたフォントで黙って既定フォントに落ちない |
+| `test_rendering_makes_no_network_or_fal_calls` / `test_a_fresh_process_…_never_loads_a_provider_module` | fal 呼び出し 0（socket を spy し、provider の module を import しない） |
+| `test_the_clip_argv_…` | 既存 render 線の fps・収め方・bitexact を再利用した静止画→mp4 の argv が決定論的 |
+| `test_map_modules_import_no_paid_provider_network_clock_or_random` / `test_the_detector_catches_violating_fixtures` / `test_the_map_modules_do_not_call_…` | INV-18 型の構造的保証。検出器自身が違反 fixture を検出できる |
+| `test_production_side_does_not_import_the_map_parts` | 地図の部品を本番側が import しない（未接続・INV-120 の前提） |

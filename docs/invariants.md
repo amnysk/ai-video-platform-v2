@@ -1066,3 +1066,18 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/unit/test_geo_map_presentation.py::test_presentation_findings_use_presentation_codes_not_accuracy_codes`
 / `tests/unit/test_geo_map_presentation.py::test_a_disclaimer_off_canvas_or_unreadable_is_blocked`
 （QualityGate が呼ぶ配線は未実装。画像を読み戻した検査はしない: 幾何は描画器の申告）
+
+### INV-119 同じ GeoManifest は同じ画像のバイト列になり、地図の部品は有料 provider に触れない
+`infrastructure/media/map_render.render_map` は manifest・`MapRenderSpec`・フォントのバイト列だけから PNG を作る
+（投影は `domain.geo.map_projection`、描画順は place_id 昇順、PNG にメタデータ・時刻なし、乱数なし）。
+地図の部品（`contracts/geo_map.py`・`domain/geo/map_*.py`・`infrastructure/media/map_*.py`）は
+`infrastructure.providers`・httpx・socket・subprocess・時計・乱数を import せず、描画で fal の module も読み込まれない。
+**機械検査**: `tests/unit/test_geo_map_render.py::test_the_same_manifest_renders_to_identical_bytes`
+/ `tests/unit/test_geo_map_render.py::test_rendering_in_a_fresh_process_gives_the_same_hash`
+/ `tests/unit/test_geo_map_render.py::test_the_order_of_places_and_labels_does_not_change_the_image`
+/ `tests/unit/test_geo_map_render.py::test_rendering_makes_no_network_or_fal_calls`
+/ `tests/unit/test_geo_map_render.py::test_a_fresh_process_that_renders_a_map_never_loads_a_provider_module`
+/ `tests/architecture/test_geo_maps_boundaries.py::test_map_modules_import_no_paid_provider_network_clock_or_random`
+/ `tests/architecture/test_geo_maps_boundaries.py::test_the_detector_catches_violating_fixtures`
+（Pillow / FreeType の版を上げたら同一性は再確認が要る。バイト列の固定値 golden は版依存なので持たず、
+同一入力の再現性で検査する。フォントのグリフ欠落は未検査）
