@@ -108,16 +108,24 @@ Wave 1 の変更ファイルは `contracts/{upload,geo,music,quality,agent_tool_
 
 ## 5. 本番の live 状態
 
-**未確認（結果待ち）**。以下はすべて未取得。
+**実測済み（2026-10-28 16:38 UTC、親エージェント。すべて読み取りのみ: `docker ps/inspect`、
+`scripts/workers-versions.sh`、`BEGIN READ ONLY` 内の SELECT、`temporal schedule list` / `workflow list`、
+`printenv` の予算・flag キーのみ）。** 何も変更していない。
 
-| 項目 | 値 |
-|---|---|
-| 稼働中の SHA | 未確認（結果待ち） |
-| alembic current | 未確認（結果待ち） |
-| 稼働中コンテナの revision | 未確認（結果待ち） |
-| schedule（daily / watchdog）の状態 | 未確認（結果待ち） |
-| 稼働中 workflow | 未確認（結果待ち） |
-| 未照合の provider_reservations | 未確認（結果待ち） |
+| 項目 | 値 | 判定 |
+|---|---|---|
+| 稼働中の SHA（全14アプリコンテナの image label） | `303f33ec7d0430009bd7d25e15e7bfbd813971d9`。1種類・STALE なし | Phase 2 base（6d14c30）の親。巻き戻しなし |
+| コンテナ作成時刻 | 2026-10-27T14:31:38Z（リリース記録と一致） | 記録外のデプロイなし |
+| alembic current | `0018` | head と一致（Phase 2 は migration なし） |
+| Temporal | `SERVING` | — |
+| schedule | `avp-daily-episode` paused=false（次回 約4時間後）、`avp-daily-watchdog` paused=false | — |
+| 稼働中 workflow | 0 件 | — |
+| 未照合の provider_reservations（status=reserved） | 0 件（全 426 行が spent。youtube_upload 16 行も spent） | — |
+| open な credit hold | 1 件（`waiting_for_credits`、resumable_stage=production、2026-10-27 21:21Z） | リリース記録の予告どおり月間上限で保留 |
+| Episode | uploaded 16 / completed 23 / blocked 16 / render_ready 1 / planned 1 / cancelled 1 | — |
+| `FAL_MONTHLY_BUDGET_USD`（production 系 worker） | **60**（0 ではない。ADR-0063 のハードキャップ、2026-10-27 所有者承認） | 「予算0を維持」という前提と不一致 |
+| `AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER` ほか v3 flag | どの worker の環境にも未設定（= 既定 OFF） | — |
+| OpenSearch | `avp2-logging-opensearch-1` が 8 日前から Exited(143)。`avp-logging-check.service` が failed | デプロイ後のログ検証ができない |
 
 ## 6. オーナー用 read-only チェックリスト
 
