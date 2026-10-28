@@ -18,6 +18,8 @@ DDL・新しい ArtifactType・新しい Episode 状態は足さない。
 
 ## Decision
 
+> 追記（ADR-0074 §3, 2026-10-29）: `QualityReport` に `rule_version` / `expires_at` / `model` を足し `schema_version` を 2 にした。`evaluate_for_upload` は `current_rule_version` を取り、鮮度を `domain.quality.freshness.check_freshness` で判定する。以降の本文の列挙はそれ以前の形。
+
 ### 1. 契約（唯一の定義）: `contracts/quality.py`
 
 - `QualityVerdict`: `PASS` / `WARN` / `REVIEW` / `BLOCK`。重さの順位は `VERDICT_SEVERITY` だけが持つ。

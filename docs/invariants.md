@@ -994,7 +994,8 @@ agent・日次制作は音源を取得せず、未収録なら収集依頼を積
 ### INV-101 無い・作れなかった・壊れた・今の final_video / 入力に結び付かない品質レポートは PASS ではない
 投稿可否の判定（`domain.quality.evaluate_for_upload`）は fail-closed: レポート無し（`None`）、作成失敗、
 取り込めない、schema_version 違い、未知の verdict、検査が空、保存 verdict が検査からの再計算と不一致、
-final_video の sha256 または input_hash が**今の**ものと不一致、未来日付は、すべて拒否し理由コードを返す。
+final_video の sha256 または input_hash が**今の**ものと不一致、未来日付は、すべて拒否し理由コードを返す
+（鮮度の拒否経路は INV-107）。
 許可は検証済みの PASS と WARN（報告つき）だけ。（設計 v3 T22）
 **機械検査**: `tests/unit/test_quality_upload_decision.py`（全拒否経路と許可経路）
 / `tests/contract/test_quality_contract.py::test_malformed_reports_are_rejected_with_a_reason`
@@ -1059,4 +1060,19 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/unit/test_untrusted_inputs.py::test_a_detail_that_could_carry_input_is_refused`
 / `tests/unit/test_untrusted_inputs.py::test_a_hostile_report_is_rejected_without_echoing_it`
 （配線されたログ発行側・critic が出す文面の写像は未検査 = 未配線）
+
+### INV-107 品質レポートは、今の artifact・規則版・時刻に結び付いていなければ、PASS でも投稿の根拠にならない
+`QualityReport` は対象の `final_video_sha256`・`rule_version`・`generated_at`（UTC aware）・`expires_at`
+（`generated_at` より後で `MAX_REPORT_VALIDITY` 以内）・`model`（AI の検査があれば必須）を持つ。
+`domain.quality.freshness.check_freshness` は sha256 違い・規則版違い・未来日付・失効（`now >= expires_at`）を
+理由コードで拒否し、`evaluate_for_upload` は同じ関数を通す（`current_rule_version` は必須）。時計は注入で、実時計を読まない。
+`schema_version` は 2（版 1 は拒否）。（ADR-0074 §3）
+**機械検査**: `tests/unit/test_quality_freshness.py::test_a_report_for_another_artifact_hash_is_refused_even_if_pass`
+/ `tests/unit/test_quality_freshness.py::test_a_report_for_an_older_rule_version_is_refused`
+/ `tests/unit/test_quality_freshness.py::test_expiry_is_judged_against_the_injected_clock`
+/ `tests/unit/test_quality_freshness.py::test_an_incoherent_expiry_is_refused_not_trusted`
+/ `tests/unit/test_quality_freshness.py::test_an_ai_check_without_a_model_identity_is_refused`
+/ `tests/unit/test_quality_freshness.py::test_a_schema_version_1_report_is_refused_as_a_schema_mismatch`
+/ `tests/architecture/test_quality_clock_injected.py::test_quality_modules_never_read_the_clock`
+（`upload_gate` への配線は INV-104 のまま未実装。規則版の「現行値」の供給元も配線側）
 

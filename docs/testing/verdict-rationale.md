@@ -40,3 +40,36 @@ DB・Temporal・provider・ネットワークには触れない純粋なテス�
 | `test_a_hostile_report_is_rejected_without_echoing_it` | 約 10k 字の `detail` を持つレポートは取り込めず、例外文にも入力が出ない |
 | `test_a_bad_scene_id_is_refused` | `scene_id` に改行・key・不正形式を入れられない |
 
+## INV-107 品質レポートの鮮度
+
+実事故ではなく、設計 v3 T22 の拡張（規則を更新した後に古い PASS が投稿を通す、再 render 後の PASS が残る）。
+純粋関数で時計を注入できるため単体テスト。DB・Temporal・実時計は使わない。
+
+### `tests/unit/test_quality_freshness.py`
+
+| テスト | 何を固定し、何を捕まえるか |
+|---|---|
+| `test_a_fresh_report_is_allowed_…` | 鮮度の検査が決定論だけのレポート（model なし）を過剰に拒否しない |
+| `test_a_report_for_another_artifact_hash_is_refused_even_if_pass` | 別 artifact（再 render）の PASS を流用できない。`check_freshness` と `evaluate_for_upload` の両方で |
+| `test_a_report_for_an_older_rule_version_is_refused` / `test_an_empty_current_rule_version_matches_nothing` | 規則を更新したら古い PASS は無効。空の「今の版」が何にも一致する fail-open を防ぐ |
+| `test_expiry_is_judged_against_the_injected_clock` | 失効の境界（直前は許可・ちょうど/後は拒否）。`now` だけで決まる |
+| `test_the_decision_does_not_read_the_real_clock` | 過去日付でも結果が注入した `now` で決まる（実時計に依存しない） |
+| `test_an_incoherent_expiry_is_refused_not_trusted` | `expires_at` が検査以前・上限超過・naive の自称を信じない |
+| `test_the_maximum_validity_is_allowed_exactly` | 上限の境界（ちょうど許可）。上限が 1 箇所であることの裏づけ |
+| `test_an_ai_check_without_a_model_identity_is_refused` / `test_a_model_identity_cannot_carry_free_text` | AI を使った検査はどの AI か辿れる。同一性に自由文（INV-106）を入れられない |
+| `test_the_report_round_trips_with_its_freshness_fields` | 生成側と取り込み側が同じ形（片側だけの変更で全件拒否に倒れるのを防ぐ） |
+| `test_a_report_without_a_freshness_field_cannot_be_parsed` | 鮮度の項目が欠けたレポートが既定値で通らない |
+| `test_a_schema_version_1_report_is_refused_as_a_schema_mismatch` | 鮮度を持たない旧形は拒否 |
+| `test_a_naive_clock_is_refused_not_raised` | 総関数性（INV-101）を鮮度でも維持 |
+| `test_staleness_beats_a_pass_verdict_but_not_a_block` | 期限切れ・BLOCK のどちらも通さない（鮮度が BLOCK を緩めない） |
+
+### `tests/architecture/test_quality_clock_injected.py`
+
+`contracts/quality.py` と `domain/quality` が `datetime.now()` 等の実時計を読まない（読むと単体テストで失効を再現できず、
+本番だけで時刻依存の欠陥になる）。検査器が違反 fixture を捕まえることも別テストで示す。
+
+### 既存テストへの変更（理由）
+`tests/unit/test_quality_upload_decision.py` と `tests/contract/test_quality_contract.py` は、契約の形の変更
+（`rule_version` / `expires_at` / `model` / `schema_version` 2、`current_rule_version`）に合わせて**入力の組み立てだけ**を
+更新した。assert は一切変えていない。
+

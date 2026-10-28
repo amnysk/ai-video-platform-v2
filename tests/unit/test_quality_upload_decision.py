@@ -13,6 +13,7 @@ from contracts.quality import (
     QUALITY_REPORT_SCHEMA_VERSION,
     QualityCheck,
     QualityGate,
+    QualityModelIdentity,
     QualityReason,
     QualityReport,
     QualityReportFailure,
@@ -24,6 +25,8 @@ from domain.quality import aggregate, episode_status_for, evaluate_for_upload
 V = QualityVerdict
 SHA = "b" * 64
 NOW = datetime(2026, 10, 28, 12, tzinfo=UTC)
+RULE = "rules-1"
+MODEL = QualityModelIdentity(provider="test", model_id="critic-1")
 
 
 def _check(verdict: QualityVerdict = V.PASS, *, deterministic: bool = True) -> QualityCheck:
@@ -45,16 +48,30 @@ def _report(checks=None, **over) -> QualityReport:
         "generated_at": NOW - timedelta(minutes=1),
         "generator_version": "g1",
         "reviewer_version": "r1",
+        "rule_version": RULE,
+        "model": MODEL,
         "verdict": aggregate(checks),
         "checks": checks,
     }
     fields.update(over)
+    stamp = fields["generated_at"]
+    # 既定の期限は検査時刻の 1 時間後（時刻が naive な回帰テストでは今から 1 時間後）
+    fields.setdefault(
+        "expires_at",
+        stamp + timedelta(hours=1)
+        if isinstance(stamp, datetime) and stamp.tzinfo
+        else NOW + timedelta(hours=1),
+    )
     return QualityReport(**fields)
 
 
-def _decide(report, sha: str = SHA, input_hash: str = "in-1"):
+def _decide(report, sha: str = SHA, input_hash: str = "in-1", rule: str = RULE, now=NOW):
     return evaluate_for_upload(
-        report, current_final_video_sha256=sha, current_input_hash=input_hash, now=NOW
+        report,
+        current_final_video_sha256=sha,
+        current_input_hash=input_hash,
+        current_rule_version=rule,
+        now=now,
     )
 
 
@@ -169,6 +186,7 @@ def test_naive_now_is_refused_not_raised() -> None:
         _report(),
         current_final_video_sha256=SHA,
         current_input_hash="in-1",
+        current_rule_version=RULE,
         now=datetime(2026, 10, 28, 12),
     )
     assert not d.allowed and d.reason_code is QualityReason.REPORT_TIMESTAMP_INVALID

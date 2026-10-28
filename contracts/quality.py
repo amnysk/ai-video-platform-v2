@@ -22,11 +22,17 @@ from contracts.untrusted import is_safe_detail, is_safe_id
 from contracts.verdict import VERDICT_SEVERITY as VERDICT_SEVERITY  # 再エクスポート（互換）
 from contracts.verdict import Verdict
 
-QUALITY_REPORT_SCHEMA_VERSION = 1
+#: 2: 鮮度の項目（``rule_version`` / ``expires_at`` / ``model``）を足した（ADR-0074 §3）。
+#: 版 1 のレポートは鮮度を主張できないので ``REPORT_SCHEMA_MISMATCH`` で拒否する（fail-closed）。
+QUALITY_REPORT_SCHEMA_VERSION = 2
 
 #: レポートの ``generated_at`` が ``now`` より未来でも許す時計のずれ（**ここだけで定義**）。
 #: これを超える未来日付は取り込み元の時計異常か改ざんとして拒否する（INV-101）。
 CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
+
+#: レポートの有効期間の上限（``expires_at - generated_at``。**ここだけで定義**）。これより長い期限を
+#: 自称するレポートは鮮度の主張として拒否する（REPORT_FRESHNESS_INVALID）。
+MAX_REPORT_VALIDITY = timedelta(hours=24)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SCENE_ID = re.compile(SCRIPT_SCENE_ID_PATTERN)
@@ -78,6 +84,11 @@ class QualityReason(StrEnum):
     REPORT_FROM_THE_FUTURE = "report_from_the_future"
     REPORT_TIMESTAMP_INVALID = "report_timestamp_invalid"
     REPORT_EVALUATION_ERROR = "report_evaluation_error"
+    # --- 鮮度（INV-107）
+    REPORT_RULE_VERSION_MISMATCH = "report_rule_version_mismatch"
+    REPORT_EXPIRED = "report_expired"
+    REPORT_FRESHNESS_INVALID = "report_freshness_invalid"
+    REPORT_MODEL_IDENTITY_MISSING = "report_model_identity_missing"
     # --- 投稿可否の結果 ---
     UPLOAD_ALLOWED = "upload_allowed"
     UPLOAD_ALLOWED_WITH_WARNINGS = "upload_allowed_with_warnings"
@@ -146,8 +157,28 @@ class QualityCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class QualityModelIdentity:
+    """検査に使った AI の同一性（provider + model id）。決定論だけなら持たない（``None``）。"""
+
+    provider: str
+    model_id: str
+
+    def __post_init__(self) -> None:
+        if not is_safe_id(self.provider) or not is_safe_id(self.model_id):
+            raise ValueError("model identity must match the safe id pattern")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"provider": self.provider, "model_id": self.model_id}
+
+
+@dataclass(frozen=True, slots=True)
 class QualityReport:
-    """final_video と入力に結び付いた品質判定。``verdict`` は ``domain.quality.aggregate`` の値。"""
+    """final_video と入力に結び付いた品質判定。``verdict`` は ``domain.quality.aggregate`` の値。
+
+    鮮度（INV-107）: ``final_video_sha256`` が対象 artifact、``rule_version`` が検査規則の版、
+    ``model`` が AI の同一性（決定論だけなら ``None``）、``generated_at`` が検査時刻（UTC aware）、
+    ``expires_at`` が失効時刻（``generated_at`` より後で ``MAX_REPORT_VALIDITY`` 以内）。
+    """
 
     episode_id: str
     final_video_sha256: str
@@ -155,8 +186,11 @@ class QualityReport:
     generated_at: datetime
     generator_version: str
     reviewer_version: str
+    rule_version: str
+    expires_at: datetime
     verdict: QualityVerdict
     checks: tuple[QualityCheck, ...] = field(default_factory=tuple)
+    model: QualityModelIdentity | None = None
     schema_version: int = QUALITY_REPORT_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -168,6 +202,9 @@ class QualityReport:
             "generated_at": self.generated_at.isoformat(),
             "generator_version": self.generator_version,
             "reviewer_version": self.reviewer_version,
+            "rule_version": self.rule_version,
+            "expires_at": self.expires_at.isoformat(),
+            "model": None if self.model is None else self.model.to_dict(),
             "verdict": self.verdict.value,
             "checks": [c.to_dict() for c in self.checks],
         }
@@ -250,6 +287,31 @@ def _parse_check(raw: object) -> QualityCheck:
         raise _unparsable(str(err)) from None
 
 
+def _aware_datetime(data: Mapping[str, Any], key: str) -> datetime:
+    stamp = _str(data, key)
+    try:
+        value = datetime.fromisoformat(stamp)
+    except ValueError:
+        raise _unparsable(f"{key} is not an iso datetime") from None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise _unparsable(f"{key} must carry a timezone")
+    return value
+
+
+def _parse_model(raw: object) -> QualityModelIdentity | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise _unparsable("model must be an object or null")
+    provider, model_id = raw.get("provider"), raw.get("model_id")
+    if not isinstance(provider, str) or not isinstance(model_id, str):
+        raise _unparsable("model.provider and model.model_id must be strings")
+    try:
+        return QualityModelIdentity(provider=provider, model_id=model_id)
+    except ValueError as err:
+        raise _unparsable(str(err)) from None
+
+
 def parse_quality_report(raw: object) -> QualityReport:
     """JSON 文字列・bytes・dict から取り込む。不備は必ず QualityReportError（None を返さない）。"""
     data: object = raw
@@ -277,13 +339,9 @@ def parse_quality_report(raw: object) -> QualityReport:
     sha = _str(data, "final_video_sha256")
     if not _SHA256.match(sha):
         raise _unparsable("final_video_sha256 must be 64 lowercase hex chars")
-    stamp = _str(data, "generated_at")
-    try:
-        generated_at = datetime.fromisoformat(stamp)
-    except ValueError:
-        raise _unparsable("generated_at is not an iso datetime") from None
-    if generated_at.tzinfo is None:
-        raise _unparsable("generated_at must carry a timezone")
+    generated_at = _aware_datetime(data, "generated_at")
+    expires_at = _aware_datetime(data, "expires_at")
+    model = _parse_model(data.get("model"))
     raw_checks = data.get("checks")
     if not isinstance(raw_checks, list):
         raise _unparsable("checks must be a list")
@@ -294,8 +352,11 @@ def parse_quality_report(raw: object) -> QualityReport:
         generated_at=generated_at,
         generator_version=_str(data, "generator_version"),
         reviewer_version=_str(data, "reviewer_version"),
+        rule_version=_str(data, "rule_version"),
+        expires_at=expires_at,
         verdict=_verdict(data.get("verdict"), "verdict"),
         checks=tuple(_parse_check(c) for c in raw_checks),
+        model=model,
     )
     validate_quality_report(report)
     return report
@@ -309,7 +370,13 @@ def validate_quality_report(report: object) -> None:
     """
     if not isinstance(report, QualityReport):
         raise _unparsable("not a QualityReport")
-    for name in ("episode_id", "input_hash", "generator_version", "reviewer_version"):
+    for name in (
+        "episode_id",
+        "input_hash",
+        "generator_version",
+        "reviewer_version",
+        "rule_version",
+    ):
         value = getattr(report, name)
         if not isinstance(value, str) or not value.strip():
             raise _unparsable(f"{name} must be a non-empty string")
@@ -327,6 +394,33 @@ def validate_quality_report(report: object) -> None:
         raise _unparsable("checks must be a tuple")
     for check in report.checks:
         _validate_check(check)
+    _validate_freshness_fields(report)
+
+
+def _is_aware(value: object) -> bool:
+    return isinstance(value, datetime) and value.utcoffset() is not None
+
+
+def _validate_freshness_fields(report: QualityReport) -> None:
+    """鮮度の項目の形（INV-107）。比較（今の時計との）は ``domain.quality.freshness`` の責務。"""
+    if report.model is not None and not isinstance(report.model, QualityModelIdentity):
+        raise _unparsable("model must be a QualityModelIdentity or None")
+    if any(not c.deterministic for c in report.checks) and report.model is None:
+        # AI の検査を含むのに、どの AI か分からないレポートは再現も責任の所在も辿れない
+        raise QualityReportError(
+            QualityReason.REPORT_MODEL_IDENTITY_MISSING, "an AI check needs a model identity"
+        )
+    if not _is_aware(report.expires_at):
+        raise QualityReportError(
+            QualityReason.REPORT_FRESHNESS_INVALID, "expires_at must be a timezone-aware datetime"
+        )
+    if _is_aware(report.generated_at) and not (
+        report.generated_at < report.expires_at <= report.generated_at + MAX_REPORT_VALIDITY
+    ):
+        raise QualityReportError(
+            QualityReason.REPORT_FRESHNESS_INVALID,
+            "expires_at must be after generated_at and within the maximum validity",
+        )
 
 
 def _validate_check(check: object) -> None:

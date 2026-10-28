@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from contracts.quality import (
-    CLOCK_SKEW_TOLERANCE,
     QUALITY_REPORT_SCHEMA_VERSION,
     QualityReason,
     QualityReport,
@@ -22,6 +21,7 @@ from contracts.quality import (
     validate_quality_report,
 )
 from domain.quality.aggregate import aggregate
+from domain.quality.freshness import check_freshness
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,25 +39,26 @@ def evaluate_for_upload(
     *,
     current_final_video_sha256: str,
     current_input_hash: str,
+    current_rule_version: str,
     now: datetime,
 ) -> UploadDecision:
-    """どんな入力でも例外を投げない（総関数）。想定外は ``REPORT_EVALUATION_ERROR`` で拒否する。"""
+    """どんな入力でも例外を投げない（総関数）。想定外は ``REPORT_EVALUATION_ERROR`` で拒否する。
+
+    今の artifact・入力・規則版・時刻に結び付いていない（鮮度が無い）レポートも拒否する（INV-107）。
+    """
     try:
-        return _evaluate(report, current_final_video_sha256, current_input_hash, now)
+        return _evaluate(
+            report, current_final_video_sha256, current_input_hash, current_rule_version, now
+        )
     except Exception:  # noqa: BLE001 - fail-closed: 判定できないものは通さない
         return _refuse(QualityReason.REPORT_EVALUATION_ERROR)
-
-
-def _aware(value: object) -> bool:
-    return (
-        isinstance(value, datetime) and value.tzinfo is not None and (value.utcoffset() is not None)
-    )
 
 
 def _evaluate(
     report: object,
     current_final_video_sha256: str,
     current_input_hash: str,
+    current_rule_version: str,
     now: datetime,
 ) -> UploadDecision:
     if report is None:
@@ -75,14 +76,15 @@ def _evaluate(
         return _refuse(QualityReason.REPORT_SCHEMA_MISMATCH)
     if not report.checks:
         return _refuse(QualityReason.REPORT_EMPTY_CHECKS)
-    if not current_final_video_sha256 or report.final_video_sha256 != current_final_video_sha256:
-        return _refuse(QualityReason.REPORT_FINAL_VIDEO_MISMATCH)
-    if not current_input_hash or report.input_hash != current_input_hash:
-        return _refuse(QualityReason.REPORT_INPUT_HASH_MISMATCH)
-    if not _aware(report.generated_at) or not _aware(now):
-        return _refuse(QualityReason.REPORT_TIMESTAMP_INVALID)
-    if report.generated_at > now + CLOCK_SKEW_TOLERANCE:
-        return _refuse(QualityReason.REPORT_FROM_THE_FUTURE)
+    stale = check_freshness(
+        report,
+        current_final_video_sha256=current_final_video_sha256,
+        current_input_hash=current_input_hash,
+        current_rule_version=current_rule_version,
+        now=now,
+    )
+    if stale is not None:
+        return _refuse(stale)
     if aggregate(report.checks) is not report.verdict:
         return _refuse(QualityReason.REPORT_VERDICT_INCONSISTENT)
     if report.verdict is QualityVerdict.BLOCK:
