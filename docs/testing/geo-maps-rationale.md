@@ -78,3 +78,12 @@
 | `test_a_non_latin_label_without_a_capable_font_is_not_a_pass` | 既定フォント（ASCII のみ）で「関ヶ原」を描くと豆腐になるが、箱の大きさは変わらず従来は PASS だった。描画器が欠落を申告し、見た目の検査が BLOCK |
 | `test_ascii_labels_are_not_reported_as_missing_glyphs` | 検出が全ラベルを欠落扱いする過剰検出の防止 |
 | `test_a_disclaimer_with_missing_glyphs_is_blocked` | 模式図の免責が豆腐では INV-96 の表示要件を満たさない |
+
+## 境界検査の import 形（独立レビュー MAJOR 2。`test_geo_maps_boundaries.py`）
+
+| テスト | なぜ必要か |
+|---|---|
+| `test_the_detector_sees_from_package_import_submodule` | `from infrastructure import providers` は `node.module` だけ見ると `infrastructure` で素通りする。alias を `a.b` として足す |
+| `test_the_detector_resolves_relative_imports` | `from ..providers import x` を絶対名に直さないと見えない |
+| `test_the_detector_sees_dynamic_imports` | `importlib.import_module("...")` / `__import__("...")` の定数引数。地図の部品では `importlib` 自体も禁止 |
+| `test_the_production_side_scan_sees_the_map_parts_in_every_import_form` | 本番側が `from infrastructure.media import map_render` 等でも地図の部品を import したと検出できる |

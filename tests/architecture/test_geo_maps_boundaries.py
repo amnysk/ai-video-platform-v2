@@ -48,6 +48,7 @@ FORBIDDEN_ROOTS = frozenset(
         "fal_client",
         "openai",
         "anthropic",
+        "importlib",
     }
 )
 FORBIDDEN_INFRA = ("infrastructure.providers", "infrastructure.youtube", "infrastructure.analytics")
@@ -70,20 +71,47 @@ PRODUCTION_SIDE: tuple[str, ...] = (
 MAP_PREFIXES = ("infrastructure.media.map_", "domain.geo.map_", "contracts.geo_map")
 
 
-def _modules_of_source(source: str) -> list[str]:
+def _package_of(path: pathlib.Path) -> str:
+    """ファイルの属するパッケージ（相対 import の解決用）。"""
+    return ".".join(path.relative_to(REPO).parent.parts)
+
+
+def _modules_of_source(source: str, package: str = "") -> list[str]:
+    """import されうる全てのモジュール名。
+
+    ``from a import b`` は ``a`` と ``a.b`` の両方（b がサブモジュールのことがある）、相対 import は
+    ``package`` で絶対名に直し、``import_module("x")`` / ``__import__("x")`` の定数引数も拾う。
+    """
     tree = ast.parse(source)
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            found.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                parts = package.split(".") if package else []
+                parts = parts[: len(parts) - (node.level - 1)] if node.level > 1 else parts
+                base = ".".join([*parts, *([node.module] if node.module else [])])
+            if base:
+                found.append(base)
+            found.extend(f"{base}.{alias.name}" if base else alias.name for alias in node.names)
+        elif isinstance(node, ast.Call) and node.args:
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            first = node.args[0]
+            if (
+                name in {"import_module", "__import__"}
+                and isinstance(first, ast.Constant)
+                and isinstance(first.value, str)
+            ):
+                found.append(first.value)
     return found
 
 
-def _violations(source: str) -> list[str]:
+def _violations(source: str, package: str = "") -> list[str]:
     out: list[str] = []
-    for module in _modules_of_source(source):
+    for module in _modules_of_source(source, package):
         if module.split(".")[0] in FORBIDDEN_ROOTS or module.startswith(FORBIDDEN_INFRA):
             out.append(module)
     return out
@@ -112,7 +140,7 @@ def test_map_modules_import_no_paid_provider_network_clock_or_random() -> None:
     violations = [
         f"{p.relative_to(REPO)}: imports {m}"
         for p in MAP_MODULES
-        for m in _violations(p.read_text(encoding="utf-8"))
+        for m in _violations(p.read_text(encoding="utf-8"), _package_of(p))
     ]
     assert not violations, "ADR-0078 (INV-119):\n" + "\n".join(violations)
 
@@ -146,7 +174,45 @@ def test_production_side_does_not_import_the_map_parts() -> None:
     violations: list[str] = []
     for rel in PRODUCTION_SIDE:
         for p in _py(REPO / rel):
-            for module in _modules_of_source(p.read_text(encoding="utf-8")):
+            for module in _modules_of_source(p.read_text(encoding="utf-8"), _package_of(p)):
                 if module.startswith(MAP_PREFIXES):
                     violations.append(f"{p.relative_to(REPO)}: imports {module}")
     assert not violations, "ADR-0078 (INV-120, not wired):\n" + "\n".join(violations)
+
+
+# --- 検出器の fixture（独立レビュー MAJOR 2）
+
+
+def test_the_detector_sees_from_package_import_submodule() -> None:
+    assert _violations("from infrastructure import providers")
+
+
+def test_the_detector_resolves_relative_imports() -> None:
+    assert _violations("from ..providers import fal_queue", "infrastructure.media")
+    assert _violations("from .. import providers", "infrastructure.media")
+    assert not _violations("from . import map_render", "infrastructure.media")
+
+
+def test_the_detector_sees_dynamic_imports() -> None:
+    dynamic = 'import importlib\nimportlib.import_module("infrastructure.providers.fal")'
+    assert _violations(dynamic)
+    assert _violations('__import__("infrastructure.providers.fal_queue")')
+    assert "infrastructure.providers.fal" in _modules_of_source(dynamic)
+
+
+def test_the_production_side_scan_sees_the_map_parts_in_every_import_form() -> None:
+    forms = [
+        ("from infrastructure.media import map_render", ""),
+        ("from domain.geo import map_accuracy", ""),
+        ("from contracts import geo_map", ""),
+        ("from .map_render import render_map", "infrastructure.media"),
+        ("from . import map_clip", "infrastructure.media"),
+        ('import importlib\nimportlib.import_module("infrastructure.media.map_render")', ""),
+    ]
+    for source, package in forms:
+        modules = _modules_of_source(source, package)
+        assert any(m.startswith(MAP_PREFIXES) for m in modules), (source, modules)
+    assert not any(
+        m.startswith(MAP_PREFIXES)
+        for m in _modules_of_source("from infrastructure.media import probe", "")
+    )
