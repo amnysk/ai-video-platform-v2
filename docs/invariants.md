@@ -446,3 +446,47 @@ description の 5000 UTF-8 bytes は必須部分を先に確保し、残りだ�
 **機械検査**: `tests/contract/test_upload_metadata_lint.py::test_required_parts_over_the_limit_raise_instead_of_truncating`
 / `tests/contract/test_upload_metadata_lint.py::test_required_parts_survive_a_long_body`
 / `tests/contract/test_upload_metadata_lint.py::test_required_parts_exactly_filling_the_budget_are_kept`
+
+## N. 地図・地理（ADR-0071）
+
+### INV-93 実在の位置を主張する地図シーンは GeoManifest を持ち、無ければ通らない
+地図が実在の場所を表すと主張するシーンは `GeoManifest` を要する。manifest 無しは BLOCK（fail-closed）。
+模式図（schematic）を実在の位置として提示することも BLOCK。
+**機械検査**: `tests/unit/test_geo_verify.py::test_a_scene_claiming_a_real_location_without_a_manifest_is_blocked`
+/ `tests/unit/test_geo_verify.py::test_a_schematic_cannot_back_a_real_location_claim`
+（純関数 `verify_scene` の段階まで。距離の許容は自己申告で広げられない:
+`tests/unit/test_geo_verify.py::test_a_declared_uncertainty_cannot_launder_a_place_900_km_off`
+/ `tests/unit/test_geo_verify.py::test_the_tolerance_never_exceeds_the_ceiling_of_its_feature_type`。
+claim の era / region の一致、資料が位置を支持するかは未検査。**どの workflow・render もまだ検証を呼ばない**ので、「全ての地図シーンが
+検証を通る」ことは未検査。接続する枝で検査する）
+
+### INV-94 地図の検証で BLOCK / REVIEW になったものは、LLM の評価で PASS にならない
+`GeoVerification.verdict` は check の最悪値と一致しなければ作れず、LLM の評価は `combine_verdicts` を
+通してのみ合流し、等しいか厳しい側にしか動かさない。
+**機械検査**: `tests/contract/test_geo_contracts.py::test_a_verification_cannot_be_milder_than_its_worst_check`
+/ `tests/unit/test_geo_combine.py::test_a_critic_pass_cannot_override_a_deterministic_block`
+/ `tests/unit/test_geo_combine.py::test_a_critic_pass_cannot_override_a_deterministic_review`
+/ `tests/unit/test_geo_combine.py::test_the_combined_verdict_is_never_milder_than_either_input`
+/ `tests/unit/test_geo_combine.py::test_a_score_is_not_accepted_in_place_of_a_verdict`
+（`combine_verdicts` を通る経路まで。実際の QualityGate がこの関数以外で最終 verdict を作らないことは、
+接続する枝で検査する。未接続の間は未検査）
+
+### INV-95 座標は名前付きの lat / lon（EPSG:4326）で持ち、範囲を検証する
+`GeoPlace` / `GeoBBox` / `ReferencePlace` は `lat` / `lon` を名前で持ち、範囲外・NaN・無限大・CRS 違い・
+位置引数の座標ペアを受け取らない。
+**機械検査**: `tests/contract/test_geo_contracts.py::test_coordinates_outside_epsg4326_ranges_are_rejected`
+/ `tests/contract/test_geo_contracts.py::test_coordinates_are_named_fields_not_a_positional_pair`
+/ `tests/contract/test_geo_contracts.py::test_only_epsg4326_is_accepted`
+/ `tests/contract/test_geo_contracts.py::test_coordinates_reject_bool_and_string_coercion`
+/ `tests/contract/test_geo_contracts.py::test_bbox_is_named_ordered_and_in_range`
+
+### INV-96 模式図は「縮尺不同（Not to scale）」の表示を持ち、無ければ BLOCK
+`map_kind == schematic` の manifest は `schematic_disclaimer` に表示文を持つ。無い・空・縮尺不同を示す語が
+無いものは BLOCK。
+**機械検査**: `tests/unit/test_geo_verify.py::test_a_schematic_without_the_disclaimer_is_blocked`
+/ `tests/unit/test_geo_verify.py::test_a_schematic_with_the_disclaimer_passes`
+/ `tests/unit/test_geo_verify.py::test_a_schematic_that_claims_accuracy_or_omits_the_phrase_is_blocked`
+/ `tests/unit/test_geo_verify.py::test_accepted_disclaimers_are_normalized`
+/ `tests/contract/test_geo_contracts.py::test_the_disclaimer_vocabulary_is_defined_once_in_contracts`
+（受け付けるのは縮尺が正確でないと述べる句だけ。manifest の検査まで。動画フレームに実際に表示されて
+いるかは未検査 — 描画後の照合は後続）
