@@ -66,3 +66,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0040](./0040-structured-logs-and-opensearch-search-replica.md) | 構造化 JSON ログと OpenSearch の検索用副本（ログは業務判断に使わない） | Accepted |
 | [0070](./0070-description-without-internal-ids.md) | YouTube description から内部 ID を外す（marker は tags に残す・既定 OFF の flag） | Accepted |
 | [0071](./0071-geo-manifest-and-deterministic-map-verification.md) | 地図は GeoManifest から描き、位置の検証は決定論的な純関数が行う（LLM の採点で上書きしない） | Accepted |
+| [0072](./0072-bgm-contracts-and-license-gated-selection.md) | BGM 契約とライセンスで門を閉じた選曲（契約・純粋ドメインのみ） | Proposed |

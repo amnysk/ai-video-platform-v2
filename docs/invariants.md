@@ -490,3 +490,62 @@ claim の era / region の一致、資料が位置を支持するかは未検査
 / `tests/contract/test_geo_contracts.py::test_the_disclaimer_vocabulary_is_defined_once_in_contracts`
 （受け付けるのは縮尺が正確でないと述べる句だけ。manifest の検査まで。動画フレームに実際に表示されて
 いるかは未検査 — 描画後の照合は後続）
+
+## M. BGM（ADR-0072。契約と純粋ドメインのみ。Render・説明欄・DB への結線は後続）
+
+番号 INV-41〜96 は他の枝が予約している（`docs/architecture/v3-phase0-audit.md`）。この節は INV-97〜100。
+
+### INV-97 選曲できるのは、承認済み・期限内・プラットフォーム/形式が許可された曲だけ
+候補になる曲は `license_status=approved`・`status=active`・期限内（`valid_until` が現在より後）・
+再利用/商用/改変が許可・対象プラットフォームと形式（shorts/longform）が許可・帰属必須なら指定文あり、の全てを満たす。
+未確認・失効・取消・Shorts 不可・指定文なしの曲は、他に曲が無くても選ばれず、除外理由が機械可読で返る。
+直近の使用（連投抑制）・mood・尺は並び順にだけ効き、合法な曲を除外せず、違法な曲を押し上げない。
+ライセンスの事実そのもの（承認可否）はここで決めない。人が証拠を見て決める。
+**機械検査**: `tests/unit/test_music_selection.py::test_only_legal_tracks_are_candidates_for_shorts`
+/ `tests/unit/test_music_selection.py::test_each_license_fact_excludes_the_only_track`
+/ `tests/unit/test_music_selection.py::test_valid_until_boundary_is_exclusive_of_now`
+/ `tests/unit/test_music_selection.py::test_recent_use_never_excludes_the_only_legal_track`
+/ `tests/unit/test_music_selection.py::test_recent_use_never_promotes_an_illegal_track`
+/ `tests/unit/test_music_contracts.py::test_approved_requires_evidence_and_check_time`
+（選曲を実際に呼ぶ Render / AudioDirector は未結線のため、**結線後に「承認済み以外が Render へ渡らない」ことは未検査**）
+
+### INV-98 帰属必須の指定文は、全文を説明欄に置くか、置けないなら Episode を止める
+帰属必須の曲を使う cue sheet は、カタログの `exact_attribution_text`（原文）をそのまま取り出す。
+cue 側のコピーが原文と違う・欠ける・曲がカタログに無い・source sha / license_evidence_hash が違う・選曲後に取消/失効/期限切れ/隔離になった場合はエラーにして推測で補わない。
+5000 UTF-8 bytes の説明欄に収まらないときは BLOCK を返し、切り詰めた版は作らない。
+**機械検査**: `tests/unit/test_music_credits.py::test_credit_required_track_yields_exact_text`
+/ `tests/unit/test_music_credits.py::test_stale_or_altered_credit_copy_in_cue_is_an_error_not_silently_replaced`
+/ `tests/unit/test_music_credits.py::test_fit_credits_blocks_instead_of_truncating`
+/ `tests/unit/test_music_credits.py::test_fit_credits_counts_utf8_bytes_not_characters`
+/ `tests/unit/test_music_contracts.py::test_attribution_text_is_required_iff_attribution_required`
+/ `tests/unit/test_music_contracts.py::test_attribution_text_with_chars_the_description_sanitizer_rewrites_is_rejected`
+/ `tests/unit/test_music_contracts.py::test_attribution_text_blank_after_removing_whitespace_and_format_chars_is_rejected`
+/ `tests/unit/test_music_credits.py::test_fitted_credits_are_byte_identical_to_what_is_sent`
+/ `tests/unit/test_music_credits.py::test_cue_license_evidence_hash_must_match_the_catalog`
+/ `tests/unit/test_music_credits.py::test_track_that_stopped_being_usable_after_selection_is_rejected`
+（収まるかの判定は、送信時と同じ `sanitize_youtube_text`（contracts/upload）の後のバイト数で行う。指定文に `<` `>` は持てない。
+説明欄の組み立てと投稿前 Gate への結線は後続。**投稿が実際に BLOCK されることは未検査**）
+
+### INV-99 BGM の取込は管理者の明示操作であり、agent・日次の通常制作は行わない
+カタログへの取込は、人が音源と証拠を用意して明示的に行う。取込検査は実ファイルの sha256 と申告の一致、
+object_key が `music/originals/<sha>(.<拡張子>)?` に完全一致すること、同一 sha の再利用（再収集なし）、同一 track_id の
+中身違い（変造）の拒否を行う。既存曲のライセンス事実は再取込の申告で変わらない。
+agent・日次制作は音源を取得せず、未収録なら収集依頼を積むだけ（設計 v3 §4.1）。
+**機械検査**: `tests/unit/test_music_ingest.py::test_sha_mismatch_is_rejected_as_tampered`
+/ `tests/unit/test_music_ingest.py::test_same_file_is_deduplicated_to_the_existing_track`
+/ `tests/unit/test_music_ingest.py::test_duplicate_never_upgrades_the_existing_license_facts`
+/ `tests/unit/test_music_ingest.py::test_same_track_id_with_different_bytes_is_rejected`
+/ `tests/architecture/test_music_boundaries.py::test_production_and_provider_billing_modules_do_not_import_music`
+（production / provider から domain.music を import させないところまでは検査済み。
+**取込を呼べる入口を管理者の CLI に限定すること、MinIO の immutable 設定は未検査**。取込の入口はまだ存在しない）
+
+### INV-100 cue sheet は production の成果物から独立しており、BGM だけの変更で fal を呼ばない
+`contracts/music.py` は production Artifact の契約（画像・音声・動画・状態語彙）を import せず、cue sheet は
+それらの Artifact を参照しない。時間・音量は int で持ち、hash を揺らさない。cue は start_ms 昇順で、同じ scene の cue は重ならない（別 scene どうしの重なり=クロスフェードは許す）。`domain/music` は純粋（I/O・時計なし）。
+**機械検査**: `tests/architecture/test_music_boundaries.py::test_music_contract_does_not_depend_on_production_artifacts`
+/ `tests/architecture/test_music_boundaries.py::test_domain_music_has_no_io_or_clock_imports`
+/ `tests/architecture/test_music_boundaries.py::test_domain_music_does_not_read_the_clock_or_open_files`
+/ `tests/architecture/test_music_boundaries.py::test_domain_music_imports_only_contracts_and_itself`
+/ `tests/unit/test_music_contracts.py::test_level_is_integer_so_hash_is_stable`
+（構造上の独立だけを検査。**BGM のみ差替えで fal の予約が 0 件・Render と QA だけが再実行される（T16）ことは未検査**。
+`render_input_hash` に cue sheet をどう入れるかは Render 結線の枝で決める）
