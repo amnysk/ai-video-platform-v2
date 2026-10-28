@@ -56,3 +56,13 @@ INV-90（description に内部 ID なし）・INV-91（tags の marker と旧 de
 - 悪い: `workers/upload/activities.py::_reserve` の挙動はこの ADR で変えない（予約前の照合の見直しは別タスク）
 - 悪い: `DescriptionRequiredPartsTooLongError` を `needs_input` に写す Activity 側の配線は未実装
   （必須部分を渡す呼び出し側もまだ無い。今は builder の引数として用意するだけ）
+- 悪い（flag を ON にする前提条件）: `workers/upload/activities.py::_upload` は `build_youtube_metadata` を
+  「投稿済み（SPENT）か」の判断**より前**に呼ぶ。ON のとき lint 例外（`ValueError`）は
+  `activity_errors.translate_error` で翻訳されず、既存の受領を再利用できたはずの job まで失敗しうる。
+  配線タスクで (1) 2つの例外を `needs_input` へ写し、(2) metadata の構築を再利用判断の後ろへ移す。
+  この ADR では activities.py を変えない
+- 悪い: flag を稼働中に切り替えると、切替前に組んだ metadata の snapshot を持つ受領は marker 入りの description
+  を保持しうる。実害はない（`_matching_receipt` は video_id だけで照合する）
+- lint の検出範囲: NFKC 正規化とゼロ幅などの書式文字（Cf）の除去のあとで、marker（大文字小文字不問）・UUID・
+  32 桁以上の hex（sha256 を含む）・`minio://` / `s3://`・object key を検査する。32 桁以上の hex は sha1 も
+  止める（誤検出は保留側に倒れる）。意味を変えた回避（hex の途中に通常文字を挟む等）は検出しない

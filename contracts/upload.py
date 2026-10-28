@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
@@ -83,12 +84,26 @@ UPLOAD_DESCRIPTION_WITHOUT_MARKER_ENV = "AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER"
 #: 視聴者向け description に出してはならない内部 ID（ADR-0070 / INV-90）。
 #: builder と insert_body が共有する。
 INTERNAL_ID_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(rf"{UPLOAD_MARKER_PREFIX}[0-9a-f]{{{UPLOAD_MARKER_KEY_CHARS}}}"),
-    re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
-    re.compile(r"\b(?:minio|s3)://\S+", re.IGNORECASE),
+    re.compile(rf"{UPLOAD_MARKER_PREFIX}[0-9a-f]{{{UPLOAD_MARKER_KEY_CHARS}}}", re.IGNORECASE),
+    # UUID。``\b`` は CJK・``_`` の直後で効かないので使わない（ハイフンの構造だけで判定）
+    re.compile(
+        r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}"
+        r"-[0-9A-Fa-f]{12}(?![0-9A-Fa-f])"
+    ),
+    # ハイフン無しの 32 桁以上の hex（UUID / request id / sha256）。直前が "ID" の D のように
+    # hex 文字でも拾えるよう、連続長だけで見る（sha1 の 40 桁も止める。誤検出は保留側に倒れる）
+    re.compile(r"[0-9A-Fa-f]{32,}"),
+    re.compile(r"(?<![A-Za-z0-9])(?:minio|s3)://\S+", re.IGNORECASE),
     # MinIO の object key（domain/artifact/keys.py）: <prefix>/…/<sha256>[.<ext>]
-    re.compile(r"(?<![\w/.-])(?:artifacts|media|research)/[\w./-]*[0-9a-f]{64}(?:\.\w+)?"),
+    re.compile(r"(?<![A-Za-z0-9])(?:artifacts|media|research)/[\w./-]*[0-9a-f]{64}(?:\.\w+)?"),
 )
+
+
+def _normalize_for_lint(text: str) -> str:
+    """全角を NFKC で畳み、ゼロ幅などの書式文字（Cf）を除いてから検査する。"""
+    folded = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+
 
 UploadReconciledBy = Literal["upload_response", "status_query", "marker_lookup"]
 
@@ -116,7 +131,8 @@ class DescriptionRequiredPartsTooLongError(ValueError):
 
 def find_internal_ids(text: str) -> list[str]:
     """``text`` に含まれる内部 ID らしき文字列（なければ空）。定義は INTERNAL_ID_PATTERNS のみ。"""
-    return [m.group(0) for pattern in INTERNAL_ID_PATTERNS for m in pattern.finditer(text)]
+    normalized = _normalize_for_lint(text)
+    return [m.group(0) for pattern in INTERNAL_ID_PATTERNS for m in pattern.finditer(normalized)]
 
 
 def assert_no_internal_ids(text: str, field: str = "description") -> None:
@@ -242,7 +258,11 @@ def build_youtube_metadata(
     separator = "\n\n" if required else ""
     # 本文だけを切り詰め、必須部分（マーカー・クレジット・出典）は必ず残す
     budget = YOUTUBE_DESCRIPTION_MAX_BYTES - required_bytes - len(separator.encode("utf-8"))
-    description = truncate_utf8(body, budget) + separator + required if budget > 0 else required
+    if budget > 0 and (body or marker_in_description):
+        # marker ありは従来と byte 単位で同じ形を保つ。marker 無しは本文が空なら区切りを出さない
+        description = truncate_utf8(body, budget) + separator + required
+    else:
+        description = required
     if not marker_in_description:
         assert_no_internal_ids(description)
     return YouTubeVideoMetadata(

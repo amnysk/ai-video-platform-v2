@@ -426,6 +426,8 @@ Replayer で replay。非決定にならず1件も発行しない）
 **機械検査**: `tests/contract/test_upload_metadata_lint.py::test_description_never_contains_internal_ids`
 / `tests/contract/test_upload_metadata_lint.py::test_insert_body_description_has_no_marker`
 / `tests/contract/test_upload_metadata_lint.py::test_insert_body_lints_the_final_body`
+/ `tests/contract/test_upload_metadata_lint.py::test_lint_catches_obfuscated_and_adjacent_internal_ids`
+/ `tests/contract/test_upload_metadata_lint.py::test_lint_has_no_false_positive_on_normal_text`
 / `tests/contract/test_upload_metadata_lint.py::test_flag_off_is_byte_identical_to_the_legacy_shape`
 / `tests/contract/test_upload_metadata_lint.py::test_insert_body_is_unchanged_with_flag_off`
 

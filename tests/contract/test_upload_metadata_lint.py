@@ -166,3 +166,50 @@ def test_required_parts_exactly_filling_the_budget_are_kept(flag_on: None) -> No
     credit = "x" * YOUTUBE_DESCRIPTION_MAX_BYTES
     meta = _build(required_parts=(credit,))
     assert meta.description == credit
+
+
+_SHA = "a1" * 32
+_ZW = "​"
+
+
+@pytest.mark.parametrize(
+    "leak",
+    [
+        f"動画ID{_UUID}",
+        f"id_{_UUID}",
+        f"ID:{_UUID.upper()}",
+        "12345678123456781234567812345678",
+        "動画12345678123456781234567812345678です",
+        _SHA,
+        f"保存先media/ep_1/final_video/{_SHA}.mp4",
+        f"https://example.org/artifacts/ep_1/script/{_SHA}.json",
+        "AVPU0F41035D6144C07B16F28327",
+        "ａｖｐｕ０ｆ４１０３５ｄ６１４４ｃ０７ｂ１６ｆ２８３２７",
+        f"avpu0f41035d6144c07b16{_ZW}f28327",
+        f"a{_ZW}vpu0f41035d6144c07b16f28327",
+        "S3://bucket/key",
+    ],
+)
+def test_lint_catches_obfuscated_and_adjacent_internal_ids(leak: str) -> None:
+    """レビュー M1: \\b の取りこぼし・大文字・全角・ゼロ幅文字・CJK 隣接・sha・URL 内の key。"""
+    assert find_internal_ids(leak), leak
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "How did one decision change Japanese history? #JapaneseHistory #HistoryShorts",
+        "京都は1185年に動いた。詳しくは https://example.org/source-1 と https://ja.wikipedia.org/wiki/源平合戦",
+        "Music: Example Artist - Example Song (CC BY 4.0) https://example.org/license",
+        "commit 0f41035d6144c07b16f28327 is 24 hex; abc123 is short",
+        "media/ep/x is a plain path, artifacts are great",
+        "e" * 31,
+    ],
+)
+def test_lint_has_no_false_positive_on_normal_text(text: str) -> None:
+    assert find_internal_ids(text) == []
+
+
+def test_empty_body_with_required_parts_has_no_leading_separator(flag_on: None) -> None:
+    meta = _build(hook="", narration="", required_parts=("Music: Example",))
+    assert meta.description == "Music: Example"

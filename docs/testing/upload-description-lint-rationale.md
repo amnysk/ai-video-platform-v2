@@ -13,6 +13,9 @@
 | `test_lookup_matches_tags_only_and_legacy_description_only_videos`（T19） | 二重投稿防止の照合が tags のみ・旧 description のみのどちらかで効かなくなること（fake レベル。実 YouTube は未検証） |
 | `test_required_parts_over_the_limit_raise_instead_of_truncating`（T29） | 必須の帰属が黙って欠けること |
 | `test_required_parts_survive_a_long_body` / `..._exactly_filling_the_budget_are_kept` | 本文が長いときに必須部分が先に削られること、境界（ちょうど 5000 bytes）の取り違え |
+| `test_lint_catches_obfuscated_and_adjacent_internal_ids`（parametrize） | 独立レビュー M1: `\b` が効かない CJK・`_` 直後の UUID、ハイフン無し 32 hex、sha256、CJK 直後や URL 内の key、大文字・全角・ゼロ幅文字入りの marker、`S3://` |
+| `test_lint_has_no_false_positive_on_normal_text` | 上の強化で通常の英日本文・ハッシュタグ・URL・短い hex まで止めること |
+| `test_empty_body_with_required_parts_has_no_leading_separator` | レビュー m1: 本文が空のとき description が `\n\n` で始まること（ON のみ。OFF は byte 同一を保つ） |
 
 既存の `tests/unit/test_upload_hardening.py::test_metadata_description_ends_with_the_marker_even_when_truncated`
 は既定（OFF）の挙動の検査として無変更で有効。T20 / T21 の既存テストも無変更。
