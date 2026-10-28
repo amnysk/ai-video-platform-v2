@@ -244,3 +244,11 @@ async def test_bgm_renders_decodes_and_ducks_under_the_voice(
     )
     # BGM を足すと(ducking 無しなら)ナレーション区間の音量が上がる = 曲が実際に混ざっている
     assert rms["none"] > _mean_volume_db(plain.path, 0.3, 0.8)
+
+
+def test_loudness_probe_measures_a_real_file(sources) -> None:
+    from infrastructure.render.loudness import FfmpegLoudnessProbe
+
+    m = FfmpegLoudnessProbe(FFMPEG).measure_loudness(str(sources["v1"]))
+    assert m.integrated_lufs_centi is not None and -3000 < m.integrated_lufs_centi < 0
+    assert m.true_peak_dbtp_centi is not None and m.true_peak_dbtp_centi <= 0

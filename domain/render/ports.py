@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from contracts.music_render import BgmMixPlan
+from contracts.music_render import BgmMixPlan, LoudnessMeasurement
 from contracts.render import RenderEngineIdentity, RenderPlan
 
 
@@ -93,3 +93,13 @@ class RenderEngine(Protocol):
     async def render(
         self, request: RenderRequest, *, heartbeat: Callable[[], object]
     ) -> RenderedVideo: ...
+
+
+@runtime_checkable
+class LoudnessProbe(Protocol):
+    """完成動画の音声のラウドネスを実測する（同期。呼び出し側がスレッドで待つ）。
+
+    実測できなければ ``RenderEngineFailedError``（再試行可能）。値を推測して返さない。
+    """
+
+    def measure_loudness(self, path: str) -> LoudnessMeasurement: ...

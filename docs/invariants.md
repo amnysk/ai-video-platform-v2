@@ -1064,3 +1064,16 @@ cue sheet が指す曲は、描画のたびに `now` で選曲と同じ検査（
 / `tests/unit/test_bgm_resolve.py::test_unknown_track_altered_or_missing_file_and_stale_evidence_are_not_used`
 / `tests/unit/test_bgm_resolve.py::test_one_bad_cue_drops_all_of_bgm`
 / `tests/unit/test_bgm_resolve.py::test_naive_now_is_refused`
+
+### INV-115 BGM 入りの完成動画は、実測ラウドネスが範囲内でなければ保存されない。範囲外・無音・実測不能は構造化された不合格
+ffmpeg `ebur128=peak=true` の要約から積分ラウドネス・true peak・LRA を 1/100 単位の int で取り出し、理由コード
+（`ok` / `too_quiet` / `too_loud` / `true_peak_exceeded` / `silent`）つきの結果にする。要約が読めない・実測が走らない場合は
+例外（通さない）。不合格は技術 QA の `bgm_loudness` 項目として `FinalVideoValidationError` になる。許容範囲
+（積分 -24〜-9 LUFS、true peak ≤ -1.0 dBTP）は `contracts/music_render.py` の唯一の定義で**未校正**。
+**機械検査**: `tests/unit/test_bgm_loudness.py::test_real_ffmpeg_summary_is_parsed_into_centi_units`
+/ `tests/unit/test_bgm_loudness.py::test_silent_summary_has_no_peak_and_is_a_silent_failure`
+/ `tests/unit/test_bgm_loudness.py::test_unreadable_output_is_an_error_never_a_pass`
+/ `tests/unit/test_bgm_loudness.py::test_verdict_reason_codes_and_boundaries`
+/ `tests/unit/test_bgm_loudness.py::test_a_failed_verdict_becomes_a_failed_qa_check_that_raises`
+/ `tests/unit/test_bgm_loudness.py::test_probe_that_cannot_run_raises_instead_of_passing`
+（Activity での実行は INV-116 の結線と同じコミットで検査する）

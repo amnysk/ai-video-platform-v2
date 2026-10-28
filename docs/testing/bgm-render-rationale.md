@@ -34,3 +34,14 @@ fixture の曲・hash は架空で、実在の楽曲・ライセンス判断で�
 | `test_duck_cue_uses_the_narration_bus_...` / `test_zero_length_fades_...` | unit | ducking 無しの cue にサイドチェーンが付く・長さ 0 のフェードで ffmpeg が失敗する filter が出ること |
 | `test_argv_adds_one_looping_input_per_cue_...` / `test_argv_refuses_misaligned_...` | unit | 入力番号と filtergraph のずれ（別の曲が混ざる）。BGM 無しで BGM 入力を渡すこと |
 | `tests/unit/test_render_ffmpeg_real.py::test_bgm_renders_decodes_and_ducks_under_the_voice` | unit（実 ffmpeg。同ファイルの既存条件付き skip に従う） | filtergraph が実 ffmpeg で通らない・曲が混ざっていない・ducking が効かない・短い曲が繰り返されず cue が欠けること。測定は ffmpeg の volumedetect（numpy 不要） |
+
+## ラウドネス（INV-115）
+
+| テスト | レベル | 止めるもの |
+|---|---|---|
+| `tests/unit/test_bgm_loudness.py::test_real_ffmpeg_summary_is_parsed_...` / `..._silent_summary_...` | unit（固定 fixture） | ffmpeg 出力形式の取り違え（小数の丸め・`-inf`・無音の -70.0）。fixture は固定版 ffmpeg 7.1.1 の実出力 |
+| `test_unreadable_output_is_an_error_never_a_pass` | unit | 要約が無い・欠けているときに既定値で合格すること |
+| `test_verdict_reason_codes_and_boundaries` | unit | 境界値（ちょうど下限/上限/天井）の取り違えと、複数違反時の理由の揺れ |
+| `test_a_failed_verdict_becomes_a_failed_qa_check_that_raises` | unit | 不合格が QA の失敗クラスへ写像されず保存されること |
+| `test_probe_that_cannot_run_raises_instead_of_passing` | unit | 実測バイナリが無い/失敗したときに「測れなかった=合格」となること |
+| `tests/unit/test_render_ffmpeg_real.py::test_loudness_probe_measures_a_real_file` | unit（実 ffmpeg、既存の条件付き skip に従う） | 実 ffmpeg の引数・出力形式が parse と食い違うこと |
