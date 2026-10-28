@@ -428,6 +428,11 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 **機械検査**: `tests/unit/test_quality_upload_decision.py`（全拒否経路と許可経路）
 / `tests/contract/test_quality_contract.py::test_malformed_reports_are_rejected_with_a_reason`
 / `tests/contract/test_quality_contract.py::test_non_report_input_is_unparsable`
+/ `tests/unit/test_quality_upload_decision.py::test_no_input_can_make_evaluate_raise`（総関数・fail-closed）
+/ `tests/unit/test_quality_upload_decision.py::test_deeply_nested_json_is_refused_not_raised`
+/ `tests/unit/test_quality_upload_decision.py::test_naive_generated_at_is_refused_not_raised`
+/ `tests/unit/test_quality_upload_decision.py::test_checks_must_be_a_tuple_of_quality_checks`
+/ `tests/contract/test_quality_contract.py::test_error_messages_never_echo_untrusted_values`（値を例外文に写さない）
 （判定は純粋関数の範囲。`upload_gate` への配線は INV-104）
 
 ### INV-102 決定論の BLOCK / REVIEW は LLM の判定で緩まない

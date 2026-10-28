@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from contracts.quality import (
+    CLOCK_SKEW_TOLERANCE,
     QUALITY_REPORT_SCHEMA_VERSION,
     QualityReason,
     QualityReport,
@@ -18,6 +19,7 @@ from contracts.quality import (
     QualityReportFailure,
     QualityVerdict,
     parse_quality_report,
+    validate_quality_report,
 )
 from domain.quality.aggregate import aggregate
 
@@ -39,26 +41,47 @@ def evaluate_for_upload(
     current_input_hash: str,
     now: datetime,
 ) -> UploadDecision:
+    """どんな入力でも例外を投げない（総関数）。想定外は ``REPORT_EVALUATION_ERROR`` で拒否する。"""
+    try:
+        return _evaluate(report, current_final_video_sha256, current_input_hash, now)
+    except Exception:  # noqa: BLE001 - fail-closed: 判定できないものは通さない
+        return _refuse(QualityReason.REPORT_EVALUATION_ERROR)
+
+
+def _aware(value: object) -> bool:
+    return (
+        isinstance(value, datetime) and value.tzinfo is not None and (value.utcoffset() is not None)
+    )
+
+
+def _evaluate(
+    report: object,
+    current_final_video_sha256: str,
+    current_input_hash: str,
+    now: datetime,
+) -> UploadDecision:
     if report is None:
         return _refuse(QualityReason.REPORT_MISSING)
     if isinstance(report, QualityReportFailure):
         return _refuse(QualityReason.REPORT_PRODUCTION_FAILED)
-    if not isinstance(report, QualityReport):
-        try:
+    try:
+        if not isinstance(report, QualityReport):
             report = parse_quality_report(report)
-        except QualityReportError as err:
-            return _refuse(err.reason_code)
+        validate_quality_report(report)
+    except QualityReportError as err:
+        return _refuse(err.reason_code)
+    assert isinstance(report, QualityReport)
     if report.schema_version != QUALITY_REPORT_SCHEMA_VERSION:
         return _refuse(QualityReason.REPORT_SCHEMA_MISMATCH)
-    if not isinstance(report.verdict, QualityVerdict):
-        return _refuse(QualityReason.REPORT_UNKNOWN_VERDICT)
     if not report.checks:
         return _refuse(QualityReason.REPORT_EMPTY_CHECKS)
     if not current_final_video_sha256 or report.final_video_sha256 != current_final_video_sha256:
         return _refuse(QualityReason.REPORT_FINAL_VIDEO_MISMATCH)
     if not current_input_hash or report.input_hash != current_input_hash:
         return _refuse(QualityReason.REPORT_INPUT_HASH_MISMATCH)
-    if report.generated_at > now:
+    if not _aware(report.generated_at) or not _aware(now):
+        return _refuse(QualityReason.REPORT_TIMESTAMP_INVALID)
+    if report.generated_at > now + CLOCK_SKEW_TOLERANCE:
         return _refuse(QualityReason.REPORT_FROM_THE_FUTURE)
     if aggregate(report.checks) is not report.verdict:
         return _refuse(QualityReason.REPORT_VERDICT_INCONSISTENT)

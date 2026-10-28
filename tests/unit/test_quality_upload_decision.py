@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from contracts.quality import (
+    CLOCK_SKEW_TOLERANCE,
     QUALITY_REPORT_SCHEMA_VERSION,
     QualityCheck,
     QualityGate,
@@ -152,3 +154,90 @@ def test_verdict_maps_onto_existing_episode_states_only() -> None:
     assert episode_status_for(V.REVIEW) is EpisodeStatus.BLOCKED
     assert episode_status_for(V.BLOCK) is EpisodeStatus.NEEDS_WORK
     assert {episode_status_for(v) for v in V} <= {None, *EpisodeStatus}
+
+
+# --- 独立レビューの指摘（MAJOR 2、MINOR m6/m7）の再現を回帰テストにしたもの -------------------
+
+
+def test_naive_generated_at_is_refused_not_raised() -> None:
+    d = _decide(_report(generated_at=datetime(2026, 10, 28, 11)))
+    assert not d.allowed and d.reason_code is QualityReason.REPORT_TIMESTAMP_INVALID
+
+
+def test_naive_now_is_refused_not_raised() -> None:
+    d = evaluate_for_upload(
+        _report(),
+        current_final_video_sha256=SHA,
+        current_input_hash="in-1",
+        now=datetime(2026, 10, 28, 12),
+    )
+    assert not d.allowed and d.reason_code is QualityReason.REPORT_TIMESTAMP_INVALID
+
+
+def test_deeply_nested_json_is_refused_not_raised() -> None:
+    d = _decide("[" * 100_000)
+    assert not d.allowed and d.reason_code is QualityReason.REPORT_UNPARSABLE
+
+
+def test_clock_skew_within_tolerance_is_allowed_and_beyond_is_refused() -> None:
+    ok = _decide(_report(generated_at=NOW + CLOCK_SKEW_TOLERANCE))
+    assert ok.allowed
+    late = _decide(_report(generated_at=NOW + CLOCK_SKEW_TOLERANCE + timedelta(seconds=1)))
+    assert not late.allowed and late.reason_code is QualityReason.REPORT_FROM_THE_FUTURE
+
+
+def test_checks_must_be_a_tuple_of_quality_checks() -> None:
+    """list の checks は PASS 判定が通ってしまっていた（直接構築した report の再検証）。"""
+    d = _decide(replace(_report(), checks=[_check()]))
+    assert not d.allowed and d.reason_code is QualityReason.REPORT_UNPARSABLE
+    d = _decide(replace(_report(), checks=(object(),)))
+    assert not d.allowed and d.reason_code is QualityReason.REPORT_UNPARSABLE
+
+
+def test_a_directly_constructed_report_with_bad_field_types_is_refused() -> None:
+    for over in (
+        {"verdict": "pass"},
+        {"final_video_sha256": "NOT-A-SHA"},
+        {"input_hash": ""},
+        {"episode_id": 3},
+        {"generated_at": "2026-10-28"},
+    ):
+        d = _decide(_report(**over))
+        assert not d.allowed, over
+
+
+def test_a_check_built_with_wrong_types_is_refused() -> None:
+    bad = QualityCheck(
+        gate="geo",  # type: ignore[arg-type]
+        verdict=V.PASS,
+        reason_code=QualityReason.OK,
+        detail="",
+        deterministic=True,
+    )
+    d = _decide(_report([bad]))
+    assert not d.allowed and d.reason_code is QualityReason.REPORT_UNPARSABLE
+
+
+@pytest.mark.parametrize(
+    "garbage",
+    [
+        object(),
+        {"checks": None},
+        _report().to_dict() | {"checks": [{"x": 1}]},
+        _report().to_dict() | {"generated_at": 5},
+        _report().to_dict() | {"input_hash": None},
+    ],
+)
+def test_no_input_can_make_evaluate_raise(garbage) -> None:
+    assert not _decide(garbage).allowed
+
+
+def test_an_unexpected_internal_error_fails_closed(monkeypatch) -> None:
+    import domain.quality.upload_decision as mod
+
+    def boom(_checks):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mod, "aggregate", boom)
+    d = _decide(_report())
+    assert not d.allowed and d.reason_code is QualityReason.REPORT_EVALUATION_ERROR

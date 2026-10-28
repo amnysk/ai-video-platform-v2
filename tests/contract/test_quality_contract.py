@@ -99,3 +99,54 @@ def test_a_non_pass_check_must_carry_a_real_reason_code() -> None:
 def test_reason_codes_are_unique_strings() -> None:
     values = [r.value for r in QualityReason]
     assert len(values) == len(set(values))
+
+
+# --- 独立レビューの指摘（MAJOR 2/3、MINOR m5）の再現を回帰テストにしたもの -------------------
+
+SECRET = "sk-" + "A1b2C3d4" * 625  # 5000 文字の秘密らしい値
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d.update(verdict=SECRET),
+        lambda d: d["checks"][0].update(verdict=SECRET),
+        lambda d: d["checks"][0].update(gate=SECRET),
+        lambda d: d["checks"][0].update(reason_code=SECRET),
+        lambda d: d.update(schema_version=SECRET),
+        lambda d: d.update(generated_at=SECRET),
+        lambda d: d.update(final_video_sha256=SECRET),
+        lambda d: d.update(episode_id=[SECRET]),
+    ],
+)
+def test_error_messages_never_echo_untrusted_values(mutate) -> None:
+    """INV-20/39: 取り込めなかった値（秘密を含みうる）を例外文に写さない。長さも有界。"""
+    data = _report_dict()
+    mutate(data)
+    with pytest.raises(QualityReportError) as err:
+        parse_quality_report(data)
+    message = str(err.value)
+    assert "sk-" not in message and "A1b2C3d4" not in message
+    assert len(message) < 200
+
+
+def test_raw_text_is_never_echoed_either() -> None:
+    with pytest.raises(QualityReportError) as err:
+        parse_quality_report(SECRET)
+    assert "A1b2C3d4" not in str(err.value) and len(str(err.value)) < 200
+
+
+@pytest.mark.parametrize("raw", ["[" * 100_000, '{"a":' * 100_000], ids=["brackets", "objects"])
+def test_deeply_nested_json_is_unparsable_not_a_recursion_error(raw: str) -> None:
+    with pytest.raises(QualityReportError) as err:
+        parse_quality_report(raw)
+    assert err.value.reason_code is QualityReason.REPORT_UNPARSABLE
+
+
+@pytest.mark.parametrize("version", [1.0, True, "1", None])
+def test_schema_version_must_be_exactly_the_int(version) -> None:
+    data = _report_dict()
+    data["schema_version"] = version
+    with pytest.raises(QualityReportError) as err:
+        parse_quality_report(data)
+    assert err.value.reason_code is QualityReason.REPORT_SCHEMA_MISMATCH

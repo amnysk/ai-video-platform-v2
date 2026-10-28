@@ -48,3 +48,15 @@ LLM の PASS が決定論 BLOCK を救えないことを判定の入口でも確
 | `test_forbidden_tool_ids_are_not_in_the_allowlist` | 許可リストへ禁止 tool が紛れ込む事故（実行時の交わり＋ソース上の `PolicyToolId` 本体） |
 | `test_the_allowlist_detector_catches_a_violating_fixture` | 上の検出器が違反 fixture を実際に捕まえる |
 | `test_the_forbidden_set_covers_…` | 禁止集合の縮小（例: 予約解放の削除）を検知する |
+
+## 独立レビュー後の追加（回帰テスト。いずれも再現してから直した）
+
+| テスト | なぜ必要か（再現した事故） |
+|---|---|
+| `test_error_messages_never_echo_untrusted_values` / `test_raw_text_is_never_echoed_either` | 取り込み失敗の例外文に `!r` で入力値（5000 文字の秘密らしい値）が入っていた。INV-20/39 に反する。型名と長さだけにし、文の長さも有界にした |
+| `test_deeply_nested_json_is_unparsable_not_a_recursion_error`（契約・判定の両方） | `'[' * 100000` が `RecursionError` を投げ、判定が例外で落ちた。fail-closed は「拒否を返す」であって「落ちる」ではない |
+| `test_schema_version_must_be_exactly_the_int` | `1.0 == 1` で `schema_version: 1.0` が通っていた |
+| `test_naive_generated_at_is_refused_not_raised` / `test_naive_now_is_refused_not_raised` | naive と aware の比較が `TypeError` で判定を落とした |
+| `test_clock_skew_within_tolerance_…` | 時計のずれの許容を1つの定数にし、境界（許容内は許可・1秒超は拒否）を固定する |
+| `test_checks_must_be_a_tuple_of_quality_checks` / `test_a_directly_constructed_report_…` / `test_a_check_built_with_wrong_types_is_refused` | `checks` が list の report が `allowed=True` になっていた。直接構築した report にも取り込みと同じ型検査をかける |
+| `test_no_input_can_make_evaluate_raise` / `test_an_unexpected_internal_error_fails_closed` | 総関数であること（未知の例外は `REPORT_EVALUATION_ERROR` で拒否） |

@@ -45,6 +45,18 @@ DDL・新しい ArtifactType・新しい Episode 状態は足さない。
 input_hash が違う / `generated_at` が `now` より未来 / verdict が BLOCK・REVIEW。
 許可は検証済みの PASS と WARN（WARN は `UPLOAD_ALLOWED_WITH_WARNINGS` で報告を残す）だけ。
 
+**総関数（独立レビューでの是正）**: `evaluate_for_upload` はどんな入力でも例外を投げない。想定外の例外は
+`REPORT_EVALUATION_ERROR` で拒否する。追加の拒否: naive な `generated_at` / `now`（`REPORT_TIMESTAMP_INVALID`）、
+深くネストした JSON（`RecursionError` を `REPORT_UNPARSABLE` に）、`checks` が `QualityCheck` の tuple でない・
+直接構築された report の型不備（取り込みと同じ `validate_quality_report` を通す）、`schema_version` が厳密な
+`int` でない（`1.0` / `True` は拒否）。`generated_at` が未来でも `CLOCK_SKEW_TOLERANCE`（5分。`contracts/quality.py`
+に1箇所）までは許す。
+**例外文の規則（INV-20/39）**: 取り込めなかった値は例外文に写さない（型名と長さだけ。`describe()`）。
+
+**理由コードの分割について（見送り）**: `QualityReason` は検査理由・取り込み失敗・投稿可否の結果を1つの enum に
+持つ（定義の単一性を優先）。検査の `reason_code` に `REPORT_*` / `UPLOAD_*` を入れられる弱点は残る。
+分割は配線時（保存形式が決まるとき）に、既存の値を変えない形で行う。
+
 **シグネチャの注記**: 依頼の `(report, sha, now)` に `current_input_hash`（キーワード必須）を足した。
 input_hash の結び付きを呼び出し側が省略して fail-open になるのを避けるため、省略可能にしない。
 

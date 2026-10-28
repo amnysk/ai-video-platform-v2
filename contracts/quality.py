@@ -13,11 +13,15 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
 QUALITY_REPORT_SCHEMA_VERSION = 1
+
+#: レポートの ``generated_at`` が ``now`` より未来でも許す時計のずれ（**ここだけで定義**）。
+#: これを超える未来日付は取り込み元の時計異常か改ざんとして拒否する（INV-101）。
+CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -80,6 +84,8 @@ class QualityReason(StrEnum):
     REPORT_FINAL_VIDEO_MISMATCH = "report_final_video_mismatch"
     REPORT_INPUT_HASH_MISMATCH = "report_input_hash_mismatch"
     REPORT_FROM_THE_FUTURE = "report_from_the_future"
+    REPORT_TIMESTAMP_INVALID = "report_timestamp_invalid"
+    REPORT_EVALUATION_ERROR = "report_evaluation_error"
     # --- 投稿可否の結果 ---
     UPLOAD_ALLOWED = "upload_allowed"
     UPLOAD_ALLOWED_WITH_WARNINGS = "upload_allowed_with_warnings"
@@ -157,6 +163,15 @@ class QualityReportFailure:
     reason: str = ""
 
 
+def describe(value: object) -> str:
+    """例外文に入れてよい値の記述。**値そのものは写さない**（INV-20/39）: 型名と長さだけ。"""
+    try:
+        length = len(value)  # type: ignore[arg-type]
+    except TypeError:
+        return type(value).__name__
+    return f"{type(value).__name__}(len={length})"
+
+
 def _unparsable(message: str) -> QualityReportError:
     return QualityReportError(QualityReason.REPORT_UNPARSABLE, message)
 
@@ -174,7 +189,7 @@ def _enum[E: StrEnum](cls: type[E], value: object, what: str) -> E:
     try:
         return cls(value)
     except ValueError:
-        raise _unparsable(f"unknown {what}: {value!r}") from None
+        raise _unparsable(f"unknown {what}: {describe(value)}") from None
 
 
 def _verdict(value: object, what: str) -> QualityVerdict:
@@ -182,7 +197,7 @@ def _verdict(value: object, what: str) -> QualityVerdict:
         return QualityVerdict(value)  # type: ignore[arg-type]
     except ValueError:
         raise QualityReportError(
-            QualityReason.REPORT_UNKNOWN_VERDICT, f"unknown {what}: {value!r}"
+            QualityReason.REPORT_UNKNOWN_VERDICT, f"unknown {what}: {describe(value)}"
         ) from None
 
 
@@ -225,16 +240,18 @@ def parse_quality_report(raw: object) -> QualityReport:
     if isinstance(data, str):
         try:
             data = json.loads(data)
-        except ValueError:
+        except (ValueError, RecursionError):
+            # 深くネストした入力は RecursionError。例外にせず取り込み失敗にする
             raise _unparsable("report is not valid json") from None
     if not isinstance(data, Mapping):
         raise _unparsable("report must be an object")
 
     version = data.get("schema_version")
-    if isinstance(version, bool) or version != QUALITY_REPORT_SCHEMA_VERSION:
+    # 型まで厳密に int（1.0 / True / "1" は別物）。値は写さない
+    if type(version) is not int or version != QUALITY_REPORT_SCHEMA_VERSION:
         raise QualityReportError(
             QualityReason.REPORT_SCHEMA_MISMATCH,
-            f"schema_version {version!r} != {QUALITY_REPORT_SCHEMA_VERSION}",
+            f"schema_version mismatch: {describe(version)}",
         )
     sha = _str(data, "final_video_sha256")
     if not _SHA256.match(sha):
@@ -249,7 +266,7 @@ def parse_quality_report(raw: object) -> QualityReport:
     raw_checks = data.get("checks")
     if not isinstance(raw_checks, list):
         raise _unparsable("checks must be a list")
-    return QualityReport(
+    report = QualityReport(
         episode_id=_str(data, "episode_id"),
         final_video_sha256=sha,
         input_hash=_str(data, "input_hash"),
@@ -259,3 +276,50 @@ def parse_quality_report(raw: object) -> QualityReport:
         verdict=_verdict(data.get("verdict"), "verdict"),
         checks=tuple(_parse_check(c) for c in raw_checks),
     )
+    validate_quality_report(report)
+    return report
+
+
+def validate_quality_report(report: object) -> None:
+    """直接構築された report にも取り込みと同じ検査をかける（型・形式）。不備は QualityReportError。
+
+    集計との整合（verdict の再計算）と、final_video / input_hash への結び付きは
+    ``domain.quality`` の責務。ここは形だけを見る。
+    """
+    if not isinstance(report, QualityReport):
+        raise _unparsable("not a QualityReport")
+    for name in ("episode_id", "input_hash", "generator_version", "reviewer_version"):
+        value = getattr(report, name)
+        if not isinstance(value, str) or not value.strip():
+            raise _unparsable(f"{name} must be a non-empty string")
+    if not isinstance(report.final_video_sha256, str) or not _SHA256.match(
+        report.final_video_sha256
+    ):
+        raise _unparsable("final_video_sha256 must be 64 lowercase hex chars")
+    if type(report.schema_version) is not int:
+        raise QualityReportError(QualityReason.REPORT_SCHEMA_MISMATCH, "schema_version must be int")
+    if not isinstance(report.verdict, QualityVerdict):
+        raise QualityReportError(QualityReason.REPORT_UNKNOWN_VERDICT, "verdict is not a verdict")
+    if not isinstance(report.generated_at, datetime):
+        raise _unparsable("generated_at must be a datetime")
+    if not isinstance(report.checks, tuple):
+        raise _unparsable("checks must be a tuple")
+    for check in report.checks:
+        _validate_check(check)
+
+
+def _validate_check(check: object) -> None:
+    if not isinstance(check, QualityCheck):
+        raise _unparsable("check must be a QualityCheck")
+    if (
+        not isinstance(check.gate, QualityGate)
+        or not isinstance(check.reason_code, QualityReason)
+        or not isinstance(check.deterministic, bool)
+        or not isinstance(check.detail, str)
+        or not (check.scene_id is None or isinstance(check.scene_id, str))
+    ):
+        raise _unparsable("check has a field of the wrong type")
+    if not isinstance(check.verdict, QualityVerdict):
+        raise QualityReportError(QualityReason.REPORT_UNKNOWN_VERDICT, "check.verdict invalid")
+    if (check.verdict is QualityVerdict.PASS) != (check.reason_code is QualityReason.OK):
+        raise _unparsable("a check is PASS if and only if its reason_code is OK")
