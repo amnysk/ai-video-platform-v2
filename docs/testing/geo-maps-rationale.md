@@ -87,3 +87,9 @@
 | `test_the_detector_resolves_relative_imports` | `from ..providers import x` を絶対名に直さないと見えない |
 | `test_the_detector_sees_dynamic_imports` | `importlib.import_module("...")` / `__import__("...")` の定数引数。地図の部品では `importlib` 自体も禁止 |
 | `test_the_production_side_scan_sees_the_map_parts_in_every_import_form` | 本番側が `from infrastructure.media import map_render` 等でも地図の部品を import したと検出できる |
+
+## 免責との重なり（独立レビュー MINOR 3）
+
+| テスト | なぜ必要か |
+|---|---|
+| `test_a_label_covering_the_disclaimer_is_an_overlap` | 免責の板を重なり検査から外すと、ラベルが免責を隠しても PASS になる |

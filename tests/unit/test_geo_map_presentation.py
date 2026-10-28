@@ -239,3 +239,14 @@ def test_every_pair_of_verdicts_is_monotone() -> None:
     for a, p in itertools.product(GEO_VERDICT_ORDER, [GeoVerdict.PASS, GeoVerdict.REVIEW]):
         combined = combine_map_results(_accuracy(a), _presentation(p))
         assert GEO_VERDICT_ORDER.index(combined.verdict) >= GEO_VERDICT_ORDER.index(a)
+
+
+def test_a_label_covering_the_disclaimer_is_an_overlap() -> None:
+    disclaimer = _text("s1", (0, 1800, 600, 1850))
+    label = _text("p1", (200, 1820, 400, 1860))
+    result = check_map_presentation(_layout(label, disclaimer=disclaimer, disclaimer_required=True))
+    assert (P.LABEL_OVERLAP, GeoVerdict.REVIEW) in _codes(result)
+    assert {f.target_id for f in result.findings if f.reason_code is P.LABEL_OVERLAP} == {
+        "p1",
+        "s1",
+    }

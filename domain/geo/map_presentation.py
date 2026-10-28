@@ -80,8 +80,9 @@ def check_map_presentation(layout: MapLayout) -> MapPresentationResult:
             for code in _text_problems(item, layout.width, layout.height)
         )
     overlapping: set[str] = set()
-    for i, a in enumerate(layout.labels):
-        for b in layout.labels[i + 1 :]:
+    plates = [*layout.labels, *([layout.disclaimer] if layout.disclaimer is not None else [])]
+    for i, a in enumerate(plates):
+        for b in plates[i + 1 :]:
             if _overlaps(a.box, b.box):
                 overlapping.update((a.target_id, b.target_id))
     findings.extend(
