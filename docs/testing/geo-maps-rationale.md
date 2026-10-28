@@ -101,3 +101,11 @@
 | `test_the_combined_result_can_be_bound_to_the_rendered_image` | 合流結果が manifest / 画像の sha256 を持てる（別の画像への流用を接続側が検査できる） |
 | `test_the_binding_is_optional_but_must_be_a_sha256_when_given` | 任意だが、入れるなら sha256 の形 |
 | `test_the_rendered_map_exposes_the_hashes_a_result_is_bound_to` | 描画器が結びつけ用の manifest 指紋を返し、manifest が変われば変わる |
+
+## 全域性（独立レビュー MINOR 5）
+
+| テスト | なぜ必要か |
+|---|---|
+| `test_a_huge_failing_manifest_still_yields_a_result_not_an_exception` | 最大規模（地点 200・ラベル 200）の全件失敗でも結果を返す |
+| `test_too_many_findings_are_capped_with_a_block_reason` | 上限超過は厳しい順に残し、`TOO_MANY_FINDINGS` の BLOCK を足す（BLOCK を落として REVIEW を残さない） |
+| `test_a_verifier_result_too_large_to_build_is_a_block_not_an_exception` | 検証器の結果が契約の上限で作れない（ValidationError）ときも、QualityGate へ例外を漏らさず BLOCK |

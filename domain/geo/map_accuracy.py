@@ -13,14 +13,19 @@ QualityGate が読める構造化された結果（verdict + 理由コード + �
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+
+from pydantic import ValidationError
 
 from contracts.geo import (
+    GEO_VERDICT_ORDER,
+    MAX_CHECKS,
     BorderBasis,
     GeoCheck,
     GeoManifest,
     GeoPlace,
     GeoVerdict,
+    GeoVerification,
     MapKind,
     ReferencePlace,
     stricter,
@@ -35,6 +40,9 @@ from contracts.research_evidence import EvidenceClaim, EvidenceSource
 from domain.geo.verify import resolve_reference_candidates, verify_manifest, verify_scene
 
 R = MapReasonCode
+
+#: finding の上限。超える分は厳しい順に残して打ち切り、TOO_MANY_FINDINGS の BLOCK を 1 件足す。
+MAX_FINDINGS = MAX_CHECKS - 1
 
 #: 歴史地図で REVIEW → BLOCK にする理由（時代・国境の誤りを史実として提示する）。定義はここだけ。
 ESCALATED_ON_HISTORICAL: frozenset[MapReasonCode] = frozenset(
@@ -162,10 +170,34 @@ def _result(
                 target_id=scene_id,
             )
         ]
+    if len(findings) > MAX_FINDINGS:
+        order = {v: i for i, v in enumerate(reversed(GEO_VERDICT_ORDER))}
+        findings = sorted(findings, key=lambda f: order[f.verdict])[:MAX_FINDINGS]  # 安定ソート
+        findings.append(_too_many(scene_id))
     worst = GeoVerdict.PASS
     for f in findings:
         worst = stricter(worst, f.verdict)
     return MapAccuracyResult(scene_id=scene_id, verdict=worst, findings=tuple(findings))
+
+
+def _too_many(scene_id: str) -> MapFinding:
+    return MapFinding(
+        verdict=GeoVerdict.BLOCK,
+        reason_code=R.TOO_MANY_FINDINGS,
+        target_kind=MapTargetKind.MANIFEST,
+        target_id=scene_id,
+    )
+
+
+def _verify_total(
+    scene_id: str, run: Callable[[], GeoVerification]
+) -> GeoVerification | MapAccuracyResult:
+    """検証器の結果が契約の上限で作れないときも例外にせず BLOCK の結果にする（全域関数）。"""
+    try:
+        return run()
+    except ValidationError:
+        finding = _too_many(scene_id)
+        return MapAccuracyResult(scene_id=scene_id, verdict=GeoVerdict.BLOCK, findings=(finding,))
 
 
 def check_map_accuracy(
@@ -179,7 +211,12 @@ def check_map_accuracy(
     ``evidence_sources`` を渡さないと ``source_ids`` が取得済みの資料に解決するかは検査されない。
     本番の呼び出しは渡すこと（ADR-0078）。
     """
-    verification = verify_manifest(manifest, reference_places, evidence_claims, evidence_sources)
+    verification = _verify_total(
+        manifest.scene_id,
+        lambda: verify_manifest(manifest, reference_places, evidence_claims, evidence_sources),
+    )
+    if isinstance(verification, MapAccuracyResult):
+        return verification
     return _result(manifest.scene_id, verification.checks, manifest, reference_places)
 
 
@@ -192,14 +229,20 @@ def check_scene_map_accuracy(
     evidence_sources: Sequence[EvidenceSource] | None = None,
 ) -> MapAccuracyResult:
     """INV-93 込みの入口。実在の位置を主張するシーンに manifest が無ければ BLOCK。"""
-    verification = verify_scene(
-        claims_real_location, manifest, reference_places, evidence_claims, evidence_sources
-    )
     sid = manifest.scene_id if manifest is not None else scene_id
+    verification = _verify_total(
+        sid,
+        lambda: verify_scene(
+            claims_real_location, manifest, reference_places, evidence_claims, evidence_sources
+        ),
+    )
+    if isinstance(verification, MapAccuracyResult):
+        return verification
     return _result(sid, verification.checks, manifest, reference_places)
 
 
 __all__ = [
+    "MAX_FINDINGS",
     "ESCALATED_ALWAYS",
     "ESCALATED_ON_HISTORICAL",
     "check_map_accuracy",

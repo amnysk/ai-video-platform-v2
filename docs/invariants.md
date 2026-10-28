@@ -1053,6 +1053,9 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/unit/test_geo_map_accuracy.py::test_a_homonym_stays_a_review_and_is_never_auto_picked`
 / `tests/unit/test_geo_map_accuracy.py::test_the_result_verdict_cannot_be_milder_than_its_worst_finding`
 / `tests/unit/test_geo_map_accuracy.py::test_escalation_never_relaxes_any_verdict`
+`check_map_accuracy` は全域関数: 指摘が上限を超える・検証器の結果が契約の上限で作れないときも例外にせず
+`TOO_MANY_FINDINGS` の BLOCK を返す:
+`tests/unit/test_geo_map_accuracy.py::test_too_many_findings_are_capped_with_a_block_reason`
 （QualityGate が呼ぶ配線は未実装。呼び出し側が `evidence_sources` を渡さないと資料の解決は検査されない）
 
 ### INV-118 見た目の品質は正確さと別の結果で、正確さを緩めない

@@ -65,6 +65,8 @@ class MapReasonCode(StrEnum):
     NO_PLACES = "no_places"
     SCHEMATIC_DISCLAIMER_MISSING = "schematic_disclaimer_missing"
     SCHEMATIC_AS_REAL = "schematic_as_real"
+    #: 指摘が多すぎて全部は載せられない（打ち切った）。載せきれない地図は投稿しない
+    TOO_MANY_FINDINGS = "too_many_findings"
     #: 検証器の check の語彙に分類表が追いついていない。非 PASS のまま通報する（fail-closed）
     UNCLASSIFIED = "unclassified"
 

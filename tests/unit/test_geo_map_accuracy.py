@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from contracts.geo import GeoManifest, GeoVerdict, MapKind, stricter
+from contracts.geo import GeoManifest, GeoVerdict, GeoVerification, MapKind, stricter
 from contracts.geo_map import (
     MapAccuracyResult,
     MapFinding,
@@ -312,3 +312,51 @@ def test_escalation_never_relaxes_any_verdict(
     # 引き上げは REVIEW からだけ。WARN / PASS / BLOCK は動かない。
     if outcome is not GeoVerdict.REVIEW:
         assert escalate(code, outcome, kind) is outcome
+
+
+def _all_failing_manifest() -> GeoManifest:
+    places = [
+        fg.place(
+            place_id=f"p{i}",
+            display_name="Atlantis",
+            lat=35.0,
+            lon=136.0,
+            valid_start_year=2000,
+            location_confidence="low",
+        )
+        for i in range(200)
+    ]
+    labels = [{"place_id": f"p{i}", "text": "Nope"} for i in range(200)]
+    return fg.manifest(places=places, labels=labels, borders="modern")
+
+
+def test_a_huge_failing_manifest_still_yields_a_result_not_an_exception() -> None:
+    result = check_map_accuracy(_all_failing_manifest(), fg.ALL_REFERENCES, (), fg.GOOD_SOURCES)
+    assert result.verdict is GeoVerdict.BLOCK
+
+
+def test_too_many_findings_are_capped_with_a_block_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    import domain.geo.map_accuracy as ma
+
+    monkeypatch.setattr(ma, "MAX_FINDINGS", 10)
+    result = check_map_accuracy(_all_failing_manifest(), fg.ALL_REFERENCES, (), fg.GOOD_SOURCES)
+    assert result.verdict is GeoVerdict.BLOCK
+    assert len(result.findings) == 11
+    assert result.findings[-1].reason_code is MapReasonCode.TOO_MANY_FINDINGS
+    assert result.findings[-1].verdict is GeoVerdict.BLOCK
+    # 残すのは厳しい順（BLOCK を落として REVIEW を残さない）
+    assert all(f.verdict is GeoVerdict.BLOCK for f in result.findings)
+
+
+def test_a_verifier_result_too_large_to_build_is_a_block_not_an_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import domain.geo.map_accuracy as ma
+
+    def too_big(*args: object, **kwargs: object) -> None:
+        GeoVerification(verdict=GeoVerdict.PASS, checks=())  # 契約違反で ValidationError
+
+    monkeypatch.setattr(ma, "verify_manifest", too_big)
+    result = check_map_accuracy(fg.manifest(), fg.ALL_REFERENCES, fg.GOOD_CLAIMS, fg.GOOD_SOURCES)
+    assert result.verdict is GeoVerdict.BLOCK
+    assert [f.reason_code for f in result.findings] == [MapReasonCode.TOO_MANY_FINDINGS]
