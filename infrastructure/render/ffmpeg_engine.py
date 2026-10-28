@@ -109,7 +109,16 @@ class FfmpegRenderEngine:
         work_dir.mkdir(parents=True, exist_ok=True)
         if should_burn_subtitles(plan):
             self._prepare_subtitles(request)
-        (work_dir / FILTERGRAPH_FILE_NAME).write_text(build_filtergraph(plan), encoding="utf-8")
+        bgm = request.bgm
+        bgm_mix = bgm.mix if bgm is not None else None
+        bgm_paths = (
+            [str(_require(bgm.track_paths, c.track_id).resolve()) for c in bgm.mix.cues]
+            if bgm is not None
+            else []
+        )
+        (work_dir / FILTERGRAPH_FILE_NAME).write_text(
+            build_filtergraph(plan, bgm_mix), encoding="utf-8"
+        )
 
         output = request.output_path
         partial = output.with_name(output.name + ".partial.mp4")
@@ -120,6 +129,8 @@ class FfmpegRenderEngine:
             voice_paths=[str(p.resolve()) for p in voice_paths],
             output=str(partial.resolve()),
             threads=self._threads,
+            bgm=bgm_mix,
+            bgm_paths=bgm_paths,
         )
         env = {
             "PATH": "/usr/bin:/bin",

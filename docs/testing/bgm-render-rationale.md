@@ -25,3 +25,12 @@
 | `test_naive_now_is_refused` | unit | naive な時刻での期限比較 |
 
 fixture の曲・hash は架空で、実在の楽曲・ライセンス判断ではない。
+
+## ffmpeg の混合（INV-113 / ADR-0077 §4）
+
+| テスト | レベル | 止めるもの |
+|---|---|---|
+| `tests/unit/test_bgm_ffmpeg_graph.py::test_bgm_graph_tail_snapshot_...` | unit（文字列） | ducking/fade/limiter の組み方が黙って変わること（変えるなら `BGM_MIX_VERSION` を上げ、この snapshot を更新する）。映像側の filtergraph が BGM 有効時に変わること |
+| `test_duck_cue_uses_the_narration_bus_...` / `test_zero_length_fades_...` | unit | ducking 無しの cue にサイドチェーンが付く・長さ 0 のフェードで ffmpeg が失敗する filter が出ること |
+| `test_argv_adds_one_looping_input_per_cue_...` / `test_argv_refuses_misaligned_...` | unit | 入力番号と filtergraph のずれ（別の曲が混ざる）。BGM 無しで BGM 入力を渡すこと |
+| `tests/unit/test_render_ffmpeg_real.py::test_bgm_renders_decodes_and_ducks_under_the_voice` | unit（実 ffmpeg。同ファイルの既存条件付き skip に従う） | filtergraph が実 ffmpeg で通らない・曲が混ざっていない・ducking が効かない・短い曲が繰り返されず cue が欠けること。測定は ffmpeg の volumedetect（numpy 不要） |

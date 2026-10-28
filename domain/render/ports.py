@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from contracts.music_render import BgmMixPlan
 from contracts.render import RenderEngineIdentity, RenderPlan
 
 
@@ -44,6 +45,14 @@ class FinalVideoProbe(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class BgmRenderInput:
+    """BGM を混ぜるときだけ渡す。音源は sha256 照合済みのローカルファイル（track_id → パス）。"""
+
+    mix: BgmMixPlan
+    track_paths: Mapping[str, Path]
+
+
+@dataclass(frozen=True, slots=True)
 class RenderRequest:
     """描画1回分の入力。素材は作業領域へ取り出して sha256 を照合済みのローカルファイル。"""
 
@@ -59,6 +68,8 @@ class RenderRequest:
     work_dir: Path
     output_path: Path
     timeout_seconds: float
+    #: None なら BGM 無し（導入前と同一の描画）
+    bgm: BgmRenderInput | None = None
 
 
 @dataclass(frozen=True, slots=True)

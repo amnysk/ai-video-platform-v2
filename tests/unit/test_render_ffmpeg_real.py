@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -182,3 +183,64 @@ async def test_cancellation_stops_ffmpeg_and_leaves_no_output(
     assert _processes_mentioning(token) == []
     assert not (work / "final.mp4").exists()
     assert not (work / "final.mp4.partial.mp4").exists()
+
+
+# --------------------------------------------------------------------------- BGM（ADR-0077）
+
+
+def _mean_volume_db(path: Path, start_s: float, end_s: float) -> float:
+    """ffmpeg volumedetect で区間の平均音量(dB)を測る（numpy 不要）。"""
+    done = subprocess.run(
+        [str(FFMPEG), "-hide_banner", "-nostats", "-ss", str(start_s), "-t", str(end_s - start_s),
+         "-i", str(path), "-vn", "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, check=True, timeout=60,
+    )  # fmt: skip
+    match = re.search(r"mean_volume: (-?[0-9.]+) dB", done.stderr)
+    assert match, done.stderr[-500:]
+    return float(match.group(1))
+
+
+def _bgm_request(engine, sources, work: Path, bgm_source: Path, ducking: str):
+    from contracts.music_render import BgmMixCue, BgmMixPlan
+    from domain.render.ports import BgmRenderInput
+
+    request = _request(engine, sources, work, "shorts_vertical", subtitles=False)
+    cue = BgmMixCue(
+        scene_id="s1", track_id="bgm-fixture", source_sha256="a" * 64,
+        license_evidence_hash="e" * 64, start_ms=0, end_ms=1_900, fade_in_ms=100,
+        fade_out_ms=200, level_db=-12, ducking=ducking,
+    )  # fmt: skip
+    mix = BgmMixPlan(cues=(cue,))
+    import dataclasses
+
+    return dataclasses.replace(
+        request, bgm=BgmRenderInput(mix=mix, track_paths={"bgm-fixture": bgm_source})
+    )
+
+
+async def test_bgm_renders_decodes_and_ducks_under_the_voice(
+    engine, sources, tmp_path: Path
+) -> None:
+    # 曲(0.5 秒)は cue(2 秒)より短い: -stream_loop で繰り返されること
+    bgm = _gen(
+        tmp_path / "bgm.wav",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=1000:sample_rate=44100:duration=0.5",
+    )  # noqa: E501
+    rms = {}
+    for ducking in ("none", "duck_under_voice"):
+        request = _bgm_request(engine, sources, tmp_path / ducking, bgm, ducking)
+        rendered = await engine.render(request, heartbeat=lambda: None)
+        info = PillowAvMediaProbe().probe_final_video(str(rendered.path))
+        assert info.decode_errors == 0 and info.audio_present
+        assert abs(info.duration_ms - request.plan.total_duration_ms) <= 100
+        rms[ducking] = _mean_volume_db(rendered.path, 0.3, 0.8)  # ナレーション中
+    assert rms["duck_under_voice"] < rms["none"]
+    plain = await engine.render(
+        _request(engine, sources, tmp_path / "plain", "shorts_vertical", subtitles=False),
+        heartbeat=lambda: None,
+    )
+    # BGM を足すと(ducking 無しなら)ナレーション区間の音量が上がる = 曲が実際に混ざっている
+    assert rms["none"] > _mean_volume_db(plain.path, 0.3, 0.8)

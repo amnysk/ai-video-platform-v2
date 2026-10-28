@@ -1051,6 +1051,7 @@ input_hash に入り、そのどれを変えても hash が変わる。productio
 / `tests/unit/test_bgm_off_golden.py::test_argv_without_bgm_equals_the_pre_bgm_value`
 / `tests/unit/test_bgm_resolve.py::test_no_cue_sheet_means_not_applied_and_identity_is_the_pre_bgm_hash`
 / `tests/unit/test_bgm_resolve.py::test_a_usable_cue_sheet_changes_the_input_hash_and_each_mix_field_moves_it`
+/ `tests/unit/test_bgm_ffmpeg_graph.py::test_bgm_graph_tail_snapshot_and_video_part_is_unchanged`
 
 ### INV-114 ライセンスの事実を満たさない曲は鳴らない。1 つでも満たさなければ BGM 全体を使わず、理由を返す
 cue sheet が指す曲は、描画のたびに `now` で選曲と同じ検査（`reject_reasons`）と `credits_for` を通る。未承認・失効・取消・
