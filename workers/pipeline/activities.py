@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
@@ -38,10 +38,17 @@ from contracts.pipeline import (
     UploadGateResult,
 )
 from contracts.provider_health import MAX_HELD_EPISODES, BreakerState
+from contracts.quality import QUALITY_RULE_VERSION
 from contracts.schedule_guard import WATCHDOG_CHECK_ACTIVITY, WatchdogCheckRequest, WatchdogResult
 from contracts.states import ArtifactType, EpisodeStatus, ProviderCall, ReservationStatus
 from domain.budget_gate import BudgetDecision
 from domain.daily_gate import decide_daily_mode, hold_reason_for, stage_accounts
+from domain.quality.deterministic import (
+    DEFAULT_PROVIDERS,
+    CheckProvider,
+    QualityInputs,
+    assess_for_auto_upload,
+)
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     DailyEpisodeSlotRepository,
@@ -50,6 +57,7 @@ from infrastructure.db.repositories import (
     ProviderReservationRepository,
 )
 from infrastructure.logging.emit import emit, log_guard
+from infrastructure.logging.quality_decision import log_quality_decision
 from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
 from infrastructure.temporal.daily_runs import TemporalDailyRunReader
 from infrastructure.temporal.schedules import TemporalScheduleControl
@@ -84,7 +92,14 @@ class PipelineActivities:
         uploads_paused_env: bool,
         temporal_client: Client | None = None,
         gate_ports: GatePorts | None = None,
+        quality_gate_enforce: bool = False,
+        quality_providers: Sequence[CheckProvider] = DEFAULT_PROVIDERS,
+        quality_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        # 品質ゲート（ADR-0076）。OFF（既定）では _refusal の挙動は従来と同じ
+        self._quality_enforce = quality_gate_enforce
+        self._quality_providers = quality_providers
+        self._quality_clock = quality_clock
         self._session_factory = session_factory
         self._gate = gate_ports or GatePorts()
         if not self._gate.wired:
@@ -371,4 +386,35 @@ class PipelineActivities:
                 return f"upload reservation {r.id} is spent (already uploaded?)"
             if r.status is ReservationStatus.RESERVED and r.dispatched_at is not None:
                 return f"upload reservation {r.id} is dispatched (outcome unknown)"
+        if self._quality_enforce:
+            hashes = await ArtifactMetadataRepository(session).find_current_hashes(
+                ep, ArtifactType.FINAL_VIDEO
+            )
+            if hashes is None:
+                return "quality: report_production_failed"
+            return self._quality_refusal(ep, hashes[0], hashes[1])
         return None
+
+    def _quality_refusal(self, ep: str, sha256: str, input_hash: str) -> str | None:
+        """既存の検査をすべて通った後だけ呼ぶ（ADR-0076 §1）。例外は PASS に倒さず拒否する。"""
+        try:
+            now = self._quality_clock()
+            assessment = assess_for_auto_upload(
+                QualityInputs(episode_id=ep, final_video_sha256=sha256, input_hash=input_hash),
+                now=now,
+                rule_version=QUALITY_RULE_VERSION,
+                providers=self._quality_providers,
+            )
+            log_quality_decision(
+                logger,
+                path="auto",
+                episode_id=ep,
+                final_video_sha256=sha256,
+                rule_version=QUALITY_RULE_VERSION,
+                assessment=assessment,
+            )
+        except Exception:  # noqa: BLE001 - fail-closed
+            return "quality: report_evaluation_error"
+        if assessment.decision.allowed:
+            return None
+        return f"quality: {assessment.decision.reason_code.value}"

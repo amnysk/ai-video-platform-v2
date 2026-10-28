@@ -63,3 +63,27 @@ LLM の PASS が決定論 BLOCK を救えないことを判定の入口でも確
 | `test_an_unknown_id_is_never_echoed_only_its_length_and_hash` / `test_known_ids_are_recorded_verbatim` | 拒否記録が資料由来の不明 id の先頭 64 文字を写していた（秘密・注入文が decision の記録に残る）。長さとハッシュだけにし、既知 id は監査のためそのまま残す |
 | `test_case_whitespace_and_nfkc_variants_of_forbidden_ids_are_forbidden_attempts` | `YouTube.Upload` や全角表記が「ただの不明 tool」として埋もれていた。拒否は同じまま、禁止 tool を狙った試行として監査で区別できる |
 | `test_variants_of_allowed_ids_are_still_just_not_allowlisted` | 許可 id の似た名前を曖昧に許可しない（許可は完全一致だけ） |
+
+## `tests/unit/test_quality_gate_wiring.py`（INV-104 / ADR-0076。配線。SQLite + 実 repository）
+
+| テスト | 不変条件 / レベル | なぜ必要か（捕まえる失敗） |
+|---|---|---|
+| `test_on_without_any_deterministic_check_is_refused` | INV-104 / 単体 | 検査が 0 件の Episode が「無検査 = PASS」で自動投稿される |
+| `test_on_with_only_an_llm_pass_is_refused` | INV-102 / 単体 | LLM の自己採点だけで通る |
+| `test_on_block_is_refused` / `test_on_review_is_refused_and_episode_stays_render_ready` | INV-104 / 単体 | BLOCK/REVIEW が許可に化ける。拒否時に Episode 状態を動かしてしまう（遷移表に無い遷移） |
+| `test_on_pass_and_warn_are_allowed_...` | INV-104 / 単体 | 品質を足したことで正常系まで止まる |
+| `test_on_pass_still_refused_when_reservation_is_dispatched` | INV-104 + 既存の予約検査 / 単体 | PASS が既存の拒否（二重投稿防止）を上書きする |
+| `test_on_existing_refusals_come_before_quality` | INV-104 / 単体 | 既存の拒否理由が品質の理由に置き換わる |
+| `test_on_a_provider_exception_is_refused_never_pass` | INV-101 / 単体 | 検査の例外で落ちる、または例外文（入力由来）が理由に載る |
+| `test_on_an_evaluate_exception_is_refused` / `test_on_a_clock_exception_is_refused` | INV-101 / 単体 | 評価・時計の例外が PASS に倒れる |
+| `test_on_logs_the_decision_with_contract_fields` | ADR-0076 §3 / 単体 | 判定の証跡（理由・Episode・sha256・規則版）が構造化ログに残らない |
+| `test_builder_with_no_input_aggregates_to_review_with_no_model` | INV-101 / 単体 | 入力が無いのに PASS のレポートができる。model が入る |
+| `test_builder_collects_checks_from_every_provider_in_order` | 拡張点 / 単体 | 他ブランチの検査を gate を触らずに足せなくなる |
+| `test_technical_qa_and_description_providers` | INV-106 / 単体 | 「該当なし」が PASS になる。lint の文面に入力が写る |
+| `test_llm_pass_cannot_lift_a_deterministic_block` | INV-102 / 単体 | 組み立て経由で LLM の PASS が BLOCK を緩める |
+| `test_a_report_for_another_artifact_is_refused` / `test_a_stale_rule_version_is_refused_...` | INV-107 / 単体 | 別 artifact・古い規則版のレポートが根拠に使われる（gate が同じ鮮度検査を通る） |
+| `test_manual_assessment_allows_review_but_never_block_or_failure` / `test_auto_assessment_never_approves_review` | INV-104 / 単体 | 手動の「REVIEW 許可」が BLOCK・作成失敗・自動経路へ漏れる |
+| `test_off_gate_ignores_quality_even_with_block_and_broken_providers` / `test_off_gate_matches_on_gate_for_every_pre_existing_refusal` | INV-104（OFF 同値）/ 単体 | flag OFF で挙動が変わり、本番の既存の投稿が止まる（既存 gate テストを変えずに守る） |
+| `test_setting_defaults_off_and_reads_the_single_key` | AGENTS §8 / 単体 | 既定が ON になる。キー名が複数箇所に散る |
+| `test_manual_on_block_is_409` / `..._provider_failure_is_409` / `..._without_final_video_is_409` | INV-104 / API（SQLite） | 手動経路が品質を迂回する。拒否時に workflow を起動してしまう |
+| `test_manual_on_review_is_allowed_and_the_approval_is_logged` / `test_manual_on_pass_is_allowed` | ADR-0076 §4 / API | 人の承認が記録されない。正常系が止まる |

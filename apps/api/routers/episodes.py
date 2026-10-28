@@ -8,13 +8,21 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
-from apps.api.dependencies import get_session_factory, get_workflow_starter
+from apps.api.dependencies import (
+    get_quality_clock,
+    get_quality_providers,
+    get_session_factory,
+    get_settings,
+    get_workflow_starter,
+)
 from apps.api.schemas import (
     ArtifactView,
     CreateEpisodeRequest,
@@ -31,15 +39,19 @@ from apps.api.schemas import (
 )
 from apps.api.workflow_starter import WorkflowStarter, render_workflow_id, upload_workflow_id
 from contracts.log_contract import EventName, LogStage, Outcome
+from contracts.quality import QUALITY_RULE_VERSION, QualityReason
 from contracts.render import DEFAULT_RENDER_PROFILE_ID, get_render_profile
 from contracts.states import (
     PRODUCTION_ADMISSIBLE_STATUSES,
     RENDER_ADMISSIBLE_STATUSES,
     UPLOAD_ADMISSIBLE_STATUSES,
+    ArtifactType,
     EpisodeStatus,
     ProviderCall,
 )
 from domain.pipeline.resume_plan import ReservationSummary, ResumePlan, build_resume_plan
+from domain.quality.deterministic import CheckProvider, QualityInputs, assess_for_manual_upload
+from infrastructure.config import Settings
 from infrastructure.db.provider_health_repositories import PostgresProviderHealth
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
@@ -48,6 +60,7 @@ from infrastructure.db.repositories import (
     ProviderReservationRepository,
 )
 from infrastructure.logging.emit import emit, log_guard
+from infrastructure.logging.quality_decision import log_quality_decision
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +68,9 @@ router = APIRouter(prefix="/episodes", tags=["episodes"])
 
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 Starter = Annotated[WorkflowStarter, Depends(get_workflow_starter)]
+AppSettings = Annotated[Settings, Depends(get_settings)]
+QualityProviders = Annotated[Sequence[CheckProvider], Depends(get_quality_providers)]
+QualityClock = Annotated[Callable[[], datetime], Depends(get_quality_clock)]
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=CreateEpisodeResponse)
@@ -237,6 +253,9 @@ async def start_upload(
     episode_id: uuid.UUID,
     session_factory: SessionFactory,
     starter: Starter,
+    settings: AppSettings,
+    quality_providers: QualityProviders,
+    quality_clock: QualityClock,
 ) -> StartUploadResponse:
     """upload 工程を起動するだけ（INV-16 / ADR-0020）。本文は受け取らない。
 
@@ -276,6 +295,10 @@ async def start_upload(
                     f"stage ({owner_workflow or 'unknown'}); resume that stage instead"
                 ),
             )
+    if settings.quality_gate_enforce:
+        await _require_quality_for_manual_upload(
+            episode.id, session_factory, quality_providers, quality_clock
+        )
     try:
         workflow_id = await starter.start_upload_workflow(episode_id=episode.id)
     except WorkflowAlreadyStartedError as exc:
@@ -286,6 +309,47 @@ async def start_upload(
     return StartUploadResponse(
         episode_id=episode.id, status=episode.status, workflow_id=workflow_id
     )
+
+
+async def _require_quality_for_manual_upload(
+    episode_id: str,
+    session_factory: SessionFactory,
+    providers: Sequence[CheckProvider],
+    clock: Callable[[], datetime],
+) -> None:
+    """flag ON の手動投稿: BLOCK・作成失敗は 409。REVIEW は承認としてログに残す（ADR-0076 §4）。"""
+    try:
+        async with session_factory() as session:
+            hashes = await ArtifactMetadataRepository(session).find_current_hashes(
+                episode_id, ArtifactType.FINAL_VIDEO
+            )
+        if hashes is None:
+            raise LookupError("no current final_video")
+        sha256, input_hash = hashes
+        inputs = QualityInputs(
+            episode_id=episode_id, final_video_sha256=sha256, input_hash=input_hash
+        )
+        assessment = assess_for_manual_upload(
+            inputs, now=clock(), rule_version=QUALITY_RULE_VERSION, providers=providers
+        )
+        log_quality_decision(
+            logger,
+            path="manual",
+            episode_id=episode_id,
+            final_video_sha256=sha256,
+            rule_version=QUALITY_RULE_VERSION,
+            assessment=assessment,
+        )
+    except Exception as exc:  # noqa: BLE001 - fail-closed: 判定できないものは通さない
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"quality: {QualityReason.REPORT_PRODUCTION_FAILED.value}",
+        ) from exc
+    if not assessment.decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"quality: {assessment.decision.reason_code.value}",
+        )
 
 
 async def _load_resume_plan(
