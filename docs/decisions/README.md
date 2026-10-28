@@ -64,3 +64,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0038](./0038-evidence-research-and-script-verification.md) | Evidence Research と台本の照合を research の成果物として実装する | Accepted |
 | [0039](./0039-trend-research.md) | Trend Research を research の成果物として実装し、検証つきで読み出せるようにする | Accepted |
 | [0040](./0040-structured-logs-and-opensearch-search-replica.md) | 構造化 JSON ログと OpenSearch の検索用副本（ログは業務判断に使わない） | Accepted |
+| [0071](./0071-geo-manifest-and-deterministic-map-verification.md) | 地図は GeoManifest から描き、位置の検証は決定論的な純関数が行う（LLM の採点で上書きしない） | Accepted |

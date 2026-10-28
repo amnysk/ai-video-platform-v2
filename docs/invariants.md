@@ -417,3 +417,29 @@ Replayer で replay。非決定にならず1件も発行しない）
 / `tests/unit/test_log_old_history_replay.py::test_the_old_histories_cover_every_stage_workflow`
 / `tests/architecture/test_logging_boundaries.py::test_workflow_event_names_and_stages_are_contract_vocabulary`
 / `tests/unit/test_pipeline_workflows.py`（既存の履歴 fixture の replay がログ発行を足した後も通る）
+
+## N. 地図・地理（ADR-0071）
+
+### INV-93 実在の位置を主張する地図シーンは GeoManifest を持ち、無ければ通らない
+地図が実在の場所を表すと主張するシーンは `GeoManifest` を要する。manifest 無しは BLOCK（fail-closed）。
+**機械検査**: 未検査（この枝は純関数と契約だけで、どの workflow・render もまだ検証を呼ばない。
+「全ての地図シーンが検証を通る」ことは接続する枝で検査する。願望であって保証ではない）
+
+### INV-94 地図の検証で BLOCK / REVIEW になったものは、LLM の評価で PASS にならない
+`GeoVerification.verdict` は check の最悪値と一致しなければ作れず、LLM の評価は `combine_verdicts` を
+通してのみ合流し、等しいか厳しい側にしか動かさない。
+**機械検査**: `tests/contract/test_geo_contracts.py::test_a_verification_cannot_be_milder_than_its_worst_check`
+（結合関数の検査は純関数の追加と同時に足す）
+
+### INV-95 座標は名前付きの lat / lon（EPSG:4326）で持ち、範囲を検証する
+`GeoPlace` / `GeoBBox` / `ReferencePlace` は `lat` / `lon` を名前で持ち、範囲外・NaN・無限大・CRS 違い・
+位置引数の座標ペアを受け取らない。
+**機械検査**: `tests/contract/test_geo_contracts.py::test_coordinates_outside_epsg4326_ranges_are_rejected`
+/ `tests/contract/test_geo_contracts.py::test_coordinates_are_named_fields_not_a_positional_pair`
+/ `tests/contract/test_geo_contracts.py::test_only_epsg4326_is_accepted`
+/ `tests/contract/test_geo_contracts.py::test_bbox_is_named_ordered_and_in_range`
+
+### INV-96 模式図は「縮尺不同（Not to scale）」の表示を持ち、無ければ BLOCK
+`map_kind == schematic` の manifest は `schematic_disclaimer` に表示文を持つ。無い・空・縮尺不同を示す語が
+無いものは BLOCK。
+**機械検査**: 未検査（検証器の追加と同時に足す）
