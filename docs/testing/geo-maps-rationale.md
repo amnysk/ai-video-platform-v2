@@ -70,3 +70,11 @@
 | `test_with_the_flag_off_nothing_is_rendered` | OFF で描画関数が呼ばれない（spy で 0 回） |
 | `test_with_the_flag_on_a_map_is_rendered` | OFF が常に None を返すだけの退化でない |
 | `test_render_identity_and_filtergraph_are_byte_identical_to_before` | golden: 接続前の系統（6d14c30 / audit 枝）で計算した `render_plan_sha256` と filtergraph の sha256。ffmpeg_graph の `fit_filter` 改名など本枝の変更が既存の出力を変えていない証明（2 profile） |
+
+## グリフ欠落（独立レビュー MAJOR 1。INV-118 / INV-119）
+
+| テスト | なぜ必要か |
+|---|---|
+| `test_a_non_latin_label_without_a_capable_font_is_not_a_pass` | 既定フォント（ASCII のみ）で「関ヶ原」を描くと豆腐になるが、箱の大きさは変わらず従来は PASS だった。描画器が欠落を申告し、見た目の検査が BLOCK |
+| `test_ascii_labels_are_not_reported_as_missing_glyphs` | 検出が全ラベルを欠落扱いする過剰検出の防止 |
+| `test_a_disclaimer_with_missing_glyphs_is_blocked` | 模式図の免責が豆腐では INV-96 の表示要件を満たさない |

@@ -116,6 +116,8 @@ class PresentationReasonCode(StrEnum):
     LOW_CONTRAST = "low_contrast"
     LABEL_OUTSIDE_CANVAS = "label_outside_canvas"
     DISCLAIMER_NOT_VISIBLE = "disclaimer_not_visible"
+    #: 選んだフォントに無い字がある（豆腐で描かれる）。読めない地図は投稿しない
+    FONT_MISSING_GLYPHS = "font_missing_glyphs"
 
 
 class Rgb(FrozenModel):
@@ -145,6 +147,8 @@ class LayoutText(FrozenModel):
     target_id: str = Field(pattern=f"^(?:{TARGET_ID_PATTERN})$")
     box: PixelBox
     font_px: int = Field(gt=0, le=1000)
+    #: フォントにグリフが無い字を含む（描画器が申告。豆腐になる）
+    glyphs_missing: bool = False
     text_rgb: Rgb
     plate_rgb: Rgb
 

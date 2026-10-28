@@ -60,7 +60,14 @@ def _text_problems(item: LayoutText, width: int, height: int) -> list[Presentati
         out.append(P.LOW_CONTRAST)
     if not _inside(item.box, width, height):
         out.append(P.LABEL_OUTSIDE_CANVAS)
+    if item.glyphs_missing:
+        out.append(P.FONT_MISSING_GLYPHS)
     return out
+
+
+def _verdict_for(code: PresentationReasonCode) -> GeoVerdict:
+    """読めない（豆腐）地図は止める。他の見た目の問題は人が見る。"""
+    return GeoVerdict.BLOCK if code is P.FONT_MISSING_GLYPHS else GeoVerdict.REVIEW
 
 
 def check_map_presentation(layout: MapLayout) -> MapPresentationResult:
@@ -68,7 +75,7 @@ def check_map_presentation(layout: MapLayout) -> MapPresentationResult:
     for item in layout.labels:
         findings.extend(
             PresentationFinding(
-                verdict=GeoVerdict.REVIEW, reason_code=code, target_id=item.target_id
+                verdict=_verdict_for(code), reason_code=code, target_id=item.target_id
             )
             for code in _text_problems(item, layout.width, layout.height)
         )
@@ -96,7 +103,7 @@ def check_map_presentation(layout: MapLayout) -> MapPresentationResult:
     elif disclaimer is not None:
         findings.extend(
             PresentationFinding(
-                verdict=GeoVerdict.REVIEW, reason_code=code, target_id=layout.scene_id
+                verdict=_verdict_for(code), reason_code=code, target_id=layout.scene_id
             )
             for code in _text_problems(disclaimer, layout.width, layout.height)
         )

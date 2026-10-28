@@ -16,6 +16,7 @@ import pytest
 from PIL import Image
 
 from contracts.geo import GeoVerdict
+from contracts.geo_map import PresentationReasonCode
 from contracts.render import get_render_profile
 from domain.geo.map_presentation import check_map_presentation
 from infrastructure.media.map_clip import build_map_clip_argv
@@ -221,3 +222,36 @@ def test_the_clip_argv_rejects_a_non_positive_duration() -> None:
     profile = get_render_profile("shorts_vertical")
     with pytest.raises(ValueError):
         build_map_clip_argv("ffmpeg", "map.png", "map.mp4", 0, profile)
+
+
+# ------------------------------------------------------------------ グリフ欠落（INV-119 / INV-118）
+
+
+def _japanese_manifest():
+    m = _manifest()
+    labels = (m.labels[0].model_copy(update={"text": "関ヶ原"}), *m.labels[1:])
+    return m.model_copy(update={"labels": labels})
+
+
+def test_a_non_latin_label_without_a_capable_font_is_not_a_pass() -> None:
+    """既定フォントに無い字は豆腐になる。箱の大きさが同じでも PASS にしない。"""
+    rendered = render_map(_japanese_manifest(), SPEC)
+    assert [t.target_id for t in rendered.layout.labels if t.glyphs_missing] == ["gz:sekigahara"]
+    result = check_map_presentation(rendered.layout)
+    assert result.verdict is GeoVerdict.BLOCK
+    assert (PresentationReasonCode.FONT_MISSING_GLYPHS, GeoVerdict.BLOCK) in {
+        (f.reason_code, f.verdict) for f in result.findings
+    }
+
+
+def test_ascii_labels_are_not_reported_as_missing_glyphs() -> None:
+    rendered = render_map(_manifest(), SPEC)
+    assert not any(t.glyphs_missing for t in rendered.layout.labels)
+
+
+def test_a_disclaimer_with_missing_glyphs_is_blocked() -> None:
+    m = fg.manifest(
+        map_kind="schematic", schematic_disclaimer="模式図・縮尺不同", places=[], labels=[]
+    )
+    rendered = render_map(m, SPEC)
+    assert check_map_presentation(rendered.layout).verdict is GeoVerdict.BLOCK

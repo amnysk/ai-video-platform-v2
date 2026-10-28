@@ -1080,7 +1080,9 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/architecture/test_geo_maps_boundaries.py::test_map_modules_import_no_paid_provider_network_clock_or_random`
 / `tests/architecture/test_geo_maps_boundaries.py::test_the_detector_catches_violating_fixtures`
 （Pillow / FreeType の版を上げたら同一性は再確認が要る。バイト列の固定値 golden は版依存なので持たず、
-同一入力の再現性で検査する。フォントのグリフ欠落は未検査）
+同一入力の再現性で検査する）
+グリフ欠落: 選んだフォントに無い字（日本語ラベルを既定フォントで描く等）は `glyphs_missing` として申告され、
+見た目の検査が BLOCK（`FONT_MISSING_GLYPHS`）。`tests/unit/test_geo_map_render.py::test_a_non_latin_label_without_a_capable_font_is_not_a_pass`
 
 ### INV-120 flag `GEO_MAPS_ENABLED` が OFF（既定）なら、render / storyboard / production の出力は接続前と同じ
 `Settings.geo_maps_enabled` の既定は False。OFF の `render_map_scene_visual` は何も描かず `None`。地図の部品は

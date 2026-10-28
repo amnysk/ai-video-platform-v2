@@ -90,7 +90,8 @@ dataclass の変更は workflow replay を壊す（INV-1x、既存 replay テス
   QualityGate が `check_map_accuracy` / `check_map_presentation` を呼ぶ配線は別担当。
 - 描画の同一性はフォントのバイト列・Pillow の版に依存する。版を上げたら golden の再確認が要る
   （`constraints.txt` で固定）。同梱フォント（Pillow 既定）は ASCII のみで、日本語ラベルは
-  `RENDER_FONT_PATH` と同じ CJK フォントを渡す必要がある。グリフ欠落は検出しない（未対応・後続）。
+  `RENDER_FONT_PATH` と同じ CJK フォントを渡す必要がある。フォントに無い字は notdef の形との一致で検出し、
+  見た目の検査が BLOCK（`FONT_MISSING_GLYPHS`）にする（黙って豆腐にしない）。
 - 描画しない国境・陸海の地形は無い（点とラベルだけ）。これは「模式図」と同等の情報量であり、
   `historical` の地図として提示するには背景地図データ（許諾・調達は別の判断）が要る。
 - 時代・国境の BLOCK 引き上げの対象は初期判断。実データで REVIEW に戻す余地があるが、戻すなら本 ADR を

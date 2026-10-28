@@ -73,6 +73,16 @@ def _load_font(
     return font, f"font-sha256:{sha256_hex(font_bytes)}"
 
 
+def _glyphs_missing(font: ImageFont.FreeTypeFont | ImageFont.ImageFont, text: str) -> bool:
+    """空白以外の字のうち、フォントの「無い字」の表示（notdef）と同じ形になるものがあるか。
+
+    Pillow は無い字を例外にせず notdef の箱で描く。未割当の符号位置の形と一致すれば無いとみなす
+    （保守的: 実在するが notdef と同形のグリフは無い前提）。
+    """
+    notdef = bytes(font.getmask("\U0010ffff"))
+    return any(not ch.isspace() and bytes(font.getmask(ch)) == notdef for ch in text)
+
+
 def _text_size(
     draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont | ImageFont.ImageFont
 ) -> tuple[int, int, int, int]:
@@ -126,6 +136,7 @@ def render_map(
                 target_id=label.place_id,
                 box=PixelBox(x0=x0, y0=y0, x1=x0 + plate_w, y1=y0 + plate_h),
                 font_px=spec.font_px,
+                glyphs_missing=_glyphs_missing(font, label.text),
                 text_rgb=spec.label_text,
                 plate_rgb=spec.label_plate,
             )
@@ -150,6 +161,7 @@ def render_map(
             target_id=manifest.scene_id,
             box=PixelBox(x0=x0, y0=y0, x1=x0 + plate_w, y1=y0 + plate_h),
             font_px=spec.font_px,
+            glyphs_missing=_glyphs_missing(font, text),
             text_rgb=spec.label_text,
             plate_rgb=spec.label_plate,
         )
