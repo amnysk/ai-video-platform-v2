@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 
 from contracts.music import BgmTrack, MusicCueSheet, is_blank_text
 from contracts.upload import sanitize_youtube_text
+from domain.music.selection import reject_reasons
 
 #: クレジット行どうしの区切り（説明欄に置く形。バイト数の計算に含める）。
 CREDIT_SEPARATOR = "\n"
@@ -16,14 +18,28 @@ class CreditsError(ValueError):
     """cue sheet とカタログが食い違う。帰属表記を推測で作らず、呼び出し側が止める。"""
 
 
-def credits_for(cue_sheet: MusicCueSheet, catalog: Iterable[BgmTrack]) -> tuple[str, ...]:
-    """cue sheet が使う曲のうち帰属必須のものの指定文（カタログの原文）を初出順・重複なしで返す。"""
+def credits_for(
+    cue_sheet: MusicCueSheet, catalog: Iterable[BgmTrack], *, now: datetime
+) -> tuple[str, ...]:
+    """cue sheet が使う曲のうち帰属必須のものの指定文（カタログの原文）を初出順・重複なしで返す。
+
+    選曲の後で取消・失効・期限切れになった曲を通さないよう、``now`` で曲の状態を再検査する
+    （platform / format は選曲時に確認済みなので、ここでは見ない）。
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
     by_id = {t.track_id: t for t in catalog}
     out: list[str] = []
     for cue in cue_sheet.cues:
         track = by_id.get(cue.track_id)
         if track is None:
             raise CreditsError(f"cue for unknown track {cue.track_id!r}")
+        reasons = reject_reasons(track, now=now)
+        if reasons:
+            names = ", ".join(r.value for r in reasons)
+            raise CreditsError(f"{cue.track_id!r} is no longer usable: {names}")
+        if cue.license_evidence_hash != track.license_evidence_sha256:
+            raise CreditsError(f"cue license_evidence_hash does not match {cue.track_id!r}")
         if cue.source_sha256 != track.file_sha256:
             raise CreditsError(f"cue source_sha256 does not match catalog for {cue.track_id!r}")
         if track.attribution_required:

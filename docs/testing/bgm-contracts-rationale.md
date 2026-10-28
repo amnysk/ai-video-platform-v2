@@ -71,3 +71,16 @@ fixture（`tests/support/bgm_catalog.py`）の値は架空であり、実在曲�
 | `test_music_credits.py::test_fit_uses_the_shared_description_limit_not_a_literal` | 上限を literal で複製し、`YOUTUBE_DESCRIPTION_MAX_BYTES` とずれること |
 | `test_music_contracts.py::test_attribution_text_blank_after_removing_whitespace_and_format_chars_is_rejected` / `..._uses_nfkc` | ゼロ幅文字・NBSP だけの指定文が `strip()` を通り、見えないクレジットで INV-98 を満たしたことになること |
 | `test_music_contracts.py::test_cue_sheet_rejects_*` / `..._allows_adjacent_...` | 同じ scene で重なる・重複する cue、start_ms が逆順の cue（Render が曖昧な mix を作る）。別 scene どうしの重なり（クロスフェード）は許す |
+
+## レビュー指摘の修正（M2 / m5 / m6 / m7）
+
+| テスト | 止めるもの |
+|---|---|
+| `test_music_credits.py::test_cue_license_evidence_hash_must_match_the_catalog` | cue が別のライセンス証拠 hash を指しているのに使用証跡・クレジットが作られること |
+| `test_music_credits.py::test_track_that_stopped_being_usable_after_selection_is_rejected` | 選曲の後に取消・失効・隔離・期限切れ（`valid_until==now` を含む）・再利用/商用不可になった曲が、cue sheet からそのまま使われること。`now` は引数で、時計は読まない |
+| `test_music_credits.py::test_naive_now_is_refused_by_credits_for` / `..._would_be_rewritten_on_send_is_an_error_even_if_contract_is_bypassed` | naive な now・契約を迂回した `<` `>` 入りの指定文 |
+| `test_music_selection.py::test_naive_valid_until_...` / `test_naive_license_checked_at_...` | 契約を迂回した naive 時刻が比較時に TypeError で落ちる（理由なしの異常終了）。理由 `invalid_timestamp` で除外する（fail closed） |
+| `test_music_selection.py::test_license_checked_in_the_future_is_excluded` | 確認日時が未来の（時計ずれ・偽の）承認の採用 |
+| `test_music_ingest.py::test_object_key_must_fullmatch_the_content_addressed_shape` / `..._single_alnum_extension_or_none_is_accepted` | 入れ子キー・二重拡張子・改行付きなど、sha と 1 対 1 でない object_key（`startswith` では通っていた） |
+
+`credits_for` の署名を `now` つきに変えたため、既存のクレジットテストの呼び出しを `now=NOW` に更新した（レビューで承認された仕様変更。期待値は緩めていない）。

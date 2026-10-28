@@ -154,3 +154,26 @@ def test_now_is_not_read_from_the_clock() -> None:
     far_future = datetime(2100, 1, 1, tzinfo=UTC)
     result = select((make_track(valid_until=NOW + timedelta(days=1)),), now=far_future)
     assert result.candidates == ()
+
+
+def test_naive_valid_until_bypassing_the_contract_is_excluded_with_a_reason_not_a_crash() -> None:
+    bad = BgmTrack.model_construct(
+        **{**make_track().model_dump(), "valid_until": datetime(2030, 1, 1)}
+    )
+    result = select((bad,))
+    assert result.candidates == ()
+    assert RejectReason.INVALID_TIMESTAMP in result.rejected[0].reasons
+
+
+def test_naive_license_checked_at_bypassing_the_contract_is_excluded_with_a_reason() -> None:
+    bad = BgmTrack.model_construct(
+        **{**make_track().model_dump(), "license_checked_at": datetime(2026, 1, 1)}
+    )
+    result = select((bad,))
+    assert RejectReason.INVALID_TIMESTAMP in result.rejected[0].reasons
+
+
+def test_license_checked_in_the_future_is_excluded() -> None:
+    result = select((make_track(license_checked_at=NOW + timedelta(seconds=1)),))
+    assert result.candidates == ()
+    assert RejectReason.LICENSE_CHECKED_IN_FUTURE in result.rejected[0].reasons

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from domain.music import IngestOutcome, IngestRejectReason, ingest_check
 from tests.support.bgm_catalog import catalog, make_track, sha
 
@@ -61,3 +63,19 @@ def test_ingest_check_does_not_mutate_the_catalog() -> None:
     before = catalog()
     ingest_check(before, make_track("bgm-new", "1"), sha("1"))
     assert before == catalog()
+
+
+@pytest.mark.parametrize(
+    "suffix", ["/evil.mp3", ".", ".mp3.bak/x", ".tar.gz", "x", " .mp3", ".mp3\n"]
+)
+def test_object_key_must_fullmatch_the_content_addressed_shape(suffix: str) -> None:
+    new = make_track("bgm-new", "1", object_key=f"music/originals/{sha('1')}{suffix}")
+    decision = ingest_check(catalog(), new, sha("1"))
+    assert decision.outcome is IngestOutcome.REJECT
+    assert decision.reason is IngestRejectReason.OBJECT_KEY_NOT_CONTENT_ADDRESSED
+
+
+@pytest.mark.parametrize("suffix", ["", ".mp3", ".wav", ".M4A"])
+def test_object_key_with_a_single_alnum_extension_or_none_is_accepted(suffix: str) -> None:
+    new = make_track("bgm-new", "1", object_key=f"music/originals/{sha('1')}{suffix}")
+    assert ingest_check(catalog(), new, sha("1")).outcome is IngestOutcome.ACCEPT

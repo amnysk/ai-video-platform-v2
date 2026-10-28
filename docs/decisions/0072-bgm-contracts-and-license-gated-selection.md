@@ -23,6 +23,13 @@ BGM の語彙と形を `contracts/music.py` の1箇所に定義し、選曲・�
 - 帰属の指定文は原文を取り出し、説明欄に収まらなければ BLOCK を返す。切り詰めない（INV-98）
 - 取込は管理者の明示操作。sha256 で重複排除し、変造を拒否する（INV-99）
 - cue sheet は production の成果物から独立し、数値は int（INV-100）
+- 帰属の指定文は説明欄の sanitize（`contracts/upload.py` の `sanitize_youtube_text`、`<` `>` を全角へ置換）で
+  書き換えられてはならない。契約が `<` `>` を拒否し、収まるかは sanitize **後**のバイト数で測る（定義は upload に1つ）。
+  このため `contracts/music.py` は `contracts.upload` を import する（INV-100 の「production Artifact に依存しない」は
+  Artifact 本体の契約を指し、説明欄の文字規則の共有は許す）
+- `credits_for` は `now` を取り、選曲の後に取消・失効した曲と、cue の `license_evidence_hash` が違うものを止める
+- cue sheet は start_ms 昇順・同一 scene で重ならない。別 scene どうしの重なり（クロスフェード）は意図的に許す
+- 契約を迂回した値（naive な時刻など）は例外で落とさず、理由つきで除外する（fail closed）
 - ライセンスの**事実**はコードに持たない。`license_status` は人が証拠（`license_evidence_sha256`）を見て与える値で、
   ここは運ぶだけ。`approved` は証拠 hash と確認日時が無いと作れない
 
@@ -50,5 +57,6 @@ BGM の語彙と形を `contracts/music.py` の1箇所に定義し、選曲・�
 - Remotion 前提（設計 v3）と ADR-0019（ffmpeg）の食い違いが残る。mix の実装は ffmpeg の filter で組む想定だが未確認
 - `target_relative_level_db` の範囲（-96〜0）は形だけの上下限で、校正した閾値ではない。実素材で校正する（設計 v3 §4.3）
 - カタログ DDL は後続の枝で採番する（本 ADR は DDL・新しい `ArtifactType` を足さない）
+- cue の重なりの許容範囲（別 scene 間のクロスフェードの最大長など）は実素材での校正後に狭める
 - `now` を引数に取るので、呼び出し側が決定論的な時刻を渡す責任を負う
 - INV-41〜96 は他の枝の予約。この枝のマージ時に欠番が見える（番号は再利用しない）

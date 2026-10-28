@@ -24,6 +24,9 @@ class RejectReason(StrEnum):
     PLATFORM_NOT_ALLOWED = "platform_not_allowed"
     FORMAT_NOT_ALLOWED = "format_not_allowed"
     ATTRIBUTION_TEXT_MISSING = "attribution_text_missing"
+    #: naive な時刻など、比較できない値を持つ（契約を迂回した値）。判断できないので除外する。
+    INVALID_TIMESTAMP = "invalid_timestamp"
+    LICENSE_CHECKED_IN_FUTURE = "license_checked_in_future"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,25 +43,40 @@ class SelectionResult:
     rejected: tuple[Rejection, ...]
 
 
+def _aware(value: datetime | None) -> bool:
+    return value is None or (value.tzinfo is not None and value.utcoffset() is not None)
+
+
 def reject_reasons(
-    track: BgmTrack, *, fmt: VideoFormat, platform: Platform, now: datetime
+    track: BgmTrack,
+    *,
+    now: datetime,
+    fmt: VideoFormat | None = None,
+    platform: Platform | None = None,
 ) -> tuple[RejectReason, ...]:
+    """除外理由。``fmt`` / ``platform`` が None の項目は検査しない（cue sheet の再検査用）。"""
     out: list[RejectReason] = []
     if track.license_status != "approved":
         out.append(RejectReason.LICENSE_NOT_APPROVED)
     if track.status != "active":
         out.append(RejectReason.TRACK_NOT_ACTIVE)
-    if track.valid_until is not None and track.valid_until <= now:
-        out.append(RejectReason.EXPIRED)
+    if not (_aware(track.valid_until) and _aware(track.license_checked_at)):
+        # 比較すると TypeError になる。落とさず、理由つきで除外する（fail closed）。
+        out.append(RejectReason.INVALID_TIMESTAMP)
+    else:
+        if track.valid_until is not None and track.valid_until <= now:
+            out.append(RejectReason.EXPIRED)
+        if track.license_checked_at is not None and track.license_checked_at > now:
+            out.append(RejectReason.LICENSE_CHECKED_IN_FUTURE)
     if not track.reuse_allowed:
         out.append(RejectReason.REUSE_NOT_ALLOWED)
     if not track.commercial_use_allowed:
         out.append(RejectReason.COMMERCIAL_NOT_ALLOWED)
     if not track.modification_allowed:
         out.append(RejectReason.MODIFICATION_NOT_ALLOWED)
-    if platform not in track.allowed_platforms:
+    if platform is not None and platform not in track.allowed_platforms:
         out.append(RejectReason.PLATFORM_NOT_ALLOWED)
-    if fmt not in track.allowed_formats:
+    if fmt is not None and fmt not in track.allowed_formats:
         out.append(RejectReason.FORMAT_NOT_ALLOWED)
     # 契約が弾く不整合だが、model_construct 等で迂回された値も選ばない（多層防御）。
     if track.attribution_required and is_blank_text(track.exact_attribution_text or ""):
@@ -81,7 +99,7 @@ def select_approved(
     legal: list[BgmTrack] = []
     rejected: list[Rejection] = []
     for track in catalog:
-        reasons = reject_reasons(track, fmt=fmt, platform=platform, now=now)
+        reasons = reject_reasons(track, now=now, fmt=fmt, platform=platform)
         if reasons:
             rejected.append(Rejection(track.track_id, reasons))
         else:

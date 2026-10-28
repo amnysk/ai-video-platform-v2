@@ -438,18 +438,24 @@ Replayer で replay。非決定にならず1件も発行しない）
 
 ### INV-98 帰属必須の指定文は、全文を説明欄に置くか、置けないなら Episode を止める
 帰属必須の曲を使う cue sheet は、カタログの `exact_attribution_text`（原文）をそのまま取り出す。
-cue 側のコピーが原文と違う・欠ける・曲がカタログに無い・source sha が違う場合はエラーにして推測で補わない。
+cue 側のコピーが原文と違う・欠ける・曲がカタログに無い・source sha / license_evidence_hash が違う・選曲後に取消/失効/期限切れ/隔離になった場合はエラーにして推測で補わない。
 5000 UTF-8 bytes の説明欄に収まらないときは BLOCK を返し、切り詰めた版は作らない。
 **機械検査**: `tests/unit/test_music_credits.py::test_credit_required_track_yields_exact_text`
 / `tests/unit/test_music_credits.py::test_stale_or_altered_credit_copy_in_cue_is_an_error_not_silently_replaced`
 / `tests/unit/test_music_credits.py::test_fit_credits_blocks_instead_of_truncating`
 / `tests/unit/test_music_credits.py::test_fit_credits_counts_utf8_bytes_not_characters`
 / `tests/unit/test_music_contracts.py::test_attribution_text_is_required_iff_attribution_required`
-（説明欄の組み立てと投稿前 Gate への結線は後続。**投稿が実際に BLOCK されることは未検査**）
+/ `tests/unit/test_music_contracts.py::test_attribution_text_with_chars_the_description_sanitizer_rewrites_is_rejected`
+/ `tests/unit/test_music_contracts.py::test_attribution_text_blank_after_removing_whitespace_and_format_chars_is_rejected`
+/ `tests/unit/test_music_credits.py::test_fitted_credits_are_byte_identical_to_what_is_sent`
+/ `tests/unit/test_music_credits.py::test_cue_license_evidence_hash_must_match_the_catalog`
+/ `tests/unit/test_music_credits.py::test_track_that_stopped_being_usable_after_selection_is_rejected`
+（収まるかの判定は、送信時と同じ `sanitize_youtube_text`（contracts/upload）の後のバイト数で行う。指定文に `<` `>` は持てない。
+説明欄の組み立てと投稿前 Gate への結線は後続。**投稿が実際に BLOCK されることは未検査**）
 
 ### INV-99 BGM の取込は管理者の明示操作であり、agent・日次の通常制作は行わない
 カタログへの取込は、人が音源と証拠を用意して明示的に行う。取込検査は実ファイルの sha256 と申告の一致、
-object_key が sha による content-addressed であること、同一 sha の再利用（再収集なし）、同一 track_id の
+object_key が `music/originals/<sha>(.<拡張子>)?` に完全一致すること、同一 sha の再利用（再収集なし）、同一 track_id の
 中身違い（変造）の拒否を行う。既存曲のライセンス事実は再取込の申告で変わらない。
 agent・日次制作は音源を取得せず、未収録なら収集依頼を積むだけ（設計 v3 §4.1）。
 **機械検査**: `tests/unit/test_music_ingest.py::test_sha_mismatch_is_rejected_as_tampered`
@@ -462,7 +468,7 @@ agent・日次制作は音源を取得せず、未収録なら収集依頼を積
 
 ### INV-100 cue sheet は production の成果物から独立しており、BGM だけの変更で fal を呼ばない
 `contracts/music.py` は production Artifact の契約（画像・音声・動画・状態語彙）を import せず、cue sheet は
-それらの Artifact を参照しない。時間・音量は int で持ち、hash を揺らさない。`domain/music` は純粋（I/O・時計なし）。
+それらの Artifact を参照しない。時間・音量は int で持ち、hash を揺らさない。cue は start_ms 昇順で、同じ scene の cue は重ならない（別 scene どうしの重なり=クロスフェードは許す）。`domain/music` は純粋（I/O・時計なし）。
 **機械検査**: `tests/architecture/test_music_boundaries.py::test_music_contract_does_not_depend_on_production_artifacts`
 / `tests/architecture/test_music_boundaries.py::test_domain_music_has_no_io_or_clock_imports`
 / `tests/architecture/test_music_boundaries.py::test_domain_music_does_not_read_the_clock_or_open_files`

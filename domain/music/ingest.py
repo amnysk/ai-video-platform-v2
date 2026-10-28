@@ -49,9 +49,8 @@ def ingest_check(
         return _reject(IngestRejectReason.ACTUAL_SHA_MALFORMED)
     if new_track.file_sha256 != actual_sha256:
         return _reject(IngestRejectReason.SHA_MISMATCH)
-    key = new_track.object_key
-    expected = f"{ORIGINALS_PREFIX}{actual_sha256}"
-    if not (key == expected or key.startswith(expected + ".")):
+    key_pattern = rf"{re.escape(ORIGINALS_PREFIX)}{actual_sha256}(\.[A-Za-z0-9]+)?"
+    if not re.fullmatch(key_pattern, new_track.object_key):
         return _reject(IngestRejectReason.OBJECT_KEY_NOT_CONTENT_ADDRESSED)
     existing = tuple(existing_catalog)
     for track in existing:
