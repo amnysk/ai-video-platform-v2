@@ -30,6 +30,7 @@ from pydantic import Field, field_validator, model_validator
 from contracts.artifact_refs import SCRIPT_SCENE_ID_PATTERN, SHA256_HEX_PATTERN, FrozenModel
 from contracts.research import normalize_claim_text
 from contracts.research_evidence import CLAIM_ID_PATTERN, SOURCE_ID_PATTERN
+from contracts.verdict import VERDICT_ORDER, Verdict, stricter
 
 GEO_SCHEMA_VERSION = "1.0"
 
@@ -84,26 +85,11 @@ def schematic_disclaimer_ok(text: str | None) -> bool:
     return not any(marker in remaining for marker in SCHEMATIC_AFFIRMATIVE_SCALE_MARKERS)
 
 
-class GeoVerdict(StrEnum):
-    """地図の検証の結論。厳しさは PASS < WARN < REVIEW < BLOCK（設計書 v3 §3.3）。"""
+#: 地図の検証の結論。判定語彙は ``contracts.verdict.Verdict`` と同一（INV-105。別名）。
+GeoVerdict = Verdict
 
-    PASS = "pass"
-    WARN = "warn"
-    REVIEW = "review"
-    BLOCK = "block"
-
-
-GEO_VERDICT_ORDER: tuple[GeoVerdict, ...] = (
-    GeoVerdict.PASS,
-    GeoVerdict.WARN,
-    GeoVerdict.REVIEW,
-    GeoVerdict.BLOCK,
-)
-
-
-def stricter(a: GeoVerdict, b: GeoVerdict) -> GeoVerdict:
-    """厳しい方。**厳しさの順序の唯一の定義**（``GEO_VERDICT_ORDER``）。"""
-    return a if GEO_VERDICT_ORDER.index(a) >= GEO_VERDICT_ORDER.index(b) else b
+#: 厳しさの順序（``contracts.verdict.VERDICT_ORDER`` と同一。ここで並べ直さない）。
+GEO_VERDICT_ORDER = VERDICT_ORDER
 
 
 class MapKind(StrEnum):

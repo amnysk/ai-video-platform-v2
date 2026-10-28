@@ -83,3 +83,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0071](./0071-geo-manifest-and-deterministic-map-verification.md) | 地図は GeoManifest から描き、位置の検証は決定論的な純関数が行う（LLM の採点で上書きしない） | Accepted |
 | [0072](./0072-bgm-contracts-and-license-gated-selection.md) | BGM 契約とライセンスで門を閉じた選曲（契約・純粋ドメインのみ） | Proposed |
 | [0073](./0073-quality-report-contract-and-fail-closed-gate.md) | 品質レポートの契約と fail-closed の投稿可否判定（契約層のみ・配線は後続） | Accepted |
+| [0074](./0074-v3-phase2-shared-contract-fixes.md) | v3 Phase 2 の共有契約の是正（verdict 統一・入力保護・品質レポートの鮮度） | Accepted |

@@ -17,6 +17,9 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
+from contracts.verdict import VERDICT_SEVERITY as VERDICT_SEVERITY  # 再エクスポート（互換）
+from contracts.verdict import Verdict
+
 QUALITY_REPORT_SCHEMA_VERSION = 1
 
 #: レポートの ``generated_at`` が ``now`` より未来でも許す時計のずれ（**ここだけで定義**）。
@@ -26,22 +29,8 @@ CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
-class QualityVerdict(StrEnum):
-    """判定。重さの順は PASS < WARN < REVIEW < BLOCK（``VERDICT_SEVERITY``）。"""
-
-    PASS = "pass"
-    WARN = "warn"
-    REVIEW = "review"
-    BLOCK = "block"
-
-
-#: 重さの順位。集計はこの順位だけで比べる（別の場所に並べ直さない）。
-VERDICT_SEVERITY: dict[QualityVerdict, int] = {
-    QualityVerdict.PASS: 0,
-    QualityVerdict.WARN: 1,
-    QualityVerdict.REVIEW: 2,
-    QualityVerdict.BLOCK: 3,
-}
+#: 品質判定。判定語彙と重さの順は ``contracts.verdict`` が唯一の定義（INV-105。別名）。
+QualityVerdict = Verdict
 
 
 class QualityGate(StrEnum):
