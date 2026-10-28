@@ -104,7 +104,7 @@ agent-tools の `ToolId` と取り違えないようにした。
 `upload_gate._refusal()` を拡張する（**新しい stage は作らない**。設計 v3 §5.3 の「existing upload_gate」）:
 final_video の sha256 を読み、品質レポートを読み出して `evaluate_for_upload` を呼び、拒否理由を既存の
 `UploadGateResult.reason` に載せる。保存先（Artifact か別の表か）・DDL・遷移表の変更は別の ADR で承認してから行う。
-それまで INV-104 は未検査である。
+それまで INV-104 は未検査である（→ ADR-0076 で既定 OFF の flag 付きで配線した）。
 
 ## Alternatives
 

@@ -72,6 +72,21 @@ DB に承認記録を持つことは後続 ADR の対象とする。flag OFF で
 - 自動修正ループ（最大2回の候補）は ADR-0038 の「自動書き直しループを移植しない」決定と衝突するため、
   本 ADR では扱わない。
 
+### 6. 実装の記録（設定キーと単一の定義元）
+
+- 設定キー: `contracts.quality.QUALITY_GATE_ENFORCE_ENV`（`AVP_QUALITY_GATE_ENFORCE`）。現行規則版:
+  `QUALITY_RULE_VERSION`（同ファイル）。`Settings.quality_gate_enforce` は前者を `validation_alias` に使う。
+- `grep -rn "AVP_QUALITY_GATE_ENFORCE\|quality_gate_enforce\|QUALITY_GATE_ENFORCE_ENV" apps/ workers/ domain/
+  infrastructure/ contracts/ docs/`（実装時点。ADR 本文を除く）: 書き手（定義）2 =
+  `contracts/quality.py`・`infrastructure/config.py`、読み手 2 = `workers/pipeline/run_worker.py`（worker へ渡す）・
+  `apps/api/routers/episodes.py`（手動経路）、無関係 0。`QUALITY_RULE_VERSION` の読み手 2 =
+  `workers/pipeline/activities.py`・`apps/api/routers/episodes.py`。literal の再定義は無い。
+- gate 時点で新しい保存先なしに読めるのは final_video の `sha256` / `input_hash` だけ（技術 QA の本体は
+  object storage、説明欄は upload 工程で組み立てる）。よって既定の provider 列は技術 QA・説明欄の検査を
+  持つが、gate はそれらの入力を渡さず、**本番既定では決定論の検査が 0 件 = REVIEW = 拒否**になる。
+  入力の供給元（レポートの永続化）と地図・BGM の provider は後続で `CheckProvider` 列に足す。
+- 構造化ログは既存語彙のみ: 拒否は `upload.skipped`（outcome=blocked）、許可・手動承認は `log.record`。
+
 ## Alternatives
 
 - **Episode 状態を足す / 遷移表に `render_ready → blocked` を足す**: 人の判断待ちを状態で表せるが、

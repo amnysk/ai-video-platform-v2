@@ -45,17 +45,20 @@ async def main() -> None:
         session_factory=session_factory,
         paused_env=settings.paused,
         uploads_paused_env=settings.uploads_paused,
+        quality_gate_enforce=settings.quality_gate_enforce,
         temporal_client=client,
         # 入口ゲート・保留の結線点（ADR-0058。ADR-0057 の実装はここで差し込む）
         gate_ports=build_gate_ports(session_factory, budget=settings.fal_budget),
     )
     worker = build_worker(client, activities)
     logger.info(
-        "pipeline worker listening on %s; paused=%s uploads_paused=%s fal_budget=%s",
+        "pipeline worker listening on %s; paused=%s uploads_paused=%s fal_budget=%s "
+        "quality_gate_enforce=%s",
         PIPELINE_TASK_QUEUE,
         settings.paused,
         settings.uploads_paused,
         settings.fal_budget.decision_reason,
+        settings.quality_gate_enforce,
     )
     async with worker:
         await asyncio.Event().wait()

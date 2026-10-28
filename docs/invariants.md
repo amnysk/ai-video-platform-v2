@@ -1005,7 +1005,7 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/unit/test_quality_upload_decision.py::test_naive_generated_at_is_refused_not_raised`
 / `tests/unit/test_quality_upload_decision.py::test_checks_must_be_a_tuple_of_quality_checks`
 / `tests/contract/test_quality_contract.py::test_error_messages_never_echo_untrusted_values`（値を例外文に写さない）
-（判定は純粋関数の範囲。`upload_gate` への配線は INV-104）
+（判定は純粋関数の範囲。`upload_gate` への配線は INV-104、flag ON のときだけ）
 
 ### INV-102 決定論の BLOCK / REVIEW は LLM の判定で緩まない
 `domain.quality.aggregate` は決定論の検査だけが BLOCK を作れ、LLM の検査（`deterministic=False`）は
@@ -1032,11 +1032,24 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/unit/test_agent_tool_policy.py::test_an_unknown_id_is_never_echoed_only_its_length_and_hash`
 （tool の実行器・Agent への登録はまだ無い。語彙と判定だけ）
 
-### INV-104 `upload_gate` は有効な品質レポートが無ければ投稿を拒否する（**配線は未実装**）
-計画: `upload_gate._refusal()` を拡張し（新しい stage は作らない）、final_video の sha256 と品質レポートを読んで
-`evaluate_for_upload` の拒否理由を `UploadGateResult.reason` に載せる。**現行の `upload_gate` は品質レポートを
-見ない**（本ブランチは Activity / workflow を変更しない。ADR-0073 §6）。保存先・遷移表の変更は別 ADR で先に承認する。
-**機械検査**: 未検査（配線の承認・実装まで。INV-101 の純粋な判定だけが検査済み）
+### INV-104 `AVP_QUALITY_GATE_ENFORCE` が ON のとき、`upload_gate` と手動投稿は有効な品質判定が無ければ投稿を拒否する
+ADR-0076。設定キーは `contracts.quality.QUALITY_GATE_ENFORCE_ENV`（`AVP_QUALITY_GATE_ENFORCE`。既定 **OFF**）が
+唯一の定義で、`Settings.quality_gate_enforce` が読む。**OFF では `_refusal()` / 手動経路の挙動は従来と同一**。
+ON のとき `upload_gate._refusal()` は既存の拒否（存在・状態・final_video・予約）をすべて先に評価し、通った場合だけ
+決定論の検査（`domain.quality.deterministic.build_deterministic_report`）で `QualityReport` を作って
+`evaluate_for_upload`（`current_rule_version=QUALITY_RULE_VERSION`）に渡す。PASS/WARN だけが許可で、REVIEW・BLOCK・
+作成失敗・評価例外・鮮度不一致は `quality: <理由コード>` で拒否（PASS に倒さない）。`UploadGateRequest/Result`・
+Activity・workflow・PipelineStage・Episode 状態は変えない。手動 `POST /episodes/{id}/upload` は ON のとき BLOCK と
+作成失敗を 409、REVIEW は許可して承認を構造化ログに残す。LLM の検査は実装しない（`model=None`）。
+**機械検査**: `tests/unit/test_quality_gate_wiring.py::test_on_without_any_deterministic_check_is_refused`
+/ `...::test_on_block_is_refused` / `...::test_on_review_is_refused_and_episode_stays_render_ready`
+/ `...::test_on_pass_and_warn_are_allowed_when_everything_else_holds`
+/ `...::test_on_pass_still_refused_when_reservation_is_dispatched`
+/ `...::test_on_a_provider_exception_is_refused_never_pass` / `...::test_on_an_evaluate_exception_is_refused`
+/ `...::test_off_gate_ignores_quality_even_with_block_and_broken_providers`
+/ `...::test_manual_on_block_is_409` / `...::test_manual_on_review_is_allowed_and_the_approval_is_logged`
+（OFF の既存挙動は `tests/unit/test_pipeline_activities.py` の gate テストが無変更で守る。レポートの永続保存・
+DB 上の承認記録・技術 QA / 説明欄の gate 時点での読み出し元は未実装 = 本番で ON にすると全件 REVIEW で拒否）
 
 ## AC. v3 Phase 2 の共有契約（ADR-0074。INV-105〜108）
 
@@ -1074,5 +1087,5 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/unit/test_quality_freshness.py::test_an_ai_check_without_a_model_identity_is_refused`
 / `tests/unit/test_quality_freshness.py::test_a_schema_version_1_report_is_refused_as_a_schema_mismatch`
 / `tests/architecture/test_quality_clock_injected.py::test_quality_modules_never_read_the_clock`
-（`upload_gate` への配線は INV-104 のまま未実装。規則版の「現行値」の供給元も配線側）
+（`upload_gate` への配線は INV-104。規則版の「現行値」は `contracts.quality.QUALITY_RULE_VERSION`）
 

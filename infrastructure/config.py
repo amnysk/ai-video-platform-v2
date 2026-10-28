@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from contracts.pipeline import (
@@ -25,6 +25,7 @@ from contracts.production_activities import (
     MAX_SCENE_ALTERNATIVES_PER_EPISODE,
     MAX_SCENE_ALTERNATIVES_PER_SCENE,
 )
+from contracts.quality import QUALITY_GATE_ENFORCE_ENV
 from contracts.render import (
     DEFAULT_RENDER_CONCURRENCY,
     DEFAULT_RENDER_FFMPEG_THREADS,
@@ -166,6 +167,8 @@ class Settings(BaseSettings):
     youtube_channel_id: str | None = None
     #: ``UPLOADS_PAUSED=true`` なら session を開始する前に止める
     uploads_paused: bool = False
+    #: 品質ゲートを投稿に効かせる（ADR-0076）。既定 OFF。キー名は contracts.quality が唯一の定義
+    quality_gate_enforce: bool = Field(default=False, validation_alias=QUALITY_GATE_ENFORCE_ENV)
     #: resumable upload の chunk（256 KiB の倍数）
     youtube_chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES
 

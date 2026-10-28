@@ -34,6 +34,14 @@ CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
 #: 自称するレポートは鮮度の主張として拒否する（REPORT_FRESHNESS_INVALID）。
 MAX_REPORT_VALIDITY = timedelta(hours=24)
 
+#: 現行の検査規則の版（**ここだけで定義**。ADR-0076 §3）。gate はここから読み、レポートの
+#: ``rule_version`` と一致しなければ拒否する（INV-107）。規則を変えたら必ず上げる。
+QUALITY_RULE_VERSION = "deterministic-1"
+
+#: 品質ゲートを ``upload_gate`` / 手動投稿に効かせる設定キー（env。**ここだけで定義**。ADR-0076）。
+#: 既定 OFF。``infrastructure.config.Settings.quality_gate_enforce`` がこの名前で読む。
+QUALITY_GATE_ENFORCE_ENV = "AVP_QUALITY_GATE_ENFORCE"
+
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SCENE_ID = re.compile(SCRIPT_SCENE_ID_PATTERN)
 
