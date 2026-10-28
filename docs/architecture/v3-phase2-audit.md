@@ -123,7 +123,7 @@ Wave 1 の変更ファイルは `contracts/{upload,geo,music,quality,agent_tool_
 | 未照合の provider_reservations（status=reserved） | 0 件（全 426 行が spent。youtube_upload 16 行も spent） | — |
 | open な credit hold | 1 件（`waiting_for_credits`、resumable_stage=production、2026-10-27 21:21Z） | リリース記録の予告どおり月間上限で保留 |
 | Episode | uploaded 16 / completed 23 / blocked 16 / render_ready 1 / planned 1 / cancelled 1 | — |
-| `FAL_MONTHLY_BUDGET_USD`（production 系 worker） | **60**（0 ではない。ADR-0063 のハードキャップ、2026-10-27 所有者承認） | 「予算0を維持」という前提と不一致 |
+| `FAL_MONTHLY_BUDGET_USD`（production 系 worker） | **60**（0 ではない。ADR-0063 のハードキャップ、2026-10-27 所有者承認） | 所有者判断（2026-10-29）: 60 を維持する。デプロイで変更しない |
 | `AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER` ほか v3 flag | どの worker の環境にも未設定（= 既定 OFF） | — |
 | OpenSearch | `avp2-logging-opensearch-1` が 8 日前から Exited(143)。`avp-logging-check.service` が failed | デプロイ後のログ検証ができない |
 
