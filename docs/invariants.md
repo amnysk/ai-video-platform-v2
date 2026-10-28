@@ -495,7 +495,7 @@ claim の era / region の一致、資料が位置を支持するかは未検査
 
 ## P. BGM（ADR-0072。契約と純粋ドメインのみ。Render・説明欄・DB への結線は後続）
 
-番号 INV-41〜96 は他の枝が予約している（`docs/architecture/v3-phase0-audit.md`）。この節は INV-97〜100。
+番号 INV-41〜89 は他の枝が予約している（`docs/architecture/v3-phase0-audit.md`）。この節は INV-97〜100。
 
 ### INV-97 選曲できるのは、承認済み・期限内・プラットフォーム/形式が許可された曲だけ
 候補になる曲は `license_status=approved`・`status=active`・期限内（`valid_until` が現在より後）・
@@ -552,7 +552,7 @@ agent・日次制作は音源を取得せず、未収録なら収集依頼を積
 （構造上の独立だけを検査。**BGM のみ差替えで fal の予約が 0 件・Render と QA だけが再実行される（T16）ことは未検査**。
 `render_input_hash` に cue sheet をどう入れるかは Render 結線の枝で決める）
 
-## Q. 品質ゲート（ADR-0073。INV-41〜100 は他の枝の予約帯。欠番は意図的）
+## Q. 品質ゲート（ADR-0073。INV-41〜89 は他の枝の予約帯。欠番は意図的）
 
 ### INV-101 無い・作れなかった・壊れた・今の final_video / 入力に結び付かない品質レポートは PASS ではない
 投稿可否の判定（`domain.quality.evaluate_for_upload`）は fail-closed: レポート無し（`None`）、作成失敗、
