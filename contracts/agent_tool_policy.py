@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import StrEnum
 
 
-class AllowedTool(StrEnum):
+class PolicyToolId(StrEnum):
     RESEARCH_SEARCH = "research.search"
     RESEARCH_FETCH = "research.fetch"
     GEO_RESOLVE = "geo.resolve"
@@ -19,7 +19,7 @@ class AllowedTool(StrEnum):
 
 
 #: 許可してはならない tool id。allowlist と交わらないことをテストで固定する。
-FORBIDDEN_TOOL_IDS: frozenset[str] = frozenset(
+FORBIDDEN_POLICY_TOOLS: frozenset[str] = frozenset(
     {
         "fal.generate",
         "youtube.upload",
@@ -29,10 +29,10 @@ FORBIDDEN_TOOL_IDS: frozenset[str] = frozenset(
     }
 )
 
-ALLOWED_TOOL_IDS: frozenset[str] = frozenset(t.value for t in AllowedTool)
+ALLOWED_POLICY_TOOLS: frozenset[str] = frozenset(t.value for t in PolicyToolId)
 
 
-class ToolRejection(StrEnum):
+class PolicyRejection(StrEnum):
     FORBIDDEN = "forbidden"
     NOT_ALLOWLISTED = "not_allowlisted"
     MALFORMED = "malformed"

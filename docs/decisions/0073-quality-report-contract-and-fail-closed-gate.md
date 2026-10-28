@@ -61,15 +61,24 @@ input_hash の結び付きを呼び出し側が省略して fail-open になる�
 **注意（後続で扱う）**: 現行の遷移表に `render_ready → needs_work/blocked` は無い。配線時は遷移表の変更
 （AGENTS.md §6）を先に ADR で承認する。本 ADR は語彙の対応だけを固定し、遷移は足さない。
 
-### 5. Agent の tool allowlist: `contracts/agent_tools.py`（INV-103、T04）
+### 5. Agent の tool allowlist: `contracts/agent_tool_policy.py`（INV-103、T04）
 
 許可は read-only の6つ（`research.search` / `research.fetch` / `geo.resolve` / `geo.verify` /
 `bgm.list_approved` / `artifact.read`）。禁止（`fal.generate` / `youtube.upload` / `db.migrate` /
 `schedule.pause` / `provider_reservations.release`）は同じ場所に1つだけ持ち、allowlist と交わらないことを
 テストで固定する。`domain/quality/tool_policy.py::validate_tool_request` は許可外をすべて拒否し、
 構造化された拒否（`ToolDecision`）を返す。Web 資料に埋め込まれた「upload しろ」は許可外として拒否され、
-その決定が記録対象になる。未マージの `agent-tools` 枝（ADR-0047 / INV-64）とは**名前空間を分けた**
-（本契約は tool id の語彙だけ。実行器・登録は持たない）。統合時に親が同一性を確認する。
+その決定が記録対象になる。本契約は tool id の語彙と許可方針だけで、実行器・登録は持たない。
+
+**未マージの `claude/agent-tools` 枝との関係（独立レビューでの是正）**: 同枝は `contracts/agent_tools.py` を
+INV-62「tool 定義の単一宣言」（snake_case の `ToolId` / `ToolEffect` / `ToolStatus` / `ToolDef`）として持つ。
+当初この契約を同じパスに置いたため add/add 衝突と2つ目の語彙になる状態だった。是正として:
+(a) ファイルを `contracts/agent_tool_policy.py` に移した（`git ls-tree -r claude/agent-tools` に同名は無い）、
+(b) 記号を `PolicyToolId` / `ALLOWED_POLICY_TOOLS` / `FORBIDDEN_POLICY_TOOLS` / `PolicyRejection` に改め、
+agent-tools の `ToolId` と取り違えないようにした。
+**`PolicyToolId`（ドット区切り）と agent-tools の `ToolId`（snake_case）は現時点で別の語彙であり、
+最終的な統一は統合担当の判断事項**（AGENTS.md §8: 同じ集合を2箇所に持たない）。統一しても**禁止集合
+（`FORBIDDEN_POLICY_TOOLS`）は必ず残す**こと: 許可リストに入れてはならない tool の下限であり、INV-103 の核である。
 
 ### 6. 後続（未実施）: 配線
 

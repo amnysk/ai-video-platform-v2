@@ -1,8 +1,8 @@
 """INV-101〜103 の形の検査: 品質判定と tool 契約は純粋で、許可リストに禁止 tool を入れない。
 
-1. ``contracts/quality.py`` / ``contracts/agent_tools.py`` / ``domain/quality`` は I/O をせず、
+1. ``contracts/quality.py``・``contracts/agent_tool_policy.py``・``domain/quality`` は I/O をせず、
    provider adapter・YouTube adapter・``ProviderReservationRepository``・workers を import しない
-2. 禁止 tool id が ``AllowedTool``（許可リスト）に現れない
+2. 禁止 tool id が ``PolicyToolId``（許可リスト）に現れない
 
 検査器そのものも、違反する fixture を実際に捕まえることを別テストで示す（検査の検査）。
 理由は docs/testing/quality-gate-rationale.md。
@@ -15,13 +15,13 @@ import pathlib
 
 import pytest
 
-from contracts.agent_tools import ALLOWED_TOOL_IDS, FORBIDDEN_TOOL_IDS
+from contracts.agent_tool_policy import ALLOWED_POLICY_TOOLS, FORBIDDEN_POLICY_TOOLS
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
 PURE_PATHS: tuple[str, ...] = (
     "contracts/quality.py",
-    "contracts/agent_tools.py",
+    "contracts/agent_tool_policy.py",
     "domain/quality",
 )
 
@@ -79,13 +79,13 @@ def io_violations(source: str) -> list[str]:
 
 
 def allowlist_violations(source: str) -> list[str]:
-    """``AllowedTool`` の本体に禁止 tool id の文字列が現れていないか。"""
+    """``PolicyToolId`` の本体に禁止 tool id の文字列が現れていないか。"""
     found: list[str] = []
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.ClassDef) and node.name == "AllowedTool":
+        if isinstance(node, ast.ClassDef) and node.name == "PolicyToolId":
             for inner in ast.walk(node):
-                if isinstance(inner, ast.Constant) and inner.value in FORBIDDEN_TOOL_IDS:
-                    found.append(f"AllowedTool contains {inner.value}")
+                if isinstance(inner, ast.Constant) and inner.value in FORBIDDEN_POLICY_TOOLS:
+                    found.append(f"PolicyToolId contains {inner.value}")
     return found
 
 
@@ -99,9 +99,12 @@ def _pure_files() -> list[pathlib.Path]:
 
 def test_the_pure_files_exist() -> None:
     names = {p.relative_to(REPO).as_posix() for p in _pure_files()}
-    assert {"contracts/quality.py", "contracts/agent_tools.py", "domain/quality/aggregate.py"} <= (
-        names
-    )
+    expected = {
+        "contracts/quality.py",
+        "contracts/agent_tool_policy.py",
+        "domain/quality/aggregate.py",
+    }
+    assert expected <= names
 
 
 def test_quality_and_agent_tool_modules_do_no_io_and_import_no_provider_or_worker() -> None:
@@ -137,8 +140,8 @@ def test_the_io_detector_accepts_a_clean_module() -> None:
 
 
 def test_forbidden_tool_ids_are_not_in_the_allowlist() -> None:
-    assert not (ALLOWED_TOOL_IDS & FORBIDDEN_TOOL_IDS)
-    source = (REPO / "contracts/agent_tools.py").read_text(encoding="utf-8")
+    assert not (ALLOWED_POLICY_TOOLS & FORBIDDEN_POLICY_TOOLS)
+    source = (REPO / "contracts/agent_tool_policy.py").read_text(encoding="utf-8")
     assert not allowlist_violations(source), allowlist_violations(source)
 
 
@@ -149,16 +152,16 @@ def test_the_forbidden_set_covers_billing_upload_migrate_schedule_and_reservatio
         "db.migrate",
         "schedule.pause",
         "provider_reservations.release",
-    } == FORBIDDEN_TOOL_IDS
+    } == FORBIDDEN_POLICY_TOOLS
 
 
 def test_the_allowlist_detector_catches_a_violating_fixture() -> None:
     bad = (
         "from enum import StrEnum\n"
-        "class AllowedTool(StrEnum):\n"
+        "class PolicyToolId(StrEnum):\n"
         "    A = 'research.search'\n"
         "    B = 'youtube.upload'\n"
     )
-    assert allowlist_violations(bad) == ["AllowedTool contains youtube.upload"]
-    good = "class AllowedTool:\n    A = 'research.search'\n"
+    assert allowlist_violations(bad) == ["PolicyToolId contains youtube.upload"]
+    good = "class PolicyToolId:\n    A = 'research.search'\n"
     assert not allowlist_violations(good)

@@ -441,7 +441,7 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/unit/test_quality_upload_decision.py::test_llm_pass_does_not_rescue_a_deterministic_block_at_the_gate`
 
 ### INV-103 Agent の tool allowlist は read-only の語彙だけで、課金・投稿・migrate・schedule・予約解放を含まない
-許可は `contracts.agent_tools.AllowedTool` の6つだけ。`fal.generate` / `youtube.upload` / `db.migrate` /
+許可は `contracts.agent_tool_policy.PolicyToolId` の6つだけ。`fal.generate` / `youtube.upload` / `db.migrate` /
 `schedule.pause` / `provider_reservations.release` は禁止集合に1つだけ定義し、許可と交わらない。
 `validate_tool_request` は許可外（禁止・似た名前・不正な型）を構造化された拒否で返す。
 品質判定・tool 契約のモジュールは I/O・provider・`ProviderReservationRepository`・workers を import しない。（設計 v3 T04）

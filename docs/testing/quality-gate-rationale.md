@@ -45,6 +45,6 @@ LLM の PASS が決定論 BLOCK を救えないことを判定の入口でも確
 |---|---|
 | `test_quality_and_agent_tool_modules_do_no_io_…` | 判定層が I/O・provider・予約台帳・workers に依存すると、純粋に検査できず、課金・投稿への経路になる |
 | `test_the_io_detector_catches_violating_fixtures` | 検査の検査。検出器が壊れて常に空を返しても緑になるのを防ぐ |
-| `test_forbidden_tool_ids_are_not_in_the_allowlist` | 許可リストへ禁止 tool が紛れ込む事故（実行時の交わり＋ソース上の `AllowedTool` 本体） |
+| `test_forbidden_tool_ids_are_not_in_the_allowlist` | 許可リストへ禁止 tool が紛れ込む事故（実行時の交わり＋ソース上の `PolicyToolId` 本体） |
 | `test_the_allowlist_detector_catches_a_violating_fixture` | 上の検出器が違反 fixture を実際に捕まえる |
 | `test_the_forbidden_set_covers_…` | 禁止集合の縮小（例: 予約解放の削除）を検知する |
