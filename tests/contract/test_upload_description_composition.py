@@ -216,3 +216,18 @@ def test_flag_on_blocked_composition_raises_instead_of_truncating(
 def test_music_credit_text_from_the_music_contract_is_a_plain_string() -> None:
     """クレジット行の入力型は ``contracts/music.py`` の帰属文（str）と同じ。"""
     assert BgmTrack.model_fields["exact_attribution_text"].annotation == (str | None)
+
+
+def test_the_final_string_is_linted_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    from contracts import upload
+
+    assert upload._final_lint(f"fine\n\n{MARKER}", MARKER) is None
+    leaked = upload._final_lint("x " + "a" * 40, None)
+    assert leaked is not None and leaked.reason is DescriptionBlockReason.INTERNAL_ID
+    # 部分ごとの検査をすり抜けた場合でも、組み上がりの検査が止める
+    monkeypatch.setattr(
+        upload,
+        "_final_lint",
+        lambda d, m: DescriptionBlocked(DescriptionBlockReason.INTERNAL_ID, "x"),
+    )
+    assert isinstance(compose_description(_comp()), DescriptionBlocked)

@@ -1113,5 +1113,6 @@ description（marker あり・なし、必須部分あり、長文の切り詰�
 / `tests/contract/test_upload_description_composition.py::test_long_optional_parts_are_trimmed_but_required_parts_survive`
 / `tests/contract/test_upload_description_composition.py::test_whole_supplements_are_dropped_from_the_end_not_cut`
 / `tests/contract/test_upload_description_composition.py::test_internal_ids_in_any_part_block`
+/ `tests/contract/test_upload_description_composition.py::test_the_final_string_is_linted_too`
 / `tests/contract/test_upload_description_composition.py::test_flag_on_blocked_composition_raises_instead_of_truncating`
 / `tests/contract/test_upload_description_composition.py::test_flag_on_with_marker_removed_keeps_the_lint_and_the_tag`

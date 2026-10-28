@@ -18,6 +18,7 @@
 | `test_required_parts_over_the_limit_*` / `test_not_enough_room_for_the_intro_blocks` | 必須部分が入らないときは切らずに BLOCK。導入文が残らない説明欄も通さない |
 | `test_long_optional_parts_are_trimmed_but_required_parts_survive` / `test_whole_supplements_*` | 長いときに落とすのは任意の部分だけ。補足は途中で切らずまるごと、後ろから。5000 bytes 以内 |
 | `test_internal_ids_in_any_part_block`（4 種） | 導入文・補足・クレジットのどこに内部 ID があっても BLOCK。例外・理由に値を出さない |
+| `test_the_final_string_is_linted_too` | 組み上がった文字列にも lint を掛ける（部分ごとの検査の取りこぼしへの備え）。marker 行だけは除く |
 | `test_the_marker_line_itself_*` | marker 行自体で誤って BLOCK しない |
 | `test_reference_and_composition_shapes_*` | 入力の形（http(s) の URL、1行の題、空文字なし） |
 | `test_flag_off_ignores_the_composition` / `test_flag_on_*` | 結線: OFF は無視、ON は全文でなく構成を使い、tags の marker・private・lint・送信直前の lint は変わらない |

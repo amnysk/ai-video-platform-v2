@@ -418,6 +418,21 @@ def _cut_at_word(text: str, max_bytes: int) -> str:
     return (cut[: boundary + 1] if boundary > len(cut) // 2 else cut).rstrip()
 
 
+def _final_lint(description: str, marker: str | None) -> DescriptionBlocked | None:
+    """組み上がった文字列にも内部 ID の lint を掛ける（部分ごとの検査の取りこぼしへの備え）。
+
+    ``marker`` の行だけは意図した内部 ID なので、検査の前に除く。
+    """
+    text = description
+    if marker:
+        text = "\n".join(line for line in description.split("\n") if line.strip() != marker)
+    if find_internal_ids(text):
+        return DescriptionBlocked(
+            DescriptionBlockReason.INTERNAL_ID, "the composed description contains an internal id"
+        )
+    return None
+
+
 def compose_description(
     composition: DescriptionComposition, *, marker: str | None = None
 ) -> DescriptionResult:
@@ -492,6 +507,9 @@ def compose_description(
         optional.append(cut)
         trimmed = True
     description = "\n\n".join(optional) + separator + required
+    blocked = _final_lint(description, marker)
+    if blocked is not None:
+        return blocked
     return DescriptionComposed(description=description, optional_trimmed=trimmed)
 
 
