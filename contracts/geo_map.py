@@ -1,9 +1,12 @@
-"""地図の「歴史的正確さ」の判定結果の契約（ADR-0078）。
+"""地図の「歴史的正確さ」と「見た目の品質」の判定結果の契約（ADR-0078）。
 
 ``contracts/geo.py``（GeoManifest と検証の契約）には触れず、その上に載る**構造化された結果**だけを
 ここで宣言する。QualityGate が受け取る形: verdict + 理由コード + 対象 id + 根拠の参照。
 **自由文を持たない**（LLM / manifest 由来の文字列を結果へ流さない。対象 id は契約の pattern、
 根拠は claim_id / source_id の pattern で縛られる）。
+
+見た目（``MapPresentationResult``）は正確さ（``MapAccuracyResult``）と**別の理由コード・別の結果**で、
+``CombinedMapResult`` は両者の厳しい側にしか動かない（見た目が良くても正確さの BLOCK は消えない）。
 
 この契約はどの workflow・worker にも接続されていない（ADR-0078 §未接続）。
 """
@@ -101,10 +104,129 @@ class MapAccuracyResult(FrozenModel):
         return self
 
 
+# ------------------------------------------------------------------ 見た目（presentation）
+
+
+class PresentationReasonCode(StrEnum):
+    """見た目の理由コード（**唯一の定義**）。正確さの ``MapReasonCode`` とは語彙を共有しない。"""
+
+    OK = "ok"
+    LABEL_OVERLAP = "label_overlap"
+    FONT_TOO_SMALL = "font_too_small"
+    LOW_CONTRAST = "low_contrast"
+    LABEL_OUTSIDE_CANVAS = "label_outside_canvas"
+    DISCLAIMER_NOT_VISIBLE = "disclaimer_not_visible"
+
+
+class Rgb(FrozenModel):
+    r: int = Field(ge=0, le=255)
+    g: int = Field(ge=0, le=255)
+    b: int = Field(ge=0, le=255)
+
+
+class PixelBox(FrozenModel):
+    """キャンバス座標（左上原点・px）。半開区間 ``[x0, x1)`` ``[y0, y1)``。"""
+
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+
+    @model_validator(mode="after")
+    def _non_empty(self) -> PixelBox:
+        if self.x1 <= self.x0 or self.y1 <= self.y0:
+            raise ValueError("box must have positive width and height")
+        return self
+
+
+class LayoutText(FrozenModel):
+    """描いた文字 1 つ分の幾何。``box`` は文字の下地（plate）を含む範囲。"""
+
+    target_id: str = Field(pattern=f"^(?:{TARGET_ID_PATTERN})$")
+    box: PixelBox
+    font_px: int = Field(gt=0, le=1000)
+    text_rgb: Rgb
+    plate_rgb: Rgb
+
+
+MAX_LAYOUT_LABELS = 400
+
+
+class MapLayout(FrozenModel):
+    """描画器が返す幾何。見た目の検査はこれだけを読む（画像を読み戻さない）。"""
+
+    scene_id: str = Field(pattern=SCRIPT_SCENE_ID_PATTERN)
+    width: int = Field(gt=0, le=7680)
+    height: int = Field(gt=0, le=7680)
+    labels: Annotated[tuple[LayoutText, ...], Field(max_length=MAX_LAYOUT_LABELS)] = ()
+    #: 模式図の免責の表示。``disclaimer_required`` なのに ``None`` なら見た目の BLOCK
+    disclaimer: LayoutText | None = None
+    disclaimer_required: bool = False
+
+
+class PresentationFinding(FrozenModel):
+    verdict: GeoVerdict
+    reason_code: PresentationReasonCode
+    target_id: str = Field(pattern=f"^(?:{TARGET_ID_PATTERN})$")
+
+    @model_validator(mode="after")
+    def _reason_matches_verdict(self) -> PresentationFinding:
+        if (self.verdict is GeoVerdict.PASS) != (self.reason_code is PresentationReasonCode.OK):
+            raise ValueError("reason_code 'ok' is for PASS findings only")
+        return self
+
+
+class MapPresentationResult(FrozenModel):
+    scene_id: str = Field(pattern=SCRIPT_SCENE_ID_PATTERN)
+    verdict: GeoVerdict
+    findings: Annotated[tuple[PresentationFinding, ...], Field(min_length=1, max_length=MAX_CHECKS)]
+
+    @model_validator(mode="after")
+    def _verdict_is_the_worst_finding(self) -> MapPresentationResult:
+        worst = GeoVerdict.PASS
+        for finding in self.findings:
+            worst = stricter(worst, finding.verdict)
+        if self.verdict is not worst:
+            raise ValueError(
+                f"verdict {self.verdict.value} does not match the worst finding ({worst.value})"
+            )
+        return self
+
+
+class CombinedMapResult(FrozenModel):
+    """正確さと見た目の合流。``verdict`` は両者の厳しい側と一致しなければ作れない。"""
+
+    scene_id: str = Field(pattern=SCRIPT_SCENE_ID_PATTERN)
+    verdict: GeoVerdict
+    accuracy: MapAccuracyResult
+    presentation: MapPresentationResult
+
+    @model_validator(mode="after")
+    def _never_milder_than_accuracy(self) -> CombinedMapResult:
+        if self.accuracy.scene_id != self.scene_id or self.presentation.scene_id != self.scene_id:
+            raise ValueError("accuracy and presentation must describe the same scene")
+        expected = stricter(self.accuracy.verdict, self.presentation.verdict)
+        if self.verdict is not expected:
+            raise ValueError(
+                f"verdict {self.verdict.value} must be the stricter of accuracy and presentation"
+                f" ({expected.value})"
+            )
+        return self
+
+
 __all__ = [
+    "MAX_LAYOUT_LABELS",
     "TARGET_ID_PATTERN",
+    "CombinedMapResult",
+    "LayoutText",
     "MapAccuracyResult",
     "MapFinding",
+    "MapLayout",
+    "MapPresentationResult",
     "MapReasonCode",
     "MapTargetKind",
+    "PixelBox",
+    "PresentationFinding",
+    "PresentationReasonCode",
+    "Rgb",
 ]

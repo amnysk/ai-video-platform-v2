@@ -26,3 +26,19 @@
 | `test_the_result_verdict_cannot_be_milder_than_its_worst_finding` / `test_a_non_pass_finding_needs_a_real_reason_not_ok` | BLOCK を含む結果を PASS として作れない・理由の無い非 PASS を作れない |
 | `test_every_non_pass_verifier_check_is_classified` | 検証器に check を足したのに分類表が追随しないと UNCLASSIFIED になる。それを検出する通報 |
 | `test_escalation_never_relaxes_any_verdict` | 全ての理由コード × 地図の種類 × verdict で、引き上げが REVIEW → BLOCK の一方向（緩める経路が無い） |
+
+## `tests/unit/test_geo_map_presentation.py`（INV-118）
+
+| テスト | なぜ必要か |
+|---|---|
+| `test_a_legible_layout_passes_with_one_ok_finding` | 読める地図が PASS し、結果が空にならない |
+| `test_overlapping_labels_are_flagged_for_both_targets` / `test_touching_edges_are_not_an_overlap` | 重なりは両方のラベルが対象。辺が接するだけは重なりではない（境界の定義） |
+| `test_a_font_below_the_minimum_is_flagged` / `test_a_font_exactly_at_the_minimum_is_accepted` | 最小フォントの境界 |
+| `test_low_contrast_is_flagged` / `test_contrast_ratio_matches_the_wcag_definition` | 淡い文字の検出と、比の計算が WCAG の定義（21:1・1:1・対称） |
+| `test_a_label_outside_the_canvas_is_flagged` / `test_a_label_touching_the_canvas_edge_is_inside` | 4 辺それぞれのはみ出しと、ちょうど接する場合 |
+| `test_a_required_disclaimer_…` / `test_a_disclaimer_off_canvas_or_unreadable_is_blocked` / `test_a_visible_disclaimer_passes` | 模式図の免責が無い・画面外・小さい・薄いは BLOCK（INV-96 の表示） |
+| `test_presentation_is_deterministic` | 同じ幾何から同じ結果 |
+| `test_presentation_findings_use_presentation_codes_not_accuracy_codes` | 理由コードの語彙を共有しない（見た目と正確さの混同を型で防ぐ） |
+| `test_good_presentation_never_upgrades_accuracy` / `test_every_pair_of_verdicts_is_monotone` | 全 verdict の組み合わせで、合流が正確さより緩くならない |
+| `test_a_perfectly_legible_inaccurate_map_is_still_blocked` / `test_poor_presentation_alone_does_not_block_an_accurate_map` | 見た目は正確さを救わず、見た目だけで BLOCK にもしない |
+| `test_a_combined_result_cannot_be_milder_than_accuracy` / `test_results_for_different_scenes_do_not_combine` / `test_the_combiner_accepts_only_results_never_a_verdict_or_score` | 契約が緩い合流・別シーンの合流・点数の入力を作れない |

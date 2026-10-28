@@ -1054,3 +1054,15 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/unit/test_geo_map_accuracy.py::test_the_result_verdict_cannot_be_milder_than_its_worst_finding`
 / `tests/unit/test_geo_map_accuracy.py::test_escalation_never_relaxes_any_verdict`
 （QualityGate が呼ぶ配線は未実装。呼び出し側が `evidence_sources` を渡さないと資料の解決は検査されない）
+
+### INV-118 見た目の品質は正確さと別の結果で、正確さを緩めない
+`domain.geo.map_presentation.check_map_presentation` は `MapLayout`（幾何）だけを読み、ラベルの重なり・
+最小フォント px・コントラスト比・キャンバス内収まりを別の理由コード（`PresentationReasonCode`）で返す。
+`combine_map_results` は `stricter` でしか合流せず、`CombinedMapResult` は正確さより緩い verdict を作れない。
+模式図の免責が読めない・画面外・無いときだけ見た目で BLOCK（INV-96 の表示要件）。
+**機械検査**: `tests/unit/test_geo_map_presentation.py::test_good_presentation_never_upgrades_accuracy`
+/ `tests/unit/test_geo_map_presentation.py::test_a_perfectly_legible_inaccurate_map_is_still_blocked`
+/ `tests/unit/test_geo_map_presentation.py::test_a_combined_result_cannot_be_milder_than_accuracy`
+/ `tests/unit/test_geo_map_presentation.py::test_presentation_findings_use_presentation_codes_not_accuracy_codes`
+/ `tests/unit/test_geo_map_presentation.py::test_a_disclaimer_off_canvas_or_unreadable_is_blocked`
+（QualityGate が呼ぶ配線は未実装。画像を読み戻した検査はしない: 幾何は描画器の申告）
