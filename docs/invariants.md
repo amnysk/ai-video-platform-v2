@@ -422,8 +422,11 @@ Replayer で replay。非決定にならず1件も発行しない）
 
 ### INV-93 実在の位置を主張する地図シーンは GeoManifest を持ち、無ければ通らない
 地図が実在の場所を表すと主張するシーンは `GeoManifest` を要する。manifest 無しは BLOCK（fail-closed）。
-**機械検査**: 未検査（この枝は純関数と契約だけで、どの workflow・render もまだ検証を呼ばない。
-「全ての地図シーンが検証を通る」ことは接続する枝で検査する。願望であって保証ではない）
+模式図（schematic）を実在の位置として提示することも BLOCK。
+**機械検査**: `tests/unit/test_geo_verify.py::test_a_scene_claiming_a_real_location_without_a_manifest_is_blocked`
+/ `tests/unit/test_geo_verify.py::test_a_schematic_cannot_back_a_real_location_claim`
+（純関数 `verify_scene` の段階まで。**どの workflow・render もまだ検証を呼ばない**ので、「全ての地図シーンが
+検証を通る」ことは未検査。接続する枝で検査する）
 
 ### INV-94 地図の検証で BLOCK / REVIEW になったものは、LLM の評価で PASS にならない
 `GeoVerification.verdict` は check の最悪値と一致しなければ作れず、LLM の評価は `combine_verdicts` を
@@ -442,4 +445,6 @@ Replayer で replay。非決定にならず1件も発行しない）
 ### INV-96 模式図は「縮尺不同（Not to scale）」の表示を持ち、無ければ BLOCK
 `map_kind == schematic` の manifest は `schematic_disclaimer` に表示文を持つ。無い・空・縮尺不同を示す語が
 無いものは BLOCK。
-**機械検査**: 未検査（検証器の追加と同時に足す）
+**機械検査**: `tests/unit/test_geo_verify.py::test_a_schematic_without_the_disclaimer_is_blocked`
+/ `tests/unit/test_geo_verify.py::test_a_schematic_with_the_disclaimer_passes`
+（manifest の検査まで。動画フレームに実際に表示されているかは未検査 — 描画後の照合は後続）

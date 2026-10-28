@@ -33,3 +33,35 @@ fake gazetteer（メモリ上の固定データ。ネットワークに出ない
 | `test_a_verification_cannot_be_milder_than_its_worst_check` | BLOCK の check を持つ記録に PASS / REVIEW を付けられない。verdict は check から導く値（INV-94 の契約側） |
 | `test_a_verification_needs_at_least_one_check` | 何も検査していない PASS を作れない |
 | `test_disclaimer_markers_include_not_to_scale` | 模式図の表示語の定義が空にならない（INV-96 が空集合で自明に通るのを防ぐ） |
+
+## `tests/unit/test_geo_verify.py`（決定論的検証。fake gazetteer: `tests/support/fake_gazetteer.py`）
+
+fake gazetteer はメモリ上の固定データ（関ヶ原・大坂城・江戸/東京・京都・府中 2 件・コンスタンティノープル・
+本州）。座標は実在地点のおおよその値で、距離・軸順・同名異所・旧称の意図に必要な精度だけを持つ。
+
+| テスト | なぜ必要か / 落ちたら何が起きているか |
+|---|---|
+| `test_a_correct_map_passes` | 正しい地図が PASS（過剰な止め方をしていない）。全 check が PASS |
+| `test_verification_is_deterministic` | 同じ入力から同じ結果（時計・乱数・集合の順序に依存しない） |
+| `test_a_pin_hundreds_of_km_off_is_blocked` | T07。関ヶ原を東京の位置（約 280 km）に描く誤りを BLOCK する |
+| `test_the_distance_tolerance_depends_on_the_feature_type` | 同じ約 33 km のずれが城なら BLOCK・地方なら PASS。一律閾値に退行したら落ちる |
+| `test_lower_location_confidence_widens_the_tolerance` / `test_a_source_uncertainty_radius_widens_the_tolerance` | 信頼度・資料の不確かさで許容が変わる（設計書 §3.2 検証順 3） |
+| `test_a_slightly_large_offset_is_a_warning_not_a_block` | 許容の 1〜1.5 倍は WARN（段階の途中が存在する） |
+| `test_lat_lon_swap_is_blocked_by_bbox_and_reference` | T09。範囲内に収まる軸順の入れ替えを想定地域で検出 |
+| `test_swap_is_detected_from_the_reference_even_when_the_bbox_is_wrong_too` | bbox が広すぎても参照位置との照合で拾う（片方の防衛線に頼らない） |
+| `test_a_swap_that_leaves_the_valid_range_cannot_even_be_built` | 日本の座標の入れ替えは契約（INV-95）が先に弾く |
+| `test_old_place_name_with_modern_coordinates_is_valid` | T08。旧称（江戸）が現代の座標と照合でき、旧称を誤検知しない |
+| `test_a_modern_name_on_a_historical_map_needs_review` / `test_the_same_modern_name_is_fine_on_a_modern_context_map` | 時代に合わない現代の名を REVIEW にし、現代文脈の地図では止めない |
+| `test_a_homonym_is_never_auto_picked` | T08。同名の参照が複数なら、片方に近くても自動で選ばない（REVIEW） |
+| `test_an_explicit_catalog_id_resolves_a_homonym_and_the_distance_still_applies` | カタログ ID の明示は曖昧さを解くが、距離の検査は残る（取り違えた ID を素通りさせない） |
+| `test_a_place_without_any_reference_cannot_pass` | 参照が無い地点が PASS にならない（fail-closed） |
+| `test_modern_borders_on_a_historical_map_need_review` / `test_a_border_assertion_without_border_data_needs_review` / `test_historical_borders_must_match_the_map_time_basis` / `test_modern_borders_are_fine_on_a_modern_context_map` | T08。当時の資料の無い現代国境・資料の無い国境の主張・年の食い違いを REVIEW、現代文脈は止めない |
+| `test_an_unparseable_time_basis_needs_review` / `test_time_basis_formats_are_accepted` | 時間基準が不明な歴史地図を通さない。受け付ける書式の固定 |
+| `test_a_place_outside_its_valid_period_is_blocked_on_a_historical_map` / `test_the_references_own_period_also_applies` | 存在しなかった時代の地物は BLOCK、参照側の期間でも止まる |
+| `test_a_label_for_an_unknown_place_is_blocked` / `test_a_misspelled_label_is_blocked` / `test_labels_match_by_normalized_display_name_or_a_known_alias` | T10。誤字・未知の地点を指すラベルを BLOCK、正規化と別名は誤検知しない |
+| `test_a_claim_that_is_not_supported_needs_review` / `test_a_qualified_claim_resolves` / `test_a_claim_id_that_does_not_exist_needs_review` | 位置の主張が supported / qualified に解決しない地点を REVIEW（disputed / insufficient / 不在） |
+| `test_a_schematic_without_the_disclaimer_is_blocked` / `test_a_schematic_with_the_disclaimer_passes` | T11・INV-96。縮尺不同の表示が無い・語が無い模式図を BLOCK、有れば PASS |
+| `test_a_schematic_is_not_checked_against_real_locations` / `test_a_schematic_still_blocks_a_label_for_an_unknown_place` | 模式図は実在位置を主張しないので距離を見ない。ただしラベルの参照切れは止める |
+| `test_a_scene_claiming_a_real_location_without_a_manifest_is_blocked` / `test_a_scene_without_a_real_location_claim_needs_no_manifest` / `test_a_schematic_cannot_back_a_real_location_claim` / `test_verify_scene_delegates_to_the_manifest_checks` | INV-93。manifest 無し・模式図での実在位置の主張を BLOCK。主張が無いシーンは要求しない |
+| `test_a_non_schematic_map_with_no_places_cannot_pass` | 何も検証できない地図が PASS にならない |
+| `test_the_verifier_does_not_mutate_its_inputs` | 純関数であること（注入した参照データを書き換えない） |
