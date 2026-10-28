@@ -119,6 +119,8 @@ session URI が入っていて上書きすると再照会できない）。
   （`<>` は全角へ置換、5000 bytes で文字境界切り）、tags = 投稿マーカーだけ。別 Artifact（`video_metadata`）は作らず、
   **送った値のスナップショットを受領に入れる**
 
+（ADR-0070: flag ON では description に marker を入れず、内部 ID lint と必須部分の確保を行う。既定 OFF。）
+
 ### 6. private のみ（INV-19）
 
 `privacy_status` はメタデータでも受領でも `Literal["private"]`。public / unlisted はスキーマで表現できない。

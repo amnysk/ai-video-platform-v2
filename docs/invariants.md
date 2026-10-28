@@ -855,3 +855,184 @@ waiver があるときだけ `WAIVED` になる。1 つでも欠ける・読め�
 / `tests/unit/test_paid_job_monthly_cap.py` / `tests/contract/test_fal_monthly_cap_wiring.py`
 / `tests/integration/test_monthly_cap_concurrency.py::test_concurrent_reservations_never_exceed_the_cap`
 / `tests/integration/test_monthly_cap_concurrency.py::test_mixed_input_and_month_locks_do_not_deadlock`
+## Y. 投稿の説明欄（ADR-0070）
+
+### INV-90 視聴者向け description に内部 ID を出さない
+`AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER` が ON のとき、description に `avpu[0-9a-f]{24}`・UUID・MinIO の key / URL を
+含めない。lint の定義は `contracts/upload.py::INTERNAL_ID_PATTERNS` の1つで、組み立て（`build_youtube_metadata`）と
+`videos.insert` の body（`infrastructure/youtube/metadata.py::insert_body`）の双方が通す。flag は既定 OFF で、OFF の
+挙動は従来と同じ（description の最終行に marker。ADR-0070）。
+**機械検査**: `tests/contract/test_upload_metadata_lint.py::test_description_never_contains_internal_ids`
+/ `tests/contract/test_upload_metadata_lint.py::test_insert_body_description_has_no_marker`
+/ `tests/contract/test_upload_metadata_lint.py::test_insert_body_lints_the_final_body`
+/ `tests/contract/test_upload_metadata_lint.py::test_lint_catches_obfuscated_and_adjacent_internal_ids`
+/ `tests/contract/test_upload_metadata_lint.py::test_lint_has_no_false_positive_on_normal_text`
+/ `tests/contract/test_upload_metadata_lint.py::test_flag_off_is_byte_identical_to_the_legacy_shape`
+/ `tests/contract/test_upload_metadata_lint.py::test_insert_body_is_unchanged_with_flag_off`
+
+### INV-91 投稿マーカーは tags に残り、旧 description のマーカーも照合できる
+description から marker を外しても `tags` は `upload_marker(upload_key)` を持つ。`find_video_by_marker` は tags のみの
+動画と、description にだけ marker を持つ旧動画の両方に一致する（過去動画は変更・削除・再投稿しない）。
+description の検査とは別のテストで固定する。実 YouTube が tags のみの動画を返すことの確認は未了で、
+本番で flag を ON にする前提条件（ADR-0070）。
+**機械検査**: `tests/contract/test_upload_metadata_lint.py::test_tags_keep_the_reconciliation_marker`
+/ `tests/contract/test_upload_metadata_lint.py::test_lookup_matches_tags_only_and_legacy_description_only_videos`
+/ `tests/unit/test_upload_hardening.py::test_fake_marker_lookup_matches_description_lines`
+
+### INV-92 必須部分（クレジット・出典）を黙って切り詰めない
+description の 5000 UTF-8 bytes は必須部分を先に確保し、残りだけを本文に割り当てる。必須部分だけで超えるときは
+切り詰めずに `DescriptionRequiredPartsTooLongError` を上げる（Upload 工程で `needs_input` に写す配線は別タスク）。
+**機械検査**: `tests/contract/test_upload_metadata_lint.py::test_required_parts_over_the_limit_raise_instead_of_truncating`
+/ `tests/contract/test_upload_metadata_lint.py::test_required_parts_survive_a_long_body`
+/ `tests/contract/test_upload_metadata_lint.py::test_required_parts_exactly_filling_the_budget_are_kept`
+
+## Z. 地図・地理（ADR-0071）
+
+### INV-93 実在の位置を主張する地図シーンは GeoManifest を持ち、無ければ通らない
+地図が実在の場所を表すと主張するシーンは `GeoManifest` を要する。manifest 無しは BLOCK（fail-closed）。
+模式図（schematic）を実在の位置として提示することも BLOCK。
+**機械検査**: `tests/unit/test_geo_verify.py::test_a_scene_claiming_a_real_location_without_a_manifest_is_blocked`
+/ `tests/unit/test_geo_verify.py::test_a_schematic_cannot_back_a_real_location_claim`
+（純関数 `verify_scene` の段階まで。距離の許容は自己申告で広げられない:
+`tests/unit/test_geo_verify.py::test_a_declared_uncertainty_cannot_launder_a_place_900_km_off`
+/ `tests/unit/test_geo_verify.py::test_the_tolerance_never_exceeds_the_ceiling_of_its_feature_type`。
+claim の era / region の一致、資料が位置を支持するかは未検査。**どの workflow・render もまだ検証を呼ばない**ので、「全ての地図シーンが
+検証を通る」ことは未検査。接続する枝で検査する）
+
+### INV-94 地図の検証で BLOCK / REVIEW になったものは、LLM の評価で PASS にならない
+`GeoVerification.verdict` は check の最悪値と一致しなければ作れず、LLM の評価は `combine_verdicts` を
+通してのみ合流し、等しいか厳しい側にしか動かさない。
+**機械検査**: `tests/contract/test_geo_contracts.py::test_a_verification_cannot_be_milder_than_its_worst_check`
+/ `tests/unit/test_geo_combine.py::test_a_critic_pass_cannot_override_a_deterministic_block`
+/ `tests/unit/test_geo_combine.py::test_a_critic_pass_cannot_override_a_deterministic_review`
+/ `tests/unit/test_geo_combine.py::test_the_combined_verdict_is_never_milder_than_either_input`
+/ `tests/unit/test_geo_combine.py::test_a_score_is_not_accepted_in_place_of_a_verdict`
+（`combine_verdicts` を通る経路まで。実際の QualityGate がこの関数以外で最終 verdict を作らないことは、
+接続する枝で検査する。未接続の間は未検査）
+
+### INV-95 座標は名前付きの lat / lon（EPSG:4326）で持ち、範囲を検証する
+`GeoPlace` / `GeoBBox` / `ReferencePlace` は `lat` / `lon` を名前で持ち、範囲外・NaN・無限大・CRS 違い・
+位置引数の座標ペアを受け取らない。
+**機械検査**: `tests/contract/test_geo_contracts.py::test_coordinates_outside_epsg4326_ranges_are_rejected`
+/ `tests/contract/test_geo_contracts.py::test_coordinates_are_named_fields_not_a_positional_pair`
+/ `tests/contract/test_geo_contracts.py::test_only_epsg4326_is_accepted`
+/ `tests/contract/test_geo_contracts.py::test_coordinates_reject_bool_and_string_coercion`
+/ `tests/contract/test_geo_contracts.py::test_bbox_is_named_ordered_and_in_range`
+
+### INV-96 模式図は「縮尺不同（Not to scale）」の表示を持ち、無ければ BLOCK
+`map_kind == schematic` の manifest は `schematic_disclaimer` に表示文を持つ。無い・空・縮尺不同を示す語が
+無いものは BLOCK。
+**機械検査**: `tests/unit/test_geo_verify.py::test_a_schematic_without_the_disclaimer_is_blocked`
+/ `tests/unit/test_geo_verify.py::test_a_schematic_with_the_disclaimer_passes`
+/ `tests/unit/test_geo_verify.py::test_a_schematic_that_claims_accuracy_or_omits_the_phrase_is_blocked`
+/ `tests/unit/test_geo_verify.py::test_accepted_disclaimers_are_normalized`
+/ `tests/contract/test_geo_contracts.py::test_the_disclaimer_vocabulary_is_defined_once_in_contracts`
+（受け付けるのは縮尺が正確でないと述べる句だけ。manifest の検査まで。動画フレームに実際に表示されて
+いるかは未検査 — 描画後の照合は後続）
+
+## AA. BGM（ADR-0072。契約と純粋ドメインのみ。Render・説明欄・DB への結線は後続）
+
+番号 INV-41〜89 は他の枝が予約している（`docs/architecture/v3-phase0-audit.md`）。この節は INV-97〜100。
+
+### INV-97 選曲できるのは、承認済み・期限内・プラットフォーム/形式が許可された曲だけ
+候補になる曲は `license_status=approved`・`status=active`・期限内（`valid_until` が現在より後）・
+再利用/商用/改変が許可・対象プラットフォームと形式（shorts/longform）が許可・帰属必須なら指定文あり、の全てを満たす。
+未確認・失効・取消・Shorts 不可・指定文なしの曲は、他に曲が無くても選ばれず、除外理由が機械可読で返る。
+直近の使用（連投抑制）・mood・尺は並び順にだけ効き、合法な曲を除外せず、違法な曲を押し上げない。
+ライセンスの事実そのもの（承認可否）はここで決めない。人が証拠を見て決める。
+**機械検査**: `tests/unit/test_music_selection.py::test_only_legal_tracks_are_candidates_for_shorts`
+/ `tests/unit/test_music_selection.py::test_each_license_fact_excludes_the_only_track`
+/ `tests/unit/test_music_selection.py::test_valid_until_boundary_is_exclusive_of_now`
+/ `tests/unit/test_music_selection.py::test_recent_use_never_excludes_the_only_legal_track`
+/ `tests/unit/test_music_selection.py::test_recent_use_never_promotes_an_illegal_track`
+/ `tests/unit/test_music_contracts.py::test_approved_requires_evidence_and_check_time`
+（選曲を実際に呼ぶ Render / AudioDirector は未結線のため、**結線後に「承認済み以外が Render へ渡らない」ことは未検査**）
+
+### INV-98 帰属必須の指定文は、全文を説明欄に置くか、置けないなら Episode を止める
+帰属必須の曲を使う cue sheet は、カタログの `exact_attribution_text`（原文）をそのまま取り出す。
+cue 側のコピーが原文と違う・欠ける・曲がカタログに無い・source sha / license_evidence_hash が違う・選曲後に取消/失効/期限切れ/隔離になった場合はエラーにして推測で補わない。
+5000 UTF-8 bytes の説明欄に収まらないときは BLOCK を返し、切り詰めた版は作らない。
+**機械検査**: `tests/unit/test_music_credits.py::test_credit_required_track_yields_exact_text`
+/ `tests/unit/test_music_credits.py::test_stale_or_altered_credit_copy_in_cue_is_an_error_not_silently_replaced`
+/ `tests/unit/test_music_credits.py::test_fit_credits_blocks_instead_of_truncating`
+/ `tests/unit/test_music_credits.py::test_fit_credits_counts_utf8_bytes_not_characters`
+/ `tests/unit/test_music_contracts.py::test_attribution_text_is_required_iff_attribution_required`
+/ `tests/unit/test_music_contracts.py::test_attribution_text_with_chars_the_description_sanitizer_rewrites_is_rejected`
+/ `tests/unit/test_music_contracts.py::test_attribution_text_blank_after_removing_whitespace_and_format_chars_is_rejected`
+/ `tests/unit/test_music_credits.py::test_fitted_credits_are_byte_identical_to_what_is_sent`
+/ `tests/unit/test_music_credits.py::test_cue_license_evidence_hash_must_match_the_catalog`
+/ `tests/unit/test_music_credits.py::test_track_that_stopped_being_usable_after_selection_is_rejected`
+（収まるかの判定は、送信時と同じ `sanitize_youtube_text`（contracts/upload）の後のバイト数で行う。指定文に `<` `>` は持てない。
+説明欄の組み立てと投稿前 Gate への結線は後続。**投稿が実際に BLOCK されることは未検査**）
+
+### INV-99 BGM の取込は管理者の明示操作であり、agent・日次の通常制作は行わない
+カタログへの取込は、人が音源と証拠を用意して明示的に行う。取込検査は実ファイルの sha256 と申告の一致、
+object_key が `music/originals/<sha>(.<拡張子>)?` に完全一致すること、同一 sha の再利用（再収集なし）、同一 track_id の
+中身違い（変造）の拒否を行う。既存曲のライセンス事実は再取込の申告で変わらない。
+agent・日次制作は音源を取得せず、未収録なら収集依頼を積むだけ（設計 v3 §4.1）。
+**機械検査**: `tests/unit/test_music_ingest.py::test_sha_mismatch_is_rejected_as_tampered`
+/ `tests/unit/test_music_ingest.py::test_same_file_is_deduplicated_to_the_existing_track`
+/ `tests/unit/test_music_ingest.py::test_duplicate_never_upgrades_the_existing_license_facts`
+/ `tests/unit/test_music_ingest.py::test_same_track_id_with_different_bytes_is_rejected`
+/ `tests/architecture/test_music_boundaries.py::test_production_and_provider_billing_modules_do_not_import_music`
+（production / provider から domain.music を import させないところまでは検査済み。
+**取込を呼べる入口を管理者の CLI に限定すること、MinIO の immutable 設定は未検査**。取込の入口はまだ存在しない）
+
+### INV-100 cue sheet は production の成果物から独立しており、BGM だけの変更で fal を呼ばない
+`contracts/music.py` は production Artifact の契約（画像・音声・動画・状態語彙）を import せず、cue sheet は
+それらの Artifact を参照しない。時間・音量は int で持ち、hash を揺らさない。cue は start_ms 昇順で、同じ scene の cue は重ならない（別 scene どうしの重なり=クロスフェードは許す）。`domain/music` は純粋（I/O・時計なし）。
+**機械検査**: `tests/architecture/test_music_boundaries.py::test_music_contract_does_not_depend_on_production_artifacts`
+/ `tests/architecture/test_music_boundaries.py::test_domain_music_has_no_io_or_clock_imports`
+/ `tests/architecture/test_music_boundaries.py::test_domain_music_does_not_read_the_clock_or_open_files`
+/ `tests/architecture/test_music_boundaries.py::test_domain_music_imports_only_contracts_and_itself`
+/ `tests/unit/test_music_contracts.py::test_level_is_integer_so_hash_is_stable`
+（構造上の独立だけを検査。**BGM のみ差替えで fal の予約が 0 件・Render と QA だけが再実行される（T16）ことは未検査**。
+`render_input_hash` に cue sheet をどう入れるかは Render 結線の枝で決める）
+
+## AB. 品質ゲート（ADR-0073。INV-41〜89 は他の枝の予約帯。欠番は意図的）
+
+### INV-101 無い・作れなかった・壊れた・今の final_video / 入力に結び付かない品質レポートは PASS ではない
+投稿可否の判定（`domain.quality.evaluate_for_upload`）は fail-closed: レポート無し（`None`）、作成失敗、
+取り込めない、schema_version 違い、未知の verdict、検査が空、保存 verdict が検査からの再計算と不一致、
+final_video の sha256 または input_hash が**今の**ものと不一致、未来日付は、すべて拒否し理由コードを返す。
+許可は検証済みの PASS と WARN（報告つき）だけ。（設計 v3 T22）
+**機械検査**: `tests/unit/test_quality_upload_decision.py`（全拒否経路と許可経路）
+/ `tests/contract/test_quality_contract.py::test_malformed_reports_are_rejected_with_a_reason`
+/ `tests/contract/test_quality_contract.py::test_non_report_input_is_unparsable`
+/ `tests/unit/test_quality_upload_decision.py::test_no_input_can_make_evaluate_raise`（総関数・fail-closed）
+/ `tests/unit/test_quality_upload_decision.py::test_deeply_nested_json_is_refused_not_raised`
+/ `tests/unit/test_quality_upload_decision.py::test_naive_generated_at_is_refused_not_raised`
+/ `tests/unit/test_quality_upload_decision.py::test_checks_must_be_a_tuple_of_quality_checks`
+/ `tests/contract/test_quality_contract.py::test_error_messages_never_echo_untrusted_values`（値を例外文に写さない）
+（判定は純粋関数の範囲。`upload_gate` への配線は INV-104）
+
+### INV-102 決定論の BLOCK / REVIEW は LLM の判定で緩まない
+`domain.quality.aggregate` は決定論の検査だけが BLOCK を作れ、LLM の検査（`deterministic=False`）は
+結果を厳しくする方向にだけ働く（LLM の BLOCK は REVIEW 止まり、LLM の PASS は何も緩めない）。
+決定論の検査が無いとき、LLM だけでは PASS にならない。（設計 v3 T32）
+**機械検査**: `tests/unit/test_quality_aggregate.py::test_llm_pass_cannot_relax_a_deterministic_block`
+/ `tests/unit/test_quality_aggregate.py::test_llm_pass_cannot_relax_a_deterministic_review`
+/ `tests/unit/test_quality_aggregate.py::test_adding_an_llm_check_never_relaxes_the_result`（全組み合わせの単調性）
+/ `tests/unit/test_quality_aggregate.py::test_llm_only_pass_is_still_not_proof_of_pass`
+/ `tests/unit/test_quality_upload_decision.py::test_llm_pass_does_not_rescue_a_deterministic_block_at_the_gate`
+
+### INV-103 Agent の tool allowlist は read-only の語彙だけで、課金・投稿・migrate・schedule・予約解放を含まない
+許可は `contracts.agent_tool_policy.PolicyToolId` の6つだけ。`fal.generate` / `youtube.upload` / `db.migrate` /
+`schedule.pause` / `provider_reservations.release` は禁止集合に1つだけ定義し、許可と交わらない。
+`validate_tool_request` は許可外（禁止・似た名前・不正な型）を構造化された拒否で返す。
+品質判定・tool 契約のモジュールは I/O・provider・`ProviderReservationRepository`・workers を import しない。（設計 v3 T04）
+**機械検査**: `tests/architecture/test_quality_gate_boundaries.py::test_forbidden_tool_ids_are_not_in_the_allowlist`
+/ `tests/architecture/test_quality_gate_boundaries.py::test_the_allowlist_detector_catches_a_violating_fixture`
+/ `tests/architecture/test_quality_gate_boundaries.py::test_quality_and_agent_tool_modules_do_no_io_and_import_no_provider_or_worker`
+/ `tests/architecture/test_quality_gate_boundaries.py::test_the_io_detector_catches_violating_fixtures`
+/ `tests/unit/test_agent_tool_policy.py::test_a_web_document_injected_upload_request_is_rejected_and_structured`
+/ `tests/unit/test_agent_tool_policy.py::test_forbidden_tools_are_rejected_as_forbidden`
+/ `tests/unit/test_agent_tool_policy.py::test_case_whitespace_and_nfkc_variants_of_forbidden_ids_are_forbidden_attempts`
+/ `tests/unit/test_agent_tool_policy.py::test_an_unknown_id_is_never_echoed_only_its_length_and_hash`
+（tool の実行器・Agent への登録はまだ無い。語彙と判定だけ）
+
+### INV-104 `upload_gate` は有効な品質レポートが無ければ投稿を拒否する（**配線は未実装**）
+計画: `upload_gate._refusal()` を拡張し（新しい stage は作らない）、final_video の sha256 と品質レポートを読んで
+`evaluate_for_upload` の拒否理由を `UploadGateResult.reason` に載せる。**現行の `upload_gate` は品質レポートを
+見ない**（本ブランチは Activity / workflow を変更しない。ADR-0073 §6）。保存先・遷移表の変更は別 ADR で先に承認する。
+**機械検査**: 未検査（配線の承認・実装まで。INV-101 の純粋な判定だけが検査済み）

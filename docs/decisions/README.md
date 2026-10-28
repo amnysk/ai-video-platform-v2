@@ -79,3 +79,7 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0061](./0061-fal-budget-zero-is-a-managed-hold.md) | fal の月間予算が 0 / 未設定でも、日次は失敗せず有料 submit を 0 回のまま正常終了する（ローカル予算ゲート。migration なし） | Proposed |
 | [0062](./0062-release-only-reservation-waiver.md) | 未照合の provider 予約を、release に限り期限つき・1 件限りで waive する（台帳は書かない。migration なし） | Proposed |
 | [0063](./0063-fal-monthly-hard-cap.md) | `FAL_MONTHLY_BUDGET_USD` を月間のハードキャップにする（予約と同じトランザクションで強制。migration なし） | Proposed |
+| [0070](./0070-description-without-internal-ids.md) | YouTube description から内部 ID を外す（marker は tags に残す・既定 OFF の flag） | Accepted |
+| [0071](./0071-geo-manifest-and-deterministic-map-verification.md) | 地図は GeoManifest から描き、位置の検証は決定論的な純関数が行う（LLM の採点で上書きしない） | Accepted |
+| [0072](./0072-bgm-contracts-and-license-gated-selection.md) | BGM 契約とライセンスで門を閉じた選曲（契約・純粋ドメインのみ） | Proposed |
+| [0073](./0073-quality-report-contract-and-fail-closed-gate.md) | 品質レポートの契約と fail-closed の投稿可否判定（契約層のみ・配線は後続） | Accepted |
