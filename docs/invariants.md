@@ -549,3 +549,51 @@ agent・日次制作は音源を取得せず、未収録なら収集依頼を積
 / `tests/unit/test_music_contracts.py::test_level_is_integer_so_hash_is_stable`
 （構造上の独立だけを検査。**BGM のみ差替えで fal の予約が 0 件・Render と QA だけが再実行される（T16）ことは未検査**。
 `render_input_hash` に cue sheet をどう入れるかは Render 結線の枝で決める）
+
+## N. 品質ゲート（ADR-0073。INV-41〜100 は他の枝の予約帯。欠番は意図的）
+
+### INV-101 無い・作れなかった・壊れた・今の final_video / 入力に結び付かない品質レポートは PASS ではない
+投稿可否の判定（`domain.quality.evaluate_for_upload`）は fail-closed: レポート無し（`None`）、作成失敗、
+取り込めない、schema_version 違い、未知の verdict、検査が空、保存 verdict が検査からの再計算と不一致、
+final_video の sha256 または input_hash が**今の**ものと不一致、未来日付は、すべて拒否し理由コードを返す。
+許可は検証済みの PASS と WARN（報告つき）だけ。（設計 v3 T22）
+**機械検査**: `tests/unit/test_quality_upload_decision.py`（全拒否経路と許可経路）
+/ `tests/contract/test_quality_contract.py::test_malformed_reports_are_rejected_with_a_reason`
+/ `tests/contract/test_quality_contract.py::test_non_report_input_is_unparsable`
+/ `tests/unit/test_quality_upload_decision.py::test_no_input_can_make_evaluate_raise`（総関数・fail-closed）
+/ `tests/unit/test_quality_upload_decision.py::test_deeply_nested_json_is_refused_not_raised`
+/ `tests/unit/test_quality_upload_decision.py::test_naive_generated_at_is_refused_not_raised`
+/ `tests/unit/test_quality_upload_decision.py::test_checks_must_be_a_tuple_of_quality_checks`
+/ `tests/contract/test_quality_contract.py::test_error_messages_never_echo_untrusted_values`（値を例外文に写さない）
+（判定は純粋関数の範囲。`upload_gate` への配線は INV-104）
+
+### INV-102 決定論の BLOCK / REVIEW は LLM の判定で緩まない
+`domain.quality.aggregate` は決定論の検査だけが BLOCK を作れ、LLM の検査（`deterministic=False`）は
+結果を厳しくする方向にだけ働く（LLM の BLOCK は REVIEW 止まり、LLM の PASS は何も緩めない）。
+決定論の検査が無いとき、LLM だけでは PASS にならない。（設計 v3 T32）
+**機械検査**: `tests/unit/test_quality_aggregate.py::test_llm_pass_cannot_relax_a_deterministic_block`
+/ `tests/unit/test_quality_aggregate.py::test_llm_pass_cannot_relax_a_deterministic_review`
+/ `tests/unit/test_quality_aggregate.py::test_adding_an_llm_check_never_relaxes_the_result`（全組み合わせの単調性）
+/ `tests/unit/test_quality_aggregate.py::test_llm_only_pass_is_still_not_proof_of_pass`
+/ `tests/unit/test_quality_upload_decision.py::test_llm_pass_does_not_rescue_a_deterministic_block_at_the_gate`
+
+### INV-103 Agent の tool allowlist は read-only の語彙だけで、課金・投稿・migrate・schedule・予約解放を含まない
+許可は `contracts.agent_tool_policy.PolicyToolId` の6つだけ。`fal.generate` / `youtube.upload` / `db.migrate` /
+`schedule.pause` / `provider_reservations.release` は禁止集合に1つだけ定義し、許可と交わらない。
+`validate_tool_request` は許可外（禁止・似た名前・不正な型）を構造化された拒否で返す。
+品質判定・tool 契約のモジュールは I/O・provider・`ProviderReservationRepository`・workers を import しない。（設計 v3 T04）
+**機械検査**: `tests/architecture/test_quality_gate_boundaries.py::test_forbidden_tool_ids_are_not_in_the_allowlist`
+/ `tests/architecture/test_quality_gate_boundaries.py::test_the_allowlist_detector_catches_a_violating_fixture`
+/ `tests/architecture/test_quality_gate_boundaries.py::test_quality_and_agent_tool_modules_do_no_io_and_import_no_provider_or_worker`
+/ `tests/architecture/test_quality_gate_boundaries.py::test_the_io_detector_catches_violating_fixtures`
+/ `tests/unit/test_agent_tool_policy.py::test_a_web_document_injected_upload_request_is_rejected_and_structured`
+/ `tests/unit/test_agent_tool_policy.py::test_forbidden_tools_are_rejected_as_forbidden`
+/ `tests/unit/test_agent_tool_policy.py::test_case_whitespace_and_nfkc_variants_of_forbidden_ids_are_forbidden_attempts`
+/ `tests/unit/test_agent_tool_policy.py::test_an_unknown_id_is_never_echoed_only_its_length_and_hash`
+（tool の実行器・Agent への登録はまだ無い。語彙と判定だけ）
+
+### INV-104 `upload_gate` は有効な品質レポートが無ければ投稿を拒否する（**配線は未実装**）
+計画: `upload_gate._refusal()` を拡張し（新しい stage は作らない）、final_video の sha256 と品質レポートを読んで
+`evaluate_for_upload` の拒否理由を `UploadGateResult.reason` に載せる。**現行の `upload_gate` は品質レポートを
+見ない**（本ブランチは Activity / workflow を変更しない。ADR-0073 §6）。保存先・遷移表の変更は別 ADR で先に承認する。
+**機械検査**: 未検査（配線の承認・実装まで。INV-101 の純粋な判定だけが検査済み）
