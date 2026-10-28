@@ -49,6 +49,7 @@ export RENDER_FFMPEG_SHA256=810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f
 | `RENDER_FONT_PATH` / `RENDER_FONT_SHA256` | Noto Sans CJK Regular | 描画ごとに sha256 を照合。不一致は `RenderEngineUnavailableError`。sha256 は input_hash に入る |
 | `RENDER_CONCURRENCY` | 1 | `render-media` Worker の `max_concurrent_activities`（同時描画数） |
 | `RENDER_TIMEOUT_SECONDS` | 1800 | エンジンの時間切れ。**worker 側の値**を admit が workflow へ返す（API は渡さない）。Activity の start_to_close = これ + 300秒 + 2秒 ×（profile の最長尺の秒数） |
+| `BGM_ENABLED` | false | BGM の Render 結線（ADR-0077）。ON でも `${AI_VIDEO_WORK_ROOT}/bgm/` に `catalog.json` と `cues/<episode_id>.json`・音源があり、全ライセンス検査を通る Episode だけ BGM が付く。通らなければ BGM 無しで描画しログに理由を残す。BGM 入りの input_hash は BGM 無しと異なる |
 | `RENDER_MIN_FREE_BYTES` | 10 GiB | 事前検査: 空き ≥ これ + 入力量 × 4 |
 | `AI_VIDEO_WORK_ROOT` | `/mnt/minio-hdd/ai-video-work` | 作業領域（`work-directories.md`）。試行ごとに `episodes/<ep>/<job>/attempt-<n>/` を作る。成功と cancel では片付け、**失敗では調査のため残す**（下記） |
 

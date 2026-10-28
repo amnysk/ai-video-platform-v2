@@ -4,7 +4,7 @@
   （``reject_reasons`` / ``credits_for``）で再検査し、1つでも通らなければ BGM 全体を使わない
   （一部の cue だけ鳴る動画は演出意図を壊す。全部使うか、全く使わないか）
 - 使わない場合も理由コードを返す。黙って使うことも、黙って落とすことも無い
-- 使わない場合の描画は BGM 無しと**同一**（input_hash にも ffmpeg コマンドにも BGM は現れない）
+- 使わない場合の描画は BGM 無しと**同一**（input_hash にも 描画コマンドにも BGM は現れない）
 """
 
 from __future__ import annotations

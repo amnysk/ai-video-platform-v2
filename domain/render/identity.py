@@ -42,7 +42,7 @@ def render_input_hash(
 
     ``bgm`` は BGM を実際に混ぜるときだけ渡す混合計画（``BgmMixPlan.identity_payload()``）。
     ``None`` のときは**キーごと入れない**ので、BGM 導入前と hash がバイト単位で同じ（INV-113）。
-    production の入力 hash には BGM を入れない（BGM だけの変更で fal を呼ばない。INV-116）。
+    production の入力 hash には BGM を入れない（BGM だけの変更で課金しない。INV-116）。
     """
     mix = audio_mix if audio_mix is not None else audio_mix_spec(profile)
     payload: dict[str, object] = {

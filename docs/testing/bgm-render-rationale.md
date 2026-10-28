@@ -45,3 +45,26 @@ fixture の曲・hash は架空で、実在の楽曲・ライセンス判断で�
 | `test_a_failed_verdict_becomes_a_failed_qa_check_that_raises` | unit | 不合格が QA の失敗クラスへ写像されず保存されること |
 | `test_probe_that_cannot_run_raises_instead_of_passing` | unit | 実測バイナリが無い/失敗したときに「測れなかった=合格」となること |
 | `tests/unit/test_render_ffmpeg_real.py::test_loudness_probe_measures_a_real_file` | unit（実 ffmpeg、既存の条件付き skip に従う） | 実 ffmpeg の引数・出力形式が parse と食い違うこと |
+
+## Activity 結線・fal ゼロ（INV-113〜116）
+
+| テスト | レベル | 止めるもの |
+|---|---|---|
+| `tests/unit/test_render_activities_bgm.py::test_no_cue_sheet_renders_exactly_like_no_bgm_support` | unit（SQLite+メモリ） | 設定 ON でも cue sheet が無い Episode の input_hash が変わり、現行 final_video が再利用されず全件再描画されること |
+| `test_bgm_changes_identity_and_stores_evidence_...` | unit | BGM 入りが BGM 無しと同じ hash になり古い動画を再利用する・証跡（クレジット原文・曲 sha・証拠 hash・実測）が欠ける/final_video と食い違う・QA 報告に実測が残らない |
+| `test_expired_or_unknown_license_renders_without_bgm_...` | unit | 失効・未確認・期限切れの曲が Render に渡る。黙って BGM を落とし理由がログに無い |
+| `test_license_rejected_render_has_the_same_identity_as_no_bgm` | unit | ライセンス不適合の描画が BGM 無しと別 hash になり、不要な再描画を起こす |
+| `test_a_track_that_expires_after_a_bgm_render_...` | unit | 描画後に失効した曲を含む現行動画が、次の描画でそのまま再利用されること |
+| `test_unreadable_bgm_source_renders_without_bgm` | unit | 供給元の破損で描画が止まる/破損した入力で BGM を鳴らすこと |
+| `test_out_of_range_loudness_is_a_structured_failure_...`（4 値） | unit | 大きすぎ・小さすぎ・天井超過・無音の動画が保存される。失敗後に証跡だけ残る |
+| `test_bgm_only_changes_rerender_only_and_never_touch_production_or_fal` | unit | BGM の変更が fal 呼び出し・予約・production Artifact・render 以外の job を伴うこと（fal クライアントの全メソッドを失敗化して 0 件を確認）。変更なし再実行が描画すること |
+| `tests/architecture/test_bgm_render_boundaries.py`（5 件） | architecture | Render worker が fal/production のコードを読み込む・BGM 層が production/provider を import する・設定キーを読む場所が増える・Activity 名/入出力フィールドが変わる（Temporal の履歴互換） |
+| `tests/unit/test_bgm_setting.py` | unit | 既定が ON になる・キー名が複数箇所に散る |
+
+## 暫定の供給元（`tests/unit/test_bgm_local_source.py`）
+
+| テスト | 止めるもの |
+|---|---|
+| `test_no_cue_sheet_file_means_no_bgm_...` | cue sheet が無い Episode でカタログ読み込みの失敗が描画を止めること |
+| `test_loads_cue_sheet_catalog_and_the_actual_file_sha` / `test_an_altered_file_...` / `test_a_missing_audio_file_...` | 差し替えられた・消えた音源をカタログの sha のまま「検証済み」と報告すること（実ファイルから sha を求める） |
+| `test_broken_json_and_bad_episode_id_...` | 壊れた JSON・不正な episode_id（パス注入）が例外にならず通ること |

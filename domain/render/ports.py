@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from contracts.music import BgmTrack, MusicCueSheet
 from contracts.music_render import BgmMixPlan, LoudnessMeasurement
 from contracts.render import RenderEngineIdentity, RenderPlan
 
@@ -103,3 +104,26 @@ class LoudnessProbe(Protocol):
     """
 
     def measure_loudness(self, path: str) -> LoudnessMeasurement: ...
+
+
+class BgmSourceError(Exception):
+    """BGM の供給元（カタログ・cue sheet・音源）が読めない/壊れている。BGM を使わず描画を続ける。"""
+
+
+@dataclass(frozen=True, slots=True)
+class BgmSourceData:
+    """Episode 1 件分の BGM 入力。cue sheet が無ければ ``cue_sheet=None``（BGM 無し）。"""
+
+    cue_sheet: MusicCueSheet | None
+    catalog: tuple[BgmTrack, ...] = ()
+    #: track_id → ローカルの音源ファイル
+    track_paths: Mapping[str, Path] = field(default_factory=dict)
+    #: track_id → 実ファイルから求めた sha256（読めなければ None）
+    file_sha256_by_track: Mapping[str, str | None] = field(default_factory=dict)
+
+
+@runtime_checkable
+class BgmSource(Protocol):
+    """BGM の供給元。同期（呼び出し側がスレッドで待つ）。DB 版への差し替え口（ADR-0077 §1）。"""
+
+    def load(self, episode_id: str) -> BgmSourceData: ...

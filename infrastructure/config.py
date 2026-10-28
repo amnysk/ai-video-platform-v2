@@ -156,6 +156,10 @@ class Settings(BaseSettings):
     #: 作業領域に最低限残す空き容量（バイト）。見込み使用量はこれに上乗せする。
     render_min_free_bytes: int = DEFAULT_RENDER_MIN_FREE_BYTES
 
+    #: BGM の Render 結線（ADR-0077）。既定 OFF。OFF の間は導入前と同一の描画。
+    #: 供給元は ``${ai_video_work_root}/bgm/``（catalog.json と cues/<episode_id>.json、音源）
+    bgm_enabled: bool = False
+
     # --- upload（Phase 6） ---
     #: OAuth installed app の client。secret は ``SecretStr``。
     youtube_client_id: str | None = None

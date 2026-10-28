@@ -77,7 +77,17 @@ workflow は変更しない。
 ## 設定キーの grep（AGENTS.md §8）
 
 `grep -rn "bgm_enabled\|BGM_ENABLED" apps/ workers/ domain/ infrastructure/ contracts/ docs/` を実装前に走らせた:
-ヒット 0 件（読み手 0 / 書き手 0 / 無関係 0）。実装後の内訳は下記（実装時に確定して追記）。
+ヒット 0 件（読み手 0 / 書き手 0 / 無関係 0）。実装後に同じ grep を走らせた内訳（コード 3 件 + 配布設定 2 件 + 文書）:
+
+| 場所 | 分類 | 件数 |
+|---|---|---|
+| `infrastructure/config.py`（`Settings.bgm_enabled`） | 定義 | 1 |
+| `workers/render/run_worker.py` | 読み手（worker 組み立て。唯一） | 1 |
+| `contracts/music_render.py`（`BGM_SETTING_KEY`） | キー名の唯一の定義 | 1 |
+| `compose.yaml` / `.env.example`（`BGM_ENABLED`） | 書き手（配布設定。既定 false） | 2 |
+| `docs/` | 無関係（説明） | — |
+
+読み手が 1 箇所であることは `tests/architecture/test_bgm_render_boundaries.py::test_the_setting_key_is_read_only_where_the_worker_is_assembled` が検査する。
 
 ## DDL が必要になる場合の計画（本 ADR では書かない）
 

@@ -1076,4 +1076,25 @@ ffmpeg `ebur128=peak=true` の要約から積分ラウドネス・true peak・LR
 / `tests/unit/test_bgm_loudness.py::test_verdict_reason_codes_and_boundaries`
 / `tests/unit/test_bgm_loudness.py::test_a_failed_verdict_becomes_a_failed_qa_check_that_raises`
 / `tests/unit/test_bgm_loudness.py::test_probe_that_cannot_run_raises_instead_of_passing`
-（Activity での実行は INV-116 の結線と同じコミットで検査する）
+（Activity での実行は `tests/unit/test_render_activities_bgm.py::test_out_of_range_loudness_is_a_structured_failure_and_nothing_is_stored`）
+
+### INV-116 BGM だけの変更は render だけを再実行し、fal・production・予約台帳に触れない。Temporal の Activity 契約は変わらない
+BGM の供給元とラウドネス測定は `RenderActivities` のコンストラクタ引数で、Activity の入力ではない。Render の経路（worker 全体）は
+fal クライアント・production worker のコードを読み込まない。cue sheet だけを変えた再描画は、fal クライアントの全メソッドを
+「呼ばれたら失敗」にしても通り、予約台帳の件数 0・production の Artifact（id / 版 / sha256）不変・job は render のみ。
+変更のない再実行は現行 final_video を再利用する（描画 0 回）。BGM 入り動画は証跡（クレジット原文・曲の sha と証拠 hash・
+実測ラウドネス・final_video の sha256）を MinIO に保存してから記録され、証跡が無い BGM 入り動画は存在しない。
+Activity 名と入出力 dataclass のフィールド（名前・順序）は導入前と同一。
+**機械検査**: `tests/unit/test_render_activities_bgm.py::test_bgm_only_changes_rerender_only_and_never_touch_production_or_fal`
+/ `tests/unit/test_render_activities_bgm.py::test_bgm_changes_identity_and_stores_evidence_credits_and_loudness`
+/ `tests/unit/test_render_activities_bgm.py::test_out_of_range_loudness_is_a_structured_failure_and_nothing_is_stored`
+/ `tests/unit/test_render_activities_bgm.py::test_no_cue_sheet_renders_exactly_like_no_bgm_support`
+/ `tests/unit/test_render_activities_bgm.py::test_expired_or_unknown_license_renders_without_bgm_and_logs_the_reason`
+/ `tests/unit/test_render_activities_bgm.py::test_a_track_that_expires_after_a_bgm_render_is_replaced_by_a_bgm_less_render`
+/ `tests/architecture/test_bgm_render_boundaries.py::test_the_render_worker_loads_no_fal_or_production_module`
+/ `tests/architecture/test_bgm_render_boundaries.py::test_bgm_modules_do_not_import_production_or_provider_code`
+/ `tests/architecture/test_bgm_render_boundaries.py::test_render_activity_names_and_io_dataclass_fields_are_unchanged`
+/ `tests/architecture/test_bgm_render_boundaries.py::test_the_setting_key_is_read_only_where_the_worker_is_assembled`
+/ `tests/unit/test_bgm_setting.py::test_default_is_off_and_the_key_name_is_single_sourced`
+（Temporal の replay は `tests/unit/test_log_old_history_replay.py` 等で確認。**実 Temporal / MinIO / PostgreSQL での通し、
+および説明欄・投稿前 Gate への結線は未検査**）

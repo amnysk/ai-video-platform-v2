@@ -17,6 +17,7 @@ import av
 import pytest
 from PIL import ImageChops
 
+from contracts.music import DuckingPolicy
 from domain.render.ports import RenderRequest
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.render.ffmpeg_engine import FfmpegRenderEngine
@@ -200,7 +201,7 @@ def _mean_volume_db(path: Path, start_s: float, end_s: float) -> float:
     return float(match.group(1))
 
 
-def _bgm_request(engine, sources, work: Path, bgm_source: Path, ducking: str):
+def _bgm_request(engine, sources, work: Path, bgm_source: Path, ducking: DuckingPolicy):
     from contracts.music_render import BgmMixCue, BgmMixPlan
     from domain.render.ports import BgmRenderInput
 

@@ -15,6 +15,7 @@ import os
 import shutil
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,10 +36,12 @@ from contracts.artifacts import (
     parse_storyboard_artifact,
 )
 from contracts.log_contract import EventName, LogStage, Outcome
+from contracts.music_render import BgmEvidenceTrack, BgmRenderEvidence
 from contracts.render import (
     FINAL_VIDEO_MIME_TYPE,
     RENDER_ARTIFACT_SCHEMA_VERSION,
     RenderPlan,
+    TechnicalQaReport,
     TimelinePolicy,
     get_render_profile,
 )
@@ -88,9 +91,20 @@ from domain.errors import (
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
 from domain.production.manifest import ArtifactRef
 from domain.production.media import MediaProbe
+from domain.render.bgm import BgmResolution, BgmSkipReason, resolve_bgm, skipped_for
 from domain.render.identity import render_input_hash, render_plan_sha256
+from domain.render.loudness import evaluate_loudness, loudness_check
 from domain.render.plan import Pinned, build_render_plan
-from domain.render.ports import FinalVideoProbe, RenderEngine, RenderRequest
+from domain.render.ports import (
+    BgmRenderInput,
+    BgmSource,
+    BgmSourceData,
+    BgmSourceError,
+    FinalVideoProbe,
+    LoudnessProbe,
+    RenderEngine,
+    RenderRequest,
+)
 from domain.render.qa import (
     CHECK_MEDIA_READBACK,
     evaluate_technical_qa,
@@ -130,6 +144,8 @@ WORKFLOW_OWNED_JOB_TYPES = frozenset({JobType.RENDER_FINAL_VIDEO})
 #: 入力量から見積もる作業領域の使用量の倍率（ADR-0019 §10）。
 WORKSPACE_ESTIMATE_FACTOR = 4
 FINAL_VIDEO_FILENAME = "final.mp4"
+#: BGM の使用証跡の object key に使う種別名（ArtifactType ではない。行は作らない。ADR-0077 §6）
+BGM_EVIDENCE_OBJECT_TYPE = "bgm_render_evidence"
 
 DiskUsage = Callable[[str], Any]
 HeartbeatFn = Callable[..., None]
@@ -224,6 +240,9 @@ class RenderActivities:
         run_inspector: WorkflowRunInspector | None = None,
         disk_usage: DiskUsage = shutil.disk_usage,
         heartbeat: HeartbeatFn = _activity_heartbeat,
+        bgm_source: BgmSource | None = None,
+        loudness_probe: LoudnessProbe | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
         self._store = store
@@ -244,6 +263,10 @@ class RenderActivities:
         self._run_inspector = run_inspector
         self._disk_usage = disk_usage
         self._heartbeat = heartbeat
+        #: 両方そろったときだけ BGM の経路が走る（ADR-0077）。どちらかが None なら導入前と同一
+        self._bgm_source = bgm_source
+        self._loudness_probe = loudness_probe
+        self._clock = clock
 
     def state_activities(self) -> Sequence[Callable[..., object]]:
         """``RENDER_TASK_QUEUE``（workflow と同じ queue、通常の並行枠）へ登録する。"""
@@ -376,6 +399,7 @@ class RenderActivities:
             policy=self._policy,
             engine=engine,
         )
+        bgm, bgm_data = await self._resolve_bgm(episode_id, plan)
         input_hash = render_input_hash(
             manifest_sha256=inputs.manifest_meta.sha256,
             script_sha256=inputs.script.ref.sha256,
@@ -385,6 +409,7 @@ class RenderActivities:
             engine=engine,
             font_sha256=self._font_sha256,
             engine_threads=self._render_threads,
+            bgm=bgm.identity if bgm is not None else None,
         )
 
         async with self._session_factory() as session:
@@ -426,12 +451,13 @@ class RenderActivities:
                     work_dir=work.tmp,
                     output_path=work.output / FINAL_VIDEO_FILENAME,
                     timeout_seconds=self._timeout_seconds,
+                    bgm=_bgm_input(bgm, bgm_data),
                 ),
                 heartbeat=lambda: self._heartbeat("rendering"),
             )
             self._heartbeat("rendered")
             result = await self._store_final(
-                request, job_id, inputs, plan, input_hash, rendered.path
+                request, job_id, inputs, plan, input_hash, rendered.path, bgm=bgm
             )
         except asyncio.CancelledError:
             self._cleanup(episode_id, job_id, attempt)
@@ -476,6 +502,7 @@ class RenderActivities:
         plan: RenderPlan,
         input_hash: str,
         path: Path,
+        bgm: BgmResolution | None = None,
     ) -> RenderFinalVideoResult:
         episode_id = request.episode_id
         try:
@@ -496,10 +523,18 @@ class RenderActivities:
             sources_verified=inputs.sources_verified,
             manifest=inputs.manifest,
         )
-        _log_validation(
-            episode_id, [c for c in pre_upload if c.check != CHECK_MEDIA_READBACK], "pre_upload"
-        )
-        raise_for_failed_checks([c for c in pre_upload if c.check != CHECK_MEDIA_READBACK])
+        qa_checks = [c for c in pre_upload if c.check != CHECK_MEDIA_READBACK]
+        loudness_verdict = None
+        if bgm is not None and bgm.applied:
+            # BGM 入りだけ実測する。測れない/範囲外/無音は例外（黙って通さない。INV-115）
+            assert self._loudness_probe is not None
+            measured = await self._beating(
+                "loudness", asyncio.to_thread(self._loudness_probe.measure_loudness, str(path))
+            )
+            loudness_verdict = evaluate_loudness(measured)
+            qa_checks.append(loudness_check(loudness_verdict))
+        _log_validation(episode_id, qa_checks, "pre_upload")
+        raise_for_failed_checks(qa_checks)
 
         media_key = episode_media_object_key(
             episode_id, ArtifactType.FINAL_VIDEO.value, media_sha, "mp4"
@@ -524,6 +559,10 @@ class RenderActivities:
             sources_verified=inputs.sources_verified,
             manifest=inputs.manifest,
         )
+        if loudness_verdict is not None:
+            report = TechnicalQaReport(
+                passed=True, checks=(*report.checks, loudness_check(loudness_verdict))
+            )
         _log_validation(episode_id, list(report.checks), "final")
 
         def _src(ref: ArtifactRef) -> dict[str, str]:
@@ -569,6 +608,9 @@ class RenderActivities:
                 f"final_video readback sha256 mismatch at {stored.key}: expected={digest} "
                 f"put={stored.sha256} readback={readback}"
             )
+        if bgm is not None and bgm.applied and loudness_verdict is not None:
+            # 証跡は final_video の行を記録する前に保存する（証跡の無い BGM 入り動画を作らない）
+            await self._store_bgm_evidence(episode_id, input_hash, media_sha, bgm, loudness_verdict)
         async with self._session_factory() as session:
             meta = await ArtifactMetadataRepository(session).record(
                 episode_id=episode_id,
@@ -591,6 +633,62 @@ class RenderActivities:
             size,
         )
         return _result(meta, skipped=False, job_id=job_id)
+
+    async def _store_bgm_evidence(
+        self,
+        episode_id: str,
+        input_hash: str,
+        media_sha: str,
+        bgm: BgmResolution,
+        verdict: Any,
+    ) -> None:
+        evidence = BgmRenderEvidence(
+            episode_id=episode_id,
+            input_hash=input_hash,
+            final_video_sha256=media_sha,
+            mix_plan_sha256=bgm.mix_plan_sha256,
+            tracks=tuple(BgmEvidenceTrack.model_validate(t.model_dump()) for t in bgm.tracks),
+            credit_lines=bgm.credit_lines,
+            loudness=verdict,
+        )
+        payload = evidence.model_dump(mode="json")
+        digest = sha256_hex(canonical_json_bytes(payload))
+        key = artifact_object_key(episode_id, BGM_EVIDENCE_OBJECT_TYPE, digest)
+        stored = await self._store.put_json(key, payload)
+        readback = sha256_hex(canonical_json_bytes(await self._store.get_json(stored.key)))
+        if stored.sha256 != digest or readback != digest:
+            raise FinalVideoCorruptError(f"bgm evidence readback sha256 mismatch at {stored.key}")
+
+    async def _resolve_bgm(
+        self, episode_id: str, plan: RenderPlan
+    ) -> tuple[BgmResolution | None, BgmSourceData | None]:
+        """BGM を使うか決める。設定が OFF（供給元/測定が無い）なら ``(None, None)``＝導入前と同一。
+
+        使えない理由は戻り値とログに残す。使えない場合の描画は BGM 無しと同一（INV-113/114）。
+        """
+        if self._bgm_source is None or self._loudness_probe is None:
+            return None, None
+        try:
+            data = await self._beating(
+                "bgm_source", asyncio.to_thread(self._bgm_source.load, episode_id)
+            )
+        except (BgmSourceError, OSError) as exc:
+            logger.warning("bgm not used episode=%s reason=source_unreadable (%s)", episode_id, exc)
+            return skipped_for(BgmSkipReason.SOURCE_UNREADABLE), None
+        resolution = resolve_bgm(
+            data.cue_sheet,
+            data.catalog,
+            plan=plan,
+            now=self._clock(),
+            file_sha256_by_track=data.file_sha256_by_track,
+        )
+        if not resolution.applied and data.cue_sheet is not None:
+            logger.warning(
+                "bgm not used episode=%s reasons=%s",
+                episode_id,
+                [(r.reason.value, r.track_id, r.detail) for r in resolution.rejections],
+            )
+        return resolution, data
 
     # ------------------------------------------------------------------ 入力
 
@@ -935,6 +1033,12 @@ async def _owns(episodes: EpisodeRepository, episode_id: str, token: str, action
         token,
     )
     return False
+
+
+def _bgm_input(bgm: BgmResolution | None, data: BgmSourceData | None) -> BgmRenderInput | None:
+    if bgm is None or not bgm.applied or bgm.plan is None or data is None:
+        return None
+    return BgmRenderInput(mix=bgm.plan, track_paths=data.track_paths)
 
 
 def _attempt() -> int:
