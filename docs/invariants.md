@@ -456,6 +456,8 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/architecture/test_quality_gate_boundaries.py::test_the_io_detector_catches_violating_fixtures`
 / `tests/unit/test_agent_tool_policy.py::test_a_web_document_injected_upload_request_is_rejected_and_structured`
 / `tests/unit/test_agent_tool_policy.py::test_forbidden_tools_are_rejected_as_forbidden`
+/ `tests/unit/test_agent_tool_policy.py::test_case_whitespace_and_nfkc_variants_of_forbidden_ids_are_forbidden_attempts`
+/ `tests/unit/test_agent_tool_policy.py::test_an_unknown_id_is_never_echoed_only_its_length_and_hash`
 （tool の実行器・Agent への登録はまだ無い。語彙と判定だけ）
 
 ### INV-104 `upload_gate` は有効な品質レポートが無ければ投稿を拒否する（**配線は未実装**）

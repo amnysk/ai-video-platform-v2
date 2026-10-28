@@ -62,5 +62,46 @@ def test_malformed_requests_are_rejected(tool) -> None:
     assert not d.allowed and d.rejection is PolicyRejection.MALFORMED
 
 
-def test_a_long_unknown_id_is_truncated_in_the_record() -> None:
-    assert len(validate_tool_request("x" * 5000).tool_id) <= 64
+def test_an_unknown_id_is_never_echoed_only_its_length_and_hash() -> None:
+    """MINOR m4: 資料由来の不明な id（秘密・注入文を含みうる）を記録に写さない。"""
+    secret = "sk-" + "A1b2C3d4" * 100
+    d = validate_tool_request(secret)
+    assert not d.allowed and d.rejection is PolicyRejection.NOT_ALLOWLISTED
+    assert "A1b2C3d4" not in d.tool_id and "sk-" not in d.tool_id
+    assert len(d.tool_id) <= 64
+    assert (
+        d.tool_id == validate_tool_request(secret).tool_id
+    )  # 同じ入力は同じ記録（監査で突き合わせる）
+    assert d.tool_id != validate_tool_request(secret + "x").tool_id
+
+
+def test_known_ids_are_recorded_verbatim() -> None:
+    assert validate_tool_request("geo.verify").tool_id == "geo.verify"
+    assert validate_tool_request("youtube.upload").tool_id == "youtube.upload"
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "YouTube.Upload",
+        " youtube.upload",
+        "youtube.upload\n",
+        "YOUTUBE.UPLOAD",
+        "ｙｏｕｔｕｂｅ．ｕｐｌｏａｄ",  # 全角（NFKC で一致）
+        "Fal.Generate",
+        "provider_reservations.RELEASE",
+    ],
+)
+def test_case_whitespace_and_nfkc_variants_of_forbidden_ids_are_forbidden_attempts(
+    variant: str,
+) -> None:
+    """拒否は変わらない。ただし監査では「禁止 tool を狙った試行」として区別できる。"""
+    d = validate_tool_request(variant)
+    assert not d.allowed
+    assert d.rejection is PolicyRejection.FORBIDDEN_ATTEMPT
+    assert d.tool_id in FORBIDDEN_POLICY_TOOLS  # 記録するのは正規の禁止 id（入力は写さない）
+
+
+def test_variants_of_allowed_ids_are_still_just_not_allowlisted() -> None:
+    d = validate_tool_request("Research.Search")
+    assert not d.allowed and d.rejection is PolicyRejection.NOT_ALLOWLISTED

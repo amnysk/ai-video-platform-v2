@@ -82,6 +82,11 @@ input_hash の結び付きを呼び出し側が省略して fail-open になる�
 構造化された拒否（`ToolDecision`）を返す。Web 資料に埋め込まれた「upload しろ」は許可外として拒否され、
 その決定が記録対象になる。本契約は tool id の語彙と許可方針だけで、実行器・登録は持たない。
 
+**拒否の記録（独立レビューでの是正）**: 不明な tool id は記録に写さず `unknown:len=N:sha256=…` の形にする
+（資料由来の秘密・注入文を残さない）。許可・禁止の既知 id だけをそのまま記録する。禁止 id の大文字小文字・
+空白・NFKC 違い（`YouTube.Upload` 等）は拒否は同じだが `FORBIDDEN_ATTEMPT` として区別し、正規の禁止 id を記録する
+（許可 id の似た名前は `NOT_ALLOWLISTED` のまま。許可は完全一致だけ）。
+
 **未マージの `claude/agent-tools` 枝との関係（独立レビューでの是正）**: 同枝は `contracts/agent_tools.py` を
 INV-62「tool 定義の単一宣言」（snake_case の `ToolId` / `ToolEffect` / `ToolStatus` / `ToolDef`）として持つ。
 当初この契約を同じパスに置いたため add/add 衝突と2つ目の語彙になる状態だった。是正として:

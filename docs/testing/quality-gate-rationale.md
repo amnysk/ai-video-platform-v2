@@ -60,3 +60,6 @@ LLM の PASS が決定論 BLOCK を救えないことを判定の入口でも確
 | `test_clock_skew_within_tolerance_…` | 時計のずれの許容を1つの定数にし、境界（許容内は許可・1秒超は拒否）を固定する |
 | `test_checks_must_be_a_tuple_of_quality_checks` / `test_a_directly_constructed_report_…` / `test_a_check_built_with_wrong_types_is_refused` | `checks` が list の report が `allowed=True` になっていた。直接構築した report にも取り込みと同じ型検査をかける |
 | `test_no_input_can_make_evaluate_raise` / `test_an_unexpected_internal_error_fails_closed` | 総関数であること（未知の例外は `REPORT_EVALUATION_ERROR` で拒否） |
+| `test_an_unknown_id_is_never_echoed_only_its_length_and_hash` / `test_known_ids_are_recorded_verbatim` | 拒否記録が資料由来の不明 id の先頭 64 文字を写していた（秘密・注入文が decision の記録に残る）。長さとハッシュだけにし、既知 id は監査のためそのまま残す |
+| `test_case_whitespace_and_nfkc_variants_of_forbidden_ids_are_forbidden_attempts` | `YouTube.Upload` や全角表記が「ただの不明 tool」として埋もれていた。拒否は同じまま、禁止 tool を狙った試行として監査で区別できる |
+| `test_variants_of_allowed_ids_are_still_just_not_allowlisted` | 許可 id の似た名前を曖昧に許可しない（許可は完全一致だけ） |

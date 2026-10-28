@@ -34,5 +34,7 @@ ALLOWED_POLICY_TOOLS: frozenset[str] = frozenset(t.value for t in PolicyToolId)
 
 class PolicyRejection(StrEnum):
     FORBIDDEN = "forbidden"
+    #: 禁止 id の大文字小文字・空白・NFKC 違い。拒否は同じだが、監査で試行として区別する
+    FORBIDDEN_ATTEMPT = "forbidden_attempt"
     NOT_ALLOWLISTED = "not_allowlisted"
     MALFORMED = "malformed"
