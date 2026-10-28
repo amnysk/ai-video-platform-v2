@@ -51,3 +51,13 @@ fixture（`tests/support/bgm_catalog.py`）の値は架空であり、実在曲�
 | `test_same_track_id_with_different_bytes_is_rejected` | 同じ track_id の中身の差し替え（immutable 違反） |
 | `test_object_key_must_be_content_addressed_by_the_sha` | sha と無関係な object_key（上書き可能な配置） |
 | `test_ingest_check_does_not_mutate_the_catalog` | 判定関数が副作用を持つこと |
+
+## 境界（`tests/architecture/test_music_boundaries.py`、INV-97 / 99 / 100）
+
+| テスト | 止めるもの |
+|---|---|
+| `test_domain_music_has_no_io_or_clock_imports` / `..._does_not_read_the_clock_or_open_files` / `..._imports_only_contracts_and_itself` | 選曲が時計・ファイル・ネットワーク・他の domain に依存し、再実行で結果が変わる・テストが実 I/O を要すること |
+| `test_production_and_provider_billing_modules_do_not_import_music` | production / 課金 provider の経路から BGM が見え、BGM の変更が fal 呼び出しに波及すること（T16 の前提）。取込（INV-99）が日次制作の経路に混入すること |
+| `test_music_contract_does_not_depend_on_production_artifacts` | cue sheet 契約が production Artifact の型に依存し、BGM だけの変更で production の hash が動くこと（INV-100） |
+
+違反を入れて落ちることは手元で確認した（`import os` / `datetime.now()` / production から `contracts.music`）。
