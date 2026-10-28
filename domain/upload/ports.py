@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from contracts.upload import UPLOAD_CONTENT_TYPE
+from contracts.upload import UPLOAD_CONTENT_TYPE, MarkerLookup
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +94,14 @@ class VideoUploader(Protocol):
 
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
         """タグまたは description の行がマーカーと一致する自分の投稿の video id。"""
+        ...
+
+    async def lookup_video_by_marker(self, marker_tag: str) -> MarkerLookup:
+        """``find_video_by_marker`` の3状態版（FOUND / NOT_FOUND / UNKNOWN。INV-109）。
+
+        読み切って無いときだけ NOT_FOUND。ページ上限・応答の形の崩れは UNKNOWN。
+        API の失敗は adapter 固有の例外で返す（呼び出し側が UNKNOWN として扱う）。
+        """
         ...
 
     async def own_channel_id(self) -> str:

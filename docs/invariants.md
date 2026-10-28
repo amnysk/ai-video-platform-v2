@@ -1089,7 +1089,86 @@ DB 上の承認記録・技術 QA / 説明欄の gate 時点での読み出し�
 / `tests/architecture/test_quality_clock_injected.py::test_quality_modules_never_read_the_clock`
 （`upload_gate` への配線は INV-104。規則版の「現行値」は `contracts.quality.QUALITY_RULE_VERSION`）
 
-## AD. BGM の Render 結線（ADR-0077。設定キー `bgm_enabled`、既定 OFF）
+## AD. 投稿の照合と説明欄の構成（ADR-0075。INV-109〜112）
+
+### INV-109 マーカー照合が UNKNOWN のとき、新しい `videos.insert` に進まない
+照合の結果は `MarkerLookupState`（`contracts/upload.py`）の `FOUND` / `NOT_FOUND` / `UNKNOWN`。`NOT_FOUND` は最後の
+ページまで読み切って無かったときだけ。API 例外・timeout・quota・auth・応答の形の崩れ・ページ上限の打ち切り・
+設定回数のうち1回でも失敗があれば `UNKNOWN`。`_reserve` は UNKNOWN で新しいラウンドの予約を作らず
+`UploadOutcomeUnknownError`（既存の `needs_input`）を送出する。bytes 送信後の再投稿の承認
+（`reconciled_by = operator_reupload_approved`）は照合を試みた時点で `reupload_approval_consumed` に書き換えて
+使い切り（照合の前に commit。CAS）、次の実行は運用者の新しい明示承認が無い限り投稿しない（一般的な再開は
+新しい投稿の許可ではない）。照合・採用の前に投稿先チャンネルを確かめ、FOUND の動画は自チャンネルの private
+でなければ採用も投稿もしない。FOUND は投稿せずその video id を採用し、
+NOT_FOUND のときだけ1回投稿する。同じ Activity を何度再実行しても動画は1本以下。
+**機械検査**: `tests/unit/test_upload_marker_lookup.py::test_lookup_error_before_round_two_never_inserts`
+/ `tests/unit/test_upload_marker_lookup.py::test_malformed_or_partial_lookup_before_round_two_never_inserts`
+/ `tests/unit/test_upload_marker_lookup.py::test_one_failed_attempt_is_unknown_even_if_the_next_one_finds_nothing`
+/ `tests/unit/test_upload_marker_lookup.py::test_empty_search_success_inserts_exactly_once`
+/ `tests/unit/test_upload_marker_lookup.py::test_found_adopts_the_video_without_any_insert`
+/ `tests/unit/test_upload_marker_lookup.py::test_repeated_executions_after_an_unknown_make_at_most_one_video`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_channel_mismatch_stops_before_the_lookup_and_adopts_nothing`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_found_video_that_is_not_private_is_not_adopted_and_nothing_is_uploaded`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_found_video_whose_visibility_cannot_be_read_is_not_adopted`
+/ `tests/unit/test_upload_marker_lookup.py::test_adapter_videos_list_returning_fewer_items_than_requested_is_unknown`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_lookup_error_consumes_the_approval_so_a_plain_resume_never_inserts`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_crash_during_the_lookup_still_leaves_the_approval_consumed`
+/ `tests/unit/test_upload_marker_lookup.py::test_the_approval_is_consumed_before_the_lookup_so_two_attempts_cannot_both_use_it`
+/ `tests/unit/test_upload_marker_lookup.py::test_adapter_page_limit_with_more_pages_is_unknown_not_not_found`
+/ `tests/unit/test_upload_marker_lookup.py::test_adapter_malformed_playlist_page_is_unknown`
+
+### INV-110 タグだけの照合の確認ツールは読み取り専用で、marker なし description の flag は既定 OFF のまま
+`scripts/verify-tags-only-match.py` は `youtube.readonly` だけの token でのみ動き（他の scope が1つでもあれば API を
+呼ぶ前に拒否）、GET の `channels` / `playlistItems` / `videos` だけを呼ぶ。投稿 adapter を import せず、insert / update /
+delete の呼び出しを持たない。出力は件数と不一致の video id だけ（title・description・tags・token を出さない）。
+一覧を読み切れない・比較対象が無いときは「結論なし」で、100% 一致とは報告しない。`AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER`
+は既定 OFF で、compose / deploy / Dockerfile / Makefile / `.env*` のどこにも書かない。本番での有効化は所有者がこの
+ツールを実行して 100% 一致を確認した後の別の判断。
+**機械検査**: `tests/unit/test_verify_tags_only_match.py::test_verification_code_has_no_write_call_and_never_imports_the_upload_adapter`
+/ `tests/unit/test_verify_tags_only_match.py::test_the_write_detector_catches_bypasses`
+/ `tests/unit/test_verify_tags_only_match.py::test_listing_without_the_read_only_check_is_refused_before_any_request`
+/ `tests/unit/test_verify_tags_only_match.py::test_a_refused_scope_check_does_not_unlock_listing`
+/ `tests/unit/test_verify_tags_only_match.py::test_verification_code_names_no_write_scope`
+/ `tests/unit/test_verify_tags_only_match.py::test_live_refuses_any_token_that_is_not_readonly_only_before_calling_youtube`
+/ `tests/unit/test_verify_tags_only_match.py::test_live_readonly_token_reads_with_get_only_and_reports`
+/ `tests/unit/test_verify_tags_only_match.py::test_cli_fixture_full_agreement_exits_zero_and_prints_counts_only`
+/ `tests/unit/test_verify_tags_only_match.py::test_a_truncated_listing_is_never_a_conclusion`
+/ `tests/unit/test_verify_tags_only_match.py::test_the_description_without_marker_flag_defaults_off`
+/ `tests/unit/test_verify_tags_only_match.py::test_no_deploy_artifact_turns_the_description_without_marker_flag_on`
+
+### INV-111 構成 flag OFF の description は、導入前と byte 単位で同じ
+`AVP_UPLOAD_DESCRIPTION_COMPOSED`（`contracts/upload.py::UPLOAD_DESCRIPTION_COMPOSITION_ENV`）は既定 OFF で、
+`1` / `true` 以外は OFF。OFF、または `composition` を渡さない `build_youtube_metadata` は、台本の全文を使う従来の
+description（marker あり・なし、必須部分あり、長文の切り詰め、空本文）と byte 単位で同じ。
+**機械検査**: `tests/contract/test_upload_description_golden.py::test_the_composition_flag_is_off_by_default_and_by_any_non_truthy_value`
+/ `tests/contract/test_upload_description_golden.py::test_short_with_and_without_marker`
+/ `tests/contract/test_upload_description_golden.py::test_japanese_body_is_sanitized_the_same_way`
+/ `tests/contract/test_upload_description_golden.py::test_long_body_is_truncated_to_the_same_bytes`
+/ `tests/contract/test_upload_description_golden.py::test_required_parts_layout_is_unchanged`
+/ `tests/contract/test_upload_description_golden.py::test_empty_body_shapes_are_unchanged`
+/ `tests/contract/test_upload_description_golden.py::test_flag_on_without_a_composition_input_is_still_the_legacy_description`
+/ `tests/contract/test_upload_description_composition.py::test_flag_off_ignores_the_composition`
+
+### INV-112 構成された description は必須部分（参照・クレジット）を黙って切らず、内部 ID を出さない
+`compose_description` は 導入文 → 補足 → 参照 → クレジット → （marker flag OFF のとき）マーカー の順に組む。参照・
+クレジット・マーカーを先に確保し、入らなければ `DescriptionBlocked`（`REQUIRED_PARTS_TOO_LONG` / `INTRO_NO_ROOM` /
+`REFERENCES_MISSING` / `CREDIT_NOT_REPRESENTABLE` / `INTERNAL_ID`）を返す。切り詰めるのは導入文と補足だけで、
+補足はまるごと落とす。帰属文は書き換えない（`<` `>` を含めば BLOCK）。いずれかの部分に内部 ID があれば BLOCK
+（marker 行自体は対象外）。`build_youtube_metadata` は BLOCK を `DescriptionBlockedError` で送出する。
+**機械検査**: `tests/contract/test_upload_description_composition.py::test_order_is_intro_supplement_references_credits_marker`
+/ `tests/contract/test_upload_description_composition.py::test_credit_lines_are_kept_verbatim`
+/ `tests/contract/test_upload_description_composition.py::test_credit_with_angle_brackets_blocks_instead_of_being_rewritten`
+/ `tests/contract/test_upload_description_composition.py::test_required_references_missing_blocks`
+/ `tests/contract/test_upload_description_composition.py::test_required_parts_over_the_limit_block_and_never_truncate`
+/ `tests/contract/test_upload_description_composition.py::test_not_enough_room_for_the_intro_blocks`
+/ `tests/contract/test_upload_description_composition.py::test_long_optional_parts_are_trimmed_but_required_parts_survive`
+/ `tests/contract/test_upload_description_composition.py::test_whole_supplements_are_dropped_from_the_end_not_cut`
+/ `tests/contract/test_upload_description_composition.py::test_internal_ids_in_any_part_block`
+/ `tests/contract/test_upload_description_composition.py::test_the_final_string_is_linted_too`
+/ `tests/contract/test_upload_description_composition.py::test_flag_on_blocked_composition_raises_instead_of_truncating`
+/ `tests/contract/test_upload_description_composition.py::test_flag_on_with_marker_removed_keeps_the_lint_and_the_tag`
+
+## AE. BGM の Render 結線（ADR-0077。設定キー `bgm_enabled`、既定 OFF）
 
 番号 INV-105〜112 は他の枝の予約。この節は INV-113〜116。
 
@@ -1151,7 +1230,7 @@ Activity 名と入出力 dataclass のフィールド（名前・順序）は導
 （Temporal の replay は `tests/unit/test_log_old_history_replay.py` 等で確認。**実 Temporal / MinIO / PostgreSQL での通し、
 および説明欄・投稿前 Gate への結線は未検査**）
 
-## AE. 歴史地図の正確さと描画（ADR-0078。INV-117〜120 は本枝の予約。純関数と描画部品のみ・未接続）
+## AF. 歴史地図の正確さと描画（ADR-0078。INV-117〜120 は本枝の予約。純関数と描画部品のみ・未接続）
 
 ### INV-117 歴史地図の誤り（位置・時代・国境・根拠の欠落）は理由コード付きの BLOCK になり、緩む経路が無い
 `domain.geo.map_accuracy.check_map_accuracy` は Wave 1 の検証結果を `MapAccuracyResult`

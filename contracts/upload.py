@@ -14,6 +14,8 @@ import os
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -81,6 +83,16 @@ UPLOAD_MARKER_PATTERN = rf"^{UPLOAD_MARKER_PREFIX}[0-9a-f]{{{UPLOAD_MARKER_KEY_C
 #: 読み取りはここが唯一の定義元。
 UPLOAD_DESCRIPTION_WITHOUT_MARKER_ENV = "AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER"
 
+#: ADR-0075: ``1`` / ``true`` のとき、構成された description
+#: （導入文・補足・参照・クレジット）を組む。既定 OFF（現行は台本の全文。R10）。
+#: OFF の description は従来と byte 単位で同じ。Workflow 入力には載せない。
+#: 読み取りはここが唯一の定義元。
+UPLOAD_DESCRIPTION_COMPOSITION_ENV = "AVP_UPLOAD_DESCRIPTION_COMPOSED"
+
+#: 構成された description で、導入文に最低限残す UTF-8 bytes。必須部分を確保した残りがこれ未満なら
+#: 導入文を無理に切らずに BLOCK する。
+DESCRIPTION_INTRO_MIN_BYTES = 120
+
 #: 視聴者向け description に出してはならない内部 ID（ADR-0070 / INV-90）。
 #: builder と insert_body が共有する。
 INTERNAL_ID_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -105,6 +117,48 @@ def _normalize_for_lint(text: str) -> str:
     return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
 
 
+class MarkerLookupState(StrEnum):
+    """マーカー照合（uploads playlist の検索）の結果の3状態（INV-109 / ADR-0075）。
+
+    ``UNKNOWN`` は ``NOT_FOUND`` ではない。API の失敗・timeout・quota・auth・応答の形の崩れ・
+    ページの打ち切りは「無い」を意味しないので、新しい ``videos.insert`` の根拠にならない。
+    """
+
+    FOUND = "found"
+    NOT_FOUND = "not_found"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class MarkerLookup:
+    """照合の結果。``video_id`` は FOUND のときだけ、``reason`` は UNKNOWN のときだけ持つ。
+
+    ``reason`` は短い識別子（例外の型名など）。secret・URL・応答本文は入れない。
+    """
+
+    state: MarkerLookupState
+    video_id: str | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.state is MarkerLookupState.FOUND) != bool(self.video_id):
+            raise ValueError("video_id is required for FOUND and forbidden otherwise")
+        if self.state is not MarkerLookupState.UNKNOWN and self.reason is not None:
+            raise ValueError("reason is only for UNKNOWN")
+
+    @classmethod
+    def found(cls, video_id: str) -> MarkerLookup:
+        return cls(MarkerLookupState.FOUND, video_id=video_id)
+
+    @classmethod
+    def not_found(cls) -> MarkerLookup:
+        return cls(MarkerLookupState.NOT_FOUND)
+
+    @classmethod
+    def unknown(cls, reason: str) -> MarkerLookup:
+        return cls(MarkerLookupState.UNKNOWN, reason=reason)
+
+
 UploadReconciledBy = Literal["upload_response", "status_query", "marker_lookup"]
 
 
@@ -119,6 +173,24 @@ def description_without_marker_enabled(environ: Mapping[str, str] | None = None)
     """ADR-0070 の flag。既定 OFF（未設定・空・``1`` / ``true`` 以外は OFF）。"""
     env = os.environ if environ is None else environ
     return env.get(UPLOAD_DESCRIPTION_WITHOUT_MARKER_ENV, "").strip().lower() in {"1", "true"}
+
+
+def marker_in_tags(marker: str, tags: object) -> bool:
+    """タグにマーカーがあるか。照合（adapter）と確認ツールが同じ判定を使う（AGENTS.md §8）。"""
+    return isinstance(tags, (list, tuple)) and marker in tags
+
+
+def marker_in_description_lines(marker: str, description: object) -> bool:
+    """description のどれかの行（前後の空白を除く）がマーカーそのものか。部分一致は数えない。"""
+    return isinstance(description, str) and marker in (
+        line.strip() for line in description.splitlines()
+    )
+
+
+def description_composition_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """ADR-0075 の flag。既定 OFF（未設定・空・``1`` / ``true`` 以外は OFF）。"""
+    env = os.environ if environ is None else environ
+    return env.get(UPLOAD_DESCRIPTION_COMPOSITION_ENV, "").strip().lower() in {"1", "true"}
 
 
 class InternalIdInDescriptionError(ValueError):
@@ -140,6 +212,23 @@ def assert_no_internal_ids(text: str, field: str = "description") -> None:
     if found:
         # 値そのものは例外文に出さない（ログへ内部 ID を運ばない）
         raise InternalIdInDescriptionError(f"{field} contains {len(found)} internal id(s)")
+
+
+def required_parts_body_budget(required: str) -> tuple[str, int]:
+    """必須部分（``required``）を先に確保したときの ``(本文との区切り, 本文に使える bytes)``。
+
+    必須部分だけで上限を超えるなら切り詰めずに例外（INV-92）。組み立て（旧・新の両方）が共有する。
+    """
+    required_bytes = len(required.encode("utf-8"))
+    if required_bytes > YOUTUBE_DESCRIPTION_MAX_BYTES:
+        raise DescriptionRequiredPartsTooLongError(
+            f"required description parts need {required_bytes} UTF-8 bytes "
+            f"(limit {YOUTUBE_DESCRIPTION_MAX_BYTES})"
+        )
+    separator = "\n\n" if required else ""
+    return separator, YOUTUBE_DESCRIPTION_MAX_BYTES - required_bytes - len(
+        separator.encode("utf-8")
+    )
 
 
 def youtube_tags_length(tags: tuple[str, ...] | list[str]) -> int:
@@ -216,6 +305,214 @@ class YouTubeVideoMetadata(FrozenModel):
         return value
 
 
+# ------------------------------------------ 構成された description（ADR-0075、INV-111/112）
+
+#: 参照の見出し行（英語の視聴者向け本文に合わせる）
+DESCRIPTION_REFERENCES_HEADING = "References:"
+_REFERENCE_URL = re.compile(r"https?://[^\s<>]+")
+
+
+class DescriptionReference(FrozenModel):
+    """歴史動画などの出典 1 件。``url`` は任意（書名だけの出典もある）。"""
+
+    title: str = Field(min_length=1, max_length=300)
+    url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str) -> str:
+        if not value.strip() or "\n" in value or "\r" in value:
+            raise ValueError("reference title must be one non-blank line")
+        return value.strip()
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, value: str | None) -> str | None:
+        if value is not None and not _REFERENCE_URL.fullmatch(value):
+            raise ValueError("reference url must be an http(s) URL without spaces")
+        return value
+
+
+class DescriptionComposition(FrozenModel):
+    """description の構造化された入力。台本の全文ではなく、各部分を別々に受け取る。
+
+    (1) ``intro``: 視聴者向けの自然な英語の導入文  (2) ``supplements``: 任意の補足
+    (3) ``references``: 出典（歴史動画では ``references_required``）
+    (4) ``credits``: 必須のクレジット行。BGM の ``exact_attribution_text`` /
+    ``MusicCue.credits_text`` をそのまま渡す（``contracts/music.py``。書き換えない）
+    """
+
+    intro: str = Field(min_length=1)
+    supplements: tuple[str, ...] = ()
+    references: tuple[DescriptionReference, ...] = ()
+    references_required: bool = False
+    credits: tuple[str, ...] = ()
+
+    @field_validator("intro")
+    @classmethod
+    def _intro(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("intro must not be blank")
+        return value.strip()
+
+    @field_validator("supplements")
+    @classmethod
+    def _supplements(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not s.strip() for s in value):
+            raise ValueError("supplements must not contain blank entries")
+        return tuple(s.strip() for s in value)
+
+    @field_validator("credits")
+    @classmethod
+    def _credits(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not c.strip() for c in value):
+            raise ValueError("credits must not contain blank entries")
+        return value  # 帰属文は書き換えない（前後の空白も含め、受け取ったまま）
+
+
+class DescriptionBlockReason(StrEnum):
+    """構成された description を作れない理由。切り詰めて通さず、止める（INV-112）。"""
+
+    REQUIRED_PARTS_TOO_LONG = "required_parts_too_long"
+    INTRO_NO_ROOM = "intro_no_room"
+    REFERENCES_MISSING = "references_missing"
+    CREDIT_NOT_REPRESENTABLE = "credit_not_representable"
+    INTERNAL_ID = "internal_id"
+
+
+@dataclass(frozen=True)
+class DescriptionComposed:
+    description: str
+    #: 任意の部分（導入文・補足）を削ったか。必須部分（参照・クレジット）は削らない
+    optional_trimmed: bool = False
+
+
+@dataclass(frozen=True)
+class DescriptionBlocked:
+    """作れなかった。``detail`` に値（本文・URL・内部 ID）は入れない。"""
+
+    reason: DescriptionBlockReason
+    detail: str
+
+
+DescriptionResult = DescriptionComposed | DescriptionBlocked
+
+
+class DescriptionBlockedError(ValueError):
+    """``compose_description`` が BLOCK したことを、``build_youtube_metadata`` が例外で伝える。"""
+
+    def __init__(self, blocked: DescriptionBlocked) -> None:
+        super().__init__(f"description blocked: {blocked.reason.value} ({blocked.detail})")
+        self.reason = blocked.reason
+
+
+def _reference_line(reference: DescriptionReference) -> str:
+    return f"- {reference.title}" + (f" - {reference.url}" if reference.url else "")
+
+
+def _cut_at_word(text: str, max_bytes: int) -> str:
+    cut = truncate_utf8(text, max_bytes)
+    if cut == text:
+        return text
+    boundary = max(cut.rfind(" "), cut.rfind("\n"), cut.rfind("。"))
+    return (cut[: boundary + 1] if boundary > len(cut) // 2 else cut).rstrip()
+
+
+def _final_lint(description: str, marker: str | None) -> DescriptionBlocked | None:
+    """組み上がった文字列にも内部 ID の lint を掛ける（部分ごとの検査の取りこぼしへの備え）。
+
+    ``marker`` の行だけは意図した内部 ID なので、検査の前に除く。
+    """
+    text = description
+    if marker:
+        text = "\n".join(line for line in description.split("\n") if line.strip() != marker)
+    if find_internal_ids(text):
+        return DescriptionBlocked(
+            DescriptionBlockReason.INTERNAL_ID, "the composed description contains an internal id"
+        )
+    return None
+
+
+def compose_description(
+    composition: DescriptionComposition, *, marker: str | None = None
+) -> DescriptionResult:
+    """構成された description を組む。純粋関数（I/O なし）。
+
+    並びは 導入文 → 補足 → 参照 → クレジット → （``marker`` があれば）マーカー行。参照・クレジット・
+    マーカーは必須部分で、先に枠を確保する（``required_parts_body_budget``。INV-92 と共通）。
+    残りに導入文、続けて補足を **まるごと** 入れ、入らない補足は後ろから落とす。導入文が最低
+    ``DESCRIPTION_INTRO_MIN_BYTES`` 入らないときは BLOCK。必須部分を黙って切ることは無い。
+    ``<`` ``>`` を含む帰属文は書き換えずに BLOCK、内部 ID も BLOCK（INV-90。
+    ``marker`` 自体は対象外）。
+    """
+    if composition.references_required and not composition.references:
+        return DescriptionBlocked(
+            DescriptionBlockReason.REFERENCES_MISSING, "references are required but none given"
+        )
+    for credit in composition.credits:
+        if YOUTUBE_FORBIDDEN_CHARS & set(credit):
+            return DescriptionBlocked(
+                DescriptionBlockReason.CREDIT_NOT_REPRESENTABLE,
+                "a credit line has characters YouTube rejects; it is never rewritten",
+            )
+    intro = sanitize_youtube_text(composition.intro)
+    supplements = [sanitize_youtube_text(s) for s in composition.supplements]
+    references = [sanitize_youtube_text(_reference_line(r)) for r in composition.references]
+    sections: list[str] = []
+    if references:
+        sections.append("\n".join([DESCRIPTION_REFERENCES_HEADING, *references]))
+    if composition.credits:
+        sections.append("\n".join(composition.credits))
+    viewer_text = "\n".join([intro, *supplements, *sections])
+    if find_internal_ids(viewer_text):
+        return DescriptionBlocked(
+            DescriptionBlockReason.INTERNAL_ID, "viewer-facing text contains an internal id"
+        )
+    required_parts = list(sections)
+    if marker:
+        required_parts.append(marker)
+    required = "\n\n".join(required_parts)
+    try:
+        separator, budget = required_parts_body_budget(required)
+    except DescriptionRequiredPartsTooLongError as exc:
+        return DescriptionBlocked(DescriptionBlockReason.REQUIRED_PARTS_TOO_LONG, str(exc))
+    if budget < DESCRIPTION_INTRO_MIN_BYTES:
+        return DescriptionBlocked(
+            DescriptionBlockReason.INTRO_NO_ROOM,
+            f"{budget} bytes left for the intro after required parts "
+            f"(minimum {DESCRIPTION_INTRO_MIN_BYTES})",
+        )
+    gap = len(b"\n\n")
+    optional: list[str] = []
+    used = 0
+    trimmed = False
+    intro_bytes = len(intro.encode("utf-8"))
+    if intro_bytes <= budget:
+        optional.append(intro)
+        used = intro_bytes
+        for supplement in supplements:
+            need = gap + len(supplement.encode("utf-8"))
+            if used + need > budget:
+                trimmed = True
+                break
+            optional.append(supplement)
+            used += need
+    else:
+        cut = _cut_at_word(intro, budget)
+        if len(cut.encode("utf-8")) < DESCRIPTION_INTRO_MIN_BYTES:
+            return DescriptionBlocked(
+                DescriptionBlockReason.INTRO_NO_ROOM,
+                "the intro cannot be kept at a readable length",
+            )
+        optional.append(cut)
+        trimmed = True
+    description = "\n\n".join(optional) + separator + required
+    blocked = _final_lint(description, marker)
+    if blocked is not None:
+        return blocked
+    return DescriptionComposed(description=description, optional_trimmed=trimmed)
+
+
 def build_youtube_metadata(
     *,
     upload_key: str,
@@ -227,6 +524,7 @@ def build_youtube_metadata(
     made_for_kids: bool = False,
     required_parts: Sequence[str] = (),
     marker_in_description: bool | None = None,
+    composition: DescriptionComposition | None = None,
 ) -> YouTubeVideoMetadata:
     """台本の値から決定的にメタデータを組む（ADR-0020 §5 / ADR-0070）。
 
@@ -238,6 +536,10 @@ def build_youtube_metadata(
     - ON: description にマーカーを入れない。``required_parts``（クレジット・出典）を先に確保して
       残りを本文に割り当て、必須部分だけで 5000 bytes を超えたら切らずに例外（INV-92）。
       組み立てた description は内部 ID の lint を通す（INV-90）
+    - ``composition`` を渡し、かつ flag ``AVP_UPLOAD_DESCRIPTION_COMPOSED``（既定 OFF）が ON の
+      ときだけ、台本の全文の代わりに構成された description（``compose_description``）を使う。
+      作れなければ ``DescriptionBlockedError``（切り詰めて通さない）。
+      flag OFF・composition 無しは従来と byte 単位で同じ
     """
     safe_title = sanitize_youtube_text(title.strip())[:YOUTUBE_TITLE_MAX_CHARS]
     body = sanitize_youtube_text(f"{hook.strip()}\n\n{narration.strip()}".strip())
@@ -249,21 +551,19 @@ def build_youtube_metadata(
         # マーカーは description の最終行にも置く（タグが編集・除去されても照合できる）
         parts.append(marker)
     required = "\n\n".join(parts)
-    required_bytes = len(required.encode("utf-8"))
-    if required_bytes > YOUTUBE_DESCRIPTION_MAX_BYTES:
-        raise DescriptionRequiredPartsTooLongError(
-            f"required description parts need {required_bytes} UTF-8 bytes "
-            f"(limit {YOUTUBE_DESCRIPTION_MAX_BYTES})"
-        )
-    separator = "\n\n" if required else ""
     # 本文だけを切り詰め、必須部分（マーカー・クレジット・出典）は必ず残す
-    budget = YOUTUBE_DESCRIPTION_MAX_BYTES - required_bytes - len(separator.encode("utf-8"))
+    separator, budget = required_parts_body_budget(required)
     if budget > 0 and (body or marker_in_description):
         # marker ありは従来と byte 単位で同じ形を保つ。marker 無しは本文が空なら区切りを出さない
         description = truncate_utf8(body, budget) + separator + required
     else:
         description = required
-    if not marker_in_description:
+    if composition is not None and description_composition_enabled():
+        result = compose_description(composition, marker=marker if marker_in_description else None)
+        if isinstance(result, DescriptionBlocked):
+            raise DescriptionBlockedError(result)
+        description = result.description
+    elif not marker_in_description:
         assert_no_internal_ids(description)
     return YouTubeVideoMetadata(
         title=safe_title,
@@ -375,14 +675,29 @@ __all__ = [
     "YOUTUBE_TAGS_MAX_TOTAL_CHARS",
     "YOUTUBE_TITLE_MAX_CHARS",
     "YOUTUBE_VIDEO_ID_PATTERN",
+    "DESCRIPTION_INTRO_MIN_BYTES",
+    "UPLOAD_DESCRIPTION_COMPOSITION_ENV",
+    "DescriptionBlockReason",
+    "DescriptionBlocked",
+    "DescriptionBlockedError",
+    "DescriptionComposed",
+    "DescriptionComposition",
+    "DescriptionReference",
     "DescriptionRequiredPartsTooLongError",
+    "compose_description",
+    "description_composition_enabled",
+    "required_parts_body_budget",
     "InternalIdInDescriptionError",
+    "MarkerLookup",
+    "MarkerLookupState",
     "UploadDestination",
     "UploadReceiptArtifact",
     "UploadReconciledBy",
     "YouTubeVideoMetadata",
     "build_upload_receipt",
     "assert_no_internal_ids",
+    "marker_in_description_lines",
+    "marker_in_tags",
     "build_youtube_metadata",
     "description_without_marker_enabled",
     "find_internal_ids",

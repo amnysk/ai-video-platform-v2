@@ -143,11 +143,48 @@ WHERE id = '<reservation_id>' AND status = 'reserved' AND provider_result_ref IS
    3. POST で再開する。round 2 は投稿の前に**もう一度マーカー照合**を行い、見つかればその video id を記録して
       投稿しない（`reconciled_by = marker_lookup`）。見つからなければ新しい session で投稿する
 
+**照合が UNKNOWN のとき（ADR-0075 / INV-109）**: 手順 3 の round 2 の照合が、API の失敗・quota・auth・
+応答の崩れ・ページ上限の打ち切りで「確かめられなかった」場合、upload は新しいラウンドを作らず
+`UploadOutcomeUnknownError`（`needs_input`、メッセージに `lookup unknown: <理由>` と `no new upload round was opened`）
+で止まる。予約は abandoned のまま（動画も増えない）。チャンネルを人が確認し（その動画が既にあるか）、
+API が復旧してから、**手順 2 の承認 UPDATE を新しく書き直して**から POST で再開する。照合を試みた時点で承認は
+`reconciled_by = 'reupload_approval_consumed'` に使い切られているので、書き直さずに再開しても upload は
+`needs_input`（「fresh approval が要る」）で止まり、投稿しない（一般的な再開は新しい投稿の許可ではない）。
+UPDATE の条件は `status = 'abandoned' AND reconciled_by = 'reupload_approval_consumed'` に読み替える。
+「見つからなかった」と同じ扱いにはならない。
+
 `dispatched_at` が NULL の予約（bytes を1つも送っていない）は、ただの放棄でも次のラウンドへ進める
 （その場合も round 2 はまずマーカー照合をする）。
 
 いずれも `WHERE ... status = 'reserved'` で1行だけ更新されたことを確かめる（0 行なら状態が変わっている。読み直す）。
 自動の処理が `abandoned` や承認を書くことは無い（ADR-0013 / INV-15）。
+
+### 構成された description（`AVP_UPLOAD_DESCRIPTION_COMPOSED`。ADR-0075）
+
+既定 OFF（現行は台本の全文）。ON にしても、Activity が構成の入力（導入文・出典・クレジット）を渡す配線ができるまでは
+何も変わらない。入力を渡すようになった後は、必須部分（参照・クレジット）が入らないと投稿は `DescriptionBlockedError`
+で止まる（切り詰めない）。有効化は所有者の判断。
+
+### marker なし description への切替（`AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER`。ADR-0070 / ADR-0075）
+
+**本番で ON にしてはならない。** 所有者が次を実行し、`result: AGREE (100%)`（終了コード 0）と出るまで禁止。
+
+1. `youtube.readonly` **だけ**の OAuth refresh token を別に作る（投稿用の token は使わない。upload 系の scope が
+   1つでも付いていると、ツールは API を呼ぶ前に拒否する）。ファイルは repo の外・権限 0600
+2. 練習（ネットワークなし）: `.venv/bin/python scripts/verify-tags-only-match.py --fixture videos.json`
+3. 本番チャンネル（読み取りのみ、GET 3種類）:
+
+   ```bash
+   YOUTUBE_CLIENT_ID=... YOUTUBE_CLIENT_SECRET=... \
+     .venv/bin/python scripts/verify-tags-only-match.py --live --refresh-token-path <読み取り専用 token>
+   ```
+
+4. 出力は件数と不一致の video id だけ。`DISAGREE`（旧方式の動画はタグにマーカーが無いので不一致になる）、
+   `INCONCLUSIVE`（比較対象なし・一覧を読み切れなかった。`--max-pages` を上げて再実行）のどちらでも ON にしない。
+   不一致があるなら、その扱い（照合の範囲、過去動画の移行）を ADR で決めてから
+
+flag は既定 OFF。compose / env / deploy には書かない（`tests/unit/test_verify_tags_only_match.py`）。
+エージェントはこのツールを実 API に対して実行しない。
 
 ### 別の final_video・チャンネルの投稿が既にあるとき
 
@@ -164,6 +201,8 @@ worker は起動時に `channels.list(mine=true)` のチャンネル id が `YOU
 
 - 二重投稿しない: `tests/unit/test_upload_activities.py::test_concurrent_attempts_on_the_same_key_create_one_video`、
   `tests/unit/test_upload_activities.py::test_session_expired_after_bytes_without_marker_blocks_and_never_reopens`
+- 照合が UNKNOWN のとき投稿しない: `tests/unit/test_upload_marker_lookup.py`（INV-109）
+- 確認ツールが読み取り専用・flag が既定 OFF: `tests/unit/test_verify_tags_only_match.py`（INV-110）
 - private だけを送る: `tests/unit/test_upload_activities.py::test_upload_creates_one_private_video_receipt_and_spent_reservation`
 - 処理状態: `tests/unit/test_upload_processing.py`、`tests/unit/test_upload_processing_e2e.py`
 - 送信中の一時停止: `tests/unit/test_upload_activities.py::test_pause_during_sending_stops_and_resumes_the_saved_session`
