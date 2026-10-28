@@ -168,6 +168,7 @@ class ReadOnlyYouTube:
         self._credentials = credentials
         self._client = client
         self._max_pages = max_pages
+        self._read_only_checked = False
 
     async def granted_scopes(self) -> frozenset[str]:
         """token に付いた scope（tokeninfo。token は URL でなく form で送る）。"""
@@ -184,6 +185,7 @@ class ReadOnlyYouTube:
         return frozenset(scope.split())
 
     async def assert_read_only(self) -> None:
+        self._read_only_checked = False
         scopes = await self.granted_scopes()
         if not scopes or not scopes <= ALLOWED_SCOPES:
             # scope の名前は出さない（数だけ）
@@ -192,6 +194,7 @@ class ReadOnlyYouTube:
                 f"youtube.readonly, or no readable scope ({len(scopes)} total); "
                 "use a read-only token"
             )
+        self._read_only_checked = True
 
     async def _get(self, resource: str, params: Mapping[str, str]) -> dict[str, Any]:
         token = await self._credentials.access_token()
@@ -218,7 +221,12 @@ class ReadOnlyYouTube:
         return body
 
     async def list_videos(self) -> tuple[list[VideoSample], bool]:
-        """uploads playlist を新しい順に読む。``(videos, truncated)``。"""
+        """uploads playlist を新しい順に読む。``(videos, truncated)``。
+
+        ``assert_read_only`` が成功していなければ、1回も API を呼ばずに拒否する。
+        """
+        if not self._read_only_checked:
+            raise WriteScopeRefusedError("the token scopes were not verified as read-only")
         channels = await self._get("channels", {"part": "contentDetails", "mine": "true"})
         try:
             playlist_id = channels["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]

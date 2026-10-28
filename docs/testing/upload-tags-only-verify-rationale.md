@@ -22,6 +22,8 @@
 | `test_live_refuses_any_token_that_is_not_readonly_only_before_calling_youtube`（6 scope） | live 経路 | upload / 全権 / force-ssl / analytics / scope 無しのどれでも、YouTube を1回も呼ばずに拒否する。読み取り専用の保証の本体 |
 | `test_live_page_limit_is_reported_as_truncated_not_agreement` | live 経路 | ページ上限で打ち切ったら結論にしない |
 | `test_verification_code_has_no_write_call_and_never_imports_the_upload_adapter`（script / module） | 静的（AST） | 投稿 adapter（insert を持つ）を import しない、insert / update / delete / put / patch の呼び出しが無い、POST は scope 確認の1関数だけ。後から書き込みを足す変更を止める |
+| `test_the_write_detector_catches_bypasses`（11 例）/ `test_the_write_detector_allows_get_and_the_scope_check_post` | 静的（検出器自身） | レビュー MINOR 3。検査は呼び出しだけでなく**参照**を見る: `getattr(c, "put")(…)`、`p = c.post` の別名、`h[0](…)`、lambda 経由、`__import__` / `setattr`、import した `delete`、scope 確認以外の `post` / `request`。検出器が緩むと書き込み経路を足す変更が通る |
+| `test_listing_without_the_read_only_check_is_refused_before_any_request` / `test_a_refused_scope_check_does_not_unlock_listing` | live 経路 | `list_videos` 自身が scope 確認の成功を要求する。呼び出し側の順序に頼らない |
 | `test_verification_code_names_no_write_scope` | 静的 | 書き込み系 scope の名前をコードに書かない |
 | `test_the_description_without_marker_flag_defaults_off` | 契約 | 既定 OFF の固定（既存 `test_upload_metadata_lint.py` の既定の検査と同じ値を、確認ツールの前提として別に固定） |
 | `test_no_deploy_artifact_turns_the_description_without_marker_flag_on` | 静的 | compose / deploy / Dockerfile / Makefile / `.env*` に flag を書いて本番で ON にする変更を止める |

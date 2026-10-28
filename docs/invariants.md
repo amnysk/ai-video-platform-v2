@@ -1074,6 +1074,9 @@ delete の呼び出しを持たない。出力は件数と不一致の video id 
 は既定 OFF で、compose / deploy / Dockerfile / Makefile / `.env*` のどこにも書かない。本番での有効化は所有者がこの
 ツールを実行して 100% 一致を確認した後の別の判断。
 **機械検査**: `tests/unit/test_verify_tags_only_match.py::test_verification_code_has_no_write_call_and_never_imports_the_upload_adapter`
+/ `tests/unit/test_verify_tags_only_match.py::test_the_write_detector_catches_bypasses`
+/ `tests/unit/test_verify_tags_only_match.py::test_listing_without_the_read_only_check_is_refused_before_any_request`
+/ `tests/unit/test_verify_tags_only_match.py::test_a_refused_scope_check_does_not_unlock_listing`
 / `tests/unit/test_verify_tags_only_match.py::test_verification_code_names_no_write_scope`
 / `tests/unit/test_verify_tags_only_match.py::test_live_refuses_any_token_that_is_not_readonly_only_before_calling_youtube`
 / `tests/unit/test_verify_tags_only_match.py::test_live_readonly_token_reads_with_get_only_and_reports`

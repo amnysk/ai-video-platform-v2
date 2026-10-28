@@ -260,27 +260,45 @@ async def test_live_page_limit_is_reported_as_truncated_not_agreement(
 # ------------------------------------------------------------- 書き込み経路が無いこと（静的）
 
 WRITE_NAMES = {"insert", "update", "delete", "put", "patch", "upload", "videos_insert"}
+#: 動的な呼び出し・間接参照の手段。この2ファイルでは使わせない
+DYNAMIC_NAMES = {"getattr", "setattr", "__import__", "eval", "exec", "compile", "globals", "vars"}
+#: 書き込みに使える HTTP 動詞の属性。POST は scope 確認の1関数だけ許す
+HTTP_WRITE_ATTRS = WRITE_NAMES | {"post", "request", "send", "stream"}
 
 
-def _calls(path: pathlib.Path) -> list[tuple[str, str]]:
-    """(囲む関数名, 呼ばれた属性名 / 関数名) の一覧。"""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    found: list[tuple[str, str]] = []
+def _violations(source: str) -> list[str]:
+    """書き込み・間接呼び出しの疑いを全部返す（関数名つき）。
+
+    呼び出しだけでなく **参照** も見る（``p = client.post`` の別名、``getattr(c, "put")(...)``、
+    ``handlers[0](...)``、``(lambda: c.put)()`` を通さない）。
+    """
+    tree = ast.parse(source)
+    found: list[str] = []
 
     def visit(node: ast.AST, scope: str) -> None:
         for child in ast.iter_child_nodes(node):
             inner = (
                 child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else scope
             )
-            if isinstance(child, ast.Call):
-                func = child.func
-                if isinstance(func, ast.Attribute) and ast.unparse(func.value) == "sys.path":
-                    visit(
-                        child, inner
-                    )  # ``sys.path.insert`` は import 経路の設定で、書き込みではない
-                    continue
-                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-                found.append((scope, name))
+            if isinstance(child, ast.Call) and not isinstance(
+                child.func, (ast.Name, ast.Attribute)
+            ):
+                found.append(f"{scope}: call through {type(child.func).__name__}")
+            if isinstance(child, ast.Name) and child.id in DYNAMIC_NAMES:
+                found.append(f"{scope}: {child.id}")
+            if (
+                isinstance(child, ast.Attribute)
+                and ast.unparse(child.value) != "sys.path"
+                and child.attr.lower() in HTTP_WRITE_ATTRS
+                and not (child.attr == "post" and scope == "granted_scopes")
+            ):
+                found.append(f"{scope}: .{child.attr}")
+            if isinstance(child, ast.ImportFrom):
+                found.extend(
+                    f"{scope}: import {a.name}"
+                    for a in child.names
+                    if a.name.lower() in HTTP_WRITE_ATTRS | DYNAMIC_NAMES
+                )
             visit(child, inner)
 
     visit(tree, "<module>")
@@ -304,12 +322,7 @@ def test_verification_code_has_no_write_call_and_never_imports_the_upload_adapte
 ) -> None:
     assert not [m for m in _imports(path) if m.startswith("infrastructure.youtube.uploader")]
     assert not [m for m in _imports(path) if m in {"googleapiclient", "requests"}]
-    calls = _calls(path)
-    assert not [c for c in calls if c[1].lower() in WRITE_NAMES], calls
-    # HTTP の送信は GET と、scope 確認の POST（granted_scopes 1か所）だけ
-    posts = [c for c in calls if c[1] == "post"]
-    assert all(scope == "granted_scopes" for scope, _ in posts), posts
-    assert not [c for c in calls if c[1] in {"request", "send", "stream"}]
+    assert not _violations(path.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("path", [SCRIPT, MODULE], ids=["script", "module"])
@@ -348,3 +361,59 @@ def test_no_deploy_artifact_turns_the_description_without_marker_flag_on() -> No
         if UPLOAD_DESCRIPTION_WITHOUT_MARKER_ENV in p.read_text(encoding="utf-8", errors="ignore")
     ]
     assert not hits, hits
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def f(c):\n    c.put('u')",
+        "def f(c):\n    getattr(c, 'put')('u')",
+        "def f(c):\n    p = c.post\n    p('u')",
+        "def f(c, h):\n    h[0]('u')",
+        "def f(c):\n    (lambda: c.patch)()('u')",
+        "def f(c):\n    return __import__('os')",
+        "def f(c):\n    setattr(c, 'x', 1)",
+        "from client import delete",
+        "def other(c):\n    c.post('u')",
+        "def f(c):\n    c.request('POST', 'u')",
+        "def f(c):\n    c.videos().insert(body=1)",
+    ],
+)
+def test_the_write_detector_catches_bypasses(source: str) -> None:
+    assert _violations(source), source
+
+
+def test_the_write_detector_allows_get_and_the_scope_check_post() -> None:
+    ok = (
+        "def granted_scopes(c):\n    return c.post('t')\n\n"
+        "async def g(c):\n    return await c.get('u')"
+    )
+    assert not _violations(ok)
+
+
+async def test_listing_without_the_read_only_check_is_refused_before_any_request(
+    tmp_path: pathlib.Path,
+) -> None:
+    from infrastructure.youtube.tags_only_verify import ReadOnlyYouTube
+
+    google = FakeGoogle(READONLY_SCOPE, [_api_video("aaaaaaaaaaa", [M1], M1)])
+    async with httpx.AsyncClient(transport=httpx.MockTransport(google)) as client:
+        api = ReadOnlyYouTube(_credentials(tmp_path, client), client=client)
+        with pytest.raises(WriteScopeRefusedError):
+            await api.list_videos()
+    assert not google.requests
+
+
+async def test_a_refused_scope_check_does_not_unlock_listing(tmp_path: pathlib.Path) -> None:
+    from infrastructure.youtube.tags_only_verify import ReadOnlyYouTube
+
+    google = FakeGoogle(
+        "https://www.googleapis.com/auth/youtube.upload", [_api_video("aaaaaaaaaaa", [M1], M1)]
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(google)) as client:
+        api = ReadOnlyYouTube(_credentials(tmp_path, client), client=client)
+        with pytest.raises(WriteScopeRefusedError):
+            await api.assert_read_only()
+        with pytest.raises(WriteScopeRefusedError):
+            await api.list_videos()
+    assert not [r for r in google.requests if r[1] == "www.googleapis.com"]
