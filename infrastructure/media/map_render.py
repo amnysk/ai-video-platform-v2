@@ -81,8 +81,12 @@ def _glyphs_missing(font: ImageFont.FreeTypeFont | ImageFont.ImageFont, text: st
     Pillow は無い字を例外にせず notdef の箱で描く。未割当の符号位置の形と一致すれば無いとみなす
     （保守的: 実在するが notdef と同形のグリフは無い前提）。
     """
-    notdef = bytes(font.getmask("\U0010ffff"))
-    return any(not ch.isspace() and bytes(font.getmask(ch)) == notdef for ch in text)
+
+    def mask(ch: str) -> bytes:
+        return bytes(font.getmask(ch))  # type: ignore[arg-type]  # ImagingCore は buffer protocol
+
+    notdef = mask("\U0010ffff")
+    return any(not ch.isspace() and mask(ch) == notdef for ch in text)
 
 
 def _text_size(
