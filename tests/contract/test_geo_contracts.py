@@ -210,6 +210,20 @@ def test_coordinates_reject_bool_and_string_coercion(value: object) -> None:
         GeoPlace.model_validate(_place(lon=value))
 
 
+@pytest.mark.parametrize("value", [True, "5", "5.0"])
+def test_uncertainty_radius_rejects_bool_and_string_coercion(value: object) -> None:
+    """m2: 申告の半径も座標と同じく厳格（True が 1.0 km として通らない）。"""
+    from contracts.geo import ReferencePlace
+    from tests.support.fake_gazetteer import SEKIGAHARA
+
+    with pytest.raises(ValidationError):
+        GeoPlace.model_validate(_place(uncertainty_radius_km=value))
+    ref = SEKIGAHARA.model_dump()
+    ReferencePlace.model_validate(ref)
+    with pytest.raises(ValidationError):
+        ReferencePlace.model_validate({**ref, "uncertainty_radius_km": value})
+
+
 def test_the_declared_uncertainty_radius_has_a_hard_upper_bound() -> None:
     """B1: 自己申告の半径は契約でも上限を持つ（20000 km は作れない）。"""
     from contracts.geo import UNCERTAINTY_RADIUS_MAX_KM

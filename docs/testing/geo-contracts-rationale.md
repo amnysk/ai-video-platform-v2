@@ -101,12 +101,14 @@ fake gazetteer はメモリ上の固定データ（関ヶ原・大坂城・江�
 | `test_a_modern_label_on_an_old_map_needs_review` / `test_a_modern_label_is_fine_on_a_modern_context_map` | M1。地点名は Edo でラベルが Tokyo の歴史地図が PASS した。現代文脈は止めない |
 | `test_an_explicit_id_does_not_bypass_a_name_that_belongs_elsewhere` / `test_an_explicit_id_with_an_unknown_name_needs_review` / `test_a_known_name_passes_the_name_check` | M2。id が関ヶ原・名前が Kyoto で WARN 止まりだった。別の参照の名前なら BLOCK、未知なら REVIEW |
 | `test_a_schematic_that_claims_accuracy_or_omits_the_phrase_is_blocked` / `test_accepted_disclaimers_are_normalized` | M3。「縮尺通り」「to scale」が PASS した。縮尺が正確でないと述べる句だけ受け付け、全角・空白・大小を畳む |
+| `test_a_disclaimer_that_also_claims_accuracy_is_blocked` | M3 の後半（統合時に追加）。既存の例はどれも受け付ける句を含まず、句の除去後に正確さの語を探す処理を `return True` に替えても全件緑だった。「Not to scale. Locations are accurate」のように句と正確さの主張が同居する表示を BLOCK に固定する |
 | `test_the_disclaimer_vocabulary_is_defined_once_in_contracts` | 受け付ける語の定義が contracts の 1 か所（AGENTS.md §8） |
 | `test_duplicate_claim_ids_never_resolve_last_wins` | M4。同じ claim_id の insufficient が後ろの supported に上書きされた。最も弱い評価を採り REVIEW（順序を入れ替えても同じ） |
 | `test_a_claim_of_another_kind_does_not_back_a_place` / `test_a_claim_that_does_not_mention_the_place_is_a_warning` | 無関係な supported claim が地点の根拠になった。kind が place でなければ REVIEW、地名に触れなければ WARN |
 | `test_sources_are_resolved_against_the_evidence_when_provided` / `test_an_unfetched_source_does_not_resolve` / `test_without_evidence_sources_no_source_check_is_claimed` | source_ids が解決されなかった。渡されたときだけ検査し、取得済みでなければ REVIEW。渡さなければ検査したふりをしない |
 | `test_impossible_or_ambiguous_time_bases_are_rejected` / `test_valid_leap_day_and_boundaries_parse` | m1。9999・年 0・1600-02-31・12-05・全角数字などを REVIEW。うるう日と境界値は通す |
 | `test_coordinates_reject_bool_and_string_coercion`（契約） | m2。`True` や `"35.3"` が座標になる |
+| `test_uncertainty_radius_rejects_bool_and_string_coercion`（契約） | m2 の申告半径側（統合時に追加）。`GeoPlace` / `ReferencePlace` の `uncertainty_radius_km` の `strict=True` を外しても全件緑だった。`True` が 1 km として通る退行を止める |
 | `test_more_border_words_are_recognised` | m5。territory / kingdom / 領地 / 藩 などの国境の語 |
 
 `tests/support/fake_gazetteer.py` の claim の既定文は fixture の全地名に触れる（claim と地点の関係の検査のため）。

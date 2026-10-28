@@ -609,6 +609,20 @@ def test_accepted_disclaimers_are_normalized(disclaimer: str) -> None:
     assert _outcome(result, "schematic_disclaimer") is GeoVerdict.PASS
 
 
+@pytest.mark.parametrize(
+    "disclaimer",
+    [
+        "Not to scale. Locations are accurate",
+        "縮尺不同。位置は正確",
+        "Schematic / Not to scale, drawn to scale",
+    ],
+)
+def test_a_disclaimer_that_also_claims_accuracy_is_blocked(disclaimer: str) -> None:
+    """M3: 縮尺不同の句があっても、同じ表示文が正確さを主張すれば BLOCK。"""
+    result = _verify(_schematic(schematic_disclaimer=disclaimer))
+    assert _outcome(result, "schematic_disclaimer") is GeoVerdict.BLOCK
+
+
 # ---- M4: claim / source の解決
 
 
