@@ -994,7 +994,8 @@ agent・日次制作は音源を取得せず、未収録なら収集依頼を積
 ### INV-101 無い・作れなかった・壊れた・今の final_video / 入力に結び付かない品質レポートは PASS ではない
 投稿可否の判定（`domain.quality.evaluate_for_upload`）は fail-closed: レポート無し（`None`）、作成失敗、
 取り込めない、schema_version 違い、未知の verdict、検査が空、保存 verdict が検査からの再計算と不一致、
-final_video の sha256 または input_hash が**今の**ものと不一致、未来日付は、すべて拒否し理由コードを返す。
+final_video の sha256 または input_hash が**今の**ものと不一致、未来日付は、すべて拒否し理由コードを返す
+（鮮度の拒否経路は INV-107）。
 許可は検証済みの PASS と WARN（報告つき）だけ。（設計 v3 T22）
 **機械検査**: `tests/unit/test_quality_upload_decision.py`（全拒否経路と許可経路）
 / `tests/contract/test_quality_contract.py::test_malformed_reports_are_rejected_with_a_reason`
@@ -1036,3 +1037,42 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 `evaluate_for_upload` の拒否理由を `UploadGateResult.reason` に載せる。**現行の `upload_gate` は品質レポートを
 見ない**（本ブランチは Activity / workflow を変更しない。ADR-0073 §6）。保存先・遷移表の変更は別 ADR で先に承認する。
 **機械検査**: 未検査（配線の承認・実装まで。INV-101 の純粋な判定だけが検査済み）
+
+## AC. v3 Phase 2 の共有契約（ADR-0074。INV-105〜107）
+
+### INV-105 判定語彙 PASS/WARN/REVIEW/BLOCK と厳しさの順序は `contracts/verdict.py` だけが定義する
+`Verdict`・`VERDICT_ORDER`・`VERDICT_SEVERITY`・`stricter`・`worst` が唯一の定義。`GeoVerdict` / `QualityVerdict` は
+同一オブジェクトの別名で、値と直列化は従来どおり。他のモジュールが同じ語彙を literal で再定義しない。（ADR-0074 §1）
+**機械検査**: `tests/architecture/test_verdict_single_source.py::test_only_contracts_verdict_defines_the_verdict_set`
+/ `tests/architecture/test_verdict_single_source.py::test_the_detector_catches_a_redefinition`
+/ `tests/contract/test_verdict_contract.py::test_the_legacy_names_are_the_one_shared_enum`
+/ `tests/contract/test_verdict_contract.py::test_wire_values_are_unchanged`
+/ `tests/contract/test_verdict_contract.py::test_existing_models_serialize_identically`
+
+### INV-106 LLM 由来の文字列（地名・ラベル・主張・自由文）は検査結果・レポート・ログ用フィールドに残らない
+検査結果が運ぶのは理由コード（enum）・対象 id・証拠参照（id / hash）・検査した値（enum キー + 有限数値）・
+信頼できない値の参照（`untrusted_ref`）だけ。`detail` は印字可能 ASCII 500 字以内の固定文で、入力の写しを入れない。
+`GeoCheck.log_fields()` / `QualityCheck.log_fields()` は既存の `LOG_FIELDS`（ADR-0040）の名前だけを使う。（ADR-0074 §2）
+**機械検査**: `tests/unit/test_untrusted_inputs.py::test_hostile_strings_never_appear_in_a_geo_verification`
+/ `tests/unit/test_untrusted_inputs.py::test_hostile_strings_never_appear_in_geo_log_fields`
+/ `tests/unit/test_untrusted_inputs.py::test_every_check_the_verifier_makes_carries_a_reason_code`
+/ `tests/unit/test_untrusted_inputs.py::test_log_fields_use_only_existing_log_contract_fields`
+/ `tests/unit/test_untrusted_inputs.py::test_a_detail_that_could_carry_input_is_refused`
+/ `tests/unit/test_untrusted_inputs.py::test_a_hostile_report_is_rejected_without_echoing_it`
+（配線されたログ発行側・critic が出す文面の写像は未検査 = 未配線）
+
+### INV-107 品質レポートは、今の artifact・規則版・時刻に結び付いていなければ、PASS でも投稿の根拠にならない
+`QualityReport` は対象の `final_video_sha256`・`rule_version`・`generated_at`（UTC aware）・`expires_at`
+（`generated_at` より後で `MAX_REPORT_VALIDITY` 以内）・`model`（AI の検査があれば必須）を持つ。
+`domain.quality.freshness.check_freshness` は sha256 違い・規則版違い・未来日付・失効（`now >= expires_at`）を
+理由コードで拒否し、`evaluate_for_upload` は同じ関数を通す（`current_rule_version` は必須）。時計は注入で、実時計を読まない。
+`schema_version` は 2（版 1 は拒否）。（ADR-0074 §3）
+**機械検査**: `tests/unit/test_quality_freshness.py::test_a_report_for_another_artifact_hash_is_refused_even_if_pass`
+/ `tests/unit/test_quality_freshness.py::test_a_report_for_an_older_rule_version_is_refused`
+/ `tests/unit/test_quality_freshness.py::test_expiry_is_judged_against_the_injected_clock`
+/ `tests/unit/test_quality_freshness.py::test_an_incoherent_expiry_is_refused_not_trusted`
+/ `tests/unit/test_quality_freshness.py::test_an_ai_check_without_a_model_identity_is_refused`
+/ `tests/unit/test_quality_freshness.py::test_a_schema_version_1_report_is_refused_as_a_schema_mismatch`
+/ `tests/architecture/test_quality_clock_injected.py::test_quality_modules_never_read_the_clock`
+（`upload_gate` への配線は INV-104 のまま未実装。規則版の「現行値」の供給元も配線側）
+

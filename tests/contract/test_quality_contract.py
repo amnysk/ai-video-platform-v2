@@ -30,6 +30,9 @@ def _report_dict() -> dict:
         "generated_at": "2026-10-28T00:00:00+00:00",
         "generator_version": "g1",
         "reviewer_version": "r1",
+        "rule_version": "rules-1",
+        "expires_at": "2026-10-28T06:00:00+00:00",
+        "model": None,
         "verdict": "pass",
         "checks": [
             {

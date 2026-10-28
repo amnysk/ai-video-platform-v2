@@ -17,6 +17,7 @@
 | v3-geo-contracts | 0071 | INV-93〜96 | 使わない |
 | v3-bgm-contracts | 0072 | INV-97〜100 | 使わない（カタログDDLは後続枝で採番） |
 | v3-quality-gate | 0073 | INV-101〜104 | 使わない |
+| v3-p2-contracts | 0074 | INV-105〜108 | 使わない |
 
 - 欠番は許容する（AGENTS.md §6 は再利用を禁止するだけ）。統合時に親が衝突を解消する。
 - 本番の稼働SHA（1227e26 系か daily-hardening 系か）は未確認。**確認前は、DB・Schedule・deploy に関わる有効化を一切しない。**

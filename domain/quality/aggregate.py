@@ -11,11 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from contracts.quality import VERDICT_SEVERITY, QualityCheck, QualityVerdict
-
-
-def _worst(verdicts: Iterable[QualityVerdict]) -> QualityVerdict:
-    return max(verdicts, key=VERDICT_SEVERITY.__getitem__, default=QualityVerdict.PASS)
+from contracts.quality import QualityCheck, QualityVerdict
+from contracts.verdict import worst as _worst
 
 
 def aggregate(checks: Iterable[QualityCheck]) -> QualityVerdict:
