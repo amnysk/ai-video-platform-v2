@@ -1056,6 +1056,10 @@ NOT_FOUND のときだけ1回投稿する。同じ Activity を何度再実行�
 / `tests/unit/test_upload_marker_lookup.py::test_empty_search_success_inserts_exactly_once`
 / `tests/unit/test_upload_marker_lookup.py::test_found_adopts_the_video_without_any_insert`
 / `tests/unit/test_upload_marker_lookup.py::test_repeated_executions_after_an_unknown_make_at_most_one_video`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_channel_mismatch_stops_before_the_lookup_and_adopts_nothing`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_found_video_that_is_not_private_is_not_adopted_and_nothing_is_uploaded`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_found_video_whose_visibility_cannot_be_read_is_not_adopted`
+/ `tests/unit/test_upload_marker_lookup.py::test_adapter_videos_list_returning_fewer_items_than_requested_is_unknown`
 / `tests/unit/test_upload_marker_lookup.py::test_a_lookup_error_consumes_the_approval_so_a_plain_resume_never_inserts`
 / `tests/unit/test_upload_marker_lookup.py::test_a_crash_during_the_lookup_still_leaves_the_approval_consumed`
 / `tests/unit/test_upload_marker_lookup.py::test_the_approval_is_consumed_before_the_lookup_so_two_attempts_cannot_both_use_it`

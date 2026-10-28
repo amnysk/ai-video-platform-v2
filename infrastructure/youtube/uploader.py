@@ -451,6 +451,10 @@ class YouTubeResumableUploader:
                 video_items = videos.get("items")
                 if not isinstance(video_items, list):
                     return MarkerLookup.unknown("malformed_videos_response")
+                returned = {v.get("id") for v in video_items if isinstance(v, dict)}
+                if not set(video_ids) <= returned:
+                    # 要求した動画が返っていない。見えていない動画にマーカーがあるかもしれない
+                    return MarkerLookup.unknown("videos_response_incomplete")
                 for video in video_items:
                     if not isinstance(video, dict):
                         continue

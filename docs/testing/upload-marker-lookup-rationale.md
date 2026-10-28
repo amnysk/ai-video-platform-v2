@@ -26,6 +26,10 @@
 | `test_a_lookup_error_consumes_the_approval_so_a_plain_resume_never_inserts` | Activity | レビュー MAJOR。承認済みの放棄予約 → 1回目は照合が UNKNOWN → 2回目は照合が NOT_FOUND でも投稿しない（承認は使い切り）→ 新しい承認の後の3回目でちょうど1本。一般的な再開を「新しい投稿の許可」と読む実装を止める |
 | `test_a_crash_during_the_lookup_still_leaves_the_approval_consumed` | Activity | 照合中にプロセスが落ちても（キャンセルで模す）承認は照合の前に commit 済みなので、次の実行は拒否する（fail-closed） |
 | `test_the_approval_is_consumed_before_the_lookup_so_two_attempts_cannot_both_use_it` | Activity | 並行する2試行が同じ承認で2本投稿しない（CAS） |
+| `test_a_channel_mismatch_stops_before_the_lookup_and_adopts_nothing` | Activity | レビュー MINOR 1。照合・採用の前に投稿先チャンネルを確かめる。別チャンネルの動画を spent として記録しない。承認は消費しない（照合に進んでいない） |
+| `test_a_found_video_that_is_not_private_is_not_adopted_*`（public / unlisted） | Activity | レビュー MINOR 2。private でない動画は採用も投稿もせず needs_input。動画は変更しない |
+| `test_a_found_video_whose_visibility_cannot_be_read_is_not_adopted` | Activity | 公開範囲を確かめられない動画を採用しない |
+| `test_adapter_videos_list_returning_fewer_items_than_requested_is_unknown` | adapter | 要求した id より少ない応答は、見えていない動画があり得るので UNKNOWN |
 | `test_round_one_never_looks_up` | Activity | 初回は照合しない（API を無駄に呼ばない・初回投稿が照合障害で止まらない） |
 
 fake 側の変更（`tests/support/*`）: `lookup_video_by_marker` を追加しただけ。既存の `find_video_by_marker` の挙動は同じ。

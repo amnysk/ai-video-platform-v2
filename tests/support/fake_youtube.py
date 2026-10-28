@@ -102,11 +102,16 @@ class FakeVideoUploader:
     def videos_created(self) -> int:
         return len(self.videos)
 
-    def add_existing_video(self, tags: list[str], description: str = "") -> str:
+    def add_existing_video(
+        self, tags: list[str], description: str = "", privacy: str | None = None
+    ) -> str:
         """チャンネルに既にある動画（照合用）を置く。"""
         video_id = f"vid{next(self._ids):08d}"
         snippet = {"tags": list(tags), "description": description}
-        self.videos[video_id] = FakeVideo(video_id, {"snippet": snippet}, b"")
+        metadata: dict[str, Any] = {"snippet": snippet}
+        if privacy is not None:
+            metadata["status"] = {"privacyStatus": privacy}
+        self.videos[video_id] = FakeVideo(video_id, metadata, b"")
         return video_id
 
     def processing_state(self, **overrides: Any) -> VideoProcessingState:

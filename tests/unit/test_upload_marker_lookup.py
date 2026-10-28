@@ -105,6 +105,25 @@ async def test_adapter_malformed_videos_response_is_unknown() -> None:
     assert (await uploader.lookup_video_by_marker("m")).state is MarkerLookupState.UNKNOWN
 
 
+async def test_adapter_videos_list_returning_fewer_items_than_requested_is_unknown() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/channels" in url:
+            uploads = {"relatedPlaylists": {"uploads": "UU1"}}
+            return httpx.Response(200, json={"items": [{"contentDetails": uploads}]})
+        if "/playlistItems" in url:
+            ids = ["a", "b"]
+            return httpx.Response(
+                200, json={"items": [{"contentDetails": {"videoId": v}} for v in ids]}
+            )
+        return httpx.Response(200, json={"items": [{"id": "a", "snippet": {}}]})  # b が欠ける
+
+    uploader, _ = _uploader(handler)
+    result = await uploader.lookup_video_by_marker("m")
+    assert result.state is MarkerLookupState.UNKNOWN
+    assert result.reason == "videos_response_incomplete"
+
+
 async def test_adapter_http_failure_raises_instead_of_reading_as_not_found() -> None:
     uploader, _ = _uploader(lambda r: httpx.Response(500))
     with pytest.raises(YouTubeTransientError):
@@ -396,3 +415,60 @@ async def test_the_approval_is_consumed_before_the_lookup_so_two_attempts_cannot
     results = await asyncio.gather(h.upload(h.acts()), h.upload(h.acts()), return_exceptions=True)
     assert h.fake.videos_created == base + 1
     assert sum(1 for r in results if isinstance(r, BaseException)) <= 1
+
+
+# ---------------------------------------------- 採用の前の検査（レビュー MINOR 1 / 2）
+
+
+async def test_a_channel_mismatch_stops_before_the_lookup_and_adopts_nothing(
+    h: Harness,
+) -> None:
+    await _approved_round_two_pending(h)
+    (row,) = await h.reservations()
+    h.fake.add_existing_video([upload_marker(row.idempotency_key)])
+    lookups, videos = h.fake.marker_lookups, h.fake.videos_created
+    h.fake.channel_id = "UC" + "z" * 22  # 認証中のチャンネルが設定と違う
+
+    err = await _error(h.upload(h.acts()))
+
+    assert err.type in {"UploadAuthError", "UploadOutcomeUnknownError"}
+    assert h.fake.marker_lookups == lookups and h.fake.videos_created == videos
+    assert [(r.round, r.status) for r in await h.reservations()] == [
+        (1, ReservationStatus.ABANDONED)
+    ]
+    assert await _reconciled_by_of_round_one(h) == OPERATOR_REUPLOAD_APPROVED  # 承認は消費されない
+
+
+@pytest.mark.parametrize("privacy", ["public", "unlisted"])
+async def test_a_found_video_that_is_not_private_is_not_adopted_and_nothing_is_uploaded(
+    h: Harness, privacy: str
+) -> None:
+    await _approved_round_two_pending(h)
+    (row,) = await h.reservations()
+    existing = h.fake.add_existing_video([upload_marker(row.idempotency_key)], privacy=privacy)
+    sessions, videos = h.fake.sessions_started, h.fake.videos_created
+
+    err = await _error(h.upload(h.acts()))
+
+    assert err.type == "UploadProcessingFailedError" and err.non_retryable
+    assert h.fake.sessions_started == sessions and h.fake.videos_created == videos
+    assert h.fake.videos[existing].metadata["status"]["privacyStatus"] == privacy  # 変更しない
+    assert [(r.round, r.status) for r in await h.reservations()] == [
+        (1, ReservationStatus.ABANDONED)
+    ]
+
+
+async def test_a_found_video_whose_visibility_cannot_be_read_is_not_adopted(h: Harness) -> None:
+    await _approved_round_two_pending(h)
+    (row,) = await h.reservations()
+    h.fake.add_existing_video([upload_marker(row.idempotency_key)])
+    h.fake.fail_processing_with = YouTubeTransientError("down")
+    videos = h.fake.videos_created
+
+    err = await _error(h.upload(h.acts()))
+
+    assert err.type == "UploadOutcomeUnknownError"
+    assert h.fake.videos_created == videos
+    assert [(r.round, r.status) for r in await h.reservations()] == [
+        (1, ReservationStatus.ABANDONED)
+    ]

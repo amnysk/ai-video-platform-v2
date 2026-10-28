@@ -1404,7 +1404,7 @@ class ProviderReservationRepository:
     async def consume_reconciled_by(
         self, reservation_id: uuid.UUID | str, *, expected: str, replacement: str
     ) -> bool:
-        """``abandoned`` の予約の ``reconciled_by`` を ``expected`` → ``replacement`` へ1回だけ変える（CAS）。
+        """``abandoned`` 予約の ``reconciled_by`` を ``expected`` から ``replacement`` へ1回だけ変える。
 
         運用者の承認（再投稿の承認など）を、使った時点で持続的に使い切るための操作。状態・列の
         形は変えない（``reconciled_by`` は自由文字列）。commit は呼び出し側。変えたのが

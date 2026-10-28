@@ -36,7 +36,7 @@ Accepted (2026-10-29)。設計の出典は `docs/architecture/v3-phase0-audit.md
    運用者がチャンネルを確認して、新しい承認を書いてから再実行する（`docs/operations/upload-worker.md`）。
    照合・採用の前に投稿先チャンネルを確かめ（別チャンネルの動画を採用しない）、FOUND の動画は読み取りで
    自チャンネルの private かを確かめてから採用する。そうでなければ採用も投稿もせず `needs_input`
-   （動画は変更しない）。`videos.list` が要求した id より少なく返したときは UNKNOWN。
+   （動画は変更しない）。`videos.list` が要求した id より少なく返したときは UNKNOWN（`videos_response_incomplete`）。
 3. 既存の `find_video_by_marker`（`str | None`）は互換のため残すが、予約・投稿の判断には使わない。
    新しい port メソッド `lookup_video_by_marker`（`MarkerLookup`）を使う。
 
