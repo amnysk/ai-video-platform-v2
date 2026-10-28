@@ -14,6 +14,8 @@ import os
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -103,6 +105,48 @@ def _normalize_for_lint(text: str) -> str:
     """全角を NFKC で畳み、ゼロ幅などの書式文字（Cf）を除いてから検査する。"""
     folded = unicodedata.normalize("NFKC", text)
     return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+
+
+class MarkerLookupState(StrEnum):
+    """マーカー照合（uploads playlist の検索）の結果の3状態（INV-109 / ADR-0075）。
+
+    ``UNKNOWN`` は ``NOT_FOUND`` ではない。API の失敗・timeout・quota・auth・応答の形の崩れ・
+    ページの打ち切りは「無い」を意味しないので、新しい ``videos.insert`` の根拠にならない。
+    """
+
+    FOUND = "found"
+    NOT_FOUND = "not_found"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class MarkerLookup:
+    """照合の結果。``video_id`` は FOUND のときだけ、``reason`` は UNKNOWN のときだけ持つ。
+
+    ``reason`` は短い識別子（例外の型名など）。secret・URL・応答本文は入れない。
+    """
+
+    state: MarkerLookupState
+    video_id: str | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.state is MarkerLookupState.FOUND) != bool(self.video_id):
+            raise ValueError("video_id is required for FOUND and forbidden otherwise")
+        if self.state is not MarkerLookupState.UNKNOWN and self.reason is not None:
+            raise ValueError("reason is only for UNKNOWN")
+
+    @classmethod
+    def found(cls, video_id: str) -> MarkerLookup:
+        return cls(MarkerLookupState.FOUND, video_id=video_id)
+
+    @classmethod
+    def not_found(cls) -> MarkerLookup:
+        return cls(MarkerLookupState.NOT_FOUND)
+
+    @classmethod
+    def unknown(cls, reason: str) -> MarkerLookup:
+        return cls(MarkerLookupState.UNKNOWN, reason=reason)
 
 
 UploadReconciledBy = Literal["upload_response", "status_query", "marker_lookup"]
@@ -377,6 +421,8 @@ __all__ = [
     "YOUTUBE_VIDEO_ID_PATTERN",
     "DescriptionRequiredPartsTooLongError",
     "InternalIdInDescriptionError",
+    "MarkerLookup",
+    "MarkerLookupState",
     "UploadDestination",
     "UploadReceiptArtifact",
     "UploadReconciledBy",

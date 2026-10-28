@@ -1036,3 +1036,21 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 `evaluate_for_upload` の拒否理由を `UploadGateResult.reason` に載せる。**現行の `upload_gate` は品質レポートを
 見ない**（本ブランチは Activity / workflow を変更しない。ADR-0073 §6）。保存先・遷移表の変更は別 ADR で先に承認する。
 **機械検査**: 未検査（配線の承認・実装まで。INV-101 の純粋な判定だけが検査済み）
+
+
+## AC. 投稿の照合と説明欄の構成（ADR-0075。INV-109〜112）
+
+### INV-109 マーカー照合が UNKNOWN のとき、新しい `videos.insert` に進まない
+照合の結果は `MarkerLookupState`（`contracts/upload.py`）の `FOUND` / `NOT_FOUND` / `UNKNOWN`。`NOT_FOUND` は最後の
+ページまで読み切って無かったときだけ。API 例外・timeout・quota・auth・応答の形の崩れ・ページ上限の打ち切り・
+設定回数のうち1回でも失敗があれば `UNKNOWN`。`_reserve` は UNKNOWN で新しいラウンドの予約を作らず
+`UploadOutcomeUnknownError`（既存の `needs_input`）を送出する。FOUND は投稿せずその video id を採用し、
+NOT_FOUND のときだけ1回投稿する。同じ Activity を何度再実行しても動画は1本以下。
+**機械検査**: `tests/unit/test_upload_marker_lookup.py::test_lookup_error_before_round_two_never_inserts`
+/ `tests/unit/test_upload_marker_lookup.py::test_malformed_or_partial_lookup_before_round_two_never_inserts`
+/ `tests/unit/test_upload_marker_lookup.py::test_one_failed_attempt_is_unknown_even_if_the_next_one_finds_nothing`
+/ `tests/unit/test_upload_marker_lookup.py::test_empty_search_success_inserts_exactly_once`
+/ `tests/unit/test_upload_marker_lookup.py::test_found_adopts_the_video_without_any_insert`
+/ `tests/unit/test_upload_marker_lookup.py::test_repeated_executions_after_an_unknown_make_at_most_one_video`
+/ `tests/unit/test_upload_marker_lookup.py::test_adapter_page_limit_with_more_pages_is_unknown_not_not_found`
+/ `tests/unit/test_upload_marker_lookup.py::test_adapter_malformed_playlist_page_is_unknown`

@@ -56,6 +56,8 @@ from contracts.upload import (
     DEFAULT_UPLOAD_MARKER_LOOKUP_DELAY_SECONDS,
     UPLOAD_ARTIFACT_SCHEMA_VERSION,
     UPLOAD_CONTENT_TYPE,
+    MarkerLookup,
+    MarkerLookupState,
     YouTubeVideoMetadata,
     build_upload_receipt,
     build_youtube_metadata,
@@ -123,7 +125,6 @@ from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.temporal.run_inspector import WorkflowRunInspector
 from infrastructure.workdir import WorkDirectory
 from infrastructure.youtube.errors import (
-    YouTubeQuotaError,
     YouTubeRateLimitError,
     YouTubeTransientError,
 )
@@ -532,7 +533,9 @@ class UploadActivities:
           予約があれば止める（2本目にしない）
         - dispatch 済みで video id の無い予約の放棄は、運用者の再投稿承認
           （``reconciled_by = OPERATOR_REUPLOAD_APPROVED``）が無ければ次ラウンドを開かない
-        - round 2 以降は作る前にマーカー照合をやり直し、見つかればその video id を記録して返す
+        - round 2 以降は作る前にマーカー照合をやり直し、見つかればその video id を記録して返す。
+          照合が UNKNOWN（失敗・打ち切り・応答の崩れ）なら新しいラウンドを作らず
+          ``UploadOutcomeUnknownError``（INV-109 / ADR-0075）
         """
         for _ in range(3):
             async with self._session_factory() as session:
@@ -574,7 +577,17 @@ class UploadActivities:
                         "(docs/operations/upload-worker.md)"
                     )
                 # 承認があっても、まずマーカーで既存の動画を探す（見つかれば投稿しない）
-                found = await self._lookup_marker(upload_marker(upload_key))
+                lookup = await self._lookup_marker(upload_marker(upload_key))
+                if lookup.state is MarkerLookupState.UNKNOWN:
+                    # INV-109: 確かめきれないものを「無い」と読まない。新しい予約（ラウンド）を
+                    # 作らず、videos.insert に進まない。needs_input（既存の保留）で人の確認を待つ
+                    raise UploadOutcomeUnknownError(
+                        f"could not confirm whether upload {upload_marker(upload_key)} already "
+                        f"exists on the channel (lookup unknown: {lookup.reason}); no new upload "
+                        "round was opened. Check the channel, then rerun "
+                        "(docs/operations/upload-worker.md, ADR-0075)"
+                    )
+                found = lookup.video_id
             ledger_round = 1 if latest is None else latest.round + 1
             async with self._session_factory() as session:
                 repo = ProviderReservationRepository(session)
@@ -862,30 +875,47 @@ class UploadActivities:
                 f"uploads are paused (UPLOADS_PAUSED / uploads_paused); {action}"
             )
 
-    async def _lookup_marker(self, marker: str) -> str | None:
-        """uploads playlist をマーカー（タグ / description の行）で探す。見つからなければ None。"""
+    async def _lookup_marker(self, marker: str) -> MarkerLookup:
+        """uploads playlist をマーカー（タグ / description の行）で探す。3状態で返す（INV-109）。
+
+        FOUND があればすぐ返す。全回数が読み切った上での「無い」のときだけ NOT_FOUND。
+        1回でも API の失敗・quota・auth・応答の崩れ・ページ打ち切りがあれば UNKNOWN
+        （「無い」と読んで新しい ``videos.insert`` に進まない）。例外はここで UNKNOWN にする。
+        """
+        unknown: MarkerLookup | None = None
         for attempt in range(self._lookup_attempts):
             if attempt:
                 await self._pause(self._lookup_delay, "marker_lookup_wait")
             try:
-                video_id = await self._beating(
-                    "marker_lookup", self._uploader.find_video_by_marker(marker)
+                result = await self._beating(
+                    "marker_lookup", self._uploader.lookup_video_by_marker(marker)
                 )
-            except (*_RETRY_IN_ACTIVITY, YouTubeQuotaError):
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # 例外文は出さない（型名だけ。secret を運ばない）
                 logger.warning("upload marker lookup failed (attempt %s)", attempt + 1)
+                unknown = MarkerLookup.unknown(type(exc).__name__)
                 continue
-            if video_id is not None:
-                return video_id
-        return None
+            if result.state is MarkerLookupState.FOUND:
+                return result
+            if result.state is MarkerLookupState.UNKNOWN:
+                unknown = result
+        return unknown if unknown is not None else MarkerLookup.not_found()
 
     async def _reconcile_by_marker(self, marker: str) -> _Outcome:
         """失効した dispatch 済み session の結果を uploads playlist のマーカーで確かめる。"""
-        video_id = await self._lookup_marker(marker)
-        if video_id is not None:
-            return _Outcome(video_id, "marker_lookup")
+        lookup = await self._lookup_marker(marker)
+        if lookup.state is MarkerLookupState.FOUND and lookup.video_id is not None:
+            return _Outcome(lookup.video_id, "marker_lookup")
+        basis = (
+            f"was not found after {self._lookup_attempts} lookups"
+            if lookup.state is MarkerLookupState.NOT_FOUND
+            else f"could not be checked (lookup unknown: {lookup.reason})"
+        )
         raise UploadOutcomeUnknownError(
-            f"upload session expired after bytes were sent and marker {marker} was not found "
-            f"after {self._lookup_attempts} lookups; check the channel, then follow "
+            f"upload session expired after bytes were sent and marker {marker} {basis}; "
+            "check the channel, then follow "
             "docs/operations/upload-worker.md (no new session is opened automatically)"
         )
 

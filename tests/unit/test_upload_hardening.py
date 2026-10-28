@@ -14,7 +14,7 @@ from sqlalchemy.pool import NullPool
 from temporalio.exceptions import ApplicationError
 
 from contracts.states import EpisodeStatus, ProviderCall, ReservationStatus
-from contracts.upload import build_youtube_metadata, upload_marker
+from contracts.upload import MarkerLookup, build_youtube_metadata, upload_marker
 from contracts.upload_activities import UploadAdmitRequest, UploadFinalVideoRequest
 from domain.episode.transitions import EpisodeEvent
 from domain.errors import InvalidTransitionError
@@ -65,6 +65,9 @@ class Delegate:
 
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
         return await self.inner.find_video_by_marker(marker_tag)
+
+    async def lookup_video_by_marker(self, marker_tag: str) -> MarkerLookup:
+        return await self.inner.lookup_video_by_marker(marker_tag)
 
     async def own_channel_id(self) -> str:
         return await self.inner.own_channel_id()

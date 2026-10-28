@@ -15,6 +15,7 @@ import logging
 import os
 from typing import Any
 
+from contracts.upload import MarkerLookup
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.storage.minio_store import MinioArtifactStore
@@ -66,6 +67,9 @@ class CountingUploader:
 
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
         return await self.inner.find_video_by_marker(marker_tag)
+
+    async def lookup_video_by_marker(self, marker_tag: str) -> MarkerLookup:
+        return await self.inner.lookup_video_by_marker(marker_tag)
 
     async def own_channel_id(self) -> str:
         return await self.inner.own_channel_id()

@@ -143,6 +143,12 @@ WHERE id = '<reservation_id>' AND status = 'reserved' AND provider_result_ref IS
    3. POST で再開する。round 2 は投稿の前に**もう一度マーカー照合**を行い、見つかればその video id を記録して
       投稿しない（`reconciled_by = marker_lookup`）。見つからなければ新しい session で投稿する
 
+**照合が UNKNOWN のとき（ADR-0075 / INV-109）**: 手順 3 の round 2 の照合が、API の失敗・quota・auth・
+応答の崩れ・ページ上限の打ち切りで「確かめられなかった」場合、upload は新しいラウンドを作らず
+`UploadOutcomeUnknownError`（`needs_input`、メッセージに `lookup unknown: <理由>` と `no new upload round was opened`）
+で止まる。予約は abandoned のまま（動画も増えない）。チャンネルを人が確認し（その動画が既にあるか）、
+API が復旧してから POST で再開する。「見つからなかった」と同じ扱いにはならない。
+
 `dispatched_at` が NULL の予約（bytes を1つも送っていない）は、ただの放棄でも次のラウンドへ進める
 （その場合も round 2 はまずマーカー照合をする）。
 
@@ -164,6 +170,7 @@ worker は起動時に `channels.list(mine=true)` のチャンネル id が `YOU
 
 - 二重投稿しない: `tests/unit/test_upload_activities.py::test_concurrent_attempts_on_the_same_key_create_one_video`、
   `tests/unit/test_upload_activities.py::test_session_expired_after_bytes_without_marker_blocks_and_never_reopens`
+- 照合が UNKNOWN のとき投稿しない: `tests/unit/test_upload_marker_lookup.py`（INV-109）
 - private だけを送る: `tests/unit/test_upload_activities.py::test_upload_creates_one_private_video_receipt_and_spent_reservation`
 - 処理状態: `tests/unit/test_upload_processing.py`、`tests/unit/test_upload_processing_e2e.py`
 - 送信中の一時停止: `tests/unit/test_upload_activities.py::test_pause_during_sending_stops_and_resumes_the_saved_session`

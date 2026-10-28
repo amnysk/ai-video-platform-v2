@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES
+from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES, MarkerLookup
 from domain.upload.ports import (
     UploadCompleted,
     UploadExpired,
@@ -87,6 +87,8 @@ class FakeVideoUploader:
         self.fail_send_with: Exception | None = None
         self.fail_query_with: Exception | None = None
         self.fail_lookup_with: Exception | None = None
+        #: True の間、見つからない照合は NOT_FOUND ではなく UNKNOWN（ページ上限で打ち切り）
+        self.lookup_partial = False
         self.fail_processing_with: Exception | None = None
         #: ``processing_status`` の呼び出し回数
         self.processing_checks = 0
@@ -222,6 +224,18 @@ class FakeVideoUploader:
             return self._progress(state)
 
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
+        return await self._find_marker(marker_tag)
+
+    async def lookup_video_by_marker(self, marker_tag: str) -> MarkerLookup:
+        """3状態版。``lookup_partial`` の間、見つからないときは UNKNOWN（ページ打ち切り）。"""
+        found = await self._find_marker(marker_tag)
+        if found is not None:
+            return MarkerLookup.found(found)
+        if self.lookup_partial:
+            return MarkerLookup.unknown("page_limit_reached")
+        return MarkerLookup.not_found()
+
+    async def _find_marker(self, marker_tag: str) -> str | None:
         async with self._lock:
             self.marker_lookups += 1
             exc, self.fail_lookup_with = self.fail_lookup_with, None
