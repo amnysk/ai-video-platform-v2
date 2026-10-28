@@ -65,3 +65,24 @@ fake gazetteer はメモリ上の固定データ（関ヶ原・大坂城・江�
 | `test_a_scene_claiming_a_real_location_without_a_manifest_is_blocked` / `test_a_scene_without_a_real_location_claim_needs_no_manifest` / `test_a_schematic_cannot_back_a_real_location_claim` / `test_verify_scene_delegates_to_the_manifest_checks` | INV-93。manifest 無し・模式図での実在位置の主張を BLOCK。主張が無いシーンは要求しない |
 | `test_a_non_schematic_map_with_no_places_cannot_pass` | 何も検証できない地図が PASS にならない |
 | `test_the_verifier_does_not_mutate_its_inputs` | 純関数であること（注入した参照データを書き換えない） |
+
+## `tests/unit/test_geo_combine.py`（決定論的ガードの優先。T32、INV-94）
+
+| テスト | なぜ必要か / 落ちたら何が起きているか |
+|---|---|
+| `test_a_critic_pass_cannot_override_a_deterministic_block` | T32。QualityCritic が誤りを PASS と評価しても BLOCK のまま |
+| `test_a_critic_pass_cannot_override_a_deterministic_review` | REVIEW（自動投稿に進めない）も critic の PASS / WARN で緩まない |
+| `test_the_combined_verdict_is_never_milder_than_either_input` | 4×4 全組み合わせで結果 = 厳しい方。critic は等しいか厳しい側にしか動かせない |
+| `test_a_stricter_critic_can_tighten_a_pass` | critic が厳しい側に動かすことは許す（助言として有効） |
+| `test_the_deterministic_checks_are_kept_unchanged` | 結合が決定論的な check を消す・書き換えない（誰が止めたか追える） |
+| `test_a_score_is_not_accepted_in_place_of_a_verdict` | 点数・文字列を verdict に写す入口が無い |
+| `test_a_combined_record_cannot_be_hand_edited_to_pass` | 契約側の最後の防衛線（verdict を check から切り離して PASS にできない） |
+
+## `tests/architecture/test_geo_boundaries.py`（境界）
+
+| テスト | なぜ必要か / 落ちたら何が起きているか |
+|---|---|
+| `test_the_geo_domain_exists` | 検査対象が空で自明に通るのを防ぐ |
+| `test_the_geo_domain_imports_no_io_clock_or_network_modules` / `test_the_geo_domain_does_not_call_io_builtins` | 検証器が時計・乱数・ファイル・ネットワークに触れると「同じ入力から同じ結果」が崩れ、テストが fake を使う意味が無くなる |
+| `test_the_geo_domain_imports_only_contracts_and_itself` | INV-6（domain は contracts のみ）を geo について名指しで固定 |
+| `test_production_billing_and_entrypoints_do_not_import_geo` | 未接続の保証。本番の課金・Episode 工程・API・workflow から geo が使われない（接続は後続の枝が ADR とともに決める） |

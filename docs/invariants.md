@@ -432,7 +432,12 @@ Replayer で replay。非決定にならず1件も発行しない）
 `GeoVerification.verdict` は check の最悪値と一致しなければ作れず、LLM の評価は `combine_verdicts` を
 通してのみ合流し、等しいか厳しい側にしか動かさない。
 **機械検査**: `tests/contract/test_geo_contracts.py::test_a_verification_cannot_be_milder_than_its_worst_check`
-（結合関数の検査は純関数の追加と同時に足す）
+/ `tests/unit/test_geo_combine.py::test_a_critic_pass_cannot_override_a_deterministic_block`
+/ `tests/unit/test_geo_combine.py::test_a_critic_pass_cannot_override_a_deterministic_review`
+/ `tests/unit/test_geo_combine.py::test_the_combined_verdict_is_never_milder_than_either_input`
+/ `tests/unit/test_geo_combine.py::test_a_score_is_not_accepted_in_place_of_a_verdict`
+（`combine_verdicts` を通る経路まで。実際の QualityGate がこの関数以外で最終 verdict を作らないことは、
+接続する枝で検査する。未接続の間は未検査）
 
 ### INV-95 座標は名前付きの lat / lon（EPSG:4326）で持ち、範囲を検証する
 `GeoPlace` / `GeoBBox` / `ReferencePlace` は `lat` / `lon` を名前で持ち、範囲外・NaN・無限大・CRS 違い・
