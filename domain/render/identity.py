@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from contracts.render import (
     RENDER_ARTIFACT_SCHEMA_VERSION,
     RenderEngineIdentity,
@@ -34,29 +36,34 @@ def render_input_hash(
     font_sha256: str,
     audio_mix: AudioMixSpec | None = None,
     engine_threads: int | None = None,
+    bgm: Mapping[str, object] | None = None,
 ) -> str:
-    """完成動画の入力指紋。profile は字幕設定を含む全体を正準化して入れる。"""
+    """完成動画の入力指紋。profile は字幕設定を含む全体を正準化して入れる。
+
+    ``bgm`` は BGM を実際に混ぜるときだけ渡す混合計画（``BgmMixPlan.identity_payload()``）。
+    ``None`` のときは**キーごと入れない**ので、BGM 導入前と hash がバイト単位で同じ（INV-113）。
+    production の入力 hash には BGM を入れない（BGM だけの変更で課金しない。INV-116）。
+    """
     mix = audio_mix if audio_mix is not None else audio_mix_spec(profile)
-    return sha256_hex(
-        canonical_json_bytes(
-            {
-                "stage": "render",
-                "artifact_type": ArtifactType.FINAL_VIDEO.value,
-                "schema_version": RENDER_ARTIFACT_SCHEMA_VERSION,
-                "manifest_sha256": manifest_sha256,
-                "script_sha256": script_sha256,
-                "storyboard_sha256": storyboard_sha256,
-                "profile": profile.model_dump(mode="json"),
-                "policy": policy.model_dump(mode="json"),
-                "template_version": policy.template_version,
-                "engine": engine.model_dump(mode="json"),
-                #: エンジンのスレッド数（x264 の出力はスレッド数で変わりうる）
-                "engine_threads": engine_threads,
-                "font_sha256": font_sha256,
-                "audio_mix": mix.as_payload(),
-            }
-        )
-    )
+    payload: dict[str, object] = {
+        "stage": "render",
+        "artifact_type": ArtifactType.FINAL_VIDEO.value,
+        "schema_version": RENDER_ARTIFACT_SCHEMA_VERSION,
+        "manifest_sha256": manifest_sha256,
+        "script_sha256": script_sha256,
+        "storyboard_sha256": storyboard_sha256,
+        "profile": profile.model_dump(mode="json"),
+        "policy": policy.model_dump(mode="json"),
+        "template_version": policy.template_version,
+        "engine": engine.model_dump(mode="json"),
+        #: エンジンのスレッド数（x264 の出力はスレッド数で変わりうる）
+        "engine_threads": engine_threads,
+        "font_sha256": font_sha256,
+        "audio_mix": mix.as_payload(),
+    }
+    if bgm is not None:
+        payload["bgm"] = dict(bgm)
+    return sha256_hex(canonical_json_bytes(payload))
 
 
 def render_plan_sha256(plan: RenderPlan) -> str:

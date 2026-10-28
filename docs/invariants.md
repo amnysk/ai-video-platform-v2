@@ -1089,7 +1089,69 @@ DB 上の承認記録・技術 QA / 説明欄の gate 時点での読み出し�
 / `tests/architecture/test_quality_clock_injected.py::test_quality_modules_never_read_the_clock`
 （`upload_gate` への配線は INV-104。規則版の「現行値」は `contracts.quality.QUALITY_RULE_VERSION`）
 
-## AD. 歴史地図の正確さと描画（ADR-0078。INV-117〜120 は本枝の予約。純関数と描画部品のみ・未接続）
+## AD. BGM の Render 結線（ADR-0077。設定キー `bgm_enabled`、既定 OFF）
+
+番号 INV-105〜112 は他の枝の予約。この節は INV-113〜116。
+
+### INV-113 BGM が OFF（設定が無効、または cue sheet が無い）のとき、描画の同一性と ffmpeg コマンドは BGM 導入前と同一
+`render_input_hash` は `bgm=None` のとき BGM のキーを入れず、`build_filtergraph` / `build_argv` は BGM 引数が無いとき
+導入前と同じ文字列・argv を返す。期待値は導入前のコミット（6d14c30）で実測した固定値。
+BGM を混ぜるときだけ、混合計画（cue ごとの音源 sha・証拠 hash・時刻・フェード・上限適用後の dB・ducking・混合の版）が
+input_hash に入り、そのどれを変えても hash が変わる。production の入力 hash には BGM が入らない（INV-116）。
+**機械検査**: `tests/unit/test_bgm_off_golden.py::test_input_hash_without_bgm_equals_the_pre_bgm_value`
+/ `tests/unit/test_bgm_off_golden.py::test_filtergraph_without_bgm_equals_the_pre_bgm_value`
+/ `tests/unit/test_bgm_off_golden.py::test_argv_without_bgm_equals_the_pre_bgm_value`
+/ `tests/unit/test_bgm_resolve.py::test_no_cue_sheet_means_not_applied_and_identity_is_the_pre_bgm_hash`
+/ `tests/unit/test_bgm_resolve.py::test_a_usable_cue_sheet_changes_the_input_hash_and_each_mix_field_moves_it`
+/ `tests/unit/test_bgm_ffmpeg_graph.py::test_bgm_graph_tail_snapshot_and_video_part_is_unchanged`
+
+### INV-114 ライセンスの事実を満たさない曲は鳴らない。1 つでも満たさなければ BGM 全体を使わず、理由を返す
+cue sheet が指す曲は、描画のたびに `now` で選曲と同じ検査（`reject_reasons`）と `credits_for` を通る。未承認・失効・取消・
+隔離・再利用/商用/改変不可・形式（Shorts 等）不可・期限切れ・カタログに無い・実ファイルの sha256 が違う/読めない・
+証拠 hash 不一致・帰属文不一致・cue が時間軸外/未知の scene は、他に曲が無くても使われず、BGM 無しで描画が続く
+（拒否で止めない。ADR-0077 §3）。`now` が naive なら例外（黙って通さない）。
+**機械検査**: `tests/unit/test_bgm_resolve.py::test_a_track_that_fails_any_license_fact_is_never_used_even_if_it_is_the_only_one`
+/ `tests/unit/test_bgm_resolve.py::test_a_track_expiring_after_the_cue_sheet_was_made_is_rejected_at_render_time`
+/ `tests/unit/test_bgm_resolve.py::test_a_shorts_only_restriction_follows_the_profile_format`
+/ `tests/unit/test_bgm_resolve.py::test_unknown_track_altered_or_missing_file_and_stale_evidence_are_not_used`
+/ `tests/unit/test_bgm_resolve.py::test_one_bad_cue_drops_all_of_bgm`
+/ `tests/unit/test_bgm_resolve.py::test_naive_now_is_refused`
+
+### INV-115 BGM 入りの完成動画は、実測ラウドネスが範囲内でなければ保存されない。範囲外・無音・実測不能は構造化された不合格
+ffmpeg `ebur128=peak=true` の要約から積分ラウドネス・true peak・LRA を 1/100 単位の int で取り出し、理由コード
+（`ok` / `too_quiet` / `too_loud` / `true_peak_exceeded` / `silent`）つきの結果にする。要約が読めない・実測が走らない場合は
+例外（通さない）。不合格は技術 QA の `bgm_loudness` 項目として `FinalVideoValidationError` になる。許容範囲
+（積分 -24〜-9 LUFS、true peak ≤ -1.0 dBTP）は `contracts/music_render.py` の唯一の定義で**未校正**。
+**機械検査**: `tests/unit/test_bgm_loudness.py::test_real_ffmpeg_summary_is_parsed_into_centi_units`
+/ `tests/unit/test_bgm_loudness.py::test_silent_summary_has_no_peak_and_is_a_silent_failure`
+/ `tests/unit/test_bgm_loudness.py::test_unreadable_output_is_an_error_never_a_pass`
+/ `tests/unit/test_bgm_loudness.py::test_verdict_reason_codes_and_boundaries`
+/ `tests/unit/test_bgm_loudness.py::test_a_failed_verdict_becomes_a_failed_qa_check_that_raises`
+/ `tests/unit/test_bgm_loudness.py::test_probe_that_cannot_run_raises_instead_of_passing`
+（Activity での実行は `tests/unit/test_render_activities_bgm.py::test_out_of_range_loudness_is_a_structured_failure_and_nothing_is_stored`）
+
+### INV-116 BGM だけの変更は render だけを再実行し、fal・production・予約台帳に触れない。Temporal の Activity 契約は変わらない
+BGM の供給元とラウドネス測定は `RenderActivities` のコンストラクタ引数で、Activity の入力ではない。Render の経路（worker 全体）は
+fal クライアント・production worker のコードを読み込まない。cue sheet だけを変えた再描画は、fal クライアントの全メソッドを
+「呼ばれたら失敗」にしても通り、予約台帳の件数 0・production の Artifact（id / 版 / sha256）不変・job は render のみ。
+変更のない再実行は現行 final_video を再利用する（描画 0 回）。BGM 入り動画は証跡（クレジット原文・曲の sha と証拠 hash・
+実測ラウドネス・final_video の sha256）を MinIO に保存してから記録され、証跡が無い BGM 入り動画は存在しない。
+Activity 名と入出力 dataclass のフィールド（名前・順序）は導入前と同一。
+**機械検査**: `tests/unit/test_render_activities_bgm.py::test_bgm_only_changes_rerender_only_and_never_touch_production_or_fal`
+/ `tests/unit/test_render_activities_bgm.py::test_bgm_changes_identity_and_stores_evidence_credits_and_loudness`
+/ `tests/unit/test_render_activities_bgm.py::test_out_of_range_loudness_is_a_structured_failure_and_nothing_is_stored`
+/ `tests/unit/test_render_activities_bgm.py::test_no_cue_sheet_renders_exactly_like_no_bgm_support`
+/ `tests/unit/test_render_activities_bgm.py::test_expired_or_unknown_license_renders_without_bgm_and_logs_the_reason`
+/ `tests/unit/test_render_activities_bgm.py::test_a_track_that_expires_after_a_bgm_render_is_replaced_by_a_bgm_less_render`
+/ `tests/architecture/test_bgm_render_boundaries.py::test_the_render_worker_loads_no_fal_or_production_module`
+/ `tests/architecture/test_bgm_render_boundaries.py::test_bgm_modules_do_not_import_production_or_provider_code`
+/ `tests/architecture/test_bgm_render_boundaries.py::test_render_activity_names_and_io_dataclass_fields_are_unchanged`
+/ `tests/architecture/test_bgm_render_boundaries.py::test_the_setting_key_is_read_only_where_the_worker_is_assembled`
+/ `tests/unit/test_bgm_setting.py::test_default_is_off_and_the_key_name_is_single_sourced`
+（Temporal の replay は `tests/unit/test_log_old_history_replay.py` 等で確認。**実 Temporal / MinIO / PostgreSQL での通し、
+および説明欄・投稿前 Gate への結線は未検査**）
+
+## AE. 歴史地図の正確さと描画（ADR-0078。INV-117〜120 は本枝の予約。純関数と描画部品のみ・未接続）
 
 ### INV-117 歴史地図の誤り（位置・時代・国境・根拠の欠落）は理由コード付きの BLOCK になり、緩む経路が無い
 `domain.geo.map_accuracy.check_map_accuracy` は Wave 1 の検証結果を `MapAccuracyResult`

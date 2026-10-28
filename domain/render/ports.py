@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from contracts.music import BgmTrack, MusicCueSheet
+from contracts.music_render import BgmMixPlan, LoudnessMeasurement
 from contracts.render import RenderEngineIdentity, RenderPlan
 
 
@@ -44,6 +46,14 @@ class FinalVideoProbe(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class BgmRenderInput:
+    """BGM を混ぜるときだけ渡す。音源は sha256 照合済みのローカルファイル（track_id → パス）。"""
+
+    mix: BgmMixPlan
+    track_paths: Mapping[str, Path]
+
+
+@dataclass(frozen=True, slots=True)
 class RenderRequest:
     """描画1回分の入力。素材は作業領域へ取り出して sha256 を照合済みのローカルファイル。"""
 
@@ -59,6 +69,8 @@ class RenderRequest:
     work_dir: Path
     output_path: Path
     timeout_seconds: float
+    #: None なら BGM 無し（導入前と同一の描画）
+    bgm: BgmRenderInput | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,3 +94,36 @@ class RenderEngine(Protocol):
     async def render(
         self, request: RenderRequest, *, heartbeat: Callable[[], object]
     ) -> RenderedVideo: ...
+
+
+@runtime_checkable
+class LoudnessProbe(Protocol):
+    """完成動画の音声のラウドネスを実測する（同期。呼び出し側がスレッドで待つ）。
+
+    実測できなければ ``RenderEngineFailedError``（再試行可能）。値を推測して返さない。
+    """
+
+    def measure_loudness(self, path: str) -> LoudnessMeasurement: ...
+
+
+class BgmSourceError(Exception):
+    """BGM の供給元（カタログ・cue sheet・音源）が読めない/壊れている。BGM を使わず描画を続ける。"""
+
+
+@dataclass(frozen=True, slots=True)
+class BgmSourceData:
+    """Episode 1 件分の BGM 入力。cue sheet が無ければ ``cue_sheet=None``（BGM 無し）。"""
+
+    cue_sheet: MusicCueSheet | None
+    catalog: tuple[BgmTrack, ...] = ()
+    #: track_id → ローカルの音源ファイル
+    track_paths: Mapping[str, Path] = field(default_factory=dict)
+    #: track_id → 実ファイルから求めた sha256（読めなければ None）
+    file_sha256_by_track: Mapping[str, str | None] = field(default_factory=dict)
+
+
+@runtime_checkable
+class BgmSource(Protocol):
+    """BGM の供給元。同期（呼び出し側がスレッドで待つ）。DB 版への差し替え口（ADR-0077 §1）。"""
+
+    def load(self, episode_id: str) -> BgmSourceData: ...
