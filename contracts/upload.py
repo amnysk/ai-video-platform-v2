@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -72,6 +74,22 @@ UPLOAD_MARKER_PREFIX = "avpu"
 UPLOAD_MARKER_KEY_CHARS = 24
 UPLOAD_MARKER_PATTERN = rf"^{UPLOAD_MARKER_PREFIX}[0-9a-f]{{{UPLOAD_MARKER_KEY_CHARS}}}$"
 
+#: ADR-0070: ``1`` / ``true`` のとき description に投稿マーカーを入れない。
+#: 既定 OFF（どの compose / env でも ON にしない）。
+#: Workflow 入力には載せない（履歴の形を変えない）。
+#: 読み取りはここが唯一の定義元。
+UPLOAD_DESCRIPTION_WITHOUT_MARKER_ENV = "AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER"
+
+#: 視聴者向け description に出してはならない内部 ID（ADR-0070 / INV-90）。
+#: builder と insert_body が共有する。
+INTERNAL_ID_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(rf"{UPLOAD_MARKER_PREFIX}[0-9a-f]{{{UPLOAD_MARKER_KEY_CHARS}}}"),
+    re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
+    re.compile(r"\b(?:minio|s3)://\S+", re.IGNORECASE),
+    # MinIO の object key（domain/artifact/keys.py）: <prefix>/…/<sha256>[.<ext>]
+    re.compile(r"(?<![\w/.-])(?:artifacts|media|research)/[\w./-]*[0-9a-f]{64}(?:\.\w+)?"),
+)
+
 UploadReconciledBy = Literal["upload_response", "status_query", "marker_lookup"]
 
 
@@ -80,6 +98,32 @@ def upload_marker(upload_key: str) -> str:
     if not re.fullmatch(SHA256_HEX_PATTERN, upload_key):
         raise ValueError("upload_key must be a lowercase sha256 hex digest")
     return f"{UPLOAD_MARKER_PREFIX}{upload_key[:UPLOAD_MARKER_KEY_CHARS]}"
+
+
+def description_without_marker_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """ADR-0070 の flag。既定 OFF（未設定・空・``1`` / ``true`` 以外は OFF）。"""
+    env = os.environ if environ is None else environ
+    return env.get(UPLOAD_DESCRIPTION_WITHOUT_MARKER_ENV, "").strip().lower() in {"1", "true"}
+
+
+class InternalIdInDescriptionError(ValueError):
+    """description に内部 ID（marker・UUID・MinIO key）が含まれる（INV-90）。"""
+
+
+class DescriptionRequiredPartsTooLongError(ValueError):
+    """必須部分（クレジット・出典）だけで description の上限を超える（INV-92）。切り詰めない。"""
+
+
+def find_internal_ids(text: str) -> list[str]:
+    """``text`` に含まれる内部 ID らしき文字列（なければ空）。定義は INTERNAL_ID_PATTERNS のみ。"""
+    return [m.group(0) for pattern in INTERNAL_ID_PATTERNS for m in pattern.finditer(text)]
+
+
+def assert_no_internal_ids(text: str, field: str = "description") -> None:
+    found = find_internal_ids(text)
+    if found:
+        # 値そのものは例外文に出さない（ログへ内部 ID を運ばない）
+        raise InternalIdInDescriptionError(f"{field} contains {len(found)} internal id(s)")
 
 
 def youtube_tags_length(tags: tuple[str, ...] | list[str]) -> int:
@@ -165,22 +209,45 @@ def build_youtube_metadata(
     language: Literal["ja", "en"],
     category_id: str = DEFAULT_YOUTUBE_CATEGORY_ID,
     made_for_kids: bool = False,
+    required_parts: Sequence[str] = (),
+    marker_in_description: bool | None = None,
 ) -> YouTubeVideoMetadata:
-    """台本の値から決定的にメタデータを組む（ADR-0020 §5）。
+    """台本の値から決定的にメタデータを組む（ADR-0020 §5 / ADR-0070）。
 
     同じ入力なら同じメタデータ。タグは投稿マーカーだけ（照合に必須、それ以外は足さない）。
-    マーカーは description の最終行にも入る（照合はタグ・description のどちらかで一致すればよい）。
+
+    - ``marker_in_description=None`` なら環境変数 AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER（既定 OFF）
+      で決める。OFF（既定）: 従来どおりマーカーが description の最終行にも入る。``required_parts``
+      があればマーカーの前に置く（本文より先に枠を確保する）
+    - ON: description にマーカーを入れない。``required_parts``（クレジット・出典）を先に確保して
+      残りを本文に割り当て、必須部分だけで 5000 bytes を超えたら切らずに例外（INV-92）。
+      組み立てた description は内部 ID の lint を通す（INV-90）
     """
     safe_title = sanitize_youtube_text(title.strip())[:YOUTUBE_TITLE_MAX_CHARS]
     body = sanitize_youtube_text(f"{hook.strip()}\n\n{narration.strip()}".strip())
     marker = upload_marker(upload_key)
-    # マーカーは description の最終行にも置く（タグが編集・除去されても照合できる）。
-    # 本文だけを切り詰め、マーカーの行は必ず残す
-    suffix = f"\n\n{marker}"
-    budget = YOUTUBE_DESCRIPTION_MAX_BYTES - len(suffix.encode("utf-8"))
+    if marker_in_description is None:
+        marker_in_description = not description_without_marker_enabled()
+    parts = [t for t in (sanitize_youtube_text(p.strip()) for p in required_parts) if t]
+    if marker_in_description:
+        # マーカーは description の最終行にも置く（タグが編集・除去されても照合できる）
+        parts.append(marker)
+    required = "\n\n".join(parts)
+    required_bytes = len(required.encode("utf-8"))
+    if required_bytes > YOUTUBE_DESCRIPTION_MAX_BYTES:
+        raise DescriptionRequiredPartsTooLongError(
+            f"required description parts need {required_bytes} UTF-8 bytes "
+            f"(limit {YOUTUBE_DESCRIPTION_MAX_BYTES})"
+        )
+    separator = "\n\n" if required else ""
+    # 本文だけを切り詰め、必須部分（マーカー・クレジット・出典）は必ず残す
+    budget = YOUTUBE_DESCRIPTION_MAX_BYTES - required_bytes - len(separator.encode("utf-8"))
+    description = truncate_utf8(body, budget) + separator + required if budget > 0 else required
+    if not marker_in_description:
+        assert_no_internal_ids(description)
     return YouTubeVideoMetadata(
         title=safe_title,
-        description=truncate_utf8(body, budget) + suffix,
+        description=description,
         tags=(marker,),
         category_id=category_id,
         default_language=language,
@@ -272,6 +339,8 @@ __all__ = [
     "DEFAULT_UPLOAD_MIN_THROUGHPUT_BYTES_PER_SECOND",
     "DEFAULT_UPLOAD_MIN_TIMEOUT_SECONDS",
     "DEFAULT_YOUTUBE_CATEGORY_ID",
+    "INTERNAL_ID_PATTERNS",
+    "UPLOAD_DESCRIPTION_WITHOUT_MARKER_ENV",
     "UPLOAD_ARTIFACT_SCHEMA_VERSION",
     "UPLOAD_CONTENT_TYPE",
     "UPLOAD_KEY_STAGE",
@@ -286,12 +355,17 @@ __all__ = [
     "YOUTUBE_TAGS_MAX_TOTAL_CHARS",
     "YOUTUBE_TITLE_MAX_CHARS",
     "YOUTUBE_VIDEO_ID_PATTERN",
+    "DescriptionRequiredPartsTooLongError",
+    "InternalIdInDescriptionError",
     "UploadDestination",
     "UploadReceiptArtifact",
     "UploadReconciledBy",
     "YouTubeVideoMetadata",
     "build_upload_receipt",
+    "assert_no_internal_ids",
     "build_youtube_metadata",
+    "description_without_marker_enabled",
+    "find_internal_ids",
     "parse_upload_receipt",
     "sanitize_youtube_text",
     "truncate_utf8",

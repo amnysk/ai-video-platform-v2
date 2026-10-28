@@ -417,3 +417,30 @@ Replayer で replay。非決定にならず1件も発行しない）
 / `tests/unit/test_log_old_history_replay.py::test_the_old_histories_cover_every_stage_workflow`
 / `tests/architecture/test_logging_boundaries.py::test_workflow_event_names_and_stages_are_contract_vocabulary`
 / `tests/unit/test_pipeline_workflows.py`（既存の履歴 fixture の replay がログ発行を足した後も通る）
+
+### INV-90 視聴者向け description に内部 ID を出さない
+`AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER` が ON のとき、description に `avpu[0-9a-f]{24}`・UUID・MinIO の key / URL を
+含めない。lint の定義は `contracts/upload.py::INTERNAL_ID_PATTERNS` の1つで、組み立て（`build_youtube_metadata`）と
+`videos.insert` の body（`infrastructure/youtube/metadata.py::insert_body`）の双方が通す。flag は既定 OFF で、OFF の
+挙動は従来と同じ（description の最終行に marker。ADR-0070）。
+**機械検査**: `tests/contract/test_upload_metadata_lint.py::test_description_never_contains_internal_ids`
+/ `tests/contract/test_upload_metadata_lint.py::test_insert_body_description_has_no_marker`
+/ `tests/contract/test_upload_metadata_lint.py::test_insert_body_lints_the_final_body`
+/ `tests/contract/test_upload_metadata_lint.py::test_flag_off_is_byte_identical_to_the_legacy_shape`
+/ `tests/contract/test_upload_metadata_lint.py::test_insert_body_is_unchanged_with_flag_off`
+
+### INV-91 投稿マーカーは tags に残り、旧 description のマーカーも照合できる
+description から marker を外しても `tags` は `upload_marker(upload_key)` を持つ。`find_video_by_marker` は tags のみの
+動画と、description にだけ marker を持つ旧動画の両方に一致する（過去動画は変更・削除・再投稿しない）。
+description の検査とは別のテストで固定する。実 YouTube が tags のみの動画を返すことの確認は未了で、
+本番で flag を ON にする前提条件（ADR-0070）。
+**機械検査**: `tests/contract/test_upload_metadata_lint.py::test_tags_keep_the_reconciliation_marker`
+/ `tests/contract/test_upload_metadata_lint.py::test_lookup_matches_tags_only_and_legacy_description_only_videos`
+/ `tests/unit/test_upload_hardening.py::test_fake_marker_lookup_matches_description_lines`
+
+### INV-92 必須部分（クレジット・出典）を黙って切り詰めない
+description の 5000 UTF-8 bytes は必須部分を先に確保し、残りだけを本文に割り当てる。必須部分だけで超えるときは
+切り詰めずに `DescriptionRequiredPartsTooLongError` を上げる（Upload 工程で `needs_input` に写す配線は別タスク）。
+**機械検査**: `tests/contract/test_upload_metadata_lint.py::test_required_parts_over_the_limit_raise_instead_of_truncating`
+/ `tests/contract/test_upload_metadata_lint.py::test_required_parts_survive_a_long_body`
+/ `tests/contract/test_upload_metadata_lint.py::test_required_parts_exactly_filling_the_budget_are_kept`
