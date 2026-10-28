@@ -23,6 +23,9 @@
 | `test_found_adopts_the_video_without_any_insert` | Activity | FOUND は投稿ゼロで既存 video id を採用 |
 | `test_repeated_executions_after_an_unknown_make_at_most_one_video` | Activity | retry / worker 再起動を模して失敗を3回、復旧後に3回実行しても動画は1本以下。復旧後は台帳が spent なので照合に行かない |
 | `test_lookup_error_after_bytes_were_sent_stays_a_hold_and_opens_no_session` | Activity | bytes 送信後の session 失効の経路（`_reconcile_by_marker`）も、照合失敗で session を開かない |
+| `test_a_lookup_error_consumes_the_approval_so_a_plain_resume_never_inserts` | Activity | レビュー MAJOR。承認済みの放棄予約 → 1回目は照合が UNKNOWN → 2回目は照合が NOT_FOUND でも投稿しない（承認は使い切り）→ 新しい承認の後の3回目でちょうど1本。一般的な再開を「新しい投稿の許可」と読む実装を止める |
+| `test_a_crash_during_the_lookup_still_leaves_the_approval_consumed` | Activity | 照合中にプロセスが落ちても（キャンセルで模す）承認は照合の前に commit 済みなので、次の実行は拒否する（fail-closed） |
+| `test_the_approval_is_consumed_before_the_lookup_so_two_attempts_cannot_both_use_it` | Activity | 並行する2試行が同じ承認で2本投稿しない（CAS） |
 | `test_round_one_never_looks_up` | Activity | 初回は照合しない（API を無駄に呼ばない・初回投稿が照合障害で止まらない） |
 
 fake 側の変更（`tests/support/*`）: `lookup_video_by_marker` を追加しただけ。既存の `find_video_by_marker` の挙動は同じ。

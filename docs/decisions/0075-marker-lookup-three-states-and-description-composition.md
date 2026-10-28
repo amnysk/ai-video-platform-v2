@@ -28,7 +28,15 @@ Accepted (2026-10-29)。設計の出典は `docs/architecture/v3-phase0-audit.md
 2. `_reserve` が UNKNOWN を受けたら、**新しいラウンドの予約を作らず**（台帳は abandoned のまま＝未照合）、
    既存の `UploadOutcomeUnknownError`（`NeedsInputError` → job は `needs_input`、非 retry）を送出する。
    新しい Episode 状態・失敗クラス・Activity の入出力・workflow の順序は足さない（replay 互換）。
-   運用者がチャンネルを確認して再実行する（`docs/operations/upload-worker.md`）。
+   **再投稿の承認は、照合を試みた時点で使い切る**: `reconciled_by = operator_reupload_approved` の放棄済み予約
+   （bytes を送った後の再投稿の承認）は、照合の前に CAS で `reconciled_by = reupload_approval_consumed` へ
+   書き換えて commit する（既存の列・自由文字列。CHECK 制約も DDL も変えない）。照合が UNKNOWN でも、途中で
+   落ちても、次の実行は承認が無いものとして拒否し、運用者が新しい明示承認を書くまで投稿しない
+   （一般的な「再開」は新しい投稿の許可ではない）。メッセージは「新しい承認が要る」と言う。
+   運用者がチャンネルを確認して、新しい承認を書いてから再実行する（`docs/operations/upload-worker.md`）。
+   照合・採用の前に投稿先チャンネルを確かめ（別チャンネルの動画を採用しない）、FOUND の動画は読み取りで
+   自チャンネルの private かを確かめてから採用する。そうでなければ採用も投稿もせず `needs_input`
+   （動画は変更しない）。`videos.list` が要求した id より少なく返したときは UNKNOWN。
 3. 既存の `find_video_by_marker`（`str | None`）は互換のため残すが、予約・投稿の判断には使わない。
    新しい port メソッド `lookup_video_by_marker`（`MarkerLookup`）を使う。
 

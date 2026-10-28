@@ -6,12 +6,15 @@ docs/testing/upload-marker-lookup-rationale.md。
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from temporalio.exceptions import ApplicationError
@@ -19,7 +22,7 @@ from temporalio.exceptions import ApplicationError
 from contracts.states import ProviderCall, ReservationStatus
 from contracts.upload import MarkerLookup, MarkerLookupState, upload_marker
 from contracts.upload_activities import UploadAdmitRequest, UploadFinalVideoRequest
-from infrastructure.db.models import Base
+from infrastructure.db.models import Base, ProviderReservationRow
 from infrastructure.db.repositories import ProviderReservationRepository
 from infrastructure.storage.memory_store import InMemoryArtifactStore
 from infrastructure.workdir import WorkDirectory
@@ -304,13 +307,14 @@ async def test_repeated_executions_after_an_unknown_make_at_most_one_video(h: Ha
         assert (await _error(h.upload(h.acts(broken)))).type == "UploadOutcomeUnknownError"
     assert h.fake.videos_created == base
 
+    await _approve_again(h)  # 照合の試行で承認は使い切り。再開には新しい明示承認が要る（INV-109）
     first = await h.upload(h.acts())  # 復旧後
     again = await h.upload(h.acts())  # 再実行
     third = await h.upload(h.acts(broken))  # 台帳が spent なので照合すら要らない
 
     assert h.fake.videos_created == base + 1
     assert first.video_id == again.video_id == third.video_id
-    assert broken.lookups == 6  # 3回 × 2試行。復旧後の2回は照合に行かない
+    assert broken.lookups == 2  # 最初の1回（2試行）だけ。承認は使い切りで、後の実行は照合に行かない
 
 
 async def test_lookup_error_after_bytes_were_sent_stays_a_hold_and_opens_no_session(
@@ -328,3 +332,67 @@ async def test_round_one_never_looks_up(h: Harness) -> None:
     flaky = AlwaysFailingLookup(h.fake, RuntimeError("must not be called"))
     await h.upload(h.acts(flaky))
     assert flaky.lookups == 0 and h.fake.videos_created == 1
+
+
+# ---------------------------------------------- 承認は照合の試行で使い切る（レビュー MAJOR）
+
+
+async def _reconciled_by_of_round_one(h: Harness) -> str | None:
+    rows = await h.reservations()
+    return sorted(rows, key=lambda r: r.round)[0].reconciled_by
+
+
+async def _approve_again(h: Harness) -> None:
+    (row, *_) = sorted(await h.reservations(), key=lambda r: r.round)
+    async with h.factory() as s:
+        # 新しい明示承認＝運用者が予約の reconciled_by を承認値へ書く（runbook の手順 2 と同じ）
+        await s.execute(
+            update(ProviderReservationRow)
+            .where(ProviderReservationRow.id == uuid.UUID(str(row.id)))
+            .values(reconciled_by=OPERATOR_REUPLOAD_APPROVED)
+        )
+        await s.commit()
+
+
+async def test_a_lookup_error_consumes_the_approval_so_a_plain_resume_never_inserts(
+    h: Harness,
+) -> None:
+    await _approved_round_two_pending(h)
+    base = h.fake.videos_created
+    broken = AlwaysFailingLookup(h.fake, YouTubeTransientError("down"))
+
+    err = await _error(h.upload(h.acts(broken)))  # run 1: UNKNOWN
+    assert err.type == "UploadOutcomeUnknownError" and "fresh" in str(err)
+    assert await _reconciled_by_of_round_one(h) != OPERATOR_REUPLOAD_APPROVED
+
+    err2 = await _error(h.upload(h.acts()))  # run 2: 照合は NOT_FOUND になるが、承認は使い切り
+    assert err2.type == "UploadOutcomeUnknownError" and err2.non_retryable
+    assert OPERATOR_REUPLOAD_APPROVED in str(err2) and "fresh" in str(err2)
+    assert h.fake.videos_created == base
+    assert [(r.round, r.status) for r in await h.reservations()] == [
+        (1, ReservationStatus.ABANDONED)
+    ]
+
+    await _approve_again(h)  # 新しい明示承認
+    await h.upload(h.acts())  # run 3
+    assert h.fake.videos_created == base + 1
+
+
+async def test_a_crash_during_the_lookup_still_leaves_the_approval_consumed(h: Harness) -> None:
+    await _approved_round_two_pending(h)
+    base = h.fake.videos_created
+    with pytest.raises(asyncio.CancelledError):
+        await h.upload(h.acts(AlwaysFailingLookup(h.fake, asyncio.CancelledError())))
+    err = await _error(h.upload(h.acts()))
+    assert err.type == "UploadOutcomeUnknownError"
+    assert h.fake.videos_created == base
+
+
+async def test_the_approval_is_consumed_before_the_lookup_so_two_attempts_cannot_both_use_it(
+    h: Harness,
+) -> None:
+    await _approved_round_two_pending(h)
+    base = h.fake.videos_created
+    results = await asyncio.gather(h.upload(h.acts()), h.upload(h.acts()), return_exceptions=True)
+    assert h.fake.videos_created == base + 1
+    assert sum(1 for r in results if isinstance(r, BaseException)) <= 1

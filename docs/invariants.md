@@ -1044,7 +1044,11 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 照合の結果は `MarkerLookupState`（`contracts/upload.py`）の `FOUND` / `NOT_FOUND` / `UNKNOWN`。`NOT_FOUND` は最後の
 ページまで読み切って無かったときだけ。API 例外・timeout・quota・auth・応答の形の崩れ・ページ上限の打ち切り・
 設定回数のうち1回でも失敗があれば `UNKNOWN`。`_reserve` は UNKNOWN で新しいラウンドの予約を作らず
-`UploadOutcomeUnknownError`（既存の `needs_input`）を送出する。FOUND は投稿せずその video id を採用し、
+`UploadOutcomeUnknownError`（既存の `needs_input`）を送出する。bytes 送信後の再投稿の承認
+（`reconciled_by = operator_reupload_approved`）は照合を試みた時点で `reupload_approval_consumed` に書き換えて
+使い切り（照合の前に commit。CAS）、次の実行は運用者の新しい明示承認が無い限り投稿しない（一般的な再開は
+新しい投稿の許可ではない）。照合・採用の前に投稿先チャンネルを確かめ、FOUND の動画は自チャンネルの private
+でなければ採用も投稿もしない。FOUND は投稿せずその video id を採用し、
 NOT_FOUND のときだけ1回投稿する。同じ Activity を何度再実行しても動画は1本以下。
 **機械検査**: `tests/unit/test_upload_marker_lookup.py::test_lookup_error_before_round_two_never_inserts`
 / `tests/unit/test_upload_marker_lookup.py::test_malformed_or_partial_lookup_before_round_two_never_inserts`
@@ -1052,6 +1056,9 @@ NOT_FOUND のときだけ1回投稿する。同じ Activity を何度再実行�
 / `tests/unit/test_upload_marker_lookup.py::test_empty_search_success_inserts_exactly_once`
 / `tests/unit/test_upload_marker_lookup.py::test_found_adopts_the_video_without_any_insert`
 / `tests/unit/test_upload_marker_lookup.py::test_repeated_executions_after_an_unknown_make_at_most_one_video`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_lookup_error_consumes_the_approval_so_a_plain_resume_never_inserts`
+/ `tests/unit/test_upload_marker_lookup.py::test_a_crash_during_the_lookup_still_leaves_the_approval_consumed`
+/ `tests/unit/test_upload_marker_lookup.py::test_the_approval_is_consumed_before_the_lookup_so_two_attempts_cannot_both_use_it`
 / `tests/unit/test_upload_marker_lookup.py::test_adapter_page_limit_with_more_pages_is_unknown_not_not_found`
 / `tests/unit/test_upload_marker_lookup.py::test_adapter_malformed_playlist_page_is_unknown`
 

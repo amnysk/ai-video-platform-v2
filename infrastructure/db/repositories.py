@@ -1401,6 +1401,28 @@ class ProviderReservationRepository:
         await self._session.flush()
         return _to_reservation(row)
 
+    async def consume_reconciled_by(
+        self, reservation_id: uuid.UUID | str, *, expected: str, replacement: str
+    ) -> bool:
+        """``abandoned`` の予約の ``reconciled_by`` を ``expected`` → ``replacement`` へ1回だけ変える（CAS）。
+
+        運用者の承認（再投稿の承認など）を、使った時点で持続的に使い切るための操作。状態・列の
+        形は変えない（``reconciled_by`` は自由文字列）。commit は呼び出し側。変えたのが
+        この呼び出しなら True、既に使い切られた・別の値なら False（並行する試行が先に使った）。
+        """
+        table = ProviderReservationRow
+        result = await self._session.execute(
+            update(table)
+            .where(
+                table.id == _as_uuid(reservation_id),
+                table.status == ReservationStatus.ABANDONED.value,
+                table.reconciled_by == expected,
+            )
+            .values(reconciled_by=replacement)
+            .execution_options(synchronize_session=False)
+        )
+        return getattr(result, "rowcount", 0) == 1
+
     async def attach_artifact(
         self, reservation_id: uuid.UUID | str, artifact_id: uuid.UUID | str
     ) -> ProviderReservation:

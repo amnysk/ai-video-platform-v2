@@ -56,6 +56,7 @@ from contracts.upload import (
     DEFAULT_UPLOAD_MARKER_LOOKUP_DELAY_SECONDS,
     UPLOAD_ARTIFACT_SCHEMA_VERSION,
     UPLOAD_CONTENT_TYPE,
+    UPLOAD_PRIVACY_STATUS,
     MarkerLookup,
     MarkerLookupState,
     YouTubeVideoMetadata,
@@ -155,6 +156,9 @@ DEFAULT_RESERVATION_CHECK_EVERY_CHUNKS = 8
 #: dispatch 済みで結果不明の予約を運用者が放棄し、**再投稿も承認した**ときの ``reconciled_by``。
 #: ただの放棄（``operator:<name>``）では次のラウンドを開かない（docs/operations/upload-worker.md）
 OPERATOR_REUPLOAD_APPROVED = "operator_reupload_approved"
+#: 再投稿の承認を、照合を試みた時点で使い切った印（``reconciled_by`` は自由文字列で CHECK 無し）。
+#: これは承認ではない。次の再投稿には運用者の新しい明示承認が要る（ADR-0075）
+OPERATOR_REUPLOAD_APPROVAL_CONSUMED = "reupload_approval_consumed"
 _RETRY_IN_ACTIVITY = (YouTubeTransientError, YouTubeRateLimitError)
 
 HeartbeatFn = Callable[..., None]
@@ -566,16 +570,30 @@ class UploadActivities:
                 return latest
             found: str | None = None
             if latest is not None:
-                if (
-                    latest.dispatched_at is not None
-                    and not latest.provider_result_ref
-                    and latest.reconciled_by != OPERATOR_REUPLOAD_APPROVED
-                ):
+                sent_without_result = latest.dispatched_at is not None and not (
+                    latest.provider_result_ref
+                )
+                if sent_without_result and latest.reconciled_by != OPERATOR_REUPLOAD_APPROVED:
                     raise UploadOutcomeUnknownError(
                         f"upload reservation {latest.id} was abandoned after bytes were sent; "
-                        f"a new upload needs reconciled_by='{OPERATOR_REUPLOAD_APPROVED}' "
-                        "(docs/operations/upload-worker.md)"
+                        f"a new upload needs a fresh reconciled_by='{OPERATOR_REUPLOAD_APPROVED}' "
+                        "approval (an approval is used up by one lookup attempt; "
+                        "docs/operations/upload-worker.md)"
                     )
+                # 投稿先のチャンネルを、照合・採用の前に確かめる（別チャンネルの動画を採用しない）
+                await self._verify_channel()
+                if sent_without_result:
+                    # 承認は照合を試みた時点で使い切る（INV-109）。UNKNOWN でも途中で落ちても、
+                    # 次の実行は新しい明示承認が無い限り投稿しない。並行する試行は片方だけが使える
+                    async with self._session_factory() as session:
+                        used = await ProviderReservationRepository(session).consume_reconciled_by(
+                            latest.id,
+                            expected=OPERATOR_REUPLOAD_APPROVED,
+                            replacement=OPERATOR_REUPLOAD_APPROVAL_CONSUMED,
+                        )
+                        await session.commit()
+                    if not used:
+                        continue  # 並行する試行が先に使った。読み直す
                 # 承認があっても、まずマーカーで既存の動画を探す（見つかれば投稿しない）
                 lookup = await self._lookup_marker(upload_marker(upload_key))
                 if lookup.state is MarkerLookupState.UNKNOWN:
@@ -584,9 +602,12 @@ class UploadActivities:
                     raise UploadOutcomeUnknownError(
                         f"could not confirm whether upload {upload_marker(upload_key)} already "
                         f"exists on the channel (lookup unknown: {lookup.reason}); no new upload "
-                        "round was opened. Check the channel, then rerun "
-                        "(docs/operations/upload-worker.md, ADR-0075)"
+                        "round was opened and the re-upload approval is used up. Check the "
+                        f"channel, then give a fresh reconciled_by='{OPERATOR_REUPLOAD_APPROVED}' "
+                        "approval before rerunning (docs/operations/upload-worker.md, ADR-0075)"
                     )
+                if lookup.video_id is not None:
+                    await self._require_private_own_video(lookup.video_id)
                 found = lookup.video_id
             ledger_round = 1 if latest is None else latest.round + 1
             async with self._session_factory() as session:
@@ -902,6 +923,36 @@ class UploadActivities:
             if result.state is MarkerLookupState.UNKNOWN:
                 unknown = result
         return unknown if unknown is not None else MarkerLookup.not_found()
+
+    async def _require_private_own_video(self, video_id: str) -> None:
+        """照合で見つけた動画を採用する前に、自チャンネルの private かを読み取りで確かめる。
+
+        そうでない・確かめられないときは採用も投稿もせず ``needs_input``。動画は変更しない。
+        """
+        try:
+            state = await self._beating("adopt_check", self._uploader.processing_status(video_id))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise UploadOutcomeUnknownError(
+                "a video with the upload marker was found but its visibility could not be "
+                f"checked ({type(exc).__name__}); it was not adopted and nothing was uploaded. "
+                f"Check the channel, then give a fresh '{OPERATOR_REUPLOAD_APPROVED}' approval"
+            ) from None
+        if not state.found:
+            raise UploadOutcomeUnknownError(
+                "a video with the upload marker was found but cannot be read back; it was not "
+                f"adopted and nothing was uploaded. Give a fresh '{OPERATOR_REUPLOAD_APPROVED}' "
+                "approval after checking the channel"
+            )
+        if state.privacy_status != UPLOAD_PRIVACY_STATUS or (
+            state.channel_id is not None and state.channel_id != self._channel_id
+        ):
+            raise UploadProcessingFailedError(
+                "a video with the upload marker exists but it is not a private video of the "
+                "expected channel; it was not adopted, nothing was uploaded and it was not "
+                "changed. A person must check the channel (docs/operations/upload-worker.md)"
+            )
 
     async def _reconcile_by_marker(self, marker: str) -> _Outcome:
         """失効した dispatch 済み session の結果を uploads playlist のマーカーで確かめる。"""
@@ -1375,6 +1426,7 @@ __all__ = [
     "ADMISSIBLE_STATUSES",
     "ADMIT_EVENTS",
     "MAX_LEDGER_STEPS",
+    "OPERATOR_REUPLOAD_APPROVAL_CONSUMED",
     "OPERATOR_REUPLOAD_APPROVED",
     "ScrubbedError",
     "sanitize_error",

@@ -147,7 +147,11 @@ WHERE id = '<reservation_id>' AND status = 'reserved' AND provider_result_ref IS
 応答の崩れ・ページ上限の打ち切りで「確かめられなかった」場合、upload は新しいラウンドを作らず
 `UploadOutcomeUnknownError`（`needs_input`、メッセージに `lookup unknown: <理由>` と `no new upload round was opened`）
 で止まる。予約は abandoned のまま（動画も増えない）。チャンネルを人が確認し（その動画が既にあるか）、
-API が復旧してから POST で再開する。「見つからなかった」と同じ扱いにはならない。
+API が復旧してから、**手順 2 の承認 UPDATE を新しく書き直して**から POST で再開する。照合を試みた時点で承認は
+`reconciled_by = 'reupload_approval_consumed'` に使い切られているので、書き直さずに再開しても upload は
+`needs_input`（「fresh approval が要る」）で止まり、投稿しない（一般的な再開は新しい投稿の許可ではない）。
+UPDATE の条件は `status = 'abandoned' AND reconciled_by = 'reupload_approval_consumed'` に読み替える。
+「見つからなかった」と同じ扱いにはならない。
 
 `dispatched_at` が NULL の予約（bytes を1つも送っていない）は、ただの放棄でも次のラウンドへ進める
 （その場合も round 2 はまずマーカー照合をする）。
