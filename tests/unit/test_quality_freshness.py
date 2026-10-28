@@ -206,15 +206,16 @@ def test_staleness_beats_a_pass_verdict_but_not_a_block() -> None:
 
 
 def test_a_hash_with_a_trailing_newline_is_refused_even_when_both_sides_match() -> None:
-    # 独立レビュー（F, MINOR）: ``re.match`` の ``$`` は末尾の改行を許す。呼び出し側が同じ不正値を渡すと
-    # 一致してしまうので、形式そのものを拒否する（fail closed）。
+    # 独立レビュー（F, MINOR）: ``re.match`` の ``$`` は末尾の改行を許す。
+    # 呼び出し側が同じ不正値を渡すと一致してしまうので、形式そのものを拒否する（fail closed）。
     bad = SHA + "\n"
     decision = _decide(_report(final_video_sha256=bad), current_final_video_sha256=bad)
     assert decision.allowed is False
 
 
 def test_an_unbounded_rule_version_is_refused_even_when_both_sides_match() -> None:
-    # 独立レビュー（F, MINOR）: rule_version は識別子であり、長さ上限（SAFE_ID_PATTERN）を超えたら拒否する。
+    # 独立レビュー（F, MINOR）: rule_version は識別子であり、
+    # 長さ上限（SAFE_ID_PATTERN）を超えたら拒否する。
     huge = "r" * 1_000_000
     decision = _decide(_report(rule_version=huge), current_rule_version=huge)
     assert decision.allowed is False
