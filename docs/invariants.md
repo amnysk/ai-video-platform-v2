@@ -1036,3 +1036,30 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 `evaluate_for_upload` の拒否理由を `UploadGateResult.reason` に載せる。**現行の `upload_gate` は品質レポートを
 見ない**（本ブランチは Activity / workflow を変更しない。ADR-0073 §6）。保存先・遷移表の変更は別 ADR で先に承認する。
 **機械検査**: 未検査（配線の承認・実装まで。INV-101 の純粋な判定だけが検査済み）
+
+## AE. BGM の Render 結線（ADR-0077。設定キー `bgm_enabled`、既定 OFF）
+
+番号 INV-105〜112 は他の枝の予約。この節は INV-113〜116。
+
+### INV-113 BGM が OFF（設定が無効、または cue sheet が無い）のとき、描画の同一性と ffmpeg コマンドは BGM 導入前と同一
+`render_input_hash` は `bgm=None` のとき BGM のキーを入れず、`build_filtergraph` / `build_argv` は BGM 引数が無いとき
+導入前と同じ文字列・argv を返す。期待値は導入前のコミット（6d14c30）で実測した固定値。
+BGM を混ぜるときだけ、混合計画（cue ごとの音源 sha・証拠 hash・時刻・フェード・上限適用後の dB・ducking・混合の版）が
+input_hash に入り、そのどれを変えても hash が変わる。production の入力 hash には BGM が入らない（INV-116）。
+**機械検査**: `tests/unit/test_bgm_off_golden.py::test_input_hash_without_bgm_equals_the_pre_bgm_value`
+/ `tests/unit/test_bgm_off_golden.py::test_filtergraph_without_bgm_equals_the_pre_bgm_value`
+/ `tests/unit/test_bgm_off_golden.py::test_argv_without_bgm_equals_the_pre_bgm_value`
+/ `tests/unit/test_bgm_resolve.py::test_no_cue_sheet_means_not_applied_and_identity_is_the_pre_bgm_hash`
+/ `tests/unit/test_bgm_resolve.py::test_a_usable_cue_sheet_changes_the_input_hash_and_each_mix_field_moves_it`
+
+### INV-114 ライセンスの事実を満たさない曲は鳴らない。1 つでも満たさなければ BGM 全体を使わず、理由を返す
+cue sheet が指す曲は、描画のたびに `now` で選曲と同じ検査（`reject_reasons`）と `credits_for` を通る。未承認・失効・取消・
+隔離・再利用/商用/改変不可・形式（Shorts 等）不可・期限切れ・カタログに無い・実ファイルの sha256 が違う/読めない・
+証拠 hash 不一致・帰属文不一致・cue が時間軸外/未知の scene は、他に曲が無くても使われず、BGM 無しで描画が続く
+（拒否で止めない。ADR-0077 §3）。`now` が naive なら例外（黙って通さない）。
+**機械検査**: `tests/unit/test_bgm_resolve.py::test_a_track_that_fails_any_license_fact_is_never_used_even_if_it_is_the_only_one`
+/ `tests/unit/test_bgm_resolve.py::test_a_track_expiring_after_the_cue_sheet_was_made_is_rejected_at_render_time`
+/ `tests/unit/test_bgm_resolve.py::test_a_shorts_only_restriction_follows_the_profile_format`
+/ `tests/unit/test_bgm_resolve.py::test_unknown_track_altered_or_missing_file_and_stale_evidence_are_not_used`
+/ `tests/unit/test_bgm_resolve.py::test_one_bad_cue_drops_all_of_bgm`
+/ `tests/unit/test_bgm_resolve.py::test_naive_now_is_refused`
