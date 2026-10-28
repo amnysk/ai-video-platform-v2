@@ -1036,3 +1036,21 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 `evaluate_for_upload` の拒否理由を `UploadGateResult.reason` に載せる。**現行の `upload_gate` は品質レポートを
 見ない**（本ブランチは Activity / workflow を変更しない。ADR-0073 §6）。保存先・遷移表の変更は別 ADR で先に承認する。
 **機械検査**: 未検査（配線の承認・実装まで。INV-101 の純粋な判定だけが検査済み）
+
+## AC. 歴史地図の正確さと描画（ADR-0078。INV-117〜120 は本枝の予約。純関数と描画部品のみ・未接続）
+
+### INV-117 歴史地図の誤り（位置・時代・国境・根拠の欠落）は理由コード付きの BLOCK になり、緩む経路が無い
+`domain.geo.map_accuracy.check_map_accuracy` は Wave 1 の検証結果を `MapAccuracyResult`
+（verdict + `MapReasonCode` + 対象 id + claim / source の参照。**自由文なし**）に写す。位置のずれ・軸順の取り違え、
+歴史地図でのアナクロな地点・名前・ラベル、現代国境、根拠（claim / 取得済み資料）に結びつかない地点は BLOCK。
+同名異所・参照なし・時間基準不明は REVIEW のまま（自動で 1 つに決めない）。verdict は finding の最悪値と
+一致しなければ作れず、`escalate` は REVIEW → BLOCK の一方向。
+**機械検査**: `tests/unit/test_geo_map_accuracy.py::test_misplaced_coordinates_are_blocked_with_the_place_as_target`
+/ `tests/unit/test_geo_map_accuracy.py::test_an_anachronistic_place_name_on_a_historical_map_is_blocked`
+/ `tests/unit/test_geo_map_accuracy.py::test_modern_borders_on_a_historical_map_are_blocked`
+/ `tests/unit/test_geo_map_accuracy.py::test_a_place_whose_claim_does_not_resolve_is_blocked_as_missing_evidence`
+/ `tests/unit/test_geo_map_accuracy.py::test_a_place_whose_source_was_not_fetched_is_blocked_as_missing_evidence`
+/ `tests/unit/test_geo_map_accuracy.py::test_a_homonym_stays_a_review_and_is_never_auto_picked`
+/ `tests/unit/test_geo_map_accuracy.py::test_the_result_verdict_cannot_be_milder_than_its_worst_finding`
+/ `tests/unit/test_geo_map_accuracy.py::test_escalation_never_relaxes_any_verdict`
+（QualityGate が呼ぶ配線は未実装。呼び出し側が `evidence_sources` を渡さないと資料の解決は検査されない）
