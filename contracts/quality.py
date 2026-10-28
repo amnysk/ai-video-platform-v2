@@ -17,6 +17,8 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
+from contracts.artifact_refs import SCRIPT_SCENE_ID_PATTERN
+from contracts.untrusted import is_safe_detail, is_safe_id
 from contracts.verdict import VERDICT_SEVERITY as VERDICT_SEVERITY  # 再エクスポート（互換）
 from contracts.verdict import Verdict
 
@@ -27,6 +29,7 @@ QUALITY_REPORT_SCHEMA_VERSION = 1
 CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SCENE_ID = re.compile(SCRIPT_SCENE_ID_PATTERN)
 
 
 #: 品質判定。判定語彙と重さの順は ``contracts.verdict`` が唯一の定義（INV-105。別名）。
@@ -100,8 +103,17 @@ class QualityCheck:
     detail: str
     deterministic: bool
     scene_id: str | None = None
+    #: 証拠への参照（id / hash。``SAFE_ID_PATTERN``）。入力の文字列は持たない（INV-106）
+    evidence_ref: str | None = None
 
     def __post_init__(self) -> None:
+        # 信頼できない文字列を結果に残さない（INV-106）: detail は印字可能な ASCII の固定文だけ
+        if not is_safe_detail(self.detail):
+            raise ValueError("detail must be printable ascii without control characters")
+        if self.scene_id is not None and not _SCENE_ID.fullmatch(self.scene_id):
+            raise ValueError("scene_id must match the scene id pattern")
+        if self.evidence_ref is not None and not is_safe_id(self.evidence_ref):
+            raise ValueError("evidence_ref must match the safe id pattern")
         # PASS ⇔ OK。不合格なのに理由が無い（または合格なのに理由がある）検査は作れない
         if (self.verdict is QualityVerdict.PASS) != (self.reason_code is QualityReason.OK):
             raise ValueError("a check is PASS if and only if its reason_code is OK")
@@ -113,8 +125,24 @@ class QualityCheck:
             "reason_code": self.reason_code.value,
             "detail": self.detail,
             "scene_id": self.scene_id,
+            "evidence_ref": self.evidence_ref,
             "deterministic": self.deterministic,
         }
+
+    def log_fields(self) -> dict[str, object]:
+        """既存の構造化ログのフィールド名（``contracts.log_contract.LOG_FIELDS``）に載せる形。"""
+        fields: dict[str, object] = {
+            "outcome": self.verdict.value,
+            "error_code": self.reason_code.value,
+            "attributes": {
+                "gate": self.gate.value,
+                "deterministic": self.deterministic,
+                **({"evidence_ref": self.evidence_ref} if self.evidence_ref else {}),
+            },
+        }
+        if self.scene_id is not None:
+            fields["scene_id"] = self.scene_id
+        return fields
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +230,9 @@ def _parse_check(raw: object) -> QualityCheck:
     detail = raw.get("detail", "")
     if not isinstance(detail, str):
         raise _unparsable("check.detail must be a string")
+    evidence_ref = raw.get("evidence_ref")
+    if evidence_ref is not None and not isinstance(evidence_ref, str):
+        raise _unparsable("check.evidence_ref must be a string or null")
     verdict = _verdict(raw.get("verdict"), "check.verdict")
     try:
         return QualityCheck(
@@ -211,6 +242,7 @@ def _parse_check(raw: object) -> QualityCheck:
             detail=detail,
             deterministic=deterministic,
             scene_id=scene_id,
+            evidence_ref=evidence_ref,
         )
     except ValueError as err:
         if isinstance(err, QualityReportError):
@@ -306,6 +338,7 @@ def _validate_check(check: object) -> None:
         or not isinstance(check.deterministic, bool)
         or not isinstance(check.detail, str)
         or not (check.scene_id is None or isinstance(check.scene_id, str))
+        or not (check.evidence_ref is None or isinstance(check.evidence_ref, str))
     ):
         raise _unparsable("check has a field of the wrong type")
     if not isinstance(check.verdict, QualityVerdict):

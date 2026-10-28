@@ -6,7 +6,7 @@ critic の結論は**等しいか厳しい側にしか**動かせない。決定
 
 from __future__ import annotations
 
-from contracts.geo import GeoCheck, GeoVerdict, GeoVerification, stricter
+from contracts.geo import GeoCheck, GeoReason, GeoVerdict, GeoVerification, stricter
 
 CRITIC_CHECK_NAME = "critic"
 
@@ -17,6 +17,7 @@ def combine_verdicts(deterministic: GeoVerification, critic: GeoVerdict) -> GeoV
     check = GeoCheck(
         name=CRITIC_CHECK_NAME,
         outcome=critic,
+        reason=GeoReason.OK if critic is GeoVerdict.PASS else GeoReason.CRITIC_CONCERN,
         detail="critic verdict (advisory: it can only match or tighten the deterministic verdict)",
     )
     return GeoVerification(

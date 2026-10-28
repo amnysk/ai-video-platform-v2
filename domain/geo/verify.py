@@ -15,7 +15,10 @@ from contracts.geo import (
     BorderBasis,
     GeoCheck,
     GeoManifest,
+    GeoMeasure,
+    GeoMeasureKey,
     GeoPlace,
+    GeoReason,
     GeoVerdict,
     GeoVerification,
     MapKind,
@@ -30,6 +33,7 @@ from contracts.research_evidence import (
     EvidenceSource,
     SourceFetchStatus,
 )
+from contracts.untrusted import untrusted_ref
 from domain.geo.tolerance import (
     BASE_TOLERANCE_KM,
     BLOCK_FACTOR,
@@ -99,8 +103,32 @@ def parse_as_of_year(as_of: str) -> int | None:
     return year
 
 
-def _check(name: str, outcome: GeoVerdict, detail: str) -> GeoCheck:
-    return GeoCheck(name=name, outcome=outcome, detail=detail[:500])
+def _m(key: GeoMeasureKey, value: float) -> GeoMeasure:
+    return GeoMeasure(key=key, value=float(value))
+
+
+def _check(
+    name: str,
+    outcome: GeoVerdict,
+    reason: GeoReason,
+    detail: str,
+    *,
+    target: str | None = None,
+    evidence: str | None = None,
+    value_ref: str | None = None,
+    measures: tuple[GeoMeasure, ...] = (),
+) -> GeoCheck:
+    """検査結果。``detail`` は固定の説明で、入力の文字列を入れない（INV-106）。"""
+    return GeoCheck(
+        name=name,
+        outcome=outcome,
+        reason=reason,
+        detail=detail,
+        target_id=target,
+        evidence_ref=evidence,
+        value_ref=value_ref,
+        measures=measures,
+    )
 
 
 def _finish(checks: list[GeoCheck]) -> GeoVerification:
@@ -169,13 +197,34 @@ def verify_manifest(
         year = parse_as_of_year(manifest.as_of)
         if year is None:
             checks.append(
-                _check("as_of", GeoVerdict.REVIEW, f"time basis {manifest.as_of!r} is unknown")
+                _check(
+                    "as_of",
+                    GeoVerdict.REVIEW,
+                    GeoReason.AS_OF_UNKNOWN,
+                    "time basis is unknown",
+                    value_ref=untrusted_ref(manifest.as_of),
+                )
             )
         else:
-            checks.append(_check("as_of", GeoVerdict.PASS, f"year {year}"))
+            checks.append(
+                _check(
+                    "as_of",
+                    GeoVerdict.PASS,
+                    GeoReason.OK,
+                    "time basis resolved",
+                    measures=(_m(GeoMeasureKey.YEAR, year),),
+                )
+            )
         checks.append(_borders(manifest, year))
         if not manifest.places:
-            checks.append(_check("places", GeoVerdict.REVIEW, "a real map has no places to verify"))
+            checks.append(
+                _check(
+                    "places",
+                    GeoVerdict.REVIEW,
+                    GeoReason.NO_PLACES,
+                    "a real map has no places to verify",
+                )
+            )
 
     claims, duplicates = _index_claims(evidence_claims)
     if duplicates:
@@ -183,7 +232,10 @@ def verify_manifest(
             _check(
                 "claims.duplicate",
                 GeoVerdict.REVIEW,
-                f"claim_id appears with different assessments: {', '.join(duplicates)}",
+                GeoReason.CLAIM_AMBIGUOUS,
+                "claim_id appears with different assessments",
+                evidence=duplicates[0],
+                measures=(_m(GeoMeasureKey.CANDIDATE_COUNT, len(duplicates)),),
             )
         )
     sources = None if evidence_sources is None else {s.source_id: s for s in evidence_sources}
@@ -212,14 +264,24 @@ def verify_scene(
     if manifest is None:
         if claims_real_location:
             return _finish(
-                [_check("manifest_required", GeoVerdict.BLOCK, "real-location map has no manifest")]
+                [
+                    _check(
+                        "manifest_required",
+                        GeoVerdict.BLOCK,
+                        GeoReason.MANIFEST_REQUIRED,
+                        "real-location map has no manifest",
+                    )
+                ]
             )
-        return _finish([_check("no_real_location_claim", GeoVerdict.PASS, "no map to verify")])
+        return _finish(
+            [_check("no_real_location_claim", GeoVerdict.PASS, GeoReason.OK, "no map to verify")]
+        )
     result = verify_manifest(manifest, reference_places, evidence_claims, evidence_sources)
     if claims_real_location and manifest.map_kind is MapKind.SCHEMATIC:
         extra = _check(
             "schematic_claims_real_location",
             GeoVerdict.BLOCK,
+            GeoReason.SCHEMATIC_CLAIMS_REAL_LOCATION,
             "a schematic map cannot be presented as a real location",
         )
         return _finish([*result.checks, extra])
@@ -228,10 +290,11 @@ def verify_scene(
 
 def _schematic_disclaimer(manifest: GeoManifest) -> GeoCheck:
     if schematic_disclaimer_ok(manifest.schematic_disclaimer):
-        return _check("schematic_disclaimer", GeoVerdict.PASS, "disclaimer present")
+        return _check("schematic_disclaimer", GeoVerdict.PASS, GeoReason.OK, "disclaimer present")
     return _check(
         "schematic_disclaimer",
         GeoVerdict.BLOCK,
+        GeoReason.SCHEMATIC_DISCLAIMER_MISSING,
         "a schematic map needs a visible 'Not to scale' disclaimer that does not claim accuracy",
     )
 
@@ -242,6 +305,7 @@ def _borders(manifest: GeoManifest, year: int | None) -> GeoCheck:
         return _check(
             "borders",
             GeoVerdict.REVIEW,
+            GeoReason.BORDER_MODERN_ON_HISTORICAL,
             "modern borders on a historical map without historical data",
         )
     border_year = manifest.border_valid_year
@@ -254,16 +318,21 @@ def _borders(manifest: GeoManifest, year: int | None) -> GeoCheck:
         return _check(
             "borders",
             GeoVerdict.REVIEW,
-            f"border data of {border_year} does not match as_of {year}",
+            GeoReason.BORDER_YEAR_MISMATCH,
+            "border data year does not match the time basis",
+            measures=(_m(GeoMeasureKey.BORDER_YEAR, border_year), _m(GeoMeasureKey.YEAR, year)),
         )
     if manifest.borders is BorderBasis.NONE:
         for text in manifest.spatial_assertions:
             folded = normalize_claim_text(text)
             if any(word in folded for word in BORDER_KEYWORDS):
                 return _check(
-                    "borders", GeoVerdict.REVIEW, "a border assertion has no border data basis"
+                    "borders",
+                    GeoVerdict.REVIEW,
+                    GeoReason.BORDER_ASSERTION_UNSUPPORTED,
+                    "a border assertion has no border data basis",
                 )
-    return _check("borders", GeoVerdict.PASS, f"borders: {manifest.borders.value}")
+    return _check("borders", GeoVerdict.PASS, GeoReason.OK, f"borders: {manifest.borders.value}")
 
 
 # ------------------------------------------------------------------ 地点
@@ -284,19 +353,37 @@ def _place_checks(
 
     if not candidates:
         out.append(
-            _check(f"{pid}.reference", GeoVerdict.REVIEW, "no reference place; unverifiable")
+            _check(
+                f"{pid}.reference",
+                GeoVerdict.REVIEW,
+                GeoReason.REFERENCE_MISSING,
+                "no reference place; unverifiable",
+                target=pid,
+            )
         )
     elif ref is None:
-        ids = ", ".join(r.ref_id for r in candidates)
         out.append(
             _check(
                 f"{pid}.reference",
                 GeoVerdict.REVIEW,
-                f"homonym: {len(candidates)} reference candidates ({ids}); not auto-picked",
+                GeoReason.REFERENCE_HOMONYM,
+                "homonym: several reference candidates; not auto-picked",
+                target=pid,
+                evidence=candidates[0].ref_id,
+                measures=(_m(GeoMeasureKey.CANDIDATE_COUNT, len(candidates)),),
             )
         )
     else:
-        out.append(_check(f"{pid}.reference", GeoVerdict.PASS, f"resolved to {ref.ref_id}"))
+        out.append(
+            _check(
+                f"{pid}.reference",
+                GeoVerdict.PASS,
+                GeoReason.OK,
+                "resolved to a reference place",
+                target=pid,
+                evidence=ref.ref_id,
+            )
+        )
 
     out.append(_swap(manifest, place, ref))
     if ref is not None:
@@ -320,10 +407,22 @@ def _uncertainty(place: GeoPlace) -> GeoCheck:
         return _check(
             name,
             GeoVerdict.REVIEW,
-            f"declared uncertainty {declared:g} km exceeds the cap {cap:g} km for "
-            f"{place.feature_type.value}; only the cap counts toward the tolerance",
+            GeoReason.UNCERTAINTY_OVER_CAP,
+            f"declared uncertainty exceeds the cap for {place.feature_type.value}; "
+            "only the cap counts toward the tolerance",
+            target=place.place_id,
+            measures=(
+                _m(GeoMeasureKey.DECLARED_UNCERTAINTY_KM, declared),
+                _m(GeoMeasureKey.UNCERTAINTY_CAP_KM, cap),
+            ),
         )
-    return _check(name, GeoVerdict.PASS, "declared uncertainty is within the cap")
+    return _check(
+        name,
+        GeoVerdict.PASS,
+        GeoReason.OK,
+        "declared uncertainty is within the cap",
+        target=place.place_id,
+    )
 
 
 def _name(
@@ -333,7 +432,16 @@ def _name(
     name = f"{place.place_id}.name"
     wanted = normalize_claim_text(place.display_name)
     if any(normalize_claim_text(n.name) == wanted for n in ref.names):
-        return [_check(name, GeoVerdict.PASS, "display_name is a known name of the reference")]
+        return [
+            _check(
+                name,
+                GeoVerdict.PASS,
+                GeoReason.OK,
+                "display_name is a known name of the reference",
+                target=place.place_id,
+                evidence=ref.ref_id,
+            )
+        ]
     tol = _ref_tolerance(place, ref)
     elsewhere = [
         r
@@ -343,20 +451,27 @@ def _name(
         and haversine_km(r.lat, r.lon, ref.lat, ref.lon) > tol
     ]
     if elsewhere:
-        ids = ", ".join(r.ref_id for r in elsewhere)
         return [
             _check(
                 name,
                 GeoVerdict.BLOCK,
-                f"display_name {place.display_name!r} names another place ({ids}) "
-                f"and not {ref.ref_id}",
+                GeoReason.NAME_BELONGS_ELSEWHERE,
+                "display_name names another place and not the resolved reference",
+                target=place.place_id,
+                evidence=elsewhere[0].ref_id,
+                value_ref=untrusted_ref(place.display_name),
+                measures=(_m(GeoMeasureKey.CANDIDATE_COUNT, len(elsewhere)),),
             )
         ]
     return [
         _check(
             name,
             GeoVerdict.REVIEW,
-            f"display_name {place.display_name!r} is not a known name of {ref.ref_id}",
+            GeoReason.NAME_UNKNOWN_TO_REFERENCE,
+            "display_name is not a known name of the resolved reference",
+            target=place.place_id,
+            evidence=ref.ref_id,
+            value_ref=untrusted_ref(place.display_name),
         )
     ]
 
@@ -367,10 +482,24 @@ def _bounds(manifest: GeoManifest, place: GeoPlace) -> GeoCheck:
         not (-90.0 <= place.lat <= 90.0 and -180.0 <= place.lon <= 180.0)
         or place.crs != "EPSG:4326"
     ):
-        return _check(name, GeoVerdict.BLOCK, "coordinates are outside EPSG:4326 ranges")
+        return _check(
+            name,
+            GeoVerdict.BLOCK,
+            GeoReason.COORDS_OUT_OF_RANGE,
+            "coordinates are outside EPSG:4326 ranges",
+            target=place.place_id,
+        )
     if not manifest.bbox.contains(place.lat, place.lon):
-        return _check(name, GeoVerdict.REVIEW, "point is outside the expected region bbox")
-    return _check(name, GeoVerdict.PASS, "inside the expected region")
+        return _check(
+            name,
+            GeoVerdict.REVIEW,
+            GeoReason.OUTSIDE_REGION,
+            "point is outside the expected region bbox",
+            target=place.place_id,
+        )
+    return _check(
+        name, GeoVerdict.PASS, GeoReason.OK, "inside the expected region", target=place.place_id
+    )
 
 
 def _ref_tolerance(place: GeoPlace, ref: ReferencePlace) -> float:
@@ -386,19 +515,34 @@ def _swap(manifest: GeoManifest, place: GeoPlace, ref: ReferencePlace | None) ->
     """(lat, lon) を入れ替えた点が想定地域・参照位置に合うなら、軸順の取り違え。"""
     name = f"{place.place_id}.swap"
     if abs(place.lon) > 90.0:  # 入れ替えると緯度の範囲外。契約（INV-95）が先に弾く形
-        return _check(name, GeoVerdict.PASS, "swap is not representable")
+        return _check(
+            name, GeoVerdict.PASS, GeoReason.OK, "swap is not representable", target=place.place_id
+        )
     sw_lat, sw_lon = place.lon, place.lat
     if manifest.bbox.contains(sw_lat, sw_lon) and not manifest.bbox.contains(place.lat, place.lon):
-        return _check(name, GeoVerdict.BLOCK, "lat/lon look swapped (fits the region only swapped)")
+        return _check(
+            name,
+            GeoVerdict.BLOCK,
+            GeoReason.AXES_SWAPPED,
+            "lat/lon look swapped (fits the region only swapped)",
+            target=place.place_id,
+        )
     if ref is not None:
         tol = _ref_tolerance(place, ref)
         drawn = haversine_km(place.lat, place.lon, ref.lat, ref.lon)
         swapped = haversine_km(sw_lat, sw_lon, ref.lat, ref.lon)
         if drawn > tol * BLOCK_FACTOR and swapped <= tol:
             return _check(
-                name, GeoVerdict.BLOCK, "lat/lon look swapped (swapped point hits reference)"
+                name,
+                GeoVerdict.BLOCK,
+                GeoReason.AXES_SWAPPED,
+                "lat/lon look swapped (swapped point hits reference)",
+                target=place.place_id,
+                evidence=ref.ref_id,
             )
-    return _check(name, GeoVerdict.PASS, "no sign of swapped axes")
+    return _check(
+        name, GeoVerdict.PASS, GeoReason.OK, "no sign of swapped axes", target=place.place_id
+    )
 
 
 def _distance(place: GeoPlace, ref: ReferencePlace) -> GeoCheck:
@@ -408,8 +552,12 @@ def _distance(place: GeoPlace, ref: ReferencePlace) -> GeoCheck:
     return _check(
         f"{place.place_id}.distance",
         outcome,
-        f"{dist:.1f} km from {ref.ref_id}; tolerance {tol:.1f} km "
-        f"({place.feature_type.value}, {place.location_confidence.value})",
+        GeoReason.OK if outcome is GeoVerdict.PASS else GeoReason.DISTANCE_OVER_TOLERANCE,
+        f"distance from the reference ({place.feature_type.value}, "
+        f"{place.location_confidence.value})",
+        target=place.place_id,
+        evidence=ref.ref_id,
+        measures=(_m(GeoMeasureKey.DISTANCE_KM, dist), _m(GeoMeasureKey.TOLERANCE_KM, tol)),
     )
 
 
@@ -422,13 +570,39 @@ def _valid_time(
     out: list[GeoCheck] = []
     if not _in_period(year, place.valid_start_year, place.valid_end_year):
         outcome = GeoVerdict.BLOCK if manifest.map_kind is MapKind.HISTORICAL else GeoVerdict.REVIEW
-        out.append(_check(name, outcome, f"{year} is outside the place's valid period"))
+        out.append(
+            _check(
+                name,
+                outcome,
+                GeoReason.VALID_TIME_MISMATCH,
+                "the time basis is outside the place's valid period",
+                target=place.place_id,
+                measures=(_m(GeoMeasureKey.YEAR, year),),
+            )
+        )
     elif ref is not None and not _in_period(year, ref.valid_start_year, ref.valid_end_year):
         out.append(
-            _check(name, GeoVerdict.REVIEW, f"{year} is outside the reference's valid period")
+            _check(
+                name,
+                GeoVerdict.REVIEW,
+                GeoReason.VALID_TIME_MISMATCH,
+                "the time basis is outside the reference's valid period",
+                target=place.place_id,
+                evidence=ref.ref_id,
+                measures=(_m(GeoMeasureKey.YEAR, year),),
+            )
         )
     else:
-        out.append(_check(name, GeoVerdict.PASS, f"valid in {year}"))
+        out.append(
+            _check(
+                name,
+                GeoVerdict.PASS,
+                GeoReason.OK,
+                "valid at the time basis",
+                target=place.place_id,
+                measures=(_m(GeoMeasureKey.YEAR, year),),
+            )
+        )
     return out
 
 
@@ -441,10 +615,37 @@ def _name_era(
     if not matching:
         return []  # 名前が参照に無いことは ``.name`` が止める
     if year is None or manifest.map_kind is not MapKind.HISTORICAL:
-        return [_check(name, GeoVerdict.PASS, "name period not applicable")]
+        return [
+            _check(
+                name,
+                GeoVerdict.PASS,
+                GeoReason.OK,
+                "name period not applicable",
+                target=place.place_id,
+            )
+        ]
     if any(_in_period(year, n.start_year, n.end_year) for n in matching):
-        return [_check(name, GeoVerdict.PASS, f"name was in use in {year}")]
-    return [_check(name, GeoVerdict.REVIEW, f"name was not in use in {year} (anachronistic)")]
+        return [
+            _check(
+                name,
+                GeoVerdict.PASS,
+                GeoReason.OK,
+                "name was in use at the time basis",
+                target=place.place_id,
+                measures=(_m(GeoMeasureKey.YEAR, year),),
+            )
+        ]
+    return [
+        _check(
+            name,
+            GeoVerdict.REVIEW,
+            GeoReason.NAME_ANACHRONISTIC,
+            "name was not in use at the time basis (anachronistic)",
+            target=place.place_id,
+            evidence=ref.ref_id,
+            measures=(_m(GeoMeasureKey.YEAR, year),),
+        )
+    ]
 
 
 def _claim(
@@ -453,16 +654,48 @@ def _claim(
     name = f"{place.place_id}.claim"
     claim = claims.get(place.claim_id) if place.claim_id is not None else None
     if claim is None:
-        return [_check(name, GeoVerdict.REVIEW, f"claim {place.claim_id} does not resolve")]
+        return [
+            _check(
+                name,
+                GeoVerdict.REVIEW,
+                GeoReason.CLAIM_UNRESOLVED,
+                "the place's claim does not resolve",
+                target=place.place_id,
+                evidence=place.claim_id,
+            )
+        ]
     if claim.assessment not in RESOLVING_ASSESSMENTS:
         return [
-            _check(name, GeoVerdict.REVIEW, f"claim {claim.claim_id} is {claim.assessment.value}")
+            _check(
+                name,
+                GeoVerdict.REVIEW,
+                GeoReason.CLAIM_NOT_SUPPORTED,
+                f"claim assessment is {claim.assessment.value}",
+                target=place.place_id,
+                evidence=claim.claim_id,
+            )
         ]
     if claim.kind is not ClaimKind.PLACE:
         return [
-            _check(name, GeoVerdict.REVIEW, f"claim {claim.claim_id} is a {claim.kind.value} claim")
+            _check(
+                name,
+                GeoVerdict.REVIEW,
+                GeoReason.CLAIM_WRONG_KIND,
+                f"claim is a {claim.kind.value} claim",
+                target=place.place_id,
+                evidence=claim.claim_id,
+            )
         ]
-    out = [_check(name, GeoVerdict.PASS, f"claim {claim.claim_id} is {claim.assessment.value}")]
+    out = [
+        _check(
+            name,
+            GeoVerdict.PASS,
+            GeoReason.OK,
+            f"claim assessment is {claim.assessment.value}",
+            target=place.place_id,
+            evidence=claim.claim_id,
+        )
+    ]
     names = {normalize_claim_text(place.display_name)}
     if ref is not None:
         names |= {normalize_claim_text(n.name) for n in ref.names}
@@ -472,9 +705,12 @@ def _claim(
         _check(
             f"{place.place_id}.claim_relevance",
             GeoVerdict.PASS if related else GeoVerdict.WARN,
+            GeoReason.OK if related else GeoReason.CLAIM_TEXT_UNRELATED,
             "claim text mentions the place"
             if related
             else "claim text does not mention the place name or its aliases",
+            target=place.place_id,
+            evidence=claim.claim_id,
         )
     )
     return out
@@ -491,9 +727,19 @@ def _sources(place: GeoPlace, sources: dict[str, EvidenceSource]) -> GeoCheck:
         return _check(
             name,
             GeoVerdict.REVIEW,
-            f"sources not resolved to a fetched source: {', '.join(bad) or '(none declared)'}",
+            GeoReason.SOURCES_UNRESOLVED,
+            "sources are not declared or not resolved to a fetched source",
+            target=place.place_id,
+            evidence=bad[0] if bad else None,
+            measures=(_m(GeoMeasureKey.CANDIDATE_COUNT, len(bad)),),
         )
-    return _check(name, GeoVerdict.PASS, "all sources resolve to fetched sources")
+    return _check(
+        name,
+        GeoVerdict.PASS,
+        GeoReason.OK,
+        "all sources resolve to fetched sources",
+        target=place.place_id,
+    )
 
 
 # ------------------------------------------------------------------ ラベル
@@ -508,7 +754,16 @@ def _label_checks(
         name = f"label[{label.place_id}]"
         place = places.get(label.place_id)
         if place is None:
-            out.append(_check(name, GeoVerdict.BLOCK, "label points to an unknown place_id"))
+            out.append(
+                _check(
+                    name,
+                    GeoVerdict.BLOCK,
+                    GeoReason.LABEL_UNKNOWN_PLACE,
+                    "label points to an unknown place_id",
+                    target=label.place_id,
+                    value_ref=untrusted_ref(label.text),
+                )
+            )
             continue
         accepted = {normalize_claim_text(place.display_name)}
         candidates = resolved.get(place.place_id, [])
@@ -522,7 +777,10 @@ def _label_checks(
                 _check(
                     name,
                     GeoVerdict.BLOCK,
-                    f"label {label.text!r} does not match {place.display_name!r}",
+                    GeoReason.LABEL_MISMATCH,
+                    "label does not match the place name",
+                    target=place.place_id,
+                    value_ref=untrusted_ref(label.text),
                 )
             )
     return out
@@ -539,5 +797,11 @@ def _label_era(
     if manifest.map_kind is MapKind.HISTORICAL and year is not None and len(candidates) == 1:
         matching = [n for n in candidates[0].names if normalize_claim_text(n.name) == folded]
         if matching and not any(_in_period(year, n.start_year, n.end_year) for n in matching):
-            return _check(name, GeoVerdict.REVIEW, f"label name was not in use in {year}")
-    return _check(name, GeoVerdict.PASS, "label matches the place name")
+            return _check(
+                name,
+                GeoVerdict.REVIEW,
+                GeoReason.NAME_ANACHRONISTIC,
+                "label name was not in use at the time basis",
+                measures=(_m(GeoMeasureKey.YEAR, year),),
+            )
+    return _check(name, GeoVerdict.PASS, GeoReason.OK, "label matches the place name")

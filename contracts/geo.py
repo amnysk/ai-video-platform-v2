@@ -30,6 +30,13 @@ from pydantic import Field, field_validator, model_validator
 from contracts.artifact_refs import SCRIPT_SCENE_ID_PATTERN, SHA256_HEX_PATTERN, FrozenModel
 from contracts.research import normalize_claim_text
 from contracts.research_evidence import CLAIM_ID_PATTERN, SOURCE_ID_PATTERN
+from contracts.untrusted import (
+    CHECK_NAME_PATTERN,
+    MAX_DETAIL_CHARS,
+    SAFE_ID_PATTERN,
+    UNTRUSTED_REF_PATTERN,
+    is_safe_detail,
+)
 from contracts.verdict import VERDICT_ORDER, Verdict, stricter
 
 GEO_SCHEMA_VERSION = "1.0"
@@ -259,10 +266,112 @@ class ReferencePlace(FrozenModel):
 # ------------------------------------------------------------------ 検証結果
 
 
+class GeoReason(StrEnum):
+    """検査の理由コード（**ここだけで定義**。INV-106）。PASS の検査は ``OK``。"""
+
+    OK = "ok"
+    MANIFEST_REQUIRED = "manifest_required"
+    SCHEMATIC_DISCLAIMER_MISSING = "schematic_disclaimer_missing"
+    SCHEMATIC_CLAIMS_REAL_LOCATION = "schematic_claims_real_location"
+    AS_OF_UNKNOWN = "as_of_unknown"
+    NO_PLACES = "no_places"
+    CLAIM_AMBIGUOUS = "claim_ambiguous"
+    BORDER_MODERN_ON_HISTORICAL = "border_modern_on_historical"
+    BORDER_YEAR_MISMATCH = "border_year_mismatch"
+    BORDER_ASSERTION_UNSUPPORTED = "border_assertion_unsupported"
+    REFERENCE_MISSING = "reference_missing"
+    REFERENCE_HOMONYM = "reference_homonym"
+    UNCERTAINTY_OVER_CAP = "uncertainty_over_cap"
+    NAME_UNKNOWN_TO_REFERENCE = "name_unknown_to_reference"
+    NAME_BELONGS_ELSEWHERE = "name_belongs_elsewhere"
+    COORDS_OUT_OF_RANGE = "coords_out_of_range"
+    OUTSIDE_REGION = "outside_region"
+    AXES_SWAPPED = "axes_swapped"
+    DISTANCE_OVER_TOLERANCE = "distance_over_tolerance"
+    VALID_TIME_MISMATCH = "valid_time_mismatch"
+    NAME_ANACHRONISTIC = "name_anachronistic"
+    CLAIM_UNRESOLVED = "claim_unresolved"
+    CLAIM_NOT_SUPPORTED = "claim_not_supported"
+    CLAIM_WRONG_KIND = "claim_wrong_kind"
+    CLAIM_TEXT_UNRELATED = "claim_text_unrelated"
+    SOURCES_UNRESOLVED = "sources_unresolved"
+    LABEL_UNKNOWN_PLACE = "label_unknown_place"
+    LABEL_MISMATCH = "label_mismatch"
+    CRITIC_CONCERN = "critic_concern"
+
+
+class GeoMeasureKey(StrEnum):
+    """検査した値の種類（数値だけ）。"""
+
+    YEAR = "year"
+    BORDER_YEAR = "border_year"
+    DISTANCE_KM = "distance_km"
+    TOLERANCE_KM = "tolerance_km"
+    DECLARED_UNCERTAINTY_KM = "declared_uncertainty_km"
+    UNCERTAINTY_CAP_KM = "uncertainty_cap_km"
+    CANDIDATE_COUNT = "candidate_count"
+
+
+class GeoMeasure(FrozenModel):
+    """検査した値。キーは enum、値は有限の数値。文字列は持てない。"""
+
+    key: GeoMeasureKey
+    value: float = Field(strict=True, allow_inf_nan=False)
+
+
 class GeoCheck(FrozenModel):
-    name: str = Field(min_length=1, max_length=200)
+    """1 つの検査結果。入力の文字列（地名・ラベル・主張）は持たない（INV-106）。
+
+    OpenSearch へは ``log_fields()`` の既存フィールド（``error_code`` / ``outcome`` / ``scene_id`` /
+    ``attributes``）で辿れる（ADR-0040）。
+    """
+
+    name: str = Field(min_length=1, pattern=CHECK_NAME_PATTERN)
     outcome: GeoVerdict
-    detail: str = Field(max_length=500)
+    #: 固定の説明。印字可能な ASCII のみ（改行・制御文字・非 ASCII なし）。入力の写しは入れない。
+    detail: str = Field(max_length=MAX_DETAIL_CHARS)
+    #: 理由コード。検証器が作る検査は必ず持つ。``None`` は理由を持たない旧来の記録。
+    reason: GeoReason | None = None
+    #: 対象（地点 id など）
+    target_id: str | None = Field(default=None, pattern=SAFE_ID_PATTERN)
+    #: 証拠への参照（claim_id / source_id / ref_id）
+    evidence_ref: str | None = Field(default=None, pattern=SAFE_ID_PATTERN)
+    #: 信頼できない値の参照（``untrusted_ref``: 長さと sha256 先頭だけ）
+    value_ref: str | None = Field(default=None, pattern=UNTRUSTED_REF_PATTERN)
+    measures: Annotated[tuple[GeoMeasure, ...], Field(max_length=8)] = ()
+
+    @field_validator("detail")
+    @classmethod
+    def _detail_is_plain(cls, value: str) -> str:
+        if not is_safe_detail(value):
+            raise ValueError("detail must be printable ascii without control characters")
+        return value
+
+    @model_validator(mode="after")
+    def _pass_iff_ok(self) -> GeoCheck:
+        if self.reason is not None and (self.outcome is GeoVerdict.PASS) != (
+            self.reason is GeoReason.OK
+        ):
+            raise ValueError("a check is PASS if and only if its reason is OK")
+        return self
+
+    def log_fields(self, *, scene_id: str | None = None) -> dict[str, object]:
+        """既存の構造化ログのフィールド名（``contracts.log_contract.LOG_FIELDS``）に載せる形。"""
+        fields: dict[str, object] = {
+            "outcome": self.outcome.value,
+            "attributes": {
+                "check": self.name,
+                **({"target_id": self.target_id} if self.target_id else {}),
+                **({"evidence_ref": self.evidence_ref} if self.evidence_ref else {}),
+                **({"value_ref": self.value_ref} if self.value_ref else {}),
+                **{m.key.value: m.value for m in self.measures},
+            },
+        }
+        if self.reason is not None:
+            fields["error_code"] = self.reason.value
+        if scene_id is not None:
+            fields["scene_id"] = scene_id
+        return fields
 
 
 class GeoVerification(FrozenModel):
@@ -296,7 +405,10 @@ __all__ = [
     "GeoFeatureType",
     "GeoLabel",
     "GeoManifest",
+    "GeoMeasure",
+    "GeoMeasureKey",
     "GeoPlace",
+    "GeoReason",
     "GeoVerdict",
     "GeoVerification",
     "LocationConfidence",

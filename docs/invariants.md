@@ -1048,3 +1048,15 @@ final_video の sha256 または input_hash が**今の**ものと不一致、�
 / `tests/contract/test_verdict_contract.py::test_wire_values_are_unchanged`
 / `tests/contract/test_verdict_contract.py::test_existing_models_serialize_identically`
 
+### INV-106 LLM 由来の文字列（地名・ラベル・主張・自由文）は検査結果・レポート・ログ用フィールドに残らない
+検査結果が運ぶのは理由コード（enum）・対象 id・証拠参照（id / hash）・検査した値（enum キー + 有限数値）・
+信頼できない値の参照（`untrusted_ref`）だけ。`detail` は印字可能 ASCII 500 字以内の固定文で、入力の写しを入れない。
+`GeoCheck.log_fields()` / `QualityCheck.log_fields()` は既存の `LOG_FIELDS`（ADR-0040）の名前だけを使う。（ADR-0074 §2）
+**機械検査**: `tests/unit/test_untrusted_inputs.py::test_hostile_strings_never_appear_in_a_geo_verification`
+/ `tests/unit/test_untrusted_inputs.py::test_hostile_strings_never_appear_in_geo_log_fields`
+/ `tests/unit/test_untrusted_inputs.py::test_every_check_the_verifier_makes_carries_a_reason_code`
+/ `tests/unit/test_untrusted_inputs.py::test_log_fields_use_only_existing_log_contract_fields`
+/ `tests/unit/test_untrusted_inputs.py::test_a_detail_that_could_carry_input_is_refused`
+/ `tests/unit/test_untrusted_inputs.py::test_a_hostile_report_is_rejected_without_echoing_it`
+（配線されたログ発行側・critic が出す文面の写像は未検査 = 未配線）
+

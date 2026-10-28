@@ -38,13 +38,35 @@ Wave 1 の統合後、Phase 2 の下流（MapRender・QualityGate 結線・BGM�
 値・JSON・pydantic の直列化は変わらない。他モジュールが同じ語彙を literal で再定義することは
 `tests/architecture/test_verdict_single_source.py` が禁じる。
 
+### 2. 信頼できない文字列を結果・ログに残さない（INV-106）
+
+監査（Wave 1 の d75cfa3 / 465cfc3 / a8270eb は tool id・例外文・uncertainty/名前の束縛を扱った。残りの穴）:
+
+| 場所 | 穴 | 是正 |
+|---|---|---|
+| `domain/geo/verify.py` の `GeoCheck.detail` | `as_of` / `display_name` / `label.text` を `!r` で写していた（200 字・改行・偽 key をそのまま保存） | 写さない。`value_ref`（`untrusted_ref`: 長さ + sha256 先頭 12 桁）だけ |
+| `GeoCheck` | 理由コード・対象・証拠が構造化されておらず `detail` の文頼み | `reason: GeoReason`・`target_id`・`evidence_ref`・`measures`（enum キー + 有限数値）・`value_ref` を追加。PASS ⇔ OK を強制 |
+| `GeoCheck.name` / `detail` | 文字種の制約なし | `name` は `CHECK_NAME_PATTERN`、`detail` は印字可能 ASCII 500 字以内（改行・制御文字・非 ASCII 不可） |
+| `QualityCheck.detail` | 無制限の自由文（LLM critic の出力がそのまま保存・取り込み可） | 同じ `detail` 規則を `__post_init__` で強制（取り込みは `REPORT_UNPARSABLE`）。値は例外文に写さない |
+| `QualityCheck.scene_id` | 型だけで形式の検査なし | `SCRIPT_SCENE_ID_PATTERN` を強制 |
+| `QualityCheck` | 証拠への参照が無い | `evidence_ref`（`SAFE_ID_PATTERN`）を追加 |
+| OpenSearch での追跡 | 結果をログに載せる写像が無い | `GeoCheck.log_fields()` / `QualityCheck.log_fields()` が既存フィールド（`outcome` / `error_code` / `scene_id` / `attributes`。ADR-0040 の `LOG_FIELDS`）だけで返す。新フィールドは足さない |
+
+語彙は `contracts/untrusted.py` に 1 箇所。`GeoCheck.reason` は互換のため `None` を許す（理由を持たない旧記録）が、
+検証器が作る検査はすべて持つ（テストで強制）。音楽（`domain/music`）の拒否理由は `RejectReason`（enum）で既に構造化。
+`CreditsError` は `track_id` を写すが `BGM_TRACK_ID_PATTERN` で字種は制限済み（**長さの上限が無い点は未対応**。
+BGM 契約の担当で `max_length` を足すこと）。
+
 ## Alternatives
 
 - **`GeoVerdict(Verdict)` のサブクラス**: StrEnum は値を持つと継承できず、別型になって `is` 比較が割れる。却下。
+- **`detail` を自由文のままサニタイズ（赤塗り）する**: 取りこぼしが出る。そもそも入力を写さない設計にする。
 - **別名なしで全 import を書き換える**: 差分が大きく、他枝（未マージ）との衝突を生む。別名で互換を保つ。
 
 ## Consequences
 
 - 判定語彙と順序が 1 箇所になる。下流は `contracts.verdict` を直接 import してよい。
 - `GeoVerdict.__name__` は `Verdict` になる（repr / エラー文の表示だけが変わる）。
+- `GeoCheck.detail` の文面が固定文になり、旧来の「地名入りの説明」は消える（追跡は `target_id` / `value_ref`）。
+- LLM critic が日本語の自由文を `QualityCheck.detail` に入れる配線は、reason code + 固定文へ写像する責務が配線側に生じる。
 - 理由は `docs/testing/verdict-rationale.md`。

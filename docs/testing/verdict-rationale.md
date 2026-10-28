@@ -22,3 +22,21 @@ DB・Temporal・provider・ネットワークには触れない純粋なテス�
 | `test_only_contracts_verdict_defines_the_verdict_set` | 4 値のうち 3 値以上を持つ enum/集合/列/辞書 literal が他にあれば失敗（定義の複製を防ぐ） |
 | `test_the_owner_exists_and_is_the_definition` | 検査対象の定義元が消えて検査が空振りしないこと |
 | `test_the_detector_catches_a_redefinition` / `test_the_detector_ignores_unrelated_literals` | 検査の検査（見逃しと誤検出） |
+
+## INV-106 信頼できない入力（`tests/unit/test_untrusted_inputs.py`）
+
+実際の漏えいは未発生。Wave 1 のレビュー（d75cfa3 等）で tool id を写していたのと同種の穴が geo の `detail` に
+残っていた（`display_name!r` / `label.text!r` / `as_of!r`）ので、敵対的入力から作った単体テスト。
+単体にするのは、検証器・契約が純粋で、DB も Temporal も要らず、全組み合わせを安く回せるため。
+
+| テスト | 何を固定し、何を捕まえるか |
+|---|---|
+| `test_hostile_strings_never_appear_in_a_geo_verification` | 改行・ESC・偽 `sk-` key を地名・ラベル・as_of・主張本文に入れ、検証結果の JSON のどこにも現れない。`detail` に `!r` を戻すと落ちる（変異で確認済み） |
+| `test_hostile_strings_never_appear_in_geo_log_fields` | OpenSearch へ載せる `log_fields()` にも漏れない |
+| `test_the_hostile_value_is_traceable_only_by_length_and_hash` | 写さない代わりに `value_ref` で辿れる（追跡性を失って「黙る」解にならない） |
+| `test_every_check_the_verifier_makes_carries_a_reason_code` | 構造化が一部の検査だけで止まらない。PASS ⇔ OK |
+| `test_log_fields_use_only_existing_log_contract_fields` | ADR-0040 の語彙から外れた新フィールドを足さない |
+| `test_a_detail_that_could_carry_input_is_refused` | 改行・日本語・タブ・501 字の `detail` を geo / quality の双方が構築時に拒否 |
+| `test_a_hostile_report_is_rejected_without_echoing_it` | 約 10k 字の `detail` を持つレポートは取り込めず、例外文にも入力が出ない |
+| `test_a_bad_scene_id_is_refused` | `scene_id` に改行・key・不正形式を入れられない |
+
