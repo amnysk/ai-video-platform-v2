@@ -32,6 +32,15 @@ Accepted (2026-10-29)。設計の出典は `docs/architecture/v3-phase0-audit.md
 3. 既存の `find_video_by_marker`（`str | None`）は互換のため残すが、予約・投稿の判断には使わない。
    新しい port メソッド `lookup_video_by_marker`（`MarkerLookup`）を使う。
 
+4. **タグだけの照合の確認ツール**（`scripts/verify-tags-only-match.py` + `infrastructure/youtube/tags_only_verify.py`）。
+   所有者が読み取り専用の OAuth（`youtube.readonly` だけ。他の scope が1つでも付いた token は API を呼ぶ前に拒否）で
+   チャンネルの既存の private 動画を GET だけで読み、動画ごとに「description のマーカー照合」と「タグだけの照合」が
+   同じ動画を返すかを数える（件数と不一致の video id だけを出す。fixture / dry-run モードあり）。判定の定義
+   （`marker_in_tags` / `marker_in_description_lines`）は `contracts/upload.py` に1つで、adapter と共有する。
+   **本番で `AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER` を ON にするのは、所有者がこのツールを実行して 100% 一致
+   （比較対象あり・一覧を読み切り）と報告されるまで禁止**。flag は既定 OFF のまま、どの compose / env にも書かない
+   （`tests/unit/test_verify_tags_only_match.py` が固定する）。エージェントはこのツールを実 API に対して実行しない。
+
 ## Alternatives
 
 - **UNKNOWN を `TransientError`（retryable）にする**: 却下。retry の度に動画を再ダウンロードし、quota 切れや
@@ -50,9 +59,12 @@ Accepted (2026-10-29)。設計の出典は `docs/architecture/v3-phase0-audit.md
 - 悪い（負債）: 一時的な API 障害でも、承認済みの再投稿は `needs_input` で止まり、人の再実行が要る
 - 悪い: 照合の API 呼び出しが `max_lookup_pages` を超える古いチャンネルでは、常に UNKNOWN になる
   （上限は adapter の設定。引き上げは quota とのトレードオフ）
+- 悪い: 旧方式（description のみにマーカーがあり、タグに無い）の既存動画は、タグだけの照合では見つからない。
+  確認ツールはそれを不一致として報告する。ON にする前に、過去動画の扱い（照合の対象を直近の動画に限る、等）を
+  所有者が決める必要がある（ADR-0070 の「過去動画は変更しない」は変わらない）
 - 悪い: `_reconcile_by_marker`（bytes 送信後の session 失効）の挙動は元から保留で、変わらない。メッセージだけが
   「見つからなかった」と「確かめられなかった」を区別する
 
 ## INV
 
-INV-109（UNKNOWN では新しい投稿をしない）。
+INV-109（UNKNOWN では新しい投稿をしない）、INV-110（確認ツールは読み取り専用で、flag は既定 OFF のまま）。

@@ -165,6 +165,18 @@ def description_without_marker_enabled(environ: Mapping[str, str] | None = None)
     return env.get(UPLOAD_DESCRIPTION_WITHOUT_MARKER_ENV, "").strip().lower() in {"1", "true"}
 
 
+def marker_in_tags(marker: str, tags: object) -> bool:
+    """タグにマーカーがあるか。照合（adapter）と確認ツールが同じ判定を使う（AGENTS.md §8）。"""
+    return isinstance(tags, (list, tuple)) and marker in tags
+
+
+def marker_in_description_lines(marker: str, description: object) -> bool:
+    """description のどれかの行（前後の空白を除く）がマーカーそのものか。部分一致は数えない。"""
+    return isinstance(description, str) and marker in (
+        line.strip() for line in description.splitlines()
+    )
+
+
 class InternalIdInDescriptionError(ValueError):
     """description に内部 ID（marker・UUID・MinIO key）が含まれる（INV-90）。"""
 
@@ -429,6 +441,8 @@ __all__ = [
     "YouTubeVideoMetadata",
     "build_upload_receipt",
     "assert_no_internal_ids",
+    "marker_in_description_lines",
+    "marker_in_tags",
     "build_youtube_metadata",
     "description_without_marker_enabled",
     "find_internal_ids",

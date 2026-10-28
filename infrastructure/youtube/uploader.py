@@ -30,6 +30,8 @@ from contracts.upload import (
     DEFAULT_UPLOAD_CHUNK_BYTES,
     YOUTUBE_CHUNK_ALIGNMENT_BYTES,
     MarkerLookup,
+    marker_in_description_lines,
+    marker_in_tags,
 )
 from domain.upload.ports import (
     UploadCompleted,
@@ -455,11 +457,9 @@ class YouTubeResumableUploader:
                     snippet = video.get("snippet")
                     tags = snippet.get("tags") if isinstance(snippet, dict) else None
                     description = snippet.get("description") if isinstance(snippet, dict) else None
-                    in_tags = isinstance(tags, list) and marker_tag in tags
-                    in_description = isinstance(description, str) and marker_tag in (
-                        line.strip() for line in description.splitlines()
-                    )
-                    if in_tags or in_description:
+                    if marker_in_tags(marker_tag, tags) or marker_in_description_lines(
+                        marker_tag, description
+                    ):
                         video_id = video.get("id")
                         if isinstance(video_id, str) and video_id:
                             return MarkerLookup.found(video_id)

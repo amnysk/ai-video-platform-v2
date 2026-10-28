@@ -1054,3 +1054,19 @@ NOT_FOUND のときだけ1回投稿する。同じ Activity を何度再実行�
 / `tests/unit/test_upload_marker_lookup.py::test_repeated_executions_after_an_unknown_make_at_most_one_video`
 / `tests/unit/test_upload_marker_lookup.py::test_adapter_page_limit_with_more_pages_is_unknown_not_not_found`
 / `tests/unit/test_upload_marker_lookup.py::test_adapter_malformed_playlist_page_is_unknown`
+
+### INV-110 タグだけの照合の確認ツールは読み取り専用で、marker なし description の flag は既定 OFF のまま
+`scripts/verify-tags-only-match.py` は `youtube.readonly` だけの token でのみ動き（他の scope が1つでもあれば API を
+呼ぶ前に拒否）、GET の `channels` / `playlistItems` / `videos` だけを呼ぶ。投稿 adapter を import せず、insert / update /
+delete の呼び出しを持たない。出力は件数と不一致の video id だけ（title・description・tags・token を出さない）。
+一覧を読み切れない・比較対象が無いときは「結論なし」で、100% 一致とは報告しない。`AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER`
+は既定 OFF で、compose / deploy / Dockerfile / Makefile / `.env*` のどこにも書かない。本番での有効化は所有者がこの
+ツールを実行して 100% 一致を確認した後の別の判断。
+**機械検査**: `tests/unit/test_verify_tags_only_match.py::test_verification_code_has_no_write_call_and_never_imports_the_upload_adapter`
+/ `tests/unit/test_verify_tags_only_match.py::test_verification_code_names_no_write_scope`
+/ `tests/unit/test_verify_tags_only_match.py::test_live_refuses_any_token_that_is_not_readonly_only_before_calling_youtube`
+/ `tests/unit/test_verify_tags_only_match.py::test_live_readonly_token_reads_with_get_only_and_reports`
+/ `tests/unit/test_verify_tags_only_match.py::test_cli_fixture_full_agreement_exits_zero_and_prints_counts_only`
+/ `tests/unit/test_verify_tags_only_match.py::test_a_truncated_listing_is_never_a_conclusion`
+/ `tests/unit/test_verify_tags_only_match.py::test_the_description_without_marker_flag_defaults_off`
+/ `tests/unit/test_verify_tags_only_match.py::test_no_deploy_artifact_turns_the_description_without_marker_flag_on`
