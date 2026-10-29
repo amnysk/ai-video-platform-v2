@@ -158,7 +158,20 @@ class QualityRecordWriter(Protocol):
 | `CheckKey` / `UsageFeature` / `approver_kind` / `get_upload_approver` / `required_check_missing` / `usage_declaration` | 0 | 新規。定義は `contracts/quality_records.py`（前 2 つ）・`contracts/quality.py`（理由コード）・`apps/api/dependencies.py`（依存） |
 | `ApproverKind` | 1 | `contracts/approval.py`（本枝の最初のコミットが作った唯一の定義。ADR-0080 と同一の文面） |
 
-実装後の件数は `docs/testing/v3-phase3-quality.md` に追記する。
+実装後（`grep -rn` を再実行。ADR 本文・invariants を除く）:
+
+| key | 書き手 | 読み手 | 無関係 |
+|---|---|---|---|
+| 4 つの表名 | migration 0019（凍結 literal）・`infrastructure/db/models.py`・`infrastructure/db/quality_repositories.py` | `quality_repositories.py` だけ | 0 |
+| `CheckKey` / `UsageFeature` | 定義 `contracts/quality_records.py` のみ | `domain/quality/records.py`・`technical_qa_checks`/`service`/`wiring`・`models.py`・`quality_repositories.py` | 0 |
+| `REQUIRED_CHECK_MISSING` / `USAGE_DECLARATION_MISSING` | 定義 `contracts/quality.py` のみ | `domain/quality/records.py` | 0 |
+| `ApproverKind` | 定義 `contracts/approval.py` のみ | `domain/quality/approval.py`・`models.py`・`quality_repositories.py`・`infrastructure/quality/service.py` | 0 |
+| `get_upload_approver` | 定義 `apps/api/dependencies.py` | `apps/api/routers/episodes.py` | 0 |
+| `build_upload_metadata` | 定義 `domain/upload/metadata_builder.py` | `workers/upload/activities.py`・`infrastructure/quality/service.py` | 0 |
+
+migration の語彙 literal（凍結値）と契約の enum の一致は `tests/contract/test_migration_0019_quality.py` が固定する。
+`quality_manual_approvals` の列は `approved_verdict`（`'review'` 固定の CHECK）・`approver_kind`・`approver_id`・
+`approved_at`・`report_id`・`final_video_sha256`。
 
 ## Alternatives
 
