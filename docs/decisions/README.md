@@ -88,3 +88,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0076](./0076-quality-gate-wiring-in-upload-gate.md) | 品質ゲートを `upload_gate` に結線する（既定 OFF・状態を足さない・Phase 2 は決定論の検査のみ。LLM レビューは未実装） | Accepted |
 | [0077](./0077-bgm-render-wiring.md) | BGM の Render 結線（1 つの設定キーの背後・既定 OFF・ffmpeg で混合） | Proposed |
 | [0078](./0078-historical-map-accuracy-gate-and-deterministic-render.md) | 歴史地図の正確さの関門（理由コード・BLOCK 引き上げ）と決定論的な地図描画（既定 OFF・未接続） | Accepted |
+| [0079](./0079-integration-tests-must-prove-isolation-from-production.md) | integration テストは本番スタックから隔離されていると積極的に宣言できるときだけ走る（宣言・接続先規則・Temporal の動的検査・直書き禁止） | Accepted |

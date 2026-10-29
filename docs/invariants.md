@@ -1292,3 +1292,31 @@ dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph �
 / `tests/unit/test_geo_maps_flag_off.py::test_render_identity_and_filtergraph_are_byte_identical_to_before`
 / `tests/architecture/test_geo_maps_boundaries.py::test_production_side_does_not_import_the_map_parts`
 （flag ON の挙動は部品の呼び出しまで。ON にしても workflow には何も起きない。接続は後続）
+
+## AG. v3 Phase 3 の安全（ADR-0079 / ADR-0080。INV-121〜125 は Phase 3 監査枝の予約）
+
+### INV-121 integration テストは、隔離の積極的な宣言が無い限り、接続先が設定されていれば収集時に例外で止まる
+接続先（`TEMPORAL_ADDRESS` / `TEST_DATABASE_URL` / `DATABASE_URL` / `MINIO_ENDPOINT`）が1つでも設定されているとき、
+`AVP_INTEGRATION_ISOLATION` が `apptest:avp2-oslog-c*`（接続先は内部サービス名 `temporal` / `postgres` / `minio` のみ、
+このホスト自身へ解決される名前は不可）か `ci-ephemeral`（`GITHUB_ACTIONS=true` と loopback）の**完全一致**でなければ
+`ProductionTargetError`。綴り違い・空・本番 project `avp2`・前後の空白はすべて拒否（許可リスト。拒否リストではない）。
+**機械検査**: `tests/unit/test_production_target_guard.py::test_a_target_without_an_isolation_declaration_is_refused`
+/ `tests/unit/test_production_target_guard.py::test_a_mistyped_declaration_fails_closed`
+/ `tests/unit/test_production_target_guard.py::test_the_ci_declaration_is_refused_outside_github_actions`
+/ `tests/unit/test_production_target_guard.py::test_the_apptest_declaration_never_allows_the_host_or_its_published_ports`
+/ `tests/unit/test_production_target_guard.py::test_the_production_compose_project_is_never_a_valid_declaration`
+/ `tests/unit/test_production_target_guard.py::test_the_isolated_apptest_stack_passes`
+/ `tests/unit/test_production_target_guard.py::test_the_ci_ephemeral_services_pass`
+/ `tests/architecture/test_integration_no_hardcoded_addresses.py::test_integration_conftest_asserts_isolation_before_anything_else`
+
+### INV-122 integration テストは接続先を直書きせず、到達した Temporal が本番（日次 Schedule が在る）なら拒否する
+`tests/integration/` と `tests/support/` に `localhost:7233` 等・`TEMPORAL_ADDRESS = "..."`・
+`connect_test_client("...")`・DB URL の host の直書きが無い。Temporal は `default` namespace の
+`avp-daily-episode` を describe し、在れば `ProductionTemporalError`、NOT_FOUND 以外で判定できなければ拒否（fail closed）。
+**機械検査**: `tests/architecture/test_integration_no_hardcoded_addresses.py::test_no_hardcoded_connection_address`
+/ `tests/architecture/test_integration_no_hardcoded_addresses.py::test_the_detector_catches_the_original_incident`
+/ `tests/unit/test_temporal_production_probe.py::test_a_server_that_has_the_daily_schedule_is_production`
+/ `tests/unit/test_temporal_production_probe.py::test_a_server_without_the_schedule_passes`
+/ `tests/unit/test_temporal_production_probe.py::test_an_undecidable_answer_fails_closed`
+（PostgreSQL / MinIO を本番と区別する読み取りだけの指標は無い。静的な宣言と接続先の規則に依存する: ADR-0079 §2）
+
