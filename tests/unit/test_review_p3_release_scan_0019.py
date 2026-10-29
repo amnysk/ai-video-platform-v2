@@ -1,6 +1,7 @@
 """Phase 3 re-review (Sonnet E): the release scanner against the real migration 0019.
 
-``_check_migration`` reads the approving ADR at the *deployed* revision (``c.adr_text(deployed, n)``),
+``_check_migration`` reads the approving ADR at the *deployed* revision
+(``c.adr_text(deployed, n)``),
 so a marker that cites an ADR which is not yet deployed (ADR-0081 is new in this release) is not
 honoured. EXPECTED TO FAIL at ba1e895: the migration_compat check would be BLOCKED for the release
 that carries 0019 itself.
