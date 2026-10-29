@@ -1,0 +1,21 @@
+# Release v3-phase2-flags-off
+
+- target SHA: e3c9555313593ab2511af30e33424e3f1867e150（`claude/v3-phase2-integration`、PR #21 draft）
+- previous (production) SHA: 303f33ec7d0430009bd7d25e15e7bfbd813971d9   deploy-state: deploy-state/20261029T005327Z-pre-e3c9555313593ab2511af30e33424e3f1867e150.txt
+- approver / approved_at: amnysk（所有者の条件付き委任。エージェントが記録）/ 2026-10-29T00:53:20+00:00   approval file: release/approvals/e3c9555313593ab2511af30e33424e3f1867e150.json
+- preflight: READY at 2026-10-29（承認前は owner_approval のみ UNKNOWN、他 14 項目 PASS）   report: release/records/v3p2-preflight.json（sha256 a3bb66b8d082e049b150f864fab64ae33aef03b8d36719a1da34fcadf6c7644a）
+- migrations: none   classification: expand-only（変更なし、alembic 0018）
+- backup manifest: /home/yoshiki/avp-backups/20261029T003957Z/manifest.json（restore_verified: true）   oldest component age: < 1h
+- replay evidence: release/evidence/e3c9555313593ab2511af30e33424e3f1867e150-replay.json（65 passed）+ CI run 40795468026「Temporal replay」success
+- integration: 隔離 project `avp2-oslog-c-v3p2` で tests/integration 157 passed / 7 skipped / 0 failed
+- schedule snapshot (before): avp-daily-episode paused=False, avp-daily-watchdog paused=False
+- deploy: started 2026-10-29T00:53:26Z / finished 2026-10-29T00:55:42Z / result: success（`make deploy-workers`、release worktree `.worktrees/claude-release-v3p2`）
+- post-deploy verify: READY at 2026-10-29（containers_at_target 13 / worker_pollers 12 queues / schedules_unchanged / alembic_at_head 0018 / approval_binding）
+- schedules after: same
+- rollback: not needed（手順: 303f33e の worktree で `--rollback` の二段階 → `SKIP_MIGRATE=1 make deploy-workers`）
+- notes / deviations:
+  - 新 flag（AVP_QUALITY_GATE_ENFORCE / AVP_UPLOAD_DESCRIPTION_COMPOSED / AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER / BGM_ENABLED / GEO_MAPS_ENABLED）はすべて OFF。`FAL_MONTHLY_BUDGET_USD=60` を維持（デプロイ後の worker 環境で確認）
+  - 安全側の挙動変更 D-1（YouTube 照合が UNKNOWN なら投稿しない・再投稿承認を一度で消費）は flag 無しで即時有効
+  - OpenSearch は所有者判断で停止を維持（起動・再作成・設定変更なし）。デプロイ後の監視は docker logs・Temporal（schedule / workflow list）・PostgreSQL 台帳（provider_reservations / upload_receipt / provider_credit_holds）で基準値と比較し、全項目 PASS（新規予約 0、youtube_upload 16 のまま、credit hold 4 件不変、Schedule 不変、重複起動 0、traceback 0）
+  - CI の初回は Temporal test server のダウンロード 503 で 2 件失敗。失敗ジョブの再実行で success（テスト・コードは変更なし）
+  - Phase 2 の全機能完成は FAIL のまま（docs/architecture/v3-phase2-report.md §3.1）。このリリースはコードを出しただけで、機能は有効化していない
