@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Any
 
 from contracts.geo import (
@@ -18,6 +20,7 @@ from contracts.geo import (
     ReferencePlace,
 )
 from contracts.geo_scene import GeoMapRequest, GeoMapSpec, GeoPlaceRequest
+from contracts.render import RenderProfile
 from contracts.research import ClaimImportance, ClaimKind
 from contracts.research_evidence import (
     ClaimAssessment,
@@ -147,3 +150,14 @@ def manifest_from(spec_: GeoMapSpec) -> GeoManifest:
     manifest, findings = build_manifest(spec_.request, GAZETTEER)
     assert manifest is not None, findings
     return manifest
+
+
+class FakeEncoder:
+    """クリップ符号化の fake。呼び出しを記録し、画像の指紋から決まる中身を書く。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str]] = []
+
+    def encode(self, png: Path, output: Path, duration_ms: int, profile: RenderProfile) -> None:
+        self.calls.append((duration_ms, profile.profile_id))
+        output.write_bytes(b"fake-map-clip:" + hashlib.sha256(png.read_bytes()).digest())
