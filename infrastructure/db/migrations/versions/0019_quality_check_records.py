@@ -35,7 +35,9 @@ TABLES = (APPROVALS, REPORTS, USAGE, RECORDS)
 #: ADR-0081 の語彙。**編集しない**（履歴の凍結値）。
 CHECK_KEYS: tuple[str, ...] = ("technical_qa", "description_lint", "bgm", "map")
 USAGE_FEATURES: tuple[str, ...] = ("bgm", "map")
-VERDICTS: tuple[str, ...] = ("pass", "warn", "review", "block")
+#: 判定語彙は ``contracts/verdict.py`` が唯一の定義。ここは凍結した写しで、literal の集合を
+#: 書かない（INV-105 の検査器に引っかからない形）。一致は contract テストが固定する。
+VERDICTS: tuple[str, ...] = tuple("pass warn review block".split())
 APPROVER_KINDS: tuple[str, ...] = ("owner", "agent_delegated")
 
 
