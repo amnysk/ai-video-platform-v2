@@ -37,12 +37,17 @@ def render_input_hash(
     audio_mix: AudioMixSpec | None = None,
     engine_threads: int | None = None,
     bgm: Mapping[str, object] | None = None,
+    geo: Mapping[str, object] | None = None,
 ) -> str:
     """完成動画の入力指紋。profile は字幕設定を含む全体を正準化して入れる。
 
     ``bgm`` は BGM を実際に混ぜるときだけ渡す混合計画（``BgmMixPlan.identity_payload()``）。
     ``None`` のときは**キーごと入れない**ので、BGM 導入前と hash がバイト単位で同じ（INV-113）。
     production の入力 hash には BGM を入れない（BGM だけの変更で課金しない。INV-116）。
+
+    ``geo`` は ``GEO_MAPS_ENABLED`` が ON のときだけ渡す地図の識別子（地図の判定・画像・クリップの
+    指紋。ADR-0084）。``None`` のときは**キーごと入れない**ので、OFF の hash は従来と
+    同じ（INV-143）。
     """
     mix = audio_mix if audio_mix is not None else audio_mix_spec(profile)
     payload: dict[str, object] = {
@@ -63,6 +68,8 @@ def render_input_hash(
     }
     if bgm is not None:
         payload["bgm"] = dict(bgm)
+    if geo is not None:
+        payload["geo"] = dict(geo)
     return sha256_hex(canonical_json_bytes(payload))
 
 

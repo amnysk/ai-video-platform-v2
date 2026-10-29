@@ -108,3 +108,8 @@ dataclass の変更は workflow replay を壊す（INV-1x、既存 replay テス
   更新する（テストを緩めない）。
 - 見た目の閾値（最小フォント 28 px、コントラスト 4.5:1 など）は初期値で、実データで調整する。
 - 予約済み番号: INV-117〜120（本 ADR）。
+
+## 更新（ADR-0084）
+
+未接続だった本 ADR の部品は ADR-0084 が Production の事前検査（`plan`）と Render の差し替え・証跡へ結線した
+（既定 OFF・workflow 変更なし）。本 ADR の決定は変えていない。

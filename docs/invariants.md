@@ -1291,4 +1291,89 @@ dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph �
 / `tests/unit/test_geo_maps_flag_off.py::test_the_flag_is_not_exposed_in_any_deployment_file`
 / `tests/unit/test_geo_maps_flag_off.py::test_render_identity_and_filtergraph_are_byte_identical_to_before`
 / `tests/architecture/test_geo_maps_boundaries.py::test_production_side_does_not_import_the_map_parts`
-（flag ON の挙動は部品の呼び出しまで。ON にしても workflow には何も起きない。接続は後続）
+（flag ON の挙動は部品の呼び出しまで。ON にしても workflow には何も起きない。接続は後続 →
+ADR-0084 が既存 Activity の内側へ結線した。OFF の同一性は INV-143 が引き継ぐ）
+
+### INV-139 地図の座標は gazetteer だけから決まり、同じ依頼は同じ manifest になる
+`GeoMapRequest`（座標を持たない依頼。`extra=forbid`）から `domain.geo.manifest_builder.build_manifest` が
+gazetteer の座標・地物の種類・存在期間・不確かさを埋める。依頼の作者（人・LLM）は座標を書けない。gazetteer に無い
+`ref_id`・重複・根拠（claim / source）が空の地点は manifest を作らず BLOCK（推測で埋めない）。順序が違う依頼も同じ manifest。
+**機械検査**: `tests/unit/test_geo_p3_gate.py::test_a_request_cannot_carry_coordinates`
+/ `tests/unit/test_geo_p3_gate.py::test_a_well_formed_request_passes_and_takes_coordinates_from_the_gazetteer`
+/ `tests/unit/test_geo_p3_gate.py::test_the_same_request_always_builds_the_same_manifest`
+/ `tests/unit/test_geo_p3_gate.py::test_an_unknown_gazetteer_reference_is_blocked_not_guessed`
+/ `tests/unit/test_geo_p3_gate.py::test_a_place_without_a_claim_or_without_a_source_is_blocked`
+（ADR-0084 §1。完成済みの manifest を直接受ける経路は残り、位置違いは検証器が止める:
+`test_a_manifest_with_wrong_coordinates_is_blocked_by_the_verifier`）
+
+### INV-140 検証を通らない地図（BLOCK も REVIEW も）は使われず、投稿を許さない
+位置違い・軸の取り違え・根拠不足（claim / source が無い・解決しない・取得失敗・評価が足りない）・時代錯誤（名前・
+存在期間・国境）・時間基準不明・同名の曖昧は、`gate_map` が PASS にしない。PASS でない地図は描かれず（見た目だけが
+不合格の画像は証跡に残るが使われない）、Production の `plan` が有料呼び出しの前に `GeoMapRefusedError` で止め、
+Render は差し替えず、`map_quality_checks` が PASS でない検査を返す。
+**機械検査**: `tests/unit/test_geo_p3_gate.py::test_a_modern_name_on_a_twelfth_century_map_is_an_anachronism`
+/ `tests/unit/test_geo_p3_gate.py::test_a_source_that_is_not_in_the_research_evidence_is_refused`
+/ `tests/unit/test_geo_p3_gate.py::test_an_insufficient_claim_is_not_evidence`
+/ `tests/unit/test_geo_p3_gate.py::test_a_manifest_with_wrong_coordinates_is_blocked_by_the_verifier`
+/ `tests/unit/test_geo_p3_gate.py::test_an_unknown_time_basis_on_a_historical_map_is_refused`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_a_refused_map_is_never_drawn`
+/ `tests/unit/test_production_plan_geo.py::test_a_map_that_would_be_refused_stops_production_before_any_paid_call`
+/ `tests/unit/test_render_activities_geo.py::test_a_refused_map_keeps_the_original_video_and_the_evidence_blocks_the_upload`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_refused_maps_are_not_passes`
+
+### INV-141 使われた地図は hash の鎖で、manifest・検証・画像・クリップ・完成動画に結びつく
+`GeoMapRecord` は manifest_sha256 / verification_sha256 / png_sha256 / clip_sha256 / final_video_sha256 と判定の入力
+（gazetteer・根拠・下地・フォント）の指紋を束ねる。`binding_problems` は manifest と verification を**再計算**し、PASS の
+記録がクリップ・完成動画を欠く／別の完成動画のものなら問題を返す。`verdict` は正確さと見た目の厳しい側と一致しなければ
+作れず、PASS は presentation・manifest・画像なしに作れない。Render の証跡は final_video の行より前に保存される。
+**機械検査**: `tests/unit/test_geo_p3_record_and_quality.py::test_the_digest_format_matches_the_renderers_manifest_hash`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_tampering_with_the_manifest_or_the_verification_breaks_the_binding`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_a_pass_record_needs_a_clip_and_the_same_final_video`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_the_record_refuses_to_pass_without_the_presentation`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_the_record_refuses_a_verdict_milder_than_its_findings`
+/ `tests/unit/test_render_activities_geo.py::test_a_verified_map_replaces_that_scenes_video_and_is_bound_to_the_final_video`
+/ `tests/unit/test_render_activities_geo.py::test_no_final_video_row_exists_without_its_geo_evidence`
+
+### INV-142 `map_quality_checks` は純関数で fail-closed。地図なしは完成動画に結びついた明示の PASS
+`domain.geo.quality_checks.map_quality_checks` は証跡を `QualityCheck`（gate=GEO・決定論）にするだけ。地図なしは
+`evidence_ref = sha256({"geo":"not_used","final_video_sha256":…})` の PASS。指定したのに証跡が無い・複数・鎖の切れ・
+別の完成動画の証跡は BLOCK。`detail` に入力の文字列を入れない。
+**機械検査**: `tests/unit/test_geo_p3_record_and_quality.py::test_an_episode_without_a_map_gets_an_explicit_hash_bound_pass`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_a_specified_map_with_no_evidence_is_blocked_not_treated_as_not_used`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_evidence_for_another_final_video_is_blocked`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_two_records_for_one_scene_are_ambiguous`
+/ `tests/unit/test_geo_p3_record_and_quality.py::test_the_checks_never_echo_input_strings_and_are_deterministic`
+/ `tests/architecture/test_geo_boundaries.py::test_the_geo_domain_imports_no_io_clock_or_network_modules`
+
+### INV-143 `GEO_MAPS_ENABLED` が OFF（既定）なら出力は接続前と同じで、workflow・Activity の履歴は変わらない
+OFF では `render_input_hash` に `geo` キーが**入らず**（既存の golden hash と一致）、worker は結線を作らず、
+Production の事前検査も Render の差し替えも走らない。workflow・Activity の追加/順序変更・入出力 dataclass の変更は無く
+（地図は既存 Activity の内側。`workflow.patched` 不要）、workflow と Activity 契約は地図の結線を import しない。
+ON は `AVP_QUALITY_GATE_ENFORCE=true` でなければ worker が起動しない。
+**機械検査**: `tests/unit/test_geo_p3_flag.py::test_geo_none_keeps_the_pre_geo_input_hash`
+/ `tests/unit/test_geo_p3_flag.py::test_maps_cannot_be_enabled_while_the_quality_gate_is_not_enforced`
+/ `tests/unit/test_render_activities_geo.py::test_flag_off_writes_no_geo_evidence_and_keeps_the_same_identity`
+/ `tests/unit/test_production_plan_geo.py::test_flag_off_does_not_look_at_geo_at_all`
+/ `tests/architecture/test_geo_boundaries.py::test_workflows_and_activity_contracts_do_not_import_the_wiring`
+/ `tests/architecture/test_geo_boundaries.py::test_the_setting_is_read_only_where_workers_are_assembled`
+/ `tests/unit/test_geo_maps_flag_off.py::test_render_identity_and_filtergraph_are_byte_identical_to_before`
+
+### INV-144 地図の結線はネットワーク・有料 provider に触れず、子プロセスはクリップの ffmpeg だけ
+`infrastructure/geo/` は provider・httpx・socket 等を import せず、子プロセスを起こすのは `clip.py`（render worker が
+検証した固定版 ffmpeg）だけ。gazetteer・下地・根拠はローカルの JSON で、実行時に外へ出ない。import 検出は相対 import・
+`from pkg import submodule`・動的 import も見る（Phase 2 報告 §4-8 の抜けを塞いだ）。
+**機械検査**: `tests/architecture/test_geo_boundaries.py::test_the_wiring_imports_no_paid_provider_or_network_module`
+/ `tests/architecture/test_geo_boundaries.py::test_only_the_clip_encoder_starts_a_process`
+/ `tests/architecture/test_geo_boundaries.py::test_the_detector_sees_from_package_import_submodule`
+/ `tests/architecture/test_geo_boundaries.py::test_the_detector_resolves_relative_imports`
+/ `tests/architecture/test_geo_boundaries.py::test_the_detector_sees_dynamic_imports`
+/ `tests/architecture/test_geo_boundaries.py::test_production_billing_and_entrypoints_do_not_import_geo`
+
+### INV-145 地図の文字は固定したフォントで描かれ、描けない字は使われない
+Render は sha256 検証済みの `render_font_path`（CJK）のバイト列で描き、フォントの識別子（`font-sha256:…`）は記録に、
+フォントの sha256 は render identity に入る。フォントに無い字（豆腐）は見た目の検査の BLOCK（`FONT_MISSING_GLYPHS`）で
+その地図は使われない。下地を使う地図は出典の注記を必ず描く（現代の海岸線を当時の地形に見せない）。
+**機械検査**: `tests/unit/test_geo_p3_record_and_quality.py::test_a_map_whose_text_cannot_be_drawn_is_not_applied`
+/ `tests/unit/test_geo_p3_infra.py::test_japanese_labels_pass_with_the_pinned_cjk_font_and_the_font_is_in_the_identity`
+/ `tests/unit/test_geo_p3_infra.py::test_the_base_caption_is_part_of_the_layout`
+/ `tests/unit/test_geo_p3_infra.py::test_a_basemap_changes_the_image_and_its_identity_only_when_given`

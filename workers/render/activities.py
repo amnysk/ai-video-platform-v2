@@ -119,6 +119,13 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
 )
+from infrastructure.geo.service import (
+    GeoPlan,
+    GeoRenderService,
+    SceneSlot,
+    geo_evidence_key,
+    refusal_summary,
+)
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
 from infrastructure.render.binary import file_sha256
@@ -242,6 +249,7 @@ class RenderActivities:
         heartbeat: HeartbeatFn = _activity_heartbeat,
         bgm_source: BgmSource | None = None,
         loudness_probe: LoudnessProbe | None = None,
+        geo: GeoRenderService | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
@@ -266,6 +274,8 @@ class RenderActivities:
         #: 両方そろったときだけ BGM の経路が走る（ADR-0077）。どちらかが None なら導入前と同一
         self._bgm_source = bgm_source
         self._loudness_probe = loudness_probe
+        #: 地図の結線（ADR-0084）。None（``GEO_MAPS_ENABLED`` が OFF）なら導入前と同一
+        self._geo = geo
         self._clock = clock
 
     def state_activities(self) -> Sequence[Callable[..., object]]:
@@ -400,6 +410,7 @@ class RenderActivities:
             engine=engine,
         )
         bgm, bgm_data = await self._resolve_bgm(episode_id, plan)
+        geo_plan = await self._resolve_geo(episode_id, plan, inputs)
         input_hash = render_input_hash(
             manifest_sha256=inputs.manifest_meta.sha256,
             script_sha256=inputs.script.ref.sha256,
@@ -410,6 +421,7 @@ class RenderActivities:
             font_sha256=self._font_sha256,
             engine_threads=self._render_threads,
             bgm=bgm.identity if bgm is not None else None,
+            geo=geo_plan.identity if geo_plan is not None else None,
         )
 
         async with self._session_factory() as session:
@@ -439,6 +451,11 @@ class RenderActivities:
         try:
             video_paths, voice_paths = await self._download_media(inputs, work)
             self._heartbeat("media_downloaded")
+            if geo_plan is not None:
+                # PASS の地図だけクリップにして、そのシーンの動画を差し替える（ADR-0084 §4）
+                await self._beating(
+                    "geo_clips", asyncio.to_thread(geo_plan.materialize, video_paths, work.tmp)
+                )
             rendered = await self._engine.render(
                 RenderRequest(
                     plan=plan,
@@ -457,7 +474,7 @@ class RenderActivities:
             )
             self._heartbeat("rendered")
             result = await self._store_final(
-                request, job_id, inputs, plan, input_hash, rendered.path, bgm=bgm
+                request, job_id, inputs, plan, input_hash, rendered.path, bgm=bgm, geo=geo_plan
             )
         except asyncio.CancelledError:
             self._cleanup(episode_id, job_id, attempt)
@@ -503,6 +520,7 @@ class RenderActivities:
         input_hash: str,
         path: Path,
         bgm: BgmResolution | None = None,
+        geo: GeoPlan | None = None,
     ) -> RenderFinalVideoResult:
         episode_id = request.episode_id
         try:
@@ -611,6 +629,9 @@ class RenderActivities:
         if bgm is not None and bgm.applied and loudness_verdict is not None:
             # 証跡は final_video の行を記録する前に保存する（証跡の無い BGM 入り動画を作らない）
             await self._store_bgm_evidence(episode_id, input_hash, media_sha, bgm, loudness_verdict)
+        if geo is not None:
+            # 地図の証跡も final_video の行より前に保存する（証跡の無い動画を作らない。INV-141）
+            await self._store_geo_evidence(episode_id, geo, media_sha, input_hash)
         async with self._session_factory() as session:
             meta = await ArtifactMetadataRepository(session).record(
                 episode_id=episode_id,
@@ -658,6 +679,45 @@ class RenderActivities:
         readback = sha256_hex(canonical_json_bytes(await self._store.get_json(stored.key)))
         if stored.sha256 != digest or readback != digest:
             raise FinalVideoCorruptError(f"bgm evidence readback sha256 mismatch at {stored.key}")
+
+    async def _store_geo_evidence(
+        self, episode_id: str, geo: GeoPlan, media_sha: str, input_hash: str
+    ) -> None:
+        payload = geo.evidence(media_sha, input_hash).model_dump(mode="json")
+        key = geo_evidence_key(episode_id, media_sha, input_hash)
+        stored = await self._store.put_json(key, payload)
+        readback = sha256_hex(canonical_json_bytes(await self._store.get_json(stored.key)))
+        if stored.sha256 != sha256_hex(canonical_json_bytes(payload)) or readback != stored.sha256:
+            raise FinalVideoCorruptError(f"geo evidence readback sha256 mismatch at {stored.key}")
+        for scene_id, verdict, codes in refusal_summary(geo):
+            logger.warning(
+                "map refused episode=%s scene=%s verdict=%s reasons=%s (the original scene video "
+                "is kept; the quality gate refuses the upload)",
+                episode_id,
+                scene_id,
+                verdict,
+                codes,
+            )
+
+    async def _resolve_geo(
+        self, episode_id: str, plan: RenderPlan, inputs: _Inputs
+    ) -> GeoPlan | None:
+        """地図を使うか決める。設定が OFF（``self._geo`` が無い）なら ``None``＝導入前と同一。"""
+        if self._geo is None:
+            return None
+        script_scene = {s.scene_id: s.script_scene_id for s in inputs.storyboard.artifact.scenes}
+        slots = [
+            SceneSlot(
+                storyboard_scene_id=s.scene_id,
+                script_scene_id=script_scene[s.scene_id],
+                source_duration_ms=s.source_duration_ms,
+            )
+            for s in plan.scenes
+        ]
+        return await self._beating(
+            "geo_prepare",
+            asyncio.to_thread(self._geo.prepare, episode_id, slots, plan.profile),
+        )
 
     async def _resolve_bgm(
         self, episode_id: str, plan: RenderPlan

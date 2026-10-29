@@ -19,6 +19,10 @@ from contracts.states import RENDER_MEDIA_TASK_QUEUE, RENDER_TASK_QUEUE
 from domain.errors import RenderEngineUnavailableError
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.geo.clip import FfmpegMapClipEncoder
+from infrastructure.geo.guard import require_quality_gate
+from infrastructure.geo.service import GeoRenderService
+from infrastructure.geo.source import LocalDirectoryGeoSource
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.media.probe import PillowAvMediaProbe
 from infrastructure.render.bgm_source import LocalDirectoryBgmSource
@@ -102,6 +106,17 @@ async def main() -> None:
     if settings.bgm_enabled and settings.render_ffmpeg_path:
         bgm_source = LocalDirectoryBgmSource(Path(settings.ai_video_work_root) / "bgm")
         loudness_probe = FfmpegLoudnessProbe(settings.render_ffmpeg_path)
+    # ADR-0084: 設定 ON のときだけ地図の結線を渡す。OFF は導入前と同一
+    geo = None
+    if settings.geo_maps_enabled:
+        require_quality_gate(settings)
+        if not settings.render_ffmpeg_path:
+            raise SystemExit("render worker: GEO_MAPS_ENABLED needs RENDER_FFMPEG_PATH")
+        geo = GeoRenderService(
+            source=LocalDirectoryGeoSource(Path(settings.ai_video_work_root) / "geo"),
+            encoder=FfmpegMapClipEncoder(settings.render_ffmpeg_path),
+            font_path=Path(settings.render_font_path),
+        )
     activities = RenderActivities(
         session_factory=session_factory_from_settings(settings),
         store=store,
@@ -118,6 +133,7 @@ async def main() -> None:
         run_inspector=TemporalWorkflowRunInspector(client),
         bgm_source=bgm_source,
         loudness_probe=loudness_probe,
+        geo=geo,
     )
     state, media = build_workers(client, settings, activities)
     logger.info(

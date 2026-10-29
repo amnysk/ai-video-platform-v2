@@ -169,3 +169,69 @@ def test_the_detector_sees_dynamic_imports() -> None:
     assert _hits('import importlib\nimportlib.import_module("domain.geo.verify")')
     assert _hits('__import__("contracts.geo")')
     assert not _hits('import importlib\nimportlib.import_module("contracts.verdict")')
+
+
+# --- Phase 3 の結線の境界（ADR-0084、INV-143 / INV-144）
+
+_WIRING = REPO / "infrastructure" / "geo"
+_NETWORK_AND_PAID = frozenset(
+    {"httpx", "requests", "aiohttp", "urllib", "http", "socket", "ssl", "fal_client", "openai"}
+)
+
+
+def test_the_wiring_package_exists() -> None:
+    assert {p.name for p in _py(_WIRING)} >= {"service.py", "prepare.py", "source.py", "clip.py"}
+
+
+def test_the_wiring_imports_no_paid_provider_or_network_module() -> None:
+    violations = [
+        f"{p.relative_to(REPO)}: imports {m}"
+        for p in _py(_WIRING)
+        for m in _modules(p)
+        if m.split(".")[0] in _NETWORK_AND_PAID
+        or m.startswith(("infrastructure.providers", "infrastructure.youtube"))
+    ]
+    assert not violations, "ADR-0084 (INV-144):\n" + "\n".join(violations)
+
+
+def test_only_the_clip_encoder_starts_a_process() -> None:
+    violations = [
+        f"{p.relative_to(REPO)}: imports {m}"
+        for p in _py(_WIRING)
+        if p.name != "clip.py"
+        for m in _modules(p)
+        if m.split(".")[0] in {"subprocess", "asyncio", "threading", "random", "secrets"}
+    ]
+    assert not violations, "ADR-0084:\n" + "\n".join(violations)
+
+
+def test_workflows_and_activity_contracts_do_not_import_the_wiring() -> None:
+    """Temporal の履歴に地図が入らない: workflow と Activity の入出力契約は地図を知らない。"""
+    files = [
+        *REPO.glob("workers/*/workflows.py"),
+        REPO / "contracts" / "render_activities.py",
+        REPO / "contracts" / "production_activities.py",
+        REPO / "contracts" / "render.py",
+    ]
+    assert len(files) >= 5
+    violations = [
+        f"{p.relative_to(REPO)}: imports {m}"
+        for p in files
+        for m in _modules(p)
+        if m == "infrastructure.geo" or m.startswith("infrastructure.geo.")
+    ]
+    assert not violations, "ADR-0084 (INV-143):\n" + "\n".join(violations)
+
+
+def test_the_setting_is_read_only_where_workers_are_assembled() -> None:
+    """``settings.geo_maps_enabled`` の読み手（属性アクセス）。ほかの層が flag を見て分岐しない。"""
+    readers = sorted(
+        str(p.relative_to(REPO))
+        for root in ("apps", "workers", "domain", "infrastructure", "contracts")
+        for p in _py(REPO / root)
+        if any(
+            isinstance(n, ast.Attribute) and n.attr == "geo_maps_enabled"
+            for n in ast.walk(ast.parse(p.read_text(encoding="utf-8")))
+        )
+    )
+    assert readers == ["workers/production/run_worker.py", "workers/render/run_worker.py"], readers
