@@ -62,7 +62,7 @@ def _write_tokens(tmp_path: Path, text: str, mode: int = 0o600) -> Path:
 
 @pytest_asyncio.fixture
 async def secured(session_factory, tmp_path: Path):
-    from apps.api.auth import get_api_tokens
+    from apps.api.auth import get_api_token_source
     from apps.api.dependencies import (
         get_quality_clock,
         get_quality_providers,
@@ -81,7 +81,13 @@ async def secured(session_factory, tmp_path: Path):
     app = create_app()
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_workflow_starter] = lambda: starter
-    app.dependency_overrides[get_api_tokens] = lambda: state["tokens"]
+    state["reads"] = 0
+
+    def source():
+        state["reads"] += 1
+        return state["tokens"]
+
+    app.dependency_overrides[get_api_token_source] = lambda: source
     app.dependency_overrides[get_quality_providers] = lambda: state["providers"]
     app.dependency_overrides[get_quality_clock] = lambda: lambda: NOW
     app.dependency_overrides[get_settings] = lambda: Settings(
@@ -322,3 +328,92 @@ async def test_the_resume_client_sends_the_token_and_never_logs_it() -> None:
     await ApiResumeClient("http://api.test", token=OWNER_TOKEN, transport=transport).resume("e")
     await ApiResumeClient("http://api.test", transport=transport).resume("e")
     assert seen == [f"Bearer {OWNER_TOKEN}", None]
+
+
+# ---- M2: owner / agent の分離は、別ファイルに置いたときだけ実効を持つ（ADR-0080 §B の正直な記述）
+
+
+def _write(tmp_path: Path, name: str, text: str, mode: int = 0o600) -> str:
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    path.chmod(mode)
+    return str(path)
+
+
+def test_an_owner_file_supplies_the_owner_token_and_the_shared_file_the_agent_token(
+    tmp_path: Path,
+) -> None:
+    shared = _write(tmp_path, "shared", f"agent:{AGENT_TOKEN}\n")
+    owner = _write(tmp_path, "owner", f"owner:{OWNER_TOKEN}\n")
+    tokens = load_api_tokens(shared, owner)
+    assert authenticate(f"Bearer {OWNER_TOKEN}", tokens) is Actor.OWNER
+    assert authenticate(f"Bearer {AGENT_TOKEN}", tokens) is Actor.AGENT
+
+
+def test_with_an_owner_file_an_owner_token_in_the_shared_file_is_refused(tmp_path: Path) -> None:
+    """共有ファイル（エージェントが読める）に owner token が残る構成を、分離の名で通さない。"""
+    shared = _write(tmp_path, "shared", f"agent:{AGENT_TOKEN}\nowner:{'q' * 40}\n")
+    owner = _write(tmp_path, "owner", f"owner:{OWNER_TOKEN}\n")
+    assert load_api_tokens(shared, owner).is_empty()
+
+
+@pytest.mark.parametrize("problem", ["missing", "loose", "agent_line", "empty"])
+def test_an_owner_file_that_is_configured_but_unusable_closes_everything(
+    tmp_path: Path, problem: str
+) -> None:
+    shared = _write(tmp_path, "shared", f"agent:{AGENT_TOKEN}\n")
+    owner = {
+        "missing": str(tmp_path / "nope"),
+        "loose": _write(tmp_path, "o1", f"owner:{OWNER_TOKEN}\n", 0o640),
+        "agent_line": _write(tmp_path, "o2", f"agent:{OWNER_TOKEN}\n"),
+        "empty": _write(tmp_path, "o3", "# nothing\n"),
+    }[problem]
+    assert load_api_tokens(shared, owner).is_empty()
+
+
+def test_the_same_token_in_both_files_is_refused(tmp_path: Path) -> None:
+    shared = _write(tmp_path, "shared", f"agent:{OWNER_TOKEN}\n")
+    owner = _write(tmp_path, "owner", f"owner:{OWNER_TOKEN}\n")
+    assert load_api_tokens(shared, owner).is_empty()
+
+
+def test_the_owner_file_setting_is_read_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("AVP_API_OWNER_TOKEN_PATH", "/run/x/owner")
+    monkeypatch.setenv("AVP_API_TOKENS_PATH", "/run/x/tokens")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.api_owner_token_file == "/run/x/owner"
+    assert settings.api_tokens_file == "/run/x/tokens"
+
+
+# ---- Minor (a): 読み取りリクエストは token ファイルに触れない
+
+
+async def test_read_requests_never_read_the_token_file_or_log_about_it(secured, caplog) -> None:
+    _app, client, _starter, state = secured
+    with caplog.at_level(logging.DEBUG):
+        assert (await client.get("/healthz")).status_code == 200
+        assert (await client.get(f"/episodes/{uuid.uuid4()}")).status_code == 404
+    assert state["reads"] == 0
+    assert "token file" not in repr([r.getMessage() for r in caplog.records])
+    await client.post("/episodes", json={}, headers=_bearer(OWNER_TOKEN))
+    assert state["reads"] == 1
+
+
+async def test_a_bad_token_file_logs_only_for_mutating_requests(tmp_path, caplog) -> None:
+    from apps.api.auth import get_api_token_source
+    from apps.api.dependencies import get_settings
+    from apps.api.main import create_app
+
+    bad = _write(tmp_path, "bad", f"owner:{OWNER_TOKEN}\n", 0o644)
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        AVP_API_TOKENS_PATH=bad,  # type: ignore[call-arg]
+    )
+    app.dependency_overrides.pop(get_api_token_source, None)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with caplog.at_level(logging.ERROR):
+            await client.get("/healthz")
+            assert [r for r in caplog.records if "token file" in r.getMessage()] == []
+            assert (await client.post("/episodes", json={})).status_code == 503
+    assert [r for r in caplog.records if "token file" in r.getMessage()]
