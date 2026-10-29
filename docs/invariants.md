@@ -1339,7 +1339,7 @@ dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph �
 **機械検査**: `tests/unit/test_bgm_intelligibility.py::test_margin_is_voice_minus_music_and_the_smallest_one_decides`
 / `tests/unit/test_bgm_intelligibility.py::test_one_scene_below_the_threshold_fails_the_whole_episode`
 / `tests/unit/test_bgm_intelligibility.py::test_a_scene_without_music_is_not_a_failure_but_unmeasured_voice_is_not_a_pass`
-/ `tests/unit/test_bgm_intelligibility.py::test_the_music_stem_uses_the_same_bgm_chain_as_the_real_mix_and_leaves_nothing_dangling`
+/ `tests/unit/test_bgm_intelligibility.py::test_the_music_stem_reuses_the_real_bgm_chain_and_leaves_nothing_dangling`
 / `tests/unit/test_bgm_intelligibility.py::test_the_voice_stem_is_the_narration_bus_of_the_bgm_less_render`
 / `tests/unit/test_bgm_real_ffmpeg_margin.py::test_ducking_lowers_the_music_under_speech_and_the_probe_measures_it`
 / `tests/architecture/test_bgm_phase3_boundaries.py::test_the_calibrated_constants_are_defined_only_in_the_contract`

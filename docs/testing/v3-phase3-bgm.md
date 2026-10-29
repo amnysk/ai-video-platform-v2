@@ -2,7 +2,7 @@
 
 各テストが何の事故・退行を止めるために存在するか。落ちたら実装を直す（テストを緩めない）。
 ADR-0077 の既存テスト（`docs/testing/bgm-render-rationale.md`）は変えていない。変えたのは次の 2 点だけで、いずれも ADR-0083 の
-設計変更（Proposed）に伴う期待値の更新: (1) `tests/unit/test_bgm_ffmpeg_graph.py::EXPECTED_TAIL` の ducking の係数
+設計変更（Proposed）に伴う期待値の更新: (1) `tests/unit/test_bgm_ffmpeg_graph.py` の `EXPECTED_TAIL` の ducking の係数
 （threshold=0.03 ratio=9 → 0.1 / 3。実音声で発話中の BGM が声より約 25 LU 低く聞こえない状態を実測したため）、
 (2) 同ファイルの末尾に `source_offset_ms` のテストを追加。
 
