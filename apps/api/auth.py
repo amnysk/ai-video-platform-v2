@@ -3,7 +3,7 @@
 - 変更系（POST / PUT / PATCH / DELETE）は ``Authorization: Bearer <token>`` を要求する。
   読み取り（GET 等）は開けたまま（運用者・監視・healthcheck が使い、データの変更・課金・投稿を
   起こさない）。
-- トークンは repo 外の 0600 のファイル（``Settings.api_tokens_file`` = ``AVP_API_TOKENS_FILE``）から
+- トークンは repo 外の 0600 のファイル（``Settings.api_tokens_file`` = ``AVP_API_TOKENS_PATH``）から
   読む。1 行 1 件 ``owner:<token>`` / ``agent:<token>``（空行と ``#`` 行は無視）。32 文字以上。
 - **未設定・読めない・壊れている・他者が読める権限なら、変更系を全拒否（503）**。
   誤設定で無認証に倒れない。
@@ -17,9 +17,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-import os
-import stat
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated
@@ -30,12 +28,12 @@ from apps.api.dependencies import get_settings
 from contracts.approval import ApproverKind
 from contracts.log_contract import EventName
 from domain.quality.approval import UploadApprover
+from infrastructure.api_tokens import TOKEN_MIN_LENGTH, read_token_file
 from infrastructure.config import Settings
 from infrastructure.logging.emit import emit, log_guard
 
 logger = logging.getLogger("avp.api.auth")
 
-TOKEN_MIN_LENGTH = 32
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _BEARER = "Bearer "
 
@@ -75,37 +73,29 @@ def _refuse(reason: str) -> ApiTokens:
     return ApiTokens()
 
 
-def load_api_tokens(path: str | None) -> ApiTokens:
-    """token ファイルを読む。どんな不備でも例外にせず、空（= 未設定 = 全拒否）を返す。"""
+def load_api_tokens(path: str | None, owner_path: str | None = None) -> ApiTokens:
+    """token ファイルを読む。どんな不備でも例外にせず、空（= 未設定 = 全拒否）を返す。
+
+    ``owner_path``（``AVP_API_OWNER_TOKEN_PATH``）を設定すると、owner token は
+    そのファイルからだけ読む。
+    その場合、通常のファイルに ``owner:`` 行があれば拒否する（owner token をエージェントが読める
+    ファイルに残さない / ADR-0080 §B）。owner ファイルが設定されているのに読めないときも全拒否。
+    """
+    main = read_token_file(path)
     if not path:
         return ApiTokens()
-    try:
-        info = os.stat(path)
-    except OSError:
-        return _refuse("not readable")
-    if not stat.S_ISREG(info.st_mode):
-        return _refuse("not a regular file")
-    if info.st_mode & 0o077:
-        return _refuse("readable by group/others (must be 0600)")
-    try:
-        with open(path, encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
-    except (OSError, UnicodeDecodeError):
-        return _refuse("not readable")
-    pairs: list[tuple[Actor, str]] = []
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        name, sep, token = line.partition(":")
-        try:
-            actor = Actor(name.strip())
-        except ValueError:
-            return _refuse("unknown actor")
-        token = token.strip()
-        if not sep or len(token) < TOKEN_MIN_LENGTH:
-            return _refuse("malformed or too short token")
-        pairs.append((actor, token))
+    if main.problem is not None:
+        return _refuse(main.problem) if main.problem != "absent" else ApiTokens()
+    pairs = [(Actor(name), token) for name, token in main.entries]
+    if owner_path:
+        owner = read_token_file(owner_path)
+        if owner.problem is not None:
+            return _refuse(f"owner token file: {owner.problem}")
+        if any(actor is Actor.OWNER for actor, _t in pairs):
+            return _refuse("owner token found in the shared file while an owner file is configured")
+        if any(name != "owner" for name, _t in owner.entries):
+            return _refuse("owner token file may hold only owner tokens")
+        pairs += [(Actor(name), token) for name, token in owner.entries]
     if len({t for _a, t in pairs}) != len(pairs):
         return _refuse("a token is used twice")
     return ApiTokens.from_pairs(pairs)
@@ -123,17 +113,26 @@ def authenticate(authorization: str | None, tokens: ApiTokens) -> Actor | None:
     return matched
 
 
-def get_api_tokens(settings: Annotated[Settings, Depends(get_settings)]) -> ApiTokens:
-    """リクエストごとにファイルを読む（鍵の差し替えが再起動なしで効く。小さなファイル）。"""
-    return load_api_tokens(settings.api_tokens_file)
+TokenSource = Callable[[], ApiTokens]
+
+
+def get_api_token_source(settings: Annotated[Settings, Depends(get_settings)]) -> TokenSource:
+    """token を読む関数を返す。**読むのは変更系のときだけ**。
+
+    GET ではファイルに触れず、ログも出さない。
+
+    呼ぶたびにファイルを読む（鍵の差し替えが再起動なしで効く。小さなファイル）。
+    """
+    return lambda: load_api_tokens(settings.api_tokens_file, settings.api_owner_token_file)
 
 
 async def require_api_actor(
-    request: Request, tokens: Annotated[ApiTokens, Depends(get_api_tokens)]
+    request: Request, source: Annotated[TokenSource, Depends(get_api_token_source)]
 ) -> Actor | None:
     """変更系ルートの認証。読み取りは通す（None）。未設定は 503、不正は 401。"""
     if request.method in SAFE_METHODS:
         return None
+    tokens = source()
     if tokens.is_empty():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -184,8 +183,9 @@ __all__ = [
     "ApiActor",
     "ApiTokens",
     "authenticate",
+    "TokenSource",
+    "get_api_token_source",
     "get_upload_approver",
-    "get_api_tokens",
     "load_api_tokens",
     "require_api_actor",
 ]

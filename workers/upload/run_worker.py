@@ -26,6 +26,7 @@ from infrastructure.config import Settings
 from infrastructure.db.repositories import OperationalSwitchRepository
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.logging.temporal import worker_interceptors
+from infrastructure.music.credits import BgmCreditSource
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
@@ -161,6 +162,7 @@ async def main() -> None:
             uploads_paused=uploads_paused_switch(settings, session_factory),
             chunk_bytes=uploader.chunk_bytes,
             run_inspector=TemporalWorkflowRunInspector(client),
+            credit_source=BgmCreditSource(store, session_factory),
         )
         state, media = build_workers(client, activities)
         logger.info(

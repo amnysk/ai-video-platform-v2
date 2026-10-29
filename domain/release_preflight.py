@@ -21,9 +21,11 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Protocol
 
+from contracts.approval import ApproverKind
 from contracts.ci import CI_GATE_JOB_NAME
 from contracts.provider_health import BudgetStatus
 from contracts.release import (
+    FEATURE_FLAG_ENV_KEYS,
     STAGING_DB_NAME,
     STAGING_ENVIRONMENT_MARK,
     STAGING_TEMPORAL_NAMESPACE,
@@ -98,6 +100,7 @@ CHECK_BACKUP = "backup_freshness"
 CHECK_SERVICE_HEALTH = "service_health"
 CHECK_REPLAY = "replay_evidence"
 CHECK_APPROVAL = "owner_approval"
+CHECK_API_TOKENS = "api_token_file"
 
 CHECK_AT_TARGET = "containers_at_target"
 CHECK_POLLERS = "worker_pollers"
@@ -120,6 +123,7 @@ PRE_DEPLOY_REQUIRED: tuple[str, ...] = (
     CHECK_SERVICE_HEALTH,
     CHECK_BACKUP,
     CHECK_REPLAY,
+    CHECK_API_TOKENS,
     CHECK_APPROVAL,
 )
 POST_DEPLOY_REQUIRED: tuple[str, ...] = (
@@ -221,6 +225,21 @@ class ReservationView:
 
 
 @dataclass(frozen=True)
+class ApiTokenProbe:
+    """API の token ファイルの状態（token の中身は含まない。ADR-0080 §B）。"""
+
+    path: str
+    exists: bool
+    problem: str | None
+    mode: int | None
+    uid: int | None
+    #: API コンテナの実行 UID（``AVP_UID``）。ファイルの所有者がこれでないと 0600 のため読めない
+    expected_uid: int | None
+    #: 読めた token の actor（``owner`` / ``agent``）。owner 別ファイルがあれば合算
+    actors: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Report:
     target_sha: str
     mode: str
@@ -246,6 +265,8 @@ class Collectors(Protocol):
     def pending_reservation_count(self) -> int: ...
     def pending_reservations(self) -> Sequence[ReservationView]: ...
     def paid_budget_setting(self) -> str | None: ...
+    def feature_flag_settings(self) -> Mapping[str, str | None]: ...
+    def api_token_probe(self) -> ApiTokenProbe: ...
     def unhealthy_services(self) -> Sequence[str]: ...
     def schedule_states(self) -> Mapping[str, Mapping[str, object]]: ...
     def required_queues(self) -> Sequence[str]: ...
@@ -359,6 +380,7 @@ def run_preflight(req: Request, c: Collectors, now: datetime) -> Report:
         results.append(_guard(CHECK_SERVICE_HEALTH, lambda: _check_service_health(c)))
         results.append(_guard(CHECK_BACKUP, lambda: _check_backup(req, c, now)))
         dependent(CHECK_REPLAY, lambda: _check_replay(req, c, now))
+        results.append(_guard(CHECK_API_TOKENS, lambda: _check_api_tokens(c)))
         dependent(CHECK_APPROVAL, lambda: _check_approval(req, c, now))
         required = PRE_DEPLOY_REQUIRED
     if target_box[0] is not None:
@@ -1446,6 +1468,9 @@ def _check_approval(req: Request, c: Collectors, now: datetime) -> CheckResult:
     kind = _approval_kind(doc)
     if isinstance(kind, CheckResult):
         return kind
+    flags_on = _check_flags_against_approval(kind, doc, c)
+    if isinstance(flags_on, CheckResult):
+        return flags_on
     if not _bounded(req.evidence_max_age_hours, MAX_EVIDENCE_MAX_AGE_HOURS):
         return _unknown(
             CHECK_APPROVAL,
@@ -1478,6 +1503,7 @@ def _check_approval(req: Request, c: Collectors, now: datetime) -> CheckResult:
         {
             "approver_kind": kind.kind.value,
             "approval_ref_fingerprint": _sha256(kind.reference)[:16],
+            "flags_on": list(flags_on),
             **({"delegated_by": kind.delegated_by} if kind.delegated_by else {}),
         },
     )
@@ -1492,7 +1518,13 @@ def _approval_kind(doc: Mapping[str, Any]) -> ApprovalReference | CheckResult:
     declared = doc.get("approver_kind")
     if declared is not None and declared != ref.kind.value:
         return _unknown(CHECK_APPROVAL, "approver_kind contradicts the kind stated by approval_ref")
-    enables = doc.get("enables", [])
+    if "enables" not in doc:
+        return _unknown(
+            CHECK_APPROVAL,
+            "enables is required: list the owner gates this release opens "
+            "(an explicit [] means a flags-off deploy)",
+        )
+    enables = doc["enables"]
     if not isinstance(enables, list) or not all(isinstance(g, str) for g in enables):
         return _unknown(CHECK_APPROVAL, "enables must be a list of owner-gate names")
     gates: list[OwnerGate] = []
@@ -1511,6 +1543,85 @@ def _approval_kind(doc: Mapping[str, Any]) -> ApprovalReference | CheckResult:
                 f"{gate.value} needs the owner's own approval; this one is {ref.kind.value}",
             )
     return ref
+
+
+_OFF_VALUES = frozenset({"", "false", "0", "no", "off", "f", "n"})
+
+
+def flag_is_on(raw: str | None) -> bool:
+    """設定値が ON か。明確な OFF 以外は ON として扱う（読み違えを OFF に倒さない）。"""
+    return raw is not None and raw.strip().lower() not in _OFF_VALUES
+
+
+def _check_flags_against_approval(
+    ref: ApprovalReference, doc: Mapping[str, Any], c: Collectors
+) -> CheckResult | tuple[str, ...]:
+    """対象環境で実際に ON の新機能 flag を、承認の種別・宣言と突き合わせる。
+
+    自己申告（``enables``）を信用しない。
+    """
+    values = c.feature_flag_settings()
+    on = tuple(k for k in FEATURE_FLAG_ENV_KEYS if flag_is_on(values.get(k)))
+    if not on:
+        return on
+    names = ", ".join(on)
+    if ref.kind is not ApproverKind.OWNER:
+        return CheckResult(
+            CHECK_APPROVAL,
+            Status.BLOCKED,
+            f"new-feature flag(s) ON in the target environment ({names}): turning a feature on "
+            f"needs the owner's own approval; this one is {ref.kind.value}",
+            {"flags_on": list(on)},
+        )
+    if OwnerGate.ENABLE_NEW_FEATURE.value not in doc["enables"]:
+        return CheckResult(
+            CHECK_APPROVAL,
+            Status.BLOCKED,
+            f"new-feature flag(s) ON in the target environment ({names}) but the approval does "
+            f"not declare {OwnerGate.ENABLE_NEW_FEATURE.value} in enables",
+            {"flags_on": list(on)},
+        )
+    return on
+
+
+def _check_api_tokens(c: Collectors) -> CheckResult:
+    """API の token ファイルが在り、API が受け付ける権限・所有者・内容か（読み取りのみ）。"""
+    p = c.api_token_probe()
+    if not p.exists:
+        return CheckResult(
+            CHECK_API_TOKENS,
+            Status.BLOCKED,
+            f"api token file absent ({p.path or 'no path'}): every mutating API route would "
+            "answer 503 after the deploy (docs/operations/api-auth.md)",
+        )
+    if p.problem is not None:
+        return CheckResult(
+            CHECK_API_TOKENS, Status.BLOCKED, f"api token file unusable ({p.path}): {p.problem}"
+        )
+    if p.mode is None or p.mode & 0o077:
+        return CheckResult(
+            CHECK_API_TOKENS, Status.BLOCKED, f"api token file {p.path} must be 0600"
+        )
+    if p.expected_uid is not None and p.uid != p.expected_uid:
+        return CheckResult(
+            CHECK_API_TOKENS,
+            Status.BLOCKED,
+            f"api token file {p.path} is owned by uid {p.uid}, not the container uid "
+            f"{p.expected_uid} (0600: the API could not read it)",
+        )
+    missing = sorted({"owner", "agent"} - set(p.actors))
+    if missing:
+        return CheckResult(
+            CHECK_API_TOKENS,
+            Status.BLOCKED,
+            f"api token file lacks a token for: {', '.join(missing)}",
+        )
+    return CheckResult(
+        CHECK_API_TOKENS,
+        Status.PASS,
+        f"api token file {p.path} is 0600 with owner and agent tokens",
+        {"actors": sorted(p.actors), "mode": f"{p.mode:o}"},
+    )
 
 
 # ---- deploy 後

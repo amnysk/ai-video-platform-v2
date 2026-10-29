@@ -7,8 +7,13 @@
 
 既存の表・制約・索引・列には触れない（旧コード e3c9555 はこれらの表を知らないまま動く）。
 語彙は literal で凍結する（履歴の値。編集しない）。PostgreSQL では追記専用を UPDATE 拒否の
-トリガで強制し、有効期間（24h 以内）の CHECK を足す（SQLite は区間演算とトリガを使わない。
-テスト用の DB だけ）。
+トリガ、DELETE / TRUNCATE 拒否のトリガで強制し、有効期間（24h 以内）の CHECK を足す
+（SQLite は区間演算とトリガを使わない。テスト用の DB だけ）。
+
+episode への外部キーは ``ON DELETE RESTRICT``（追記専用の監査記録を episode の削除で巻き込まない。
+episode を削除するコードは無い。CASCADE のままでも DELETE 拒否のトリガに当たって失敗するだけなので、
+意図を FK に書く）。承認の報告への外部キーは episode_id も含める
+（別 episode の報告を承認できない）。
 
 downgrade は行が残っていれば何も変えずに拒否する（監査記録を黙って消さない / ADR-0057 と同じ）。
 
@@ -22,6 +27,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
+# contract-migration: approved ADR-0081
 revision: str = "0019"
 down_revision: str | None = "0018"
 branch_labels = None
@@ -46,7 +52,7 @@ def _in(values: tuple[str, ...]) -> str:
 
 
 def _episode_fk() -> sa.ForeignKey:
-    return sa.ForeignKey("episodes.id", ondelete="CASCADE")
+    return sa.ForeignKey("episodes.id", ondelete="RESTRICT")
 
 
 def _created_at() -> sa.Column:
@@ -150,7 +156,9 @@ def upgrade() -> None:
             name="ck_quality_reports_hash_length",
         ),
         sa.CheckConstraint("expires_at > generated_at", name="ck_quality_reports_expiry"),
-        sa.UniqueConstraint("id", "final_video_sha256", name="uq_quality_reports_id_sha"),
+        sa.UniqueConstraint(
+            "id", "episode_id", "final_video_sha256", name="uq_quality_reports_id_episode_sha"
+        ),
     )
     op.create_index("ix_quality_reports_subject", REPORTS, ["episode_id", "final_video_sha256"])
 
@@ -173,8 +181,12 @@ def upgrade() -> None:
             "approved_verdict = 'review'", name="ck_quality_manual_approvals_verdict"
         ),
         sa.ForeignKeyConstraint(
-            ["report_id", "final_video_sha256"],
-            ["quality_reports.id", "quality_reports.final_video_sha256"],
+            ["report_id", "episode_id", "final_video_sha256"],
+            [
+                "quality_reports.id",
+                "quality_reports.episode_id",
+                "quality_reports.final_video_sha256",
+            ],
             name="fk_quality_manual_approvals_report",
         ),
     )
@@ -213,6 +225,48 @@ def _postgres_guards() -> None:
         "BEFORE UPDATE ON quality_manual_approvals "
         "FOR EACH ROW EXECUTE FUNCTION quality_records_reject_update()"
     )
+    # DELETE / TRUNCATE も拒否する（行ごと / 文ごと）。DROP TABLE は downgrade のため止めない。
+    # 走査器は TRUNCATE の語を破壊的と数えるが、ここは拒否するトリガを作る文（下の marker）
+    op.execute(
+        "CREATE TRIGGER quality_check_records_no_delete "
+        "BEFORE DELETE ON quality_check_records "
+        "FOR EACH ROW EXECUTE FUNCTION quality_records_reject_update()"
+    )
+    op.execute(
+        "CREATE TRIGGER quality_check_records_no_truncate "
+        "BEFORE TRUNCATE ON quality_check_records "
+        "FOR EACH STATEMENT EXECUTE FUNCTION quality_records_reject_update()"
+    )
+    op.execute(
+        "CREATE TRIGGER quality_usage_declarations_no_delete "
+        "BEFORE DELETE ON quality_usage_declarations "
+        "FOR EACH ROW EXECUTE FUNCTION quality_records_reject_update()"
+    )
+    op.execute(
+        "CREATE TRIGGER quality_usage_declarations_no_truncate "
+        "BEFORE TRUNCATE ON quality_usage_declarations "
+        "FOR EACH STATEMENT EXECUTE FUNCTION quality_records_reject_update()"
+    )
+    op.execute(
+        "CREATE TRIGGER quality_reports_no_delete "
+        "BEFORE DELETE ON quality_reports "
+        "FOR EACH ROW EXECUTE FUNCTION quality_records_reject_update()"
+    )
+    op.execute(
+        "CREATE TRIGGER quality_reports_no_truncate "
+        "BEFORE TRUNCATE ON quality_reports "
+        "FOR EACH STATEMENT EXECUTE FUNCTION quality_records_reject_update()"
+    )
+    op.execute(
+        "CREATE TRIGGER quality_manual_approvals_no_delete "
+        "BEFORE DELETE ON quality_manual_approvals "
+        "FOR EACH ROW EXECUTE FUNCTION quality_records_reject_update()"
+    )
+    op.execute(
+        "CREATE TRIGGER quality_manual_approvals_no_truncate "
+        "BEFORE TRUNCATE ON quality_manual_approvals "
+        "FOR EACH STATEMENT EXECUTE FUNCTION quality_records_reject_update()"
+    )
     # contracts.quality.MAX_REPORT_VALIDITY と同値のリテラル（一致は契約テストが固定する）
     op.execute(
         "ALTER TABLE quality_check_records ADD CONSTRAINT ck_quality_check_records_validity "
@@ -235,6 +289,8 @@ def downgrade() -> None:
     if bind.dialect.name == "postgresql":
         for table in TABLES:
             op.execute(f"DROP TRIGGER {table}_append_only ON {table}")
+            op.execute(f"DROP TRIGGER {table}_no_delete ON {table}")
+            op.execute(f"DROP TRIGGER {table}_no_truncate ON {table}")
         op.execute("DROP FUNCTION quality_records_reject_update()")
     for index, table in (
         ("ix_quality_manual_approvals_subject", APPROVALS),

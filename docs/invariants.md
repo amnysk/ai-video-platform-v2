@@ -1355,13 +1355,34 @@ ADR-0084 が既存 Activity の内側へ結線した。OFF の同一性は INV-1
 / `tests/unit/test_api_auth.py::test_every_authenticated_mutation_logs_its_actor_without_the_token`
 / `tests/unit/test_api_auth.py::test_every_operator_script_that_posts_to_the_api_sends_a_token`
 
-### INV-125 品質ゲート ON の手動投稿は、どのトークンでも BLOCK を迂回できず、REVIEW を承認できるのは owner トークンだけ
+### INV-125 品質ゲート ON の手動投稿は、どのトークンでも BLOCK を迂回できず、REVIEW の承認は owner トークンの要求に結び付く（意図の記録）
 `AVP_QUALITY_GATE_ENFORCE` ON のとき、`POST /episodes/{id}/upload` は BLOCK・レポート作成失敗を 409 にし（owner/agent
 どちらのトークンでも）、REVIEW は owner トークンのときだけ許可して actor 付きでログに残す。agent トークンの REVIEW は
 409 `quality: review_requires_owner`。flag OFF の挙動は変えない（ADR-0076）。
+**これは意図の記録であって強制ではない**: owner と agent の token が同じファイルにあり、エージェントの OS ユーザーが
+読めるなら、エージェントは owner token を使える。owner token を別ファイル（`AVP_API_OWNER_TOKEN_PATH`）に置き、
+エージェントが読めない権限にした構成だけが実効を持つ（docs/operations/api-auth.md の「残るリスク」）。BLOCK を
+迂回できないこと（トークンの種別に依らない）は強制である。
 **機械検査**: `tests/unit/test_api_auth.py::test_manual_upload_cannot_bypass_a_block_with_any_token`
 / `tests/unit/test_api_auth.py::test_review_is_approved_by_the_owner_token_but_never_by_the_agent_token`
 / `tests/unit/test_api_auth.py::test_a_passing_report_lets_the_agent_token_upload`
+
+（INV-123 追補）release 承認の `enables` は必須（明示的な空 = 新機能 OFF）。preflight は対象環境の `.env` の新機能 flag
+（`contracts/release.py::FEATURE_FLAG_ENV_KEYS`: `AVP_QUALITY_GATE_ENFORCE` / `BGM_ENABLED` / `GEO_MAPS_ENABLED` /
+`AVP_UPLOAD_DESCRIPTION_COMPOSED`）を読み、1 つでも ON なら委任された承認を BLOCKED にする。
+**機械検査**: `tests/unit/test_release_feature_flags.py::test_enables_is_mandatory_even_for_an_owner_approval`
+/ `tests/unit/test_release_feature_flags.py::test_a_delegated_approval_is_blocked_when_any_flag_is_on_in_the_target`
+/ `tests/unit/test_release_feature_flags.py::test_an_owner_approval_with_a_flag_on_must_declare_enable_new_feature`
+/ `tests/unit/test_release_collectors_flags_and_tokens.py::test_a_process_environment_that_differs_from_the_dotenv_is_unknown`
+
+（INV-124 追補）deploy 前の release preflight は API の token ファイルの存在・0600・所有者（`AVP_UID`）・owner と agent の
+token を確かめる。compose が渡す。読むのは変更系のときだけ。owner を別ファイルにしたとき、共有ファイルの `owner:` 行は拒否。
+**機械検査**: `tests/unit/test_release_api_token_check.py::test_an_absent_file_blocks_the_deploy`
+/ `tests/unit/test_release_api_token_check.py::test_a_file_the_api_would_reject_blocks_the_deploy`
+/ `tests/contract/test_api_token_wiring.py::test_the_secret_directory_is_mounted_read_only_with_a_safe_default`
+/ `tests/unit/test_api_auth.py::test_with_an_owner_file_an_owner_token_in_the_shared_file_is_refused`
+/ `tests/unit/test_api_auth.py::test_read_requests_never_read_the_token_file_or_log_about_it`
+/ `tests/contract/test_apptest_project_pattern.py::test_run_e2e_uses_the_same_prefix_and_pattern`
 
 ## AH. 品質検査の記録・必須の集合・手動承認（ADR-0081。INV-126〜132。`AVP_QUALITY_GATE_ENFORCE` の背後）
 
@@ -1608,3 +1629,47 @@ Render は sha256 検証済みの `render_font_path`（CJK）のバイト列で�
 / `tests/unit/test_geo_p3_infra.py::test_japanese_labels_pass_with_the_pinned_cjk_font_and_the_font_is_in_the_identity`
 / `tests/unit/test_geo_p3_infra.py::test_the_base_caption_is_part_of_the_layout`
 / `tests/unit/test_geo_p3_infra.py::test_a_basemap_changes_the_image_and_its_identity_only_when_given`
+
+## AK. BGM・地図の品質検査の結線（ADR-0086。INV-146〜148。既存 3 flag の背後、新しい flag なし）
+
+### INV-146 使用宣言は ENFORCE が ON のときだけ、final_video の行を記録した後に書かれ、書けなくても描画は成功する
+`AVP_QUALITY_GATE_ENFORCE` が OFF（既定）なら writer が渡されず、宣言も証跡の追加も DB / MinIO への書き込みは 1 つも増えない。
+ON では BGM（`applied` なら used・証跡の sha256、それ以外は not used）と MAP（地図の指定があれば拒否された地図も used、
+無ければ not used）を現行の対象 hash・入力 hash に結び付けて書く。書けなかった宣言は型名だけをログに出し、描画は失敗しない
+（宣言が無ければ gate は REVIEW）。発話中の声と BGM の差は BGM が適用された描画だけが測り、測れなければ `speech=None`
+（REVIEW）。
+**機械検査**: `tests/unit/test_render_usage_declarations.py::test_without_a_writer_nothing_is_declared`
+/ `tests/unit/test_render_usage_declarations.py::test_a_map_is_declared_used_even_when_it_was_refused`
+/ `tests/unit/test_render_usage_declarations.py::test_a_failing_declaration_does_not_fail_the_render`
+/ `tests/unit/test_render_usage_declarations.py::test_a_unmeasurable_margin_keeps_the_render_and_leaves_the_evidence_unmeasured`
+/ `tests/unit/test_render_usage_declarations.py::test_no_speech_probe_or_no_bgm_means_no_measurement`
+
+### INV-147 BGM・地図の検査は、宣言と結び付いた証跡を読んだ producer だけが記録し、読めなければ記録せず REVIEW
+証跡の key は（媒体 sha256, 入力 hash）から導く（`bgm_evidence_key` / `geo_evidence_key`）。producer は純関数を包むだけで、
+証跡が無い・読めない・別の動画のもの・カタログが無いは例外（= 記録されない = REVIEW、PASS に倒れない）。ライセンスが
+描画後に失効、発話余裕が足りない、地図が BLOCK は BLOCK。再描画で別 hash になった動画は古い宣言・記録を引き継がない。
+`bgm_enabled` / `geo_maps_enabled` の読み手は増えない。
+**機械検査**: `tests/unit/test_quality_wiring_gate.py::test_with_everything_on_and_fresh_records_the_episode_is_admitted`
+/ `tests/unit/test_quality_wiring_gate.py::test_bgm_used_but_its_check_cannot_be_recorded_is_review`
+/ `tests/unit/test_quality_wiring_gate.py::test_a_refused_map_stops_the_upload`
+/ `tests/unit/test_quality_wiring_gate.py::test_a_re_rendered_video_does_not_inherit_the_old_declarations_or_records`
+/ `tests/unit/test_quality_wiring_gate.py::test_a_license_revoked_after_rendering_is_blocked`
+/ `tests/unit/test_review_p3_unwired_quality.py::test_review_production_gate_has_bgm_and_map_producers`
+/ `tests/architecture/test_geo_boundaries.py::test_the_setting_is_read_only_where_workers_are_assembled`
+/ `tests/architecture/test_bgm_render_boundaries.py::test_the_setting_key_is_read_only_where_the_worker_is_assembled`
+
+### INV-148 gate が lint する説明欄と upload が送る説明欄は、BGM クレジットを含めて同一の読み口から作られる
+両方が `BgmCreditSource.credit_lines` の結果を `build_upload_metadata(credits=...)` に渡す。説明欄の構成 flag が OFF なら
+読まない（従来と同一）。BGM が無ければ `()`、証跡があるのに読めなければ例外（黙って落とさない）。
+**機械検査**: `tests/unit/test_quality_wiring_gate.py::test_the_linted_description_equals_the_uploaded_one`
+/ `tests/unit/test_quality_wiring_gate.py::test_credit_lines_are_not_read_while_the_description_flag_is_off`
+/ `tests/unit/test_quality_wiring_gate.py::test_credit_lines_come_from_the_evidence_when_the_flag_is_on`
+/ `tests/unit/test_quality_wiring_gate.py::test_an_unreadable_evidence_is_an_error_not_an_empty_credit`
+
+### 補足（INV-126 の拡張。ADR-0086 §6）追記専用は DELETE / TRUNCATE も拒否し、承認は同じ episode の報告にしか結べない
+migration 0019（未適用のため編集）が 4 表に DELETE / TRUNCATE 拒否のトリガを足し、episode への FK は RESTRICT、
+承認の報告への複合 FK は `episode_id` を含む。
+**機械検査**: `tests/contract/test_migration_0019_quality.py::test_every_table_rejects_delete_and_truncate_too`
+/ `tests/contract/test_migration_0019_quality.py::test_episode_foreign_keys_restrict_and_the_approval_fk_includes_the_episode`
+/ `tests/integration/test_quality_records_postgres.py::test_delete_and_truncate_are_refused_on_every_table`
+/ `tests/integration/test_quality_records_postgres.py::test_an_approval_cannot_point_at_another_episodes_report`

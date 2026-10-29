@@ -25,6 +25,8 @@ from infrastructure.geo.service import GeoRenderService
 from infrastructure.geo.source import LocalDirectoryGeoSource
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.media.probe import PillowAvMediaProbe
+from infrastructure.quality.wiring import build_quality_record_writer
+from infrastructure.render.bgm_intelligibility import FfmpegSpeechMarginProbe
 from infrastructure.render.bgm_source import LocalDirectoryBgmSource
 from infrastructure.render.ffmpeg_engine import FfmpegRenderEngine
 from infrastructure.render.loudness import FfmpegLoudnessProbe
@@ -103,9 +105,12 @@ async def main() -> None:
     # ADR-0077: 設定 ON のときだけ供給元と測定を渡す。OFF は導入前と同一
     bgm_source = None
     loudness_probe = None
+    speech_probe = None
     if settings.bgm_enabled and settings.render_ffmpeg_path:
         bgm_source = LocalDirectoryBgmSource(Path(settings.ai_video_work_root) / "bgm")
         loudness_probe = FfmpegLoudnessProbe(settings.render_ffmpeg_path)
+        # ADR-0086 §3: 発話中の声と BGM の差を描画の中で実測する（BGM_ENABLED の背後）
+        speech_probe = FfmpegSpeechMarginProbe(settings.render_ffmpeg_path)
     # ADR-0084: 設定 ON のときだけ地図の結線を渡す。OFF は導入前と同一
     geo = None
     if settings.geo_maps_enabled:
@@ -117,8 +122,9 @@ async def main() -> None:
             encoder=FfmpegMapClipEncoder(settings.render_ffmpeg_path),
             font_path=Path(settings.render_font_path),
         )
+    session_factory = session_factory_from_settings(settings)
     activities = RenderActivities(
-        session_factory=session_factory_from_settings(settings),
+        session_factory=session_factory,
         store=store,
         bucket=settings.minio_bucket,
         workdir=WorkDirectory(settings.ai_video_work_root),
@@ -134,6 +140,9 @@ async def main() -> None:
         bgm_source=bgm_source,
         loudness_probe=loudness_probe,
         geo=geo,
+        speech_probe=speech_probe,
+        # ADR-0086 §2: AVP_QUALITY_GATE_ENFORCE が ON のときだけ使用宣言を書く（OFF は None）
+        quality_writer=build_quality_record_writer(settings, session_factory),
     )
     state, media = build_workers(client, settings, activities)
     logger.info(
