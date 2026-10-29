@@ -61,7 +61,6 @@ from contracts.upload import (
     MarkerLookupState,
     YouTubeVideoMetadata,
     build_upload_receipt,
-    build_youtube_metadata,
     parse_upload_receipt,
     upload_marker,
     upload_timeout_seconds,
@@ -104,6 +103,7 @@ from domain.errors import (
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
 from domain.production.identity import idempotency_key
 from domain.upload.keys import compute_upload_key
+from domain.upload.metadata_builder import build_upload_metadata
 from domain.upload.ports import (
     UploadCompleted,
     UploadExpired,
@@ -441,13 +441,8 @@ class UploadActivities:
             destination_id=self._channel_id,
         )
         script = await self._source_script(episode_id, final)
-        metadata = build_youtube_metadata(
-            upload_key=upload_key,
-            title=script.title,
-            hook=script.hook,
-            narration=script.narration,
-            language=script.language,
-        )
+        # gate（品質検査）と同じ組み立て口。flag OFF では従来の呼び出しと同じ結果（ADR-0081 §5）
+        metadata = build_upload_metadata(upload_key=upload_key, script=script)
         self._heartbeat("inputs_resolved")
 
         latest = await self._latest_reservation(episode_id, upload_key)
