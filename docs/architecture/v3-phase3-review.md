@@ -238,3 +238,74 @@ ADR-0081 は今回の release で初めて入るので、e3c9555 には存在せ
 | Temporal replay（CI の 6 ファイル）+ `test_docs_contract` | 90 passed（replay 83 + docs contract 7） |
 | 隔離 integration（`run-e2e.sh`、`avp2-oslog-c-p3e`、`-m integration`） | **169 passed, 6 skipped**（rc=0、468 s）。skip 6 件は前回と同じ（`test_logging_collector_lua.py:43` docker が無い）。前回 166 → 169 の増分は wiring / audit の新しい integration（DELETE/TRUNCATE トリガ・FK） |
 | 本レビューの追加テスト | `test_review_p3_release_scan_0019.py` 1 **failed（意図。R1）**／`test_review_p3_unwired_quality.py`・`test_review_p3_token_to_approval_e2e.py` は緑 |
+
+---
+
+# Final verification（`d7a3f3f`、Sonnet E）
+
+`claude/v3-phase3-integration` @ `d7a3f3f` を `--no-ff` で merge（衝突なし）。差分 `ba1e895..d7a3f3f` の審査と、オフラインの実 preflight 走査、全スイートを実行した。
+
+## 差分の審査
+
+- **R1 解消**: 0019 から `BEFORE TRUNCATE` のトリガ 4 文と marker を外した（DELETE 拒否のトリガは残す）。TRUNCATE の拒否は「0020 に分ける」と ADR-0081 追補に記載（今回は出荷しない）。
+  `tests/unit/test_review_p3_release_scan_0019.py` が緑（実物の 0019 を使う）。副作用として、**TRUNCATE はまだ DB で拒否されない**（m3 の半分は 0020 待ち。UPDATE と DELETE は拒否される）。
+- **R2 解消（起動ガード）**: `infrastructure/music/guard.py::require_description_composition_for_bgm` を render と upload の `run_worker` が呼び、`BGM_ENABLED` が ON で `AVP_UPLOAD_DESCRIPTION_COMPOSED` が OFF なら `SystemExit`。テスト `test_bgm_credit_startup_guard.py`。
+  残る注意: ガードは各 container の環境変数を読む。`compose.yaml` はこの 3 flag のうち `BGM_ENABLED`（render 側）以外を渡さない（R3）ので、compose を編集して両方を渡さない限り BGM は起動できない = 安全側に倒れる。upload worker には `BGM_ENABLED` が渡らないため、upload 側のガードは compose の編集なしでは働かない（render 側のガードが先に止める）。
+
+## オフライン preflight 走査（本番に触れない）
+
+`RealCollectors(repo)` の git だけを読むメソッド（`migration_files` / `adr_text`）で `_check_migration(Request(target=d7a3f3f), deployed=e3c9555)` を実行:
+**`migration_compat PASS — 1 new migration(s), no contract change found`**。`e3c9555` は `d7a3f3f` の祖先（46 commit 先）で `ancestry` の前提も満たす。
+
+pre-deploy の必須チェック全 16 件と、通すために必要なこと（本番の状態は読んでいないので、環境依存のものは「deploy 時に判定」）:
+
+| チェック | 通せるか / 必要な所有者の作業 |
+|---|---|
+| `target_sha` | 40 桁 SHA を渡す（`d7a3f3f…` の全桁） |
+| `target_environment` | deploy 用 worktree の `.env` が本番（staging / `*_test` でない）を指すこと。deploy 時に判定 |
+| `worktree_clean` | release worktree が clean（`release/` は gitignore 済み） |
+| `ancestry` | **通る**（e3c9555 は祖先）。ff でない場合のみ `--allow-non-ff` が要る |
+| `ci` | **要作業**: ブランチを push し、`CI gate` が success になること（この環境の CI はまだ走っていない） |
+| `container_revisions` | 本番 container の revision label が e3c9555 であること。deploy 時に判定 |
+| `alembic` | 本番 DB が 0018 で、target の head が 0019（expand-only の前進）。deploy 時に判定 |
+| `migration_compat` | **通る**（上の実走査） |
+| `running_workflows` | 記録のみ（PASS） |
+| `provider_reservations` | 未照合の予約が 1 件でもあれば BLOCKED。あれば所有者の waiver（`OWNER-…`）か照合が要る。deploy 時に判定 |
+| `schedule_snapshot` | Schedule の状態を記録（deploy 前後で同一であることを事後検査） |
+| `service_health` | unhealthy な container が無いこと。deploy 時に判定 |
+| `backup_freshness` | **要作業**: `scripts/backup.py run` を実行して 24 時間以内の manifest（DB / MinIO / Temporal）を `--backup-manifest` で渡す |
+| `replay_evidence` | **要作業**: `docs/operations/staging.md` §5 の手順で replay 証跡 `release/evidence/<sha>-replay.json` を作る（72 時間以内）。CI 相当の replay テストはこの head で 83 件緑 |
+| `api_token_file` | **要作業**: 現時点で `~/.config/avp2/api` は存在しない（BLOCKED になる）。`tokens`（0600、`AVP_UID` 所有、`owner:` と `agent:` の行、各 32 文字以上）を作る。owner を別ファイルにするなら `AVP_API_OWNER_TOKEN_PATH` も |
+| `owner_approval` | **要作業**: 承認以外が PASS の preflight 出力を保存 → 所有者が `release/approvals/<sha>.json` を書く。`approval_ref` 必須、`enables` 必須（4 flag OFF なら `[]`）、`report_sha256`。flag を 1 つでも ON にして delegation で承認すると BLOCKED |
+
+## テスト結果（`d7a3f3f` + 本レビューの追加）
+
+| 検査 | 結果 |
+|---|---|
+| `ruff check .` / `ruff format --check .` | All checks passed / 1072 files already formatted |
+| `pyright` | 0 errors, 0 warnings |
+| `pytest tests/unit tests/contract tests/architecture` | **6399 passed**（0 failed。463 s。`test_review_p3_*` の 3 ファイルを含み全て緑） |
+| Temporal replay（CI の 6 ファイル） | 83 passed |
+| 隔離 integration（`run-e2e.sh`、`avp2-oslog-c-p3e`、`-m integration`） | **169 passed, 6 skipped**（rc=0、440 s）。skip 6 件は `test_logging_collector_lua.py:43`（runner に docker が無い）で前回と同じ。スタックは `down` 済み |
+
+## 未解決の所見（最終）
+
+| ID | 重大度 | 内容 |
+|---|---|---|
+| R3 | MINOR（機能を ON にする前に対応） | `compose.yaml` が container に渡す新機能 flag は `BGM_ENABLED` だけ。`AVP_QUALITY_GATE_ENFORCE` / `GEO_MAPS_ENABLED` / `AVP_UPLOAD_DESCRIPTION_COMPOSED` を ON にする手段が runbook に無く、preflight の flag 検出は `.env` しか見ない（compose override での ON は検出できない） |
+| R4 | MINOR | ENFORCE を ON にする前に描画済みの動画は使用宣言が無く、永久に REVIEW |
+| R5 | MINOR | preflight の `AVP_UID` 既定 1000（誤検知は安全側） |
+| R6 | MINOR | 追加の話者マージン測定の所要時間（長尺）は未計測 |
+| m3b | MINOR | TRUNCATE はまだ DB で拒否されない（0020 で対応予定） |
+| m5 | MINOR | `approver_id` が定数（`api-owner-token`） |
+| m6 | MINOR | 手動承認が workflow に渡らない（承認から起動の間に再描画が入ると hash がずれる窓） |
+| m8 | MINOR | integration ガードは `os.environ` だけを見る（`.env` は見ない） |
+| m9 | MINOR | `quality_reports` が呼び出しごとに増える（上限なし） |
+| M2 の限界 | 情報 | owner / agent は同一 OS ユーザーでは分離にならない（ADR-0080 に明記済み） |
+
+BLOCKER・MAJOR は残っていない。
+
+## 最終判定
+
+- **(a) flag すべて OFF の本番 deploy**: **安全。** コード上の互換（起動・replay・`render_input_hash`・upload・migration 0019 の expand-only・課金経路）に問題はなく、`migration_compat` は実走査で PASS。deploy の前に所有者が行う作業は上表の「要作業」（CI、バックアップ、replay 証跡、**API token ファイル**、承認記録に `approval_ref` と `enables: []`）。token ファイルが無いまま deploy すると変更系 API は 503（落ちはしない）。
+- **(b) 機能の完成度**: **BGM / 地図 / 品質ゲートは実装として完結**（B1・B2・M1・R1・R2 解消。実素材で話者マージン 14.8 LU・gate PASS・fal 0 回）。ただし本番で ON にするには R3（flag を container に渡す配線と、preflight が実効値を見ること）と R4（既存動画の扱い）の対応が要る。いずれも ON にする判断の前に行う運用/配線の作業で、OFF の deploy を妨げない。
