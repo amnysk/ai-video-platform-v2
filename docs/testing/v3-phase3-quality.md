@@ -143,3 +143,20 @@ Postgres 固有の保証は integration で固定する。
 | `test_with_the_flag_off_no_service_is_built_and_no_store_is_created` | INV-130 | OFF での MinIO クライアント生成 |
 | `test_with_the_flag_on_a_service_is_built_from_the_one_wiring_function` | worker と API が同じ組み立て口を使う | 結線の分岐 |
 | `test_no_branch_producers_are_registered_yet` | ADR-0081 §7: 登録点が 1 つで、今は空 | 登録点の見失い |
+
+## `tests/integration/test_quality_records_postgres.py`（隔離 PostgreSQL。Alembic で作ったスキーマ）
+
+層の理由: 追記専用トリガ・24h CHECK・`(report_id, sha)` の複合 FK・downgrade の拒否は **migration にしか無く
+PostgreSQL 固有**で、SQLite の unit では踏めない。gate の許可 / 拒否も、実の DB と実の render 出力で一度は確かめる
+（`deploy/logging/test/run-e2e.sh`。本番に触れない）。
+
+| テスト | リスク / 不変条件 | 捕まえるもの |
+|---|---|---|
+| `test_migration_0019_upgrade_and_downgrade_on_postgres` | INV-132: 0019 を当てても既存の全表の列・CHECK・索引・一意・FK が変わらない（旧コードが先に動く）。downgrade で戻り、トリガ関数も残らない | 既存表への副作用 / downgrade の取り残し |
+| `test_downgrade_refuses_while_audit_rows_exist` | 監査記録を黙って消さない | データ消失 |
+| `test_records_are_append_only_on_postgres` | INV-126: UPDATE が DB に拒否される。4 表すべてにトリガ | 記録の書き換えによる hash の付け替え |
+| `test_the_database_refuses_an_overlong_validity_and_duplicate_generations` | INV-126: 24h を超える期限・同じ世代の重複・未知の key を DB が拒否 | アプリのバグによる不正行 |
+| `test_an_approval_cannot_point_at_a_report_for_another_hash` | INV-129: 別 hash の報告への承認・未知の種別・空の承認者を DB が拒否 | 承認の取り違え |
+| `test_a_fresh_complete_set_is_admitted_end_to_end` | INV-127: 実 DB で、揃った新鮮な記録なら許可され、記録 2 件 + 報告 1 件が残る | 実 DB でだけ起きる不整合（型・時刻・JSON） |
+| `test_missing_declarations_are_refused_end_to_end` | INV-127 | 実 DB での fail-open |
+| `test_stale_and_foreign_records_are_refused_end_to_end` | INV-126: 別 hash・旧規則版・期限切れだけの BGM 検査は拒否。正しい新鮮な記録を足すと同じ gate が許可（対照） | 古さ以外が理由の誤拒否 / 古い記録での通過 |
