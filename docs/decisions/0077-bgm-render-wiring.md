@@ -66,7 +66,7 @@ BGM を混ぜた完成動画だけ、保存前に ffmpeg の `ebur128`（`peak=t
 
 BGM を使った完成動画ごとに `BgmRenderEvidence`（episode / input_hash / final_video sha256 / 曲ごとの source sha256 と
 license_evidence_hash / 実測ラウドネス / `credit_lines`）を MinIO に JSON として保存する（DDL 無し・新しい ArtifactType 無し・
-キーは `artifacts/{episode}/bgm_render_evidence/{sha}.json`）。保存は final_video の行を記録する**前**で、
+キーは `artifacts/{episode}/bgm_render_evidence/{結び付け id}.json`（ADR-0086 §1 で内容 hash から変更））。保存は final_video の行を記録する**前**で、
 証跡の無い BGM 入り動画は存在しない。`credit_lines` はカタログの原文（Wave 1 の `credits_for`）で、説明欄の agent は
 これを読む。説明欄に収まるかの BLOCK（`fit_credits`）は説明欄側の責務。
 

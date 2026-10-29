@@ -194,6 +194,6 @@ migration の語彙 literal（凍結値）と契約の enum の一致は `tests/
 
 1. migration 0019 が本番に適用済み（expand-only。適用だけでは何も変わらない）。
 2. worker が本 ADR の `QualityGateService` を結線したイメージで動いている（`run_worker`）。API も同様（`create_app` 本番用）。
-3. render が使用宣言を書く（BGM・地図の枝の統合後）。それまで ON は全件 REVIEW。
+3. render が使用宣言を書く — **ADR-0086 で結線済み**（ENFORCE が ON のとき render が宣言を書き、BGM・地図の producer が登録される）。ENFORCE を ON にする前に描画された動画は、再描画するまで REVIEW。
 4. 認証（`get_upload_approver`）が結線されている（手動 REVIEW の解放に必要）— 統合枝で結線済み。本番では API の token ファイル（ADR-0080 §B）が要る。
 5. 隔離環境の integration test（ON/OFF、stale/missing）が通っている。

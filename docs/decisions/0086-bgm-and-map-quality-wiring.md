@@ -81,6 +81,14 @@ API プロセスも同じ `build_quality_service` を使う。API からカタ�
 `credit_lines` も**読まない**（MinIO へ触れない。従来と同一）。ON で BGM が無い動画は 1 回の読み取り（無ければ `()`）。
 証跡があるのに読めない場合は例外: upload は進まず（再試行）、lint は記録されず REVIEW。
 
+### 6. migration 0019 の追記専用を DELETE / TRUNCATE まで広げる（INV-126 の補足）
+
+0019 は未適用なので編集する（追加の migration にしない）。4 表に DELETE / TRUNCATE 拒否のトリガを足し、episode への外部キーは
+`ON DELETE RESTRICT` にする（episode を削除するコードは無い。CASCADE のままでも DELETE 拒否のトリガに当たるので、意図を FK に
+書く）。承認 → 報告の複合 FK に `episode_id` を含め、別 episode の報告を承認できない。downgrade は行が無ければ従来どおり
+戻せる（トリガを外してから表を落とす）。release 走査器は TRUNCATE の語を破壊的と数えるので、ADR-0081（Accepted・0019 に言及）の
+marker で承認する（拒否する側のトリガを作る文であり、データには触れない）。
+
 ## 設定キーの grep（AGENTS.md §8）
 
 新しいキーは無い。既存キーの読み手を増やさない（`bgm_enabled` / `geo_maps_enabled` は既存の検査が読み手を固定している）:

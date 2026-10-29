@@ -38,8 +38,22 @@ def _upgrade_source() -> str:
     return ast.unparse(node)
 
 
-def test_release_preflight_scanner_finds_nothing_in_0019() -> None:
-    assert rp.scan_migration(MIGRATION.read_text(encoding="utf-8")) == []
+def test_release_preflight_scanner_finds_only_the_truncate_guard_triggers_in_0019() -> None:
+    """走査器は TRUNCATE の語を破壊的と数える。該当は「TRUNCATE を拒否するトリガ」の作成文だけで、
+    ADR-0081（Accepted・0019 に言及）の marker で承認されている。他の文は 1 つも拾われない。"""
+    text = MIGRATION.read_text(encoding="utf-8")
+    findings = rp.scan_migration(text)
+    assert {f.kind for f in findings} <= {"destructive"}
+    lines = text.splitlines()
+    for f in findings:
+        number = int(f.text.rsplit("line ", 1)[1].rstrip(")"))
+        statement = " ".join(lines[number - 1 : number + 2])
+        assert "BEFORE TRUNCATE ON" in statement, f
+    assert rp.contract_marker_numbers(text) == ["0081"]
+    adr = (REPO / "docs/decisions/0081-quality-check-records-and-required-set.md").read_text(
+        encoding="utf-8"
+    )
+    assert rp.adr_approves_migration(adr, "0019")
 
 
 def test_0019_follows_0018_and_upgrade_only_adds() -> None:
@@ -88,3 +102,25 @@ def test_every_table_gets_the_append_only_guard() -> None:
     text = MIGRATION.read_text(encoding="utf-8")
     for table in NEW_TABLES:
         assert re.search(rf"BEFORE UPDATE ON {table} ", text) or f"BEFORE UPDATE ON {table}" in text
+
+
+def test_every_table_rejects_delete_and_truncate_too() -> None:
+    """追記専用は UPDATE だけでなく DELETE / TRUNCATE も拒否する（ADR-0086 §6 / INV-126）。"""
+    module = _load()
+    source = MIGRATION.read_text(encoding="utf-8")
+    flat = re.sub(r'"\s*\n\s*"', "", source)
+    for table in NEW_TABLES:
+        assert f"CREATE TRIGGER {table}_no_delete BEFORE DELETE ON {table} " in flat, table
+        assert f"CREATE TRIGGER {table}_no_truncate BEFORE TRUNCATE ON {table} " in flat, table
+    # downgrade は同じトリガを外す（空の表なら戻せる）
+    downgrade = source.split("def downgrade", 1)[1]
+    assert "_no_delete" in downgrade and "_no_truncate" in downgrade
+    assert set(module.TABLES) == NEW_TABLES
+
+
+def test_episode_foreign_keys_restrict_and_the_approval_fk_includes_the_episode() -> None:
+    """episode の削除で監査記録を巻き込まない / 別 episode の報告を承認できない。"""
+    source = MIGRATION.read_text(encoding="utf-8")
+    assert 'ondelete="RESTRICT"' in source and 'ondelete="CASCADE"' not in source
+    assert '["report_id", "episode_id", "final_video_sha256"]' in source
+    assert "uq_quality_reports_id_episode_sha" in source

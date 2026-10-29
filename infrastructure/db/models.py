@@ -922,7 +922,7 @@ class QualityCheckRecordRow(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
     episode_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
     )
     final_video_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -966,7 +966,7 @@ class QualityUsageDeclarationRow(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
     episode_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
     )
     final_video_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -993,13 +993,15 @@ class QualityReportRow(Base):
         ),
         CheckConstraint("expires_at > generated_at", name="ck_quality_reports_expiry"),
         # 承認が (report_id, sha) で参照できるようにする（別 hash の報告への承認を作れない）
-        UniqueConstraint("id", "final_video_sha256", name="uq_quality_reports_id_sha"),
+        UniqueConstraint(
+            "id", "episode_id", "final_video_sha256", name="uq_quality_reports_id_episode_sha"
+        ),
         Index("ix_quality_reports_subject", "episode_id", "final_video_sha256"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
     episode_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
     )
     final_video_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1025,8 +1027,12 @@ class QualityManualApprovalRow(Base):
         CheckConstraint("length(approver_id) >= 1", name="ck_quality_manual_approvals_approver"),
         CheckConstraint("approved_verdict = 'review'", name="ck_quality_manual_approvals_verdict"),
         ForeignKeyConstraint(
-            ["report_id", "final_video_sha256"],
-            ["quality_reports.id", "quality_reports.final_video_sha256"],
+            ["report_id", "episode_id", "final_video_sha256"],
+            [
+                "quality_reports.id",
+                "quality_reports.episode_id",
+                "quality_reports.final_video_sha256",
+            ],
             name="fk_quality_manual_approvals_report",
         ),
         Index("ix_quality_manual_approvals_subject", "episode_id", "final_video_sha256"),
@@ -1034,7 +1040,7 @@ class QualityManualApprovalRow(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
     episode_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(), ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
     )
     report_id: Mapped[uuid.UUID] = mapped_column(Uuid(), nullable=False)
     final_video_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
