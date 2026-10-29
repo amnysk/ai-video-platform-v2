@@ -1,4 +1,4 @@
-"""gate の検査入力の供給: 技術 QA の分割と、upload と共有する説明欄の組み立て（ADR-0081 / INV-131）。
+"""gate の検査入力: 技術 QA の分割と、upload と共有する説明欄の組み立て（ADR-0081 / INV-131）。
 
 テストの理由は docs/testing/v3-phase3-quality.md。
 """

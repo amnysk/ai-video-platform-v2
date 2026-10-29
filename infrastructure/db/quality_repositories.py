@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -28,6 +29,7 @@ from contracts.quality import (
     QualityVerdict,
 )
 from contracts.quality_records import CheckKey, UsageFeature
+from contracts.states import ArtifactType
 from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.quality.records import (
     CheckSetDraft,
@@ -38,6 +40,7 @@ from domain.quality.records import (
     new_check_set,
 )
 from infrastructure.db.models import (
+    ArtifactMetadataRow,
     QualityCheckRecordRow,
     QualityManualApprovalRow,
     QualityReportRow,
@@ -106,11 +109,34 @@ def _usage_from_row(row: QualityUsageDeclarationRow) -> UsageDeclaration | None:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class CurrentFinalVideo:
+    """現行 final_video の 1 回の読み取り（対象 hash・入力 hash・本体の場所を同じ snapshot で）。"""
+
+    artifact_id: str
+    object_key: str
+    final_video_sha256: str
+    input_hash: str
+
+
 class QualityRecordRepository:
     """1 つの ``AsyncSession`` 上の読み書き。commit は呼び出し側。"""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def current_final_video(self, episode_id: str) -> CurrentFinalVideo | None:
+        """現行世代（``superseded_at IS NULL``）の final_video。世代交代した行は返らない。"""
+        stmt = select(ArtifactMetadataRow).where(
+            ArtifactMetadataRow.episode_id == _as_uuid(episode_id),
+            ArtifactMetadataRow.artifact_type == ArtifactType.FINAL_VIDEO.value,
+            ArtifactMetadataRow.scene_id.is_(None),
+            ArtifactMetadataRow.superseded_at.is_(None),
+        )
+        row = (await self._session.execute(stmt)).scalars().first()
+        if row is None:
+            return None
+        return CurrentFinalVideo(str(row.id), row.object_key, row.sha256, row.input_hash)
 
     async def list_check_sets(self, subject: CheckSubject) -> list[CheckSetRecord]:
         """この対象 hash の全世代・全規則版の行。鮮度の判断は呼び出し側（純関数）が行う。"""

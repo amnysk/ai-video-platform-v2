@@ -9,9 +9,12 @@ from functools import lru_cache
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.api.workflow_starter import TemporalWorkflowStarter, WorkflowStarter
+from domain.quality.approval import UploadApprover
 from domain.quality.deterministic import DEFAULT_PROVIDERS, CheckProvider
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.quality.service import QualityGateService
+from infrastructure.quality.wiring import build_quality_service
 
 
 @lru_cache(maxsize=1)
@@ -34,3 +37,26 @@ def get_quality_providers() -> Sequence[CheckProvider]:
 
 def get_quality_clock() -> Callable[[], datetime]:
     return lambda: datetime.now(UTC)
+
+
+def get_quality_service() -> QualityGateService | None:
+    """検査記録に基づく品質判定（ADR-0081）。**既定は None**（従来の ADR-0076 経路）。
+
+    本番の app だけが ``create_app(wire_quality_service=True)`` で
+    ``build_wired_quality_service`` に差し替える。テストは override する。
+    """
+    return None
+
+
+@lru_cache(maxsize=1)
+def build_wired_quality_service() -> QualityGateService | None:  # pragma: no cover - 実接続経路
+    settings = get_settings()
+    return build_quality_service(settings, session_factory_from_settings(settings))
+
+
+def get_upload_approver() -> UploadApprover | None:
+    """手動投稿を指示した承認者（ADR-0081 §9）。**既定は None = 不明 = REVIEW を解放しない**。
+
+    認証が結線されたら、この依存を差し替えて ``UploadApprover(kind, approver_id)`` を返す。
+    """
+    return None

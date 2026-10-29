@@ -87,3 +87,59 @@ Postgres 固有の保証は integration で固定する。
 | `test_the_same_inputs_give_the_same_text_for_upload_and_gate` | INV-131: gate が lint するテキスト = 送るテキスト（決定性） | 非決定な組み立て |
 | `test_an_internal_id_in_the_narration_blocks_the_composed_description` | INV-90/131: 内部 ID を含む入力は組み立てが BLOCK（lint が見る） | 内部 ID の漏出 |
 | `test_reasons_used_for_technical_qa_are_the_gate_defects` | 理由コードが gate ごとの欠陥コード | 理由コードの取り違え |
+
+## `tests/unit/test_quality_gate_service.py`（実の render で作った final_video + SQLite + メモリ storage）
+
+層の理由: gate の価値は「実際の完成動画 JSON・DB の行・記録」が噛み合うことにあり、fake だけでは hash の結び付きを
+検証できない。render は本物（`seed_render_ready`。エンジンだけ fake）。外部 API・ネットワークなし。
+
+| テスト | リスク / 不変条件 | 捕まえるもの |
+|---|---|---|
+| `test_with_declared_non_use_the_builtin_checks_alone_admit_the_episode` | INV-127: 正常系。技術 QA・説明欄が gate 時点で導出され、記録は対象 hash・規則版に結び付く | ON で常に拒否（Phase 2 の穴） |
+| `test_without_usage_declarations_the_gate_refuses_as_review` | INV-127: 宣言が無い = 不使用ではない | fail-open |
+| `test_the_report_is_persisted_bound_to_the_video_hash_even_when_refused` | INV-128: 拒否の報告も対象 hash 付きで残る | 監査の欠落 |
+| `test_a_used_feature_is_required_and_a_producer_supplies_it` | ADR-0081 §7: 他の枝の producer が繋がり、有効な記録は再生成されない | 接続口の不整合 / 無駄な再実行 |
+| `test_a_failing_producer_leaves_the_set_missing_and_the_gate_refuses` | INV-127: producer の失敗が PASS にならない | 例外の握りつぶし |
+| `test_a_producer_block_is_a_block` | INV-102: 枝の BLOCK が通らない | BLOCK の希釈 |
+| `test_expired_records_are_not_reused_and_are_regenerated` | INV-126: 期限切れは使い回さず、書き換えず新世代を足す | 失効の見落とし / UPDATE |
+| `test_an_expired_record_without_a_producer_is_refused` | INV-126 × 127 | 失効した BGM 検査での通過 |
+| `test_a_record_with_an_older_rule_version_is_not_counted` | INV-107/126 | 旧規則の PASS 残存 |
+| `test_a_record_for_another_video_hash_is_not_counted` | INV-126 | 別動画の PASS の流用 |
+| `test_a_new_final_video_gets_none_of_the_old_records_or_declarations` | INV-126 中核: 再 render（世代交代・別 sha）後に旧記録・旧宣言が効かない | 再 render 後の古い承認 |
+| `test_a_tampered_final_video_body_is_never_trusted` | INV-126: JSON の正準 hash が対象 hash と違えば根拠にしない（技術 QA を信用しない） | 差し替えられた保存物 |
+| `test_a_technical_qa_failure_in_the_stored_video_blocks` | INV-127: 空洞な技術 QA が BLOCK | 空洞化 |
+| `test_the_stored_final_video_parses_with_its_technical_qa` | 前提の確認: render が出す JSON に技術 QA が含まれる | 前提の崩れ（render 側の変更） |
+| `test_when_the_report_cannot_be_saved_the_upload_is_refused` | INV-128 | 監査なしの許可 |
+| `test_an_unexpected_error_is_a_refusal_not_an_exception` | fail-closed | 例外の PASS 化 |
+| `test_an_episode_without_a_final_video_is_refused` | INV-101 | final_video 無しの許可 |
+| `test_manual_review_is_allowed_to_proceed_and_an_owner_approval_is_recorded` | INV-129: 誰・種別・対象 hash・報告・時刻が残る | 承認の記録欠落 |
+| `test_only_a_known_owner_can_have_an_approval_recorded`（4 ケース） | INV-129: 委任エージェント・不明・空/不正 id は記録されない | 承認資格の緩み |
+| `test_manual_block_is_never_allowed` | ADR-0076 §4 | 承認で BLOCK を解放 |
+| `test_gates_cover_every_check_key` | 必須の集合が 6 gate を覆う | gate の取りこぼし |
+
+## `tests/unit/test_quality_gate_persisted_wiring.py`（upload_gate と手動投稿の配線）
+
+層の理由: Activity と API の分岐は、実サービス・実 DB と結ぶ層でしか確認できない。Temporal は不要（Activity 本体の直接呼び出し）。
+
+| テスト | リスク / 不変条件 | 捕まえるもの |
+|---|---|---|
+| `test_on_with_complete_records_the_gate_admits` / `..._missing_declaration_..._refuses_with_a_reason` | INV-127: ON の許可 / 拒否と `quality: <理由>` | 配線の欠落 |
+| `test_on_a_service_error_is_a_refusal` | fail-closed | サービス例外の PASS 化 |
+| `test_on_existing_refusals_come_before_the_service` | ADR-0076 §1: 既存の拒否（予約）が先 | 検査記録の書き込みが拒否済みの Episode に走る |
+| `test_off_never_touches_the_service_or_the_quality_tables` | INV-130 | OFF での副作用 |
+| `test_the_decision_is_logged_with_the_video_hash` | ADR-0076 §3: 判定の証跡 | ログ欠落 |
+| `test_manual_review_without_an_approver_is_forbidden_and_starts_nothing` ほか 3 件 | INV-129 | 承認者なし / 委任 / 記録失敗でも起動 |
+| `test_manual_pass_needs_no_approver` | INV-129: PASS は承認不要 | 過剰な拒否 |
+| `test_off_leaves_the_manual_path_untouched` | INV-130 | OFF の手動経路の変化 |
+| `test_the_default_dependencies_are_the_pre_existing_path_and_no_approver` | INV-129/130: 既定は従来の経路・承認者なし | 既定の fail-open |
+
+## `tests/unit/test_quality_approval_and_wiring.py`
+
+| テスト | リスク / 不変条件 | 捕まえるもの |
+|---|---|---|
+| `test_only_a_well_formed_owner_can_release_a_review` | INV-129 | 正当な所有者の拒否 |
+| `test_a_delegated_agent_cannot_release_a_review` | INV-129 / ADR-0080: 委任承認では REVIEW を解放できない | エージェントによる自己承認 |
+| `test_anything_unknown_is_refused_and_never_raises`（7 ケース） | INV-129: 型の違う入力・空/不正 id | 不明な承認者の通過 |
+| `test_with_the_flag_off_no_service_is_built_and_no_store_is_created` | INV-130 | OFF での MinIO クライアント生成 |
+| `test_with_the_flag_on_a_service_is_built_from_the_one_wiring_function` | worker と API が同じ組み立て口を使う | 結線の分岐 |
+| `test_no_branch_producers_are_registered_yet` | ADR-0081 §7: 登録点が 1 つで、今は空 | 登録点の見失い |
