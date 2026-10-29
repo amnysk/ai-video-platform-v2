@@ -66,6 +66,7 @@ from infrastructure.db.quality_repositories import (
     SqlQualityRecordWriter,
 )
 from infrastructure.db.repositories import ArtifactMetadataRepository
+from infrastructure.music.credits import BgmCreditSource
 from infrastructure.storage.artifact_store import ArtifactStore
 
 logger = logging.getLogger(__name__)
@@ -150,8 +151,11 @@ class DescriptionLintProducer:
 
     key = CheckKey.DESCRIPTION_LINT
 
-    def __init__(self, destination_id: str | None) -> None:
+    def __init__(
+        self, destination_id: str | None, credit_source: BgmCreditSource | None = None
+    ) -> None:
         self._destination = destination_id or _UNCONFIGURED_DESTINATION
+        self._credit_source = credit_source
 
     async def produce(self, context: ProducerContext, *, now: datetime) -> CheckSetDraft | None:
         final = await context.final_video()
@@ -161,9 +165,19 @@ class DescriptionLintProducer:
             final_video_sha256=final.media.sha256,
             destination_id=self._destination,
         )
+        # upload 工程と同じ読み口（読めなければ例外 = 記録されない = REVIEW。ADR-0086 §5）
+        credits = (
+            await self._credit_source.credit_lines(
+                context.subject.episode_id,
+                final_video_sha256=context.subject.final_video_sha256,
+                media_sha256=final.media.sha256,
+            )
+            if self._credit_source is not None
+            else ()
+        )
         clean = True
         try:
-            metadata = build_upload_metadata(upload_key=upload_key, script=script)
+            metadata = build_upload_metadata(upload_key=upload_key, script=script, credits=credits)
             marker = upload_marker(upload_key)
             text = "\n".join(
                 line for line in metadata.description.split("\n") if line.strip() != marker
@@ -207,6 +221,7 @@ class QualityGateService:
         store: ArtifactStore,
         producers: Sequence[CheckSetProducer] = (),
         destination_id: str | None = None,
+        credit_source: BgmCreditSource | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
@@ -215,7 +230,7 @@ class QualityGateService:
         self._writer = SqlQualityRecordWriter(session_factory)
         builtin: list[CheckSetProducer] = [
             TechnicalQaProducer(),
-            DescriptionLintProducer(destination_id),
+            DescriptionLintProducer(destination_id, credit_source),
         ]
         by_key = {p.key: p for p in builtin}
         for producer in producers:

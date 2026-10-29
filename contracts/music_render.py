@@ -24,6 +24,9 @@ from contracts.music import BGM_TRACK_ID_PATTERN, DuckingPolicy, VideoFormat
 #: 2: cue に ``source_offset_ms`` を足した（正準 JSON の形が変わる。ADR-0083 §4）。
 BGM_MIX_VERSION = 2
 BGM_EVIDENCE_SCHEMA_VERSION = "1.0"
+#: 証跡の object key の型（``artifacts/{episode}/bgm_render_evidence/{結び付け id}.json``）。
+#: key の組み立ては ``infrastructure.music.evidence.bgm_evidence_key``（唯一の口。ADR-0086）
+BGM_EVIDENCE_OBJECT_TYPE = "bgm_render_evidence"
 #: 結線を有効にする設定キー（``Settings.bgm_enabled``）。既定は OFF。
 BGM_SETTING_KEY = "bgm_enabled"
 
@@ -144,12 +147,15 @@ class BgmRenderEvidence(FrozenModel):
     tracks: tuple[BgmEvidenceTrack, ...] = Field(min_length=1)
     credit_lines: tuple[str, ...]
     loudness: LoudnessVerdict
+    #: 発話中の声と BGM の差の実測（render が測れたときだけ。``None`` は未測定 = 品質検査は REVIEW）
+    speech: SpeechIntelligibility | None = None
 
     def model_post_init(self, __context: object) -> None:
         check_canonical_uuid(self.episode_id)
 
 
 __all__ = [
+    "BGM_EVIDENCE_OBJECT_TYPE",
     "BGM_VIDEO_FORMAT_BY_PROFILE_ID",
     "BGM_EVIDENCE_SCHEMA_VERSION",
     "BGM_LOUDNESS_CHECK_NAME",

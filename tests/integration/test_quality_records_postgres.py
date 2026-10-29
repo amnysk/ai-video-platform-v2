@@ -366,3 +366,92 @@ async def test_stale_and_foreign_records_are_refused_end_to_end(world: _World) -
         world.subject, draft, checked_at=world.now, rule_version=QUALITY_RULE_VERSION
     )
     assert (await world.gate()).allowed
+
+
+# --- ADR-0086: DELETE / TRUNCATE 拒否・FK・配線したゲート ----------------------------------------
+
+
+async def _seed_one_row_per_table(pg) -> uuid.UUID:
+    ep = await _episode(pg)
+    now = datetime.now(UTC)
+    await _raw(pg, _INSERT_RECORD, **_record_params(ep))
+    await _raw(
+        pg,
+        "INSERT INTO quality_usage_declarations (id, episode_id, final_video_sha256, input_hash, "
+        "feature, used, declared_by, declared_at) VALUES (:id, :ep, :sha, :sha, 'bgm', false, "
+        "'render', now())",
+        id=uuid.uuid4(), ep=ep, sha="a" * 64,
+    )  # fmt: skip
+    report_id = uuid.uuid4()
+    await _raw(
+        pg,
+        "INSERT INTO quality_reports (id, episode_id, final_video_sha256, input_hash, "
+        "rule_version, verdict, generator_version, generated_at, expires_at, report_json, "
+        "report_sha256) VALUES "
+        "(:id, :ep, :sha, :sha, 'r', 'review', 'g', :g, :e, CAST('{}' AS json), :sha)",
+        id=report_id, ep=ep, sha="a" * 64, g=now, e=now + timedelta(hours=1),
+    )  # fmt: skip
+    await _raw(
+        pg,
+        "INSERT INTO quality_manual_approvals (id, episode_id, report_id, final_video_sha256, "
+        "approved_verdict, approver_kind, approver_id, approved_at) VALUES "
+        "(:id, :ep, :rid, :sha, 'review', 'owner', 'o', now())",
+        id=uuid.uuid4(), ep=ep, rid=report_id, sha="a" * 64,
+    )  # fmt: skip
+    return ep
+
+
+async def test_delete_and_truncate_are_refused_on_every_table(pg, probe_url: str) -> None:
+    assert_destructive_allowed(probe_url)  # 使い捨て DB であることを確かめてから破壊的な文を試す
+    ep = await _seed_one_row_per_table(pg)
+    for table in NEW_TABLES:
+        with pytest.raises(DBAPIError, match="append-only"):
+            await _raw(pg, f"DELETE FROM {table}")  # noqa: S608
+        with pytest.raises(DBAPIError, match="append-only"):
+            await _raw(pg, f"TRUNCATE {table} CASCADE")  # noqa: S608
+    with pytest.raises(DBAPIError):  # RESTRICT: 記録のある episode は消せない
+        await _raw(pg, "DELETE FROM episodes WHERE id = :id", id=ep)
+    async with pg() as s:
+        for table in NEW_TABLES:
+            n = (await s.execute(text(f"SELECT count(*) FROM {table}"))).scalar_one()  # noqa: S608
+            assert n == 1, table
+
+
+async def test_an_approval_cannot_point_at_another_episodes_report(pg) -> None:
+    ep, other = await _episode(pg), await _episode(pg)
+    report_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    await _raw(
+        pg,
+        "INSERT INTO quality_reports (id, episode_id, final_video_sha256, input_hash, "
+        "rule_version, verdict, generator_version, generated_at, expires_at, report_json, "
+        "report_sha256) VALUES "
+        "(:id, :ep, :sha, :sha, 'r', 'review', 'g', :g, :e, CAST('{}' AS json), :sha)",
+        id=report_id, ep=ep, sha="a" * 64, g=now, e=now + timedelta(hours=1),
+    )  # fmt: skip
+    with pytest.raises(IntegrityError):
+        await _raw(
+            pg,
+            "INSERT INTO quality_manual_approvals (id, episode_id, report_id, final_video_sha256, "
+            "approved_verdict, approver_kind, approver_id, approved_at) VALUES "
+            "(:id, :ep, :rid, :sha, 'review', 'owner', 'o', now())",
+            id=uuid.uuid4(), ep=other, rid=report_id, sha="a" * 64,
+        )  # fmt: skip
+
+
+async def test_the_wired_gate_reads_real_postgres_records(pg, tmp_path: Path) -> None:
+    """render(宣言・証跡) → 実 producer → 実 Postgres の記録 → 判定。通る / 地図 BLOCK で止まる。"""
+    from contracts.quality import QualityVerdict
+    from tests.unit.test_quality_wiring_gate import World, _good_map, _refused_map
+
+    ok = World(pg, InMemoryArtifactStore(), tmp_path / "ok")
+    await ok.render_with(geo=_good_map())
+    outcome = await ok.evaluate()
+    assert outcome.assessment.decision.allowed, outcome.assessment
+    assert await ok.record_keys() == {"technical_qa", "description_lint", "bgm", "map"}
+
+    bad = World(pg, InMemoryArtifactStore(), tmp_path / "bad")
+    await bad.render_with(bgm=False, geo=_refused_map())
+    refused = await bad.evaluate()
+    assert not refused.assessment.decision.allowed
+    assert refused.assessment.verdict is QualityVerdict.BLOCK
