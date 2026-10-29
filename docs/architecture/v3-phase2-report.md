@@ -3,6 +3,7 @@
 - 作成日: 2026-10-29（JST）/ 本番実測: 2026-10-28 16:38Z・20:42Z（UTC、read-only）
 - 統合ブランチ: `claude/v3-phase2-integration`（土台 `claude/v3-phase2-base` = 本番 303f33e + Wave 1）
 - 監査: [v3-phase2-audit.md](./v3-phase2-audit.md)
+- 改訂: 2026-10-29 判定を「全機能完成（A）」と「flag OFF のコードデプロイ（B）」に分割。OpenSearch 停止維持の運用判断を追記（§3.3）
 
 ## 1. 統合したブランチ
 
@@ -25,36 +26,63 @@
   Temporal replay（CI の replay 対象ファイル）を含む。
 - integration test: **未実施**。本番が同じホストの compose（project `avp2`）で動いており、隔離環境を作れない。
 
-## 3. 本番デプロイ判定: **BLOCKED**（本番は変更していない）
+## 3. デプロイ判定（2 つを別々に判定する）
+
+Phase 2 の**全機能完成**と、**新機能 OFF でのコードデプロイの安全性**は別の問いとして判定する（所有者指示 2026-10-29）。
+前者が FAIL でも、後者の条件をすべて満たせば flag OFF のままコードだけを出してよい。後者の条件を 1 つでも欠けば出さない。
+
+### 3.1 判定 A: Phase 2 の全機能完成 — **FAIL**（継続作業）
+
+地図は未結線、QualityGate は検査入力（技術 QA・説明欄）を gate から読めず ON にすると全停止、LLM レビュー未実装
+（ADR-0076 §5）、説明欄の入力生成器なし。§4 の残作業が閉じるまで新 flag は ON にしない。
+
+### 3.2 判定 B: 新機能 OFF でのコードデプロイ
 
 | # | 条件 | 判定 | 根拠 |
 |---|---|---|---|
-| 1 | Phase 2 の予定実装がすべて完了 | **FAIL** | 地図は未結線、QualityGate は検査入力（技術 QA・説明欄）を gate から読めず ON にすると全停止、LLM レビュー未実装（ADR-0076 §5）、説明欄の入力生成器なし |
-| 2 | 独立レビュー完了 | PASS | 全 6 枝 |
-| 3 | BLOCKER・MAJOR 0 | PASS | 修正後の再レビューで閉鎖 |
-| 4 | 統合後の全件テスト | PASS | 5803 passed |
-| 5 | pyright / ruff | PASS | |
-| 6 | Temporal replay | PASS | Activity 名・入出力 dataclass・workflow は不変 |
-| 7 | 稼働 SHA・DB revision の実測 | PASS | 303f33e / alembic 0018 |
-| 8 | 既存の安全対策の維持 | PASS | 土台が本番 SHA。巻き戻しなし |
-| 9 | fal 予算設定の維持 | PASS | 所有者判断で `FAL_MONTHLY_BUDGET_USD=60` を維持（変更しない） |
-| 10 | private 投稿の維持 | PASS | 変更なし |
-| 11 | 新 flag がすべて OFF | PASS | 本番 `.env` に未設定、compose は `${BGM_ENABLED:-false}` |
-| 12 | DB 変更が後方互換 | PASS | migration なし。`reconciled_by` は CHECK の無い自由文字列 |
-| 13 | バックアップ成功・復元検証 | **FAIL** | 最新 20261027T142232Z（30 時間超）。今回は取得・ドリルを実施していない |
-| 14 | 既存 Workflow の安全な継続 | PASS（条件付き） | Running 0。ただし daily は 21:00Z 起動で、デプロイ時刻の調整が要る |
-| 15 | 隔離環境での integration test | **FAIL** | 隔離環境なし |
-| 16 | 対象サービスと影響の特定 | PASS | 全アプリ 14 コンテナ。`compose.yaml` 変更で render-worker の環境が変わる |
-| 17 | 停止・復旧手順 | PASS | 既存 `--rollback`（303f33e）。DB 変更なし |
-| 18 | 新規課金・投稿・Schedule 二重実行なし | **UNKNOWN** | デプロイ後のログ検証ができない（OpenSearch が 8 日前から停止、`avp-logging-check.service` failed） |
+| B1 | 独立レビュー完了・BLOCKER/MAJOR 0 | PASS | 全 6 枝。修正後の再レビューで閉鎖 |
+| B2 | 統合後の全件テスト・pyright・ruff | PASS | 5803 passed / 0 errors |
+| B3 | Temporal replay（repo の履歴 fixture） | 証跡を target SHA で作る | `release/evidence/<sha>-replay.json`（staging.md §5） |
+| B4 | CI gate（check run `CI gate`）が target SHA で success | 確認する | preflight `ci` |
+| B5 | 稼働 SHA・DB revision・祖先関係 | PASS（実測） | 303f33e / alembic 0018、target は 303f33e の fast-forward |
+| B6 | DB 変更が後方互換 | PASS | migration なし |
+| B7 | fal 予算設定の維持 | PASS | 所有者判断で `FAL_MONTHLY_BUDGET_USD=60` を維持（変更しない） |
+| B8 | private 投稿・投稿冪等性・Temporal Schedule の維持 | 確認する | 差分に冪等キー・予約台帳・Schedule 定義の変更が無いこと、`.env` 不変 |
+| B9 | 新 flag がすべて OFF | PASS | 本番 `.env` に未設定、compose は `${BGM_ENABLED:-false}` |
+| B10 | 24h 以内のバックアップと復旧演習（`restore_verified: true`） | 実施する | `scripts/backup.py run` → `restore-drill`（ADR-0051） |
+| B11 | 隔離環境での integration test | 実施する | 本番と別の compose project・別 port・別 volume・資格情報なし（`--env-file /dev/null`）。本番 `avp2` に触れない |
+| B12 | 稼働中 workflow 0・未照合予約 0・open な投稿予約なし | 確認する | preflight `running_workflows` / `provider_reservations` |
+| B13 | Daily（21:00Z）と重ならない時刻 | 確認する | deploy は maintenance pause（`make deploy-workers`）で包む |
+| B14 | 停止・復旧手順 | PASS | `--rollback`（303f33e、`SKIP_MIGRATE=1`）。DB 変更なし |
+| B15 | デプロイ後の新規課金・投稿・Schedule 二重実行なしの確認手段 | 代替監視（§3.3） | OpenSearch に依存しない |
+| B16 | release preflight（承認込み）が READY、事後検証が READY | 実施する | release-runbook §1・§3 |
 
 注: D-1（UNKNOWN で投稿しない・承認の消費）は flag の無い安全側の挙動変更で、デプロイすると即時に有効になる。
 
+各行の実測結果はリリース記録（`docs/releases/`）に残す。この表の「確認する／実施する」は、結果が揃うまで PASS とみなさない。
+
+### 3.3 OpenSearch を停止したまま運用する判断
+
+- **所有者判断（2026-10-29）: OpenSearch（`avp2-logging-opensearch-1`）は意図的に停止したまま運用を続ける。**
+  起動・再作成・設定変更はしない。復旧は今回の作業対象外。`avp-logging-check.service` の failed も同じ理由で放置する。
+- OpenSearch の停止は、**単独ではデプロイの BLOCKED 理由にしない**。release preflight の必須チェックにも
+  OpenSearch は含まれない（`domain/release_preflight.py` の `PRE_DEPLOY_REQUIRED`）。
+- 代替監視（デプロイ前の基準値とデプロイ後の比較に使う。すべて読み取り）:
+
+  | 見るもの | 手段 | 何を確かめるか |
+  |---|---|---|
+  | アプリのログ | `docker logs --since <deploy 開始> avp2-<service>-1` | 起動エラー・例外・予期しない fal / YouTube 呼び出しの痕跡がない |
+  | Temporal 履歴 | `temporal workflow list` / `schedule describe`（読み取り） | Running 0、Schedule の paused・spec がデプロイ前の記録と同じ、同じ Schedule の起動が二重でない |
+  | PostgreSQL 監査台帳 | `BEGIN READ ONLY` の SELECT | `provider_reservations` の `reserved` 0・新規行なし、`youtube_upload` の新規行なし、`provider_credit_holds` の状態不変、`alembic_version` 0018 |
+
+- 代替監視で確かめられない（OpenSearch を前提にした）長期の検索・集計は失われたまま。これはデプロイ判定ではなく
+  運用上の既知の穴として残す。
+
 ## 4. 未解決リスクと残作業
 
-1. OpenSearch の復旧（所有者判断。今回は再起動していない）。
-2. 隔離した staging（ADR-0050）での integration test。
-3. 新しいバックアップと restore drill（ADR-0051）。
+1. OpenSearch は所有者判断で停止を維持する（§3.3）。復旧は対象外。長期のログ検索は代替監視で補えない既知の穴。
+2. 隔離環境での integration test（判定 B11）。
+3. 新しいバックアップと restore drill（判定 B10）。
 4. QualityGate の検査入力の保存先と migration 計画（後続 ADR）、手動承認の DB 記録、API 認証。
 5. `QualityCheck.detail` の自由文（LLM レビューを有効にする前に allowlist 化）。
 6. 地図の結線（`check_scene_map_accuracy` を使う、hash の結び付け、CJK フォント）、BGM のラウドネス閾値の校正、
