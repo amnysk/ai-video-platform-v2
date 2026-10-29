@@ -13,16 +13,21 @@ from __future__ import annotations
 import ast
 import pathlib
 
+from tests.support.import_scan import modules_of_file, modules_of_source, py_files
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
 GEO_DOMAIN = REPO / "domain" / "geo"
 GEO_PREFIXES = ("domain.geo", "contracts.geo", "contracts.geo_map")
 
-#: geo を import してよい infrastructure の唯一の場所（ADR-0078。描画部品。workflow からは未接続）。
+#: geo を import してよい infrastructure の場所。描画部品（ADR-0078）と、結線の窓口
+#: ``infrastructure/geo``（ADR-0084）。worker はこの窓口だけを import し、geo の契約・ドメインを
+#: 直接 import しない（下の ``test_production_billing_and_entrypoints_do_not_import_geo``）。
 GEO_CONSUMER_EXEMPT = (
     REPO / "infrastructure" / "media" / "map_render.py",
     REPO / "infrastructure" / "media" / "map_clip.py",
     REPO / "infrastructure" / "media" / "map_scene_visual.py",
+    REPO / "infrastructure" / "geo",
 )
 
 #: 純関数に不要な標準・外部のモジュール（I/O・時計・乱数・ネットワーク・並行）。
@@ -74,21 +79,11 @@ CONSUMERS_FORBIDDEN: tuple[str, ...] = (
 )
 
 
-def _py(path: pathlib.Path) -> list[pathlib.Path]:
-    if path.is_file():
-        return [path]
-    return sorted(p for p in path.rglob("*.py") if "__pycache__" not in p.parts)
+_py = py_files
 
 
 def _modules(path: pathlib.Path) -> list[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    found: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            found.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            found.append(node.module)
-    return found
+    return modules_of_file(path)
 
 
 def test_the_geo_domain_exists() -> None:
@@ -143,3 +138,34 @@ def test_production_billing_and_entrypoints_do_not_import_geo() -> None:
                 if any(module == g or module.startswith(g + ".") for g in GEO_PREFIXES):
                     violations.append(f"{p.relative_to(REPO)}: imports {module}")
     assert not violations, "ADR-0071 (not wired yet):\n" + "\n".join(violations)
+
+
+# --- import 検出器そのものの検査（Phase 2 報告 §4-8。見落としていた形）
+
+
+def _hits(source: str, package: str = "") -> bool:
+    return any(
+        m == g or m.startswith(g + ".")
+        for m in modules_of_source(source, package)
+        for g in GEO_PREFIXES
+    )
+
+
+def test_the_detector_sees_from_package_import_submodule() -> None:
+    assert _hits("from contracts import geo")
+    assert _hits("from domain import geo")
+    assert _hits("from contracts import geo_map")
+    assert not _hits("from contracts import verdict")
+
+
+def test_the_detector_resolves_relative_imports() -> None:
+    assert _hits("from . import geo", "domain")
+    assert _hits("from .geo import verify", "domain")
+    assert _hits("from ..geo import verify", "domain.sub")
+    assert not _hits("from . import verdict", "contracts")
+
+
+def test_the_detector_sees_dynamic_imports() -> None:
+    assert _hits('import importlib\nimportlib.import_module("domain.geo.verify")')
+    assert _hits('__import__("contracts.geo")')
+    assert not _hits('import importlib\nimportlib.import_module("contracts.verdict")')
