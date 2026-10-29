@@ -27,7 +27,9 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request, status
 
 from apps.api.dependencies import get_settings
+from contracts.approval import ApproverKind
 from contracts.log_contract import EventName
+from domain.quality.approval import UploadApprover
 from infrastructure.config import Settings
 from infrastructure.logging.emit import emit, log_guard
 
@@ -160,6 +162,21 @@ async def require_api_actor(
 
 ApiActor = Annotated[Actor | None, Depends(require_api_actor)]
 
+#: 認証済みの実行者から、手動投稿の承認者への写像（ADR-0080 §B / ADR-0081 §9）。
+#: エージェントのトークンは「所有者の指示による代理」= ``AGENT_DELEGATED`` で、REVIEW を解放しない。
+_APPROVER_KINDS: dict[Actor, ApproverKind] = {
+    Actor.OWNER: ApproverKind.OWNER,
+    Actor.AGENT: ApproverKind.AGENT_DELEGATED,
+}
+
+
+def get_upload_approver(actor: ApiActor) -> UploadApprover | None:
+    """手動投稿を指示した承認者。認証されていなければ ``None``（= REVIEW を解放しない）。"""
+    if actor is None:
+        return None
+    return UploadApprover(kind=_APPROVER_KINDS[actor], approver_id=f"api-{actor.value}-token")
+
+
 __all__ = [
     "SAFE_METHODS",
     "TOKEN_MIN_LENGTH",
@@ -167,6 +184,7 @@ __all__ = [
     "ApiActor",
     "ApiTokens",
     "authenticate",
+    "get_upload_approver",
     "get_api_tokens",
     "load_api_tokens",
     "require_api_actor",

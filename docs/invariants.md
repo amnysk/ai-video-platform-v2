@@ -1363,6 +1363,79 @@ ADR-0084 が既存 Activity の内側へ結線した。OFF の同一性は INV-1
 / `tests/unit/test_api_auth.py::test_review_is_approved_by_the_owner_token_but_never_by_the_agent_token`
 / `tests/unit/test_api_auth.py::test_a_passing_report_lets_the_agent_token_upload`
 
+## AH. 品質検査の記録・必須の集合・手動承認（ADR-0081。INV-126〜132。`AVP_QUALITY_GATE_ENFORCE` の背後）
+
+### INV-126 検査の記録は、今の final_video の hash・入力 hash・規則版・時刻に結び付くものだけが数えられる
+記録（`quality_check_records`）は対象 hash（現行 final_video の `artifact_metadata.sha256`）・`input_hash`・
+`rule_version`・`checked_at`/`expires_at`（有効期間は `MAX_REPORT_VALIDITY` 以内）を持つ追記専用の行で、
+再検査は世代を上げた新しい行。別 hash・別入力・別規則版・期限切れ・世代交代後の記録は「無い」と同じに扱われる。
+読み出しは `(episode_id, 対象 hash)` を必ず指定し、「episode の最新」を返す関数が無い。取得した行は SQL の絞り込みと
+独立に `select_fresh_check_sets` が再検証する。DB 側は sha 長・期限・語彙の CHECK、`(episode, sha, 規則版, key, 世代)`
+の一意、UPDATE 拒否トリガ（PostgreSQL）で構造的に守る。
+**機械検査**: `tests/unit/test_quality_records.py::test_a_record_for_another_final_video_hash_is_not_counted`
+/ `...::test_a_record_for_an_older_rule_version_is_not_counted` / `...::test_an_expired_record_is_not_counted_and_the_boundary_is_exclusive`
+/ `...::test_the_newest_generation_wins_and_a_stale_newest_hides_the_older_one`
+/ `tests/unit/test_quality_gate_service.py::test_a_new_final_video_gets_none_of_the_old_records_or_declarations`
+/ `...::test_expired_records_are_not_reused_and_are_regenerated` / `...::test_a_tampered_final_video_body_is_never_trusted`
+/ `tests/integration/test_quality_records_postgres.py::test_records_are_append_only_on_postgres`
+/ `...::test_stale_and_foreign_records_are_refused_end_to_end`
+
+### INV-127 必須の検査が揃わない・使用宣言が無いものは PASS にならない
+必須 = 技術 QA（`VISUAL`・`AUDIO`）・説明欄 lint（`METADATA`）。BGM（`MUSIC`・`LICENSE`）・地図（`GEO`）は render の
+使用宣言（`quality_usage_declarations`）が `used=true` なら必須、`used=false` なら明示の不使用記録（`used=true` は
+`evidence_ref` 必須の CHECK）。**宣言が無いことは不使用ではない**（`USAGE_DECLARATION_MISSING` の REVIEW）。必須の
+セットが無い・古い・producer が失敗した、は `REQUIRED_CHECK_MISSING` の決定論の REVIEW（ADR-0073 §2）。セットは対応する
+gate を過不足なく含まなければ書けない・読んでも無効。技術 QA は必須 19 項目のどれが欠けても該当 gate が BLOCK。
+**機械検査**: `tests/unit/test_quality_records.py::test_an_undeclared_feature_is_refused_not_treated_as_unused`
+/ `...::test_a_used_feature_requires_its_check_set` / `...::test_each_always_required_check_is_required`
+/ `...::test_a_set_must_cover_exactly_the_gates_of_its_key`
+/ `tests/unit/test_quality_description_and_qa_inputs.py::test_dropping_any_required_check_blocks_its_own_gate_only`
+/ `tests/unit/test_quality_gate_service.py::test_without_usage_declarations_the_gate_refuses_as_review`
+/ `...::test_a_failing_producer_leaves_the_set_missing_and_the_gate_refuses`
+
+### INV-128 gate が組み立てた品質レポートは、拒否も含めて対象 hash に結び付けて保存される。保存できなければ許可しない
+`quality_reports` に `QualityReport.to_dict()`・その正準 hash・対象 hash・入力 hash・規則版・判定を残す（追記専用）。
+レポートを保存できなかったときは `REPORT_PRODUCTION_FAILED` で拒否する（監査が残らない許可を出さない）。
+**機械検査**: `tests/unit/test_quality_gate_service.py::test_the_report_is_persisted_bound_to_the_video_hash_even_when_refused`
+/ `...::test_when_the_report_cannot_be_saved_the_upload_is_refused`
+/ `tests/unit/test_quality_repositories.py::test_the_stored_report_is_the_exact_serialisation`
+
+### INV-129 REVIEW を手動で解放できるのは所有者の承認だけで、承認は誰が・いつ・どの hash・どの報告かを記録してから進む
+`apps/api/auth.py::get_upload_approver`（未認証は `None`、owner トークンは `OWNER`、agent トークンは `AGENT_DELEGATED`）が承認者を与える。`None`・不明・種別が `OWNER` 以外（`AGENT_DELEGATED` を含む）は
+403 で、workflow を起動しない。`OWNER` なら `quality_manual_approvals`（`approver_kind`・`approver_id`・`approved_at`・
+対象 hash・`report_id`。(report_id, sha) の複合 FK）を書いてから起動し、書けなければ起動しない（409）。BLOCK・作成失敗・
+欠落は承認で解放できない。PASS / WARN は承認者を要しない。
+**機械検査**: `tests/unit/test_quality_gate_persisted_wiring.py::test_manual_review_without_an_approver_is_forbidden_and_starts_nothing`
+/ `...::test_manual_review_by_a_delegated_agent_is_forbidden` / `...::test_manual_review_by_the_owner_records_the_approval_then_starts`
+/ `...::test_when_the_approval_cannot_be_recorded_nothing_is_started`
+/ `tests/unit/test_quality_approval_and_wiring.py::test_anything_unknown_is_refused_and_never_raises`
+/ `tests/unit/test_quality_gate_service.py::test_only_a_known_owner_can_have_an_approval_recorded`
+
+### INV-130 `AVP_QUALITY_GATE_ENFORCE` が OFF（既定）のとき、gate・手動経路は検査記録を読まず書かず、挙動は導入前と同一
+OFF ではサービスを組み立てず（`build_quality_service` は `None`。MinIO クライアントも作らない）、`upload_gate`・
+`start_upload` は記録の表に触れない。migration 0019 を適用しても OFF の挙動は変わらない。ON でもサービスが結線されていない
+経路（既定の `get_quality_service`）は ADR-0076 の従来の経路のまま。
+**機械検査**: `tests/unit/test_quality_gate_persisted_wiring.py::test_off_never_touches_the_service_or_the_quality_tables`
+/ `...::test_off_leaves_the_manual_path_untouched` / `...::test_the_default_dependencies_are_the_pre_existing_path_and_no_approver`
+/ `tests/unit/test_quality_approval_and_wiring.py::test_with_the_flag_off_no_service_is_built_and_no_store_is_created`
+（OFF の既存挙動は `tests/unit/test_pipeline_activities.py`・`tests/unit/test_quality_gate_wiring.py` が無変更で守る）
+
+### INV-131 gate が lint する説明欄は、upload 工程が送る説明欄と同じ関数・同じ入力で組まれる
+`domain/upload/metadata_builder.py::build_upload_metadata` が唯一の組み立て口で、upload 工程と gate が呼ぶ。
+`AVP_UPLOAD_DESCRIPTION_COMPOSED` が OFF のとき結果は従来の `build_youtube_metadata` 呼び出しと byte 単位で同じ。
+gate は marker 行（意図した内部 ID）だけを除いて lint し、組み立てが BLOCK なら `METADATA_LINT_FAILED`。
+**機械検査**: `tests/unit/test_quality_description_and_qa_inputs.py::test_with_the_flag_off_the_builder_is_byte_identical_to_the_previous_call`
+/ `...::test_with_the_flag_on_the_description_is_composed_from_the_script`
+/ `...::test_an_internal_id_in_the_narration_blocks_the_composed_description`
+（既存の `tests/unit/test_upload_activities.py` が upload 工程を無変更で守る）
+
+### INV-132 migration 0019 は expand-only で、旧コードが先に動き続ける
+新しい表 4 つ（`quality_check_records`・`quality_usage_declarations`・`quality_reports`・`quality_manual_approvals`）を
+足すだけで、既存の表・制約・索引・列に触れない。release 走査（`scan_migration`）が何も検出しない。downgrade は行が
+残っていれば拒否する。語彙の凍結値は契約と一致し、DB の有効期間 24h は `MAX_REPORT_VALIDITY` と一致する。
+**機械検査**: `tests/contract/test_migration_0019_quality.py`（全件）/ `tests/contract/test_migration_matches_models.py`
+/ `tests/integration/test_quality_records_postgres.py::test_migration_0019_upgrade_and_downgrade_on_postgres`
+
 ## AJ. 歴史地図の Production / Render 結線（ADR-0084。INV-139〜145）
 
 ### INV-139 地図の座標は gazetteer だけから決まり、同じ依頼は同じ manifest になる

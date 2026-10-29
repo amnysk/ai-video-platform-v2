@@ -36,7 +36,8 @@ MAX_REPORT_VALIDITY = timedelta(hours=24)
 
 #: 現行の検査規則の版（**ここだけで定義**。ADR-0076 §3）。gate はここから読み、レポートの
 #: ``rule_version`` と一致しなければ拒否する（INV-107）。規則を変えたら必ず上げる。
-QUALITY_RULE_VERSION = "deterministic-1"
+#: 2: 必須の検査の集合と使用宣言の規則が入った（ADR-0081）。1 の記録・報告は数えない。
+QUALITY_RULE_VERSION = "deterministic-2"
 
 #: 品質ゲートを ``upload_gate`` / 手動投稿に効かせる設定キー（env。**ここだけで定義**。ADR-0076）。
 #: 既定 OFF。``infrastructure.config.Settings.quality_gate_enforce`` がこの名前で読む。
@@ -102,6 +103,12 @@ class QualityReason(StrEnum):
     UPLOAD_ALLOWED_WITH_WARNINGS = "upload_allowed_with_warnings"
     REPORT_BLOCKED = "report_blocked"
     REPORT_NEEDS_REVIEW = "report_needs_review"
+    # --- 検査の記録と必須の集合（ADR-0081）
+    REQUIRED_CHECK_MISSING = "required_check_missing"
+    USAGE_DECLARATION_MISSING = "usage_declaration_missing"
+    # --- 手動承認（ADR-0081 §9）
+    APPROVER_UNKNOWN = "approver_unknown"
+    APPROVER_NOT_OWNER = "approver_not_owner"
 
 
 class QualityReportError(ValueError):

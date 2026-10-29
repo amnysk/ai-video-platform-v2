@@ -16,6 +16,7 @@ from contracts.pipeline import PIPELINE_TASK_QUEUE
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.logging.temporal import worker_interceptors
+from infrastructure.quality.wiring import build_quality_service
 from infrastructure.temporal.connect import connect_with_retry
 from workers.pipeline.activities import PipelineActivities
 from workers.pipeline.gate_ports import build_gate_ports
@@ -46,6 +47,8 @@ async def main() -> None:
         paused_env=settings.paused,
         uploads_paused_env=settings.uploads_paused,
         quality_gate_enforce=settings.quality_gate_enforce,
+        # flag OFF では None（何も組み立てない）。ON では検査記録に基づく判定（ADR-0081）
+        quality_service=build_quality_service(settings, session_factory),
         temporal_client=client,
         # 入口ゲート・保留の結線点（ADR-0058。ADR-0057 の実装はここで差し込む）
         gate_ports=build_gate_ports(session_factory, budget=settings.fal_budget),

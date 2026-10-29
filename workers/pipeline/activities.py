@@ -59,6 +59,7 @@ from infrastructure.db.repositories import (
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.logging.quality_decision import log_quality_decision
 from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
+from infrastructure.quality.service import QualityGateService
 from infrastructure.temporal.daily_runs import TemporalDailyRunReader
 from infrastructure.temporal.schedules import TemporalScheduleControl
 from infrastructure.temporal.watchdog import (
@@ -95,11 +96,14 @@ class PipelineActivities:
         quality_gate_enforce: bool = False,
         quality_providers: Sequence[CheckProvider] = DEFAULT_PROVIDERS,
         quality_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        quality_service: QualityGateService | None = None,
     ) -> None:
         # 品質ゲート（ADR-0076）。OFF（既定）では _refusal の挙動は従来と同じ
         self._quality_enforce = quality_gate_enforce
         self._quality_providers = quality_providers
         self._quality_clock = quality_clock
+        #: 検査記録を読み書きする品質ゲート（ADR-0081）。None なら ADR-0076 の従来の経路のまま
+        self._quality_service = quality_service
         self._session_factory = session_factory
         self._gate = gate_ports or GatePorts()
         if not self._gate.wired:
@@ -364,6 +368,9 @@ class PipelineActivities:
             reason = await self._paused_reason(session, include_uploads=True)
             if reason is None:
                 reason = await self._refusal(session, ep, episode is not None, status)
+        if reason is None and self._quality_enforce and self._quality_service is not None:
+            # 既存の拒否を全て通った後だけ。DB の session を閉じてから記録を読み書きする（ADR-0081）
+            reason = await self._persisted_quality_refusal(ep)
         return UploadGateResult(allowed=reason is None, reason=reason, status=status)
 
     async def _refusal(
@@ -386,7 +393,7 @@ class PipelineActivities:
                 return f"upload reservation {r.id} is spent (already uploaded?)"
             if r.status is ReservationStatus.RESERVED and r.dispatched_at is not None:
                 return f"upload reservation {r.id} is dispatched (outcome unknown)"
-        if self._quality_enforce:
+        if self._quality_enforce and self._quality_service is None:
             hashes = await ArtifactMetadataRepository(session).find_current_hashes(
                 ep, ArtifactType.FINAL_VIDEO
             )
@@ -394,6 +401,26 @@ class PipelineActivities:
                 return "quality: report_production_failed"
             return self._quality_refusal(ep, hashes[0], hashes[1])
         return None
+
+    async def _persisted_quality_refusal(self, ep: str) -> str | None:
+        """検査記録に基づく判定（ADR-0081）。例外・作成失敗は PASS に倒さず拒否する。"""
+        service = self._quality_service
+        assert service is not None
+        try:
+            outcome = await service.evaluate(ep, manual=False)
+            log_quality_decision(
+                logger,
+                path="auto",
+                episode_id=ep,
+                final_video_sha256=outcome.final_video_sha256 or "",
+                rule_version=QUALITY_RULE_VERSION,
+                assessment=outcome.assessment,
+            )
+        except Exception:  # noqa: BLE001 - fail-closed
+            return "quality: report_evaluation_error"
+        if outcome.assessment.decision.allowed:
+            return None
+        return f"quality: {outcome.assessment.decision.reason_code.value}"
 
     def _quality_refusal(self, ep: str, sha256: str, input_hash: str) -> str | None:
         """既存の検査をすべて通った後だけ呼ぶ（ADR-0076 §1）。例外は PASS に倒さず拒否する。"""
