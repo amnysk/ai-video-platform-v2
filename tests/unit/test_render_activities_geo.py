@@ -72,9 +72,11 @@ class GeoHarness(Harness):
         self.engine.on_render = capture
 
 
-def harness(session_factory, store, tmp_path, source=None, encoder=None) -> GeoHarness:
+def harness(
+    session_factory, store, tmp_path, source=None, encoder=None, **extra_kwargs: Any
+) -> GeoHarness:
     tmp_path.mkdir(parents=True, exist_ok=True)
-    extra: dict[str, Any] = {}
+    extra: dict[str, Any] = dict(extra_kwargs)
     if source is not None:
         extra["geo"] = GeoRenderService(
             source=source, encoder=encoder or FakeEncoder(), font_path=None
