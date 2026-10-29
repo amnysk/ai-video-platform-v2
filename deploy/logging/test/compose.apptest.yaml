@@ -72,6 +72,8 @@ x-runner: &runner
     # しない（INV-69）ので、この隔離スタックだけ明示で許す。印はこの環境が自分の avp_test に付ける（INV-83）
     AVP_ALLOW_REMOTE_TEST_DB: "1"
     AVP_MARK_TEST_DB: "1"
+    # 本番スタックへ繋がないための隔離の宣言（ADR-0079 / INV-121）。project は avp2-oslog-c* だけ
+    AVP_INTEGRATION_ISOLATION: apptest:${AVP_APPTEST_PROJECT:-avp2-oslog-c}
     TEMPORAL_ADDRESS: temporal:7233
     TEMPORAL_NAMESPACE: default
     TEST_TEMPORAL_NAMESPACE: avp-test

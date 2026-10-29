@@ -20,6 +20,7 @@ def log_quality_decision(
     final_video_sha256: str,
     rule_version: str,
     assessment: QualityAssessment,
+    actor: str | None = None,
 ) -> None:
     """``path`` は ``auto`` | ``manual``。拒否は upload.skipped、許可・承認は log.record。"""
     allowed = assessment.decision.allowed
@@ -31,6 +32,8 @@ def log_quality_decision(
         "rule_version": rule_version,
         "review_approved": assessment.review_approved,
     }
+    if actor is not None:
+        attributes["actor"] = actor  # 手動経路: 誰（owner / agent）の承認か（ADR-0080）
     if assessment.verdict is not None:
         attributes["verdict"] = assessment.verdict.value
     with log_guard():

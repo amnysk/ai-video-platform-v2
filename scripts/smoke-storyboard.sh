@@ -47,7 +47,7 @@ print(m.group(1)) if m else sys.exit("NG: smoke-script.sh の出力に episode i
 fi
 
 echo "== POST /episodes/$EPISODE_ID/storyboard =="
-curl -sS -f -X POST "$API/episodes/$EPISODE_ID/storyboard" | python3 -m json.tool
+curl -sS -f -X POST -H "Authorization: Bearer ${AVP_API_TOKEN:?AVP_API_TOKEN is required: mutating API routes need a bearer token (ADR-0080)}" "$API/episodes/$EPISODE_ID/storyboard" | python3 -m json.tool
 
 echo "== storyboard_ready を待つ（数分かかる） =="
 body=$(wait_for_status "$EPISODE_ID" storyboard_ready)
@@ -111,7 +111,7 @@ PY
 
 echo
 echo "== 再POST: 同じ入力なら生成器を呼ばず job skipped・同じ Artifact（INV-17） =="
-curl -sS -f -X POST "$API/episodes/$EPISODE_ID/storyboard" >/dev/null
+curl -sS -f -X POST -H "Authorization: Bearer ${AVP_API_TOKEN:?AVP_API_TOKEN is required: mutating API routes need a bearer token (ADR-0080)}" "$API/episodes/$EPISODE_ID/storyboard" >/dev/null
 sleep 3
 body2=$(wait_for_status "$EPISODE_ID" storyboard_ready)
 for _ in $(seq 1 60); do

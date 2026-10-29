@@ -40,7 +40,7 @@ export YOUTUBE_CLIENT_ID=... YOUTUBE_CLIENT_SECRET=...
 ```bash
 docker compose --profile core up -d --wait
 ./scripts/run-upload-worker.sh               # 別ターミナル
-curl -X POST http://localhost:8000/episodes/<episode_id>/upload   # 本文なし。202
+curl -X POST -H "Authorization: Bearer $AVP_API_TOKEN" http://localhost:8000/episodes/<episode_id>/upload   # 本文なし。202（ADR-0080: 変更系は bearer token が要る。docs/operations/api-auth.md）
 curl http://localhost:8000/episodes/<episode_id>                   # uploaded / upload_receipt
 ```
 

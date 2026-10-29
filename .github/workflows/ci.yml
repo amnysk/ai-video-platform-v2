@@ -143,6 +143,8 @@ jobs:
           docker pull "$image"
       - run: pytest tests/integration -q -m integration -rs | tee pytest-integration.log
         env:
+          # 使い捨てサービスへだけ繋ぐ宣言（ADR-0079 / INV-121。GITHUB_ACTIONS=true も要る）
+          AVP_INTEGRATION_ISOLATION: ci-ephemeral
           DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
           # 破壊的なテストは *_test にだけ向く（ADR-0021）。avp_test は
           # deploy/postgres-init/01-test-db.sql が初回起動時に作る
@@ -273,6 +275,7 @@ jobs:
         # upgrade head -> 各 CHECK 制約 -> downgrade を検査する。skip は成功と数えない
         run: pytest tests/integration/test_migration_against_postgres.py -q -m integration -rs | tee pytest-alembic.log
         env:
+          AVP_INTEGRATION_ISOLATION: ci-ephemeral
           TEST_DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp_test
           # この job 専用の使い捨て DB にだけ、破壊的操作ガードの印を付ける（INV-83）
           AVP_MARK_TEST_DB: "1"

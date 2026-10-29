@@ -117,7 +117,7 @@ render_and_wait() {
   local profile="$1" before n_open n_jobs status body
   read -r before _ <<<"$(render_jobs)"
   for attempt in $(seq 1 30); do
-    code=$(curl -sS -o "$LOG_DIR/post.json" -w '%{http_code}' -X POST "$API/episodes/$EPISODE_ID/render" \
+    code=$(curl -sS -o "$LOG_DIR/post.json" -w '%{http_code}' -X POST -H "Authorization: Bearer ${AVP_API_TOKEN:?AVP_API_TOKEN is required: mutating API routes need a bearer token (ADR-0080)}" "$API/episodes/$EPISODE_ID/render" \
       -H 'content-type: application/json' -d "{\"render_profile_id\": \"$profile\"}")
     [ "$code" = 202 ] || [ "$code" = 200 ] && break
     if [ "$code" = 409 ] && [ "$attempt" -lt 30 ]; then sleep 2; continue; fi  # 前の workflow の終了待ち

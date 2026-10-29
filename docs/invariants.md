@@ -1292,3 +1292,73 @@ dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph �
 / `tests/unit/test_geo_maps_flag_off.py::test_render_identity_and_filtergraph_are_byte_identical_to_before`
 / `tests/architecture/test_geo_maps_boundaries.py::test_production_side_does_not_import_the_map_parts`
 （flag ON の挙動は部品の呼び出しまで。ON にしても workflow には何も起きない。接続は後続）
+
+## AG. v3 Phase 3 の安全（ADR-0079 / ADR-0080。INV-121〜125 は Phase 3 監査枝の予約）
+
+### INV-121 integration テストは、隔離の積極的な宣言が無い限り、接続先が設定されていれば収集時に例外で止まる
+接続先（`TEMPORAL_ADDRESS` / `TEST_DATABASE_URL` / `DATABASE_URL` / `MINIO_ENDPOINT`）が1つでも設定されているとき、
+`AVP_INTEGRATION_ISOLATION` が `apptest:avp2-oslog-c*`（接続先は内部サービス名 `temporal` / `postgres` / `minio` のみ、
+このホスト自身へ解決される名前は不可）か `ci-ephemeral`（`GITHUB_ACTIONS=true` と loopback）の**完全一致**でなければ
+`ProductionTargetError`。綴り違い・空・本番 project `avp2`・前後の空白はすべて拒否（許可リスト。拒否リストではない）。
+**機械検査**: `tests/unit/test_production_target_guard.py::test_a_target_without_an_isolation_declaration_is_refused`
+/ `tests/unit/test_production_target_guard.py::test_a_mistyped_declaration_fails_closed`
+/ `tests/unit/test_production_target_guard.py::test_the_ci_declaration_is_refused_outside_github_actions`
+/ `tests/unit/test_production_target_guard.py::test_the_apptest_declaration_never_allows_the_host_or_its_published_ports`
+/ `tests/unit/test_production_target_guard.py::test_the_production_compose_project_is_never_a_valid_declaration`
+/ `tests/unit/test_production_target_guard.py::test_the_isolated_apptest_stack_passes`
+/ `tests/unit/test_production_target_guard.py::test_the_ci_ephemeral_services_pass`
+/ `tests/architecture/test_integration_no_hardcoded_addresses.py::test_integration_conftest_asserts_isolation_before_anything_else`
+
+### INV-122 integration テストは接続先を直書きせず、到達した Temporal が本番（日次 Schedule が在る）なら拒否する
+`tests/integration/` と `tests/support/` に `localhost:7233` 等・`TEMPORAL_ADDRESS = "..."`・
+`connect_test_client("...")`・DB URL の host の直書きが無い。Temporal は `default` namespace の
+`avp-daily-episode` を describe し、在れば `ProductionTemporalError`、NOT_FOUND 以外で判定できなければ拒否（fail closed）。
+**機械検査**: `tests/architecture/test_integration_no_hardcoded_addresses.py::test_no_hardcoded_connection_address`
+/ `tests/architecture/test_integration_no_hardcoded_addresses.py::test_the_detector_catches_the_original_incident`
+/ `tests/unit/test_temporal_production_probe.py::test_a_server_that_has_the_daily_schedule_is_production`
+/ `tests/unit/test_temporal_production_probe.py::test_a_server_without_the_schedule_passes`
+/ `tests/unit/test_temporal_production_probe.py::test_an_undecidable_answer_fails_closed`
+（PostgreSQL / MinIO を本番と区別する読み取りだけの指標は無い。静的な宣言と接続先の規則に依存する: ADR-0079 §2）
+
+### INV-123 承認記録は種別（所有者本人 / エージェントへの委任）を述べ、述べない記録・委任は所有者専用の関門を通さない
+承認の参照は `OWNER-<yyyymmdd>-<id>`（所有者本人）か `AGENT-<yyyymmdd>-<id>:OWNER-<yyyymmdd>-<id>`（委任。委任元の
+所有者の指示を必ず書く）。種別を述べない・形が違う・日付が実在しない参照は承認ではない。所有者専用の関門
+（`domain.approval.OwnerGate`: 新機能 ON / fal 予算を上げる / public・unlisted 投稿 / 保留の解放・再開 / 予約の手動確定）は
+`AGENT_DELEGATED` では通らない。release 承認記録は `approval_ref` が必須（無ければ UNKNOWN）で、`enables` に所有者専用の関門を
+書いた委任は BLOCKED。既存の文字列列（`provider_breakers.approved_by` / 予約照合の `actor`）には `<kind>:<name>` で保存し、
+種別の接頭辞が無い旧い値は所有者承認とは読まない（DB の変更なし）。種別の語彙は `contracts/approval.py::ApproverKind` の1箇所。
+認証ではない（誰でも書ける形式検査）: 目的は監査記録で所有者の判断と委任の範囲の判断を取り違えないこと。
+**機械検査**: `tests/unit/test_approval_kind.py::test_anything_that_does_not_state_a_valid_kind_is_not_an_approval`
+/ `tests/unit/test_approval_kind.py::test_an_agent_delegated_approval_never_satisfies_an_owner_gate`
+/ `tests/unit/test_approval_kind.py::test_the_owner_only_gates_are_the_ones_that_spend_or_publish`
+/ `tests/unit/test_approval_kind.py::test_the_stored_actor_states_its_kind_and_a_legacy_value_does_not`
+/ `tests/unit/test_release_approval_kind.py::test_a_record_that_does_not_state_its_kind_is_not_an_approval`
+/ `tests/unit/test_release_approval_kind.py::test_a_delegated_approval_cannot_enable_an_owner_gate`
+/ `tests/unit/test_release_approval_kind.py::test_provider_credit_actions_accept_only_the_owners_own_reference`
+/ `tests/unit/test_release_approval_kind.py::test_manual_reservation_resolution_accepts_only_the_owners_own_reference`
+/ `tests/unit/test_release_approval_kind.py::test_the_release_reservation_waiver_stays_owner_only`
+
+### INV-124 API の変更系ルートは全て bearer token を要求し、未設定・不備なら閉じる（無認証に倒れない）
+`POST` / `PUT` / `PATCH` / `DELETE` の全ルート（OpenAPI から列挙。router を足してもここに入る）は、token 未設定
+（ファイル無し・読めない・壊れている・0600 以外・短い token・重複）なら 503、token が無い・違う（`Bearer` 以外、前後の
+空白、1 文字違い）なら 401、いずれも handler に到達せず workflow を起動しない。比較は digest を全件 `hmac.compare_digest`
+（打ち切らない）。読み取り（GET）は開けたまま。token は応答・ログに出ず、actor（`owner` / `agent`）だけが残る。
+**機械検査**: `tests/unit/test_api_auth.py::test_every_mutating_route_refuses_when_no_token_is_configured`
+/ `tests/unit/test_api_auth.py::test_every_mutating_route_refuses_a_missing_or_wrong_credential`
+/ `tests/unit/test_api_auth.py::test_a_valid_token_reaches_the_handler`
+/ `tests/unit/test_api_auth.py::test_read_only_routes_stay_open`
+/ `tests/unit/test_api_auth.py::test_a_missing_or_malformed_token_file_means_nothing_is_authenticated`
+/ `tests/unit/test_api_auth.py::test_a_token_file_readable_by_others_is_refused`
+/ `tests/unit/test_api_auth.py::test_comparison_is_constant_time_and_checks_every_entry`
+/ `tests/unit/test_api_auth.py::test_the_credential_never_appears_in_a_refusal`
+/ `tests/unit/test_api_auth.py::test_every_authenticated_mutation_logs_its_actor_without_the_token`
+/ `tests/unit/test_api_auth.py::test_every_operator_script_that_posts_to_the_api_sends_a_token`
+
+### INV-125 品質ゲート ON の手動投稿は、どのトークンでも BLOCK を迂回できず、REVIEW を承認できるのは owner トークンだけ
+`AVP_QUALITY_GATE_ENFORCE` ON のとき、`POST /episodes/{id}/upload` は BLOCK・レポート作成失敗を 409 にし（owner/agent
+どちらのトークンでも）、REVIEW は owner トークンのときだけ許可して actor 付きでログに残す。agent トークンの REVIEW は
+409 `quality: review_requires_owner`。flag OFF の挙動は変えない（ADR-0076）。
+**機械検査**: `tests/unit/test_api_auth.py::test_manual_upload_cannot_bypass_a_block_with_any_token`
+/ `tests/unit/test_api_auth.py::test_review_is_approved_by_the_owner_token_but_never_by_the_agent_token`
+/ `tests/unit/test_api_auth.py::test_a_passing_report_lets_the_agent_token_upload`
+
