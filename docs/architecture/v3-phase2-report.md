@@ -42,24 +42,24 @@ Phase 2 の**全機能完成**と、**新機能 OFF でのコードデプロイ�
 |---|---|---|---|
 | B1 | 独立レビュー完了・BLOCKER/MAJOR 0 | PASS | 全 6 枝。修正後の再レビューで閉鎖 |
 | B2 | 統合後の全件テスト・pyright・ruff | PASS | 5803 passed / 0 errors |
-| B3 | Temporal replay（repo の履歴 fixture） | 証跡を target SHA で作る | `release/evidence/<sha>-replay.json`（staging.md §5） |
-| B4 | CI gate（check run `CI gate`）が target SHA で success | 確認する | preflight `ci` |
+| B3 | Temporal replay（repo の履歴 fixture） | PASS | 65 passed。`release/evidence/e3c9555…-replay.json`（staging.md §5）。CI の Temporal replay も success |
+| B4 | CI gate（check run `CI gate`）が target SHA で success | PASS | PR #21 の run 40795468026。初回は Temporal test server のダウンロード 503（CI 基盤側）で 2 件失敗、失敗ジョブの再実行で全 11 ジョブ success。テストは変更していない |
 | B5 | 稼働 SHA・DB revision・祖先関係 | PASS（実測） | 303f33e / alembic 0018、target は 303f33e の fast-forward |
 | B6 | DB 変更が後方互換 | PASS | migration なし |
 | B7 | fal 予算設定の維持 | PASS | 所有者判断で `FAL_MONTHLY_BUDGET_USD=60` を維持（変更しない） |
-| B8 | private 投稿・投稿冪等性・Temporal Schedule の維持 | 確認する | 差分に冪等キー・予約台帳・Schedule 定義の変更が無いこと、`.env` 不変 |
+| B8 | private 投稿・投稿冪等性・Temporal Schedule の維持 | PASS | 差分監査: `compute_upload_key`・`_drive`・paid_job・Schedule 定義・workflow・Activity 入出力は不変。UNKNOWN 照合は投稿前に拒否（旧コードより厳しい側のみ）。`.env` 不変 |
 | B9 | 新 flag がすべて OFF | PASS | 本番 `.env` に未設定、compose は `${BGM_ENABLED:-false}` |
-| B10 | 24h 以内のバックアップと復旧演習（`restore_verified: true`） | 実施する | `scripts/backup.py run` → `restore-drill`（ADR-0051） |
-| B11 | 隔離環境での integration test | 実施する | 本番と別の compose project・別 port・別 volume・資格情報なし（`--env-file /dev/null`）。本番 `avp2` に触れない |
-| B12 | 稼働中 workflow 0・未照合予約 0・open な投稿予約なし | 確認する | preflight `running_workflows` / `provider_reservations` |
-| B13 | Daily（21:00Z）と重ならない時刻 | 確認する | deploy は maintenance pause（`make deploy-workers`）で包む |
+| B10 | 24h 以内のバックアップと復旧演習（`restore_verified: true`） | PASS | backup `20261029T003957Z`（13872 objects / 2.27 GB、3 DB）。restore-drill 6 検査すべて pass、`restore_verified: true` |
+| B11 | 隔離環境での integration test | PASS | project `avp2-oslog-c-v3p2`（`deploy/logging/test/run-e2e.sh`、internal network・host port なし・資格情報なし・別 volume / image）。157 passed / 7 skipped / 0 failed。skip は環境要因（runner に docker CLI なし 6、§4-9 の 1）。本番コンテナは無変更 |
+| B12 | 稼働中 workflow 0・未照合予約 0・open な投稿予約なし | PASS | preflight `running_workflows` 0 / `provider_reservations` reserved 0 / `reconcile-reservations list` 0 |
+| B13 | Daily（21:00Z）と重ならない時刻 | PASS | 2026-10-29 00:53:26Z〜00:55:42Z。Daily・watchdog（毎時 :35）と重ならない。maintenance pause は成功後に解除済み |
 | B14 | 停止・復旧手順 | PASS | `--rollback`（303f33e、`SKIP_MIGRATE=1`）。DB 変更なし |
-| B15 | デプロイ後の新規課金・投稿・Schedule 二重実行なしの確認手段 | 代替監視（§3.3） | OpenSearch に依存しない |
-| B16 | release preflight（承認込み）が READY、事後検証が READY | 実施する | release-runbook §1・§3 |
+| B15 | デプロイ後の新規課金・投稿・Schedule 二重実行なしの確認手段 | PASS | 代替監視（§3.3）で基準値と比較: 新規 provider_reservations 0、youtube_upload 16 / upload_receipt 16 のまま、credit hold 4 件の内容 hash 一致、Schedule 不変、重複起動 0、全アプリコンテナの traceback 0 |
+| B16 | release preflight（承認込み）が READY、事後検証が READY | PASS | 承認以外 14 項目 PASS → 承認記録（所有者の条件付き委任、§3.4）→ READY(0)。事後検証 READY(0) |
 
 注: D-1（UNKNOWN で投稿しない・承認の消費）は flag の無い安全側の挙動変更で、デプロイすると即時に有効になる。
 
-各行の実測結果はリリース記録（`docs/releases/`）に残す。この表の「確認する／実施する」は、結果が揃うまで PASS とみなさない。
+**判定 B: PASS → 2026-10-29 に e3c9555 を本番へデプロイ済み（新 flag はすべて OFF）。** 詳細はリリース記録（`claude/release-record-v3p2` の `docs/releases/2026-10-29-v3-phase2-flags-off.md`）。
 
 ### 3.3 OpenSearch を停止したまま運用する判断
 
@@ -78,17 +78,24 @@ Phase 2 の**全機能完成**と、**新機能 OFF でのコードデプロイ�
 - 代替監視で確かめられない（OpenSearch を前提にした）長期の検索・集計は失われたまま。これはデプロイ判定ではなく
   運用上の既知の穴として残す。
 
+### 3.4 承認の扱い
+
+release preflight の `owner_approval` は、所有者の指示（2026-10-29「安全条件をすべて満たした場合に限り、新機能 OFF で本番デプロイまで実施」）
+を条件付きの委任として、承認以外の全項目が PASS した preflight 出力を確認した後にエージェントが書いた。承認ファイルの `note` に
+その旨を残している。署名などの認証ではない（release-runbook §0）。
+
 ## 4. 未解決リスクと残作業
 
 1. OpenSearch は所有者判断で停止を維持する（§3.3）。復旧は対象外。長期のログ検索は代替監視で補えない既知の穴。
-2. 隔離環境での integration test（判定 B11）。
-3. 新しいバックアップと restore drill（判定 B10）。
+2. 隔離環境での integration test（判定 B11）— 完了。
+3. 新しいバックアップと restore drill（判定 B10）— 完了。
 4. QualityGate の検査入力の保存先と migration 計画（後続 ADR）、手動承認の DB 記録、API 認証。
 5. `QualityCheck.detail` の自由文（LLM レビューを有効にする前に allowlist 化）。
 6. 地図の結線（`check_scene_map_accuracy` を使う、hash の結び付け、CJK フォント）、BGM のラウドネス閾値の校正、
    ADR-0077 の承認、BGM のラウドネス失敗時の扱い（現状はレンダ失敗）。
 7. tags 単独照合の実機検証（所有者が `scripts/verify-tags-only-match.py --live` を実行）。旧動画は説明欄にしか marker が無い。
 8. 既存 `tests/architecture/test_geo_boundaries.py` の import 検出の抜け（範囲外のため未修正）。
+9. `tests/integration/test_pipeline_schedule.py:48` が `TEMPORAL_ADDRESS = "localhost:7233"` を直書きしている。隔離環境では skip になり、本番と同じホストで `pytest tests/integration` を直接実行すると本番の Temporal を向く（namespace の guard で防がれるかは未確認）。範囲外のため未修正。
 
 ## 5. 追加コストの見込み
 
