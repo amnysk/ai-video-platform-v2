@@ -79,3 +79,12 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0061](./0061-fal-budget-zero-is-a-managed-hold.md) | fal の月間予算が 0 / 未設定でも、日次は失敗せず有料 submit を 0 回のまま正常終了する（ローカル予算ゲート。migration なし） | Proposed |
 | [0062](./0062-release-only-reservation-waiver.md) | 未照合の provider 予約を、release に限り期限つき・1 件限りで waive する（台帳は書かない。migration なし） | Proposed |
 | [0063](./0063-fal-monthly-hard-cap.md) | `FAL_MONTHLY_BUDGET_USD` を月間のハードキャップにする（予約と同じトランザクションで強制。migration なし） | Proposed |
+| [0070](./0070-description-without-internal-ids.md) | YouTube description から内部 ID を外す（marker は tags に残す・既定 OFF の flag） | Accepted |
+| [0071](./0071-geo-manifest-and-deterministic-map-verification.md) | 地図は GeoManifest から描き、位置の検証は決定論的な純関数が行う（LLM の採点で上書きしない） | Accepted |
+| [0072](./0072-bgm-contracts-and-license-gated-selection.md) | BGM 契約とライセンスで門を閉じた選曲（契約・純粋ドメインのみ） | Proposed |
+| [0073](./0073-quality-report-contract-and-fail-closed-gate.md) | 品質レポートの契約と fail-closed の投稿可否判定（契約層のみ・配線は後続） | Accepted |
+| [0074](./0074-v3-phase2-shared-contract-fixes.md) | v3 Phase 2 の共有契約の是正（verdict 統一・入力保護・品質レポートの鮮度） | Accepted |
+| [0075](./0075-marker-lookup-three-states-and-description-composition.md) | マーカー照合の3状態化・タグだけの照合の確認ツール・説明欄の構成 | Accepted |
+| [0076](./0076-quality-gate-wiring-in-upload-gate.md) | 品質ゲートを `upload_gate` に結線する（既定 OFF・状態を足さない・Phase 2 は決定論の検査のみ。LLM レビューは未実装） | Accepted |
+| [0077](./0077-bgm-render-wiring.md) | BGM の Render 結線（1 つの設定キーの背後・既定 OFF・ffmpeg で混合） | Proposed |
+| [0078](./0078-historical-map-accuracy-gate-and-deterministic-render.md) | 歴史地図の正確さの関門（理由コード・BLOCK 引き上げ）と決定論的な地図描画（既定 OFF・未接続） | Accepted |

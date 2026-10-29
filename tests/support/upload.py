@@ -16,6 +16,7 @@ from contracts.render_activities import (
     RenderFinalVideoRequest,
     RenderMarkReadyRequest,
 )
+from contracts.upload import MarkerLookup
 from domain.artifact.hashing import sha256_hex
 from domain.upload.ports import UploadCompleted, UploadProgress, UploadSessionRef
 from infrastructure.storage.artifact_store import ArtifactStore
@@ -108,6 +109,9 @@ class CrashingUploader:
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
         return await self.inner.find_video_by_marker(marker_tag)
 
+    async def lookup_video_by_marker(self, marker_tag: str) -> MarkerLookup:
+        return await self.inner.lookup_video_by_marker(marker_tag)
+
     async def own_channel_id(self) -> str:
         return await self.inner.own_channel_id()
 
@@ -132,6 +136,9 @@ class ExpireOnQueryUploader:
 
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
         return await self.inner.find_video_by_marker(marker_tag)
+
+    async def lookup_video_by_marker(self, marker_tag: str) -> MarkerLookup:
+        return await self.inner.lookup_video_by_marker(marker_tag)
 
     async def own_channel_id(self) -> str:
         return await self.inner.own_channel_id()

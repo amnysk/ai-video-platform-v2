@@ -61,7 +61,9 @@ overlap は SKIP、catchup window は 1 時間。設定を変えたら `--apply`
 - 工程が駐機点以外（`needs_work` / `blocked` など）を返す・失敗する・同じ工程がすでに走っている → pipeline は
   その場で `stopped` で終わる。再開は従来どおり API から工程を POST する。翌日の trigger は影響を受けない
 - 投稿ゲートが拒否する条件: 停止スイッチ、`render_ready` でない、現行 `final_video` が無い、`youtube_upload`
-  予約が spent / dispatched。結果は `upload_skipped` と理由
+  予約が spent / dispatched、
+  `AVP_QUALITY_GATE_ENFORCE` が ON のとき品質判定が PASS/WARN でない（ADR-0076。既定 OFF）。
+  結果は `upload_skipped` と理由（品質なら `quality: <理由コード>`）
 - 結果は Temporal UI の `daily-episode-*` / `episode-{id}-pipeline` の実行結果で確認する
 - trigger 時点で `paused` なら、その日の分は**作らない**（後で解除しても同じ日には再試行しない）。
   必要なら解除後に `temporal schedule trigger --schedule-id avp-daily-episode` で手動 trigger する

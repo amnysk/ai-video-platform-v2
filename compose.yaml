@@ -399,6 +399,8 @@ services:
       RENDER_FONT_SHA256: ${RENDER_FONT_SHA256:-b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a}
       RENDER_FFMPEG_THREADS: ${RENDER_FFMPEG_THREADS:-4}
       RENDER_CONCURRENCY: ${RENDER_CONCURRENCY:-1}
+      # BGM の Render 結線（ADR-0077）。既定 OFF。OFF の間は導入前と同一の描画
+      BGM_ENABLED: ${BGM_ENABLED:-false}
     volumes:
       - type: bind
         source: ${AVP_FFMPEG_DIR:-${HOME}/.local/share/avp/ffmpeg/7.1.1}

@@ -26,7 +26,13 @@ import httpx
 
 from contracts.log_contract import EventName, Outcome, ProviderOperation
 from contracts.states import ProviderCall
-from contracts.upload import DEFAULT_UPLOAD_CHUNK_BYTES, YOUTUBE_CHUNK_ALIGNMENT_BYTES
+from contracts.upload import (
+    DEFAULT_UPLOAD_CHUNK_BYTES,
+    YOUTUBE_CHUNK_ALIGNMENT_BYTES,
+    MarkerLookup,
+    marker_in_description_lines,
+    marker_in_tags,
+)
 from domain.upload.ports import (
     UploadCompleted,
     UploadExpired,
@@ -390,9 +396,19 @@ class YouTubeResumableUploader:
         return channel_id
 
     async def find_video_by_marker(self, marker_tag: str) -> str | None:
+        """互換用: ``lookup_video_by_marker`` の FOUND だけ video id、それ以外は None。
+
+        None は「無い」と「確かめきれない」を区別しない。**予約・投稿の判断には使わない**
+        （``lookup_video_by_marker`` を使う。INV-109）。
+        """
+        return (await self.lookup_video_by_marker(marker_tag)).video_id
+
+    async def lookup_video_by_marker(self, marker_tag: str) -> MarkerLookup:
         """uploads playlist を新しい順に最大 max_lookup_pages × 50 件、マーカーで照合する。
 
         タグ、または description の行のどれかがマーカーと一致すれば自分の投稿とみなす。
+        結果は3状態: FOUND / NOT_FOUND（最後のページまで読み切って無い）/ UNKNOWN（ページ上限で
+        打ち切った・応答の形が想定外）。API の失敗（auth / quota / transient）は例外のまま送出する。
         """
         if not marker_tag:
             raise ValueError("marker_tag must be non-empty")
@@ -417,9 +433,13 @@ class YouTubeResumableUploader:
             if page_token:
                 params["pageToken"] = page_token
             page = await self._get_json("playlistItems", params, "list uploads")
+            page_items = page.get("items")
+            if not isinstance(page_items, list):
+                # items の無い / 配列でない応答を「空の playlist」と読まない
+                return MarkerLookup.unknown("malformed_playlist_page")
             video_ids = [
                 item["contentDetails"]["videoId"]
-                for item in page.get("items") or []
+                for item in page_items
                 if isinstance(item, dict)
                 and isinstance(item.get("contentDetails"), dict)
                 and isinstance(item["contentDetails"].get("videoId"), str)
@@ -428,25 +448,31 @@ class YouTubeResumableUploader:
                 videos = await self._get_json(
                     "videos", {"part": "snippet", "id": ",".join(video_ids)}, "list videos"
                 )
-                for video in videos.get("items") or []:
+                video_items = videos.get("items")
+                if not isinstance(video_items, list):
+                    return MarkerLookup.unknown("malformed_videos_response")
+                returned = {v.get("id") for v in video_items if isinstance(v, dict)}
+                if not set(video_ids) <= returned:
+                    # 要求した動画が返っていない。見えていない動画にマーカーがあるかもしれない
+                    return MarkerLookup.unknown("videos_response_incomplete")
+                for video in video_items:
                     if not isinstance(video, dict):
                         continue
                     snippet = video.get("snippet")
                     tags = snippet.get("tags") if isinstance(snippet, dict) else None
                     description = snippet.get("description") if isinstance(snippet, dict) else None
-                    in_tags = isinstance(tags, list) and marker_tag in tags
-                    in_description = isinstance(description, str) and marker_tag in (
-                        line.strip() for line in description.splitlines()
-                    )
-                    if in_tags or in_description:
+                    if marker_in_tags(marker_tag, tags) or marker_in_description_lines(
+                        marker_tag, description
+                    ):
                         video_id = video.get("id")
                         if isinstance(video_id, str) and video_id:
-                            return video_id
+                            return MarkerLookup.found(video_id)
             next_token = page.get("nextPageToken")
             if not isinstance(next_token, str) or not next_token:
-                return None
+                return MarkerLookup.not_found()
             page_token = next_token
-        return None
+        # ページ上限に達したのにまだ次がある。読んでいない範囲に動画があるかもしれない
+        return MarkerLookup.unknown("page_limit_reached")
 
     async def processing_status(self, video_id: str) -> VideoProcessingState:
         """``videos.list(part=status,processingDetails,snippet)``（1 unit、readonly scope）。

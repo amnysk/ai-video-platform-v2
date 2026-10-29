@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from contracts.pipeline import (
@@ -25,6 +25,7 @@ from contracts.production_activities import (
     MAX_SCENE_ALTERNATIVES_PER_EPISODE,
     MAX_SCENE_ALTERNATIVES_PER_SCENE,
 )
+from contracts.quality import QUALITY_GATE_ENFORCE_ENV
 from contracts.render import (
     DEFAULT_RENDER_CONCURRENCY,
     DEFAULT_RENDER_FFMPEG_THREADS,
@@ -156,6 +157,10 @@ class Settings(BaseSettings):
     #: 作業領域に最低限残す空き容量（バイト）。見込み使用量はこれに上乗せする。
     render_min_free_bytes: int = DEFAULT_RENDER_MIN_FREE_BYTES
 
+    #: BGM の Render 結線（ADR-0077）。既定 OFF。OFF の間は導入前と同一の描画。
+    #: 供給元は ``${ai_video_work_root}/bgm/``（catalog.json と cues/<episode_id>.json、音源）
+    bgm_enabled: bool = False
+
     # --- upload（Phase 6） ---
     #: OAuth installed app の client。secret は ``SecretStr``。
     youtube_client_id: str | None = None
@@ -166,6 +171,8 @@ class Settings(BaseSettings):
     youtube_channel_id: str | None = None
     #: ``UPLOADS_PAUSED=true`` なら session を開始する前に止める
     uploads_paused: bool = False
+    #: 品質ゲートを投稿に効かせる（ADR-0076）。既定 OFF。キー名は contracts.quality が唯一の定義
+    quality_gate_enforce: bool = Field(default=False, validation_alias=QUALITY_GATE_ENFORCE_ENV)
     #: resumable upload の chunk（256 KiB の倍数）
     youtube_chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES
 
@@ -214,6 +221,11 @@ class Settings(BaseSettings):
     planner_trend_enabled: bool = False
     #: 台本の後に Evidence を依頼して照合する（助言だけ。結果で Episode を止めない）
     script_evidence_enabled: bool = False
+
+    # --- 歴史地図（ADR-0078。部品のみ・workflow 未接続） ---
+    #: True のときだけ ``map_scene_visual`` が地図を描く。既定 OFF では何も描かず、
+    #: storyboard / render / production の identity と出力は接続前と同じ（INV-120）
+    geo_maps_enabled: bool = False
 
     @field_validator("fal_monthly_budget_usd", mode="before")
     @classmethod

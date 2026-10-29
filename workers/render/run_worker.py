@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
+from pathlib import Path
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -20,7 +21,9 @@ from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.media.probe import PillowAvMediaProbe
+from infrastructure.render.bgm_source import LocalDirectoryBgmSource
 from infrastructure.render.ffmpeg_engine import FfmpegRenderEngine
+from infrastructure.render.loudness import FfmpegLoudnessProbe
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.workdir import WorkDirectory
@@ -93,6 +96,12 @@ async def main() -> None:
     client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
+    # ADR-0077: 設定 ON のときだけ供給元と測定を渡す。OFF は導入前と同一
+    bgm_source = None
+    loudness_probe = None
+    if settings.bgm_enabled and settings.render_ffmpeg_path:
+        bgm_source = LocalDirectoryBgmSource(Path(settings.ai_video_work_root) / "bgm")
+        loudness_probe = FfmpegLoudnessProbe(settings.render_ffmpeg_path)
     activities = RenderActivities(
         session_factory=session_factory_from_settings(settings),
         store=store,
@@ -107,6 +116,8 @@ async def main() -> None:
         render_timeout_seconds=settings.render_timeout_seconds,
         min_free_bytes=settings.render_min_free_bytes,
         run_inspector=TemporalWorkflowRunInspector(client),
+        bgm_source=bgm_source,
+        loudness_probe=loudness_probe,
     )
     state, media = build_workers(client, settings, activities)
     logger.info(

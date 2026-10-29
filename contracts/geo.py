@@ -1,0 +1,420 @@
+"""地図・地理の契約（ADR-0071）。**GeoManifest / GeoPlace / GeoVerdict の唯一の宣言元**。
+
+地図は生成 AI に想像で描かせず、この manifest（構造化された地点・範囲・ラベル）から描画する
+（設計書 v3 §3.2）。manifest が**本当に実在の位置を表しているか**は ``domain/geo`` の純関数が
+決定論的に検査し、結果を ``GeoVerification``（``GeoVerdict`` と check の列）にする。
+
+守るもの:
+
+- 座標は **名前付きの** ``lat`` / ``lon``（EPSG:4326）で持ち、範囲を検証する（INV-95）。
+  ``(lon, lat)`` / ``(lat, lon)`` の位置引数の tuple・``coordinates`` のような順序が文脈頼みの
+  形を受け取らない（``extra=forbid``）。
+- 実在の位置を主張する点（``schematic`` 以外）は claim（``EvidenceClaim.claim_id``）と資料
+  （``source_ids``）に紐づく。紐づけが実際に解決するか・支持されているかは ``domain/geo`` が見る。
+- ``GeoVerification.verdict`` は check の最悪値と**一致しなければ作れない**。BLOCK を含む記録を
+  PASS として保存できない（INV-94 の契約側）。LLM の採点で上書きする入口は無い
+  （``domain.geo.combine_verdicts`` は等しいか厳しい側にしか動かない）。
+- 模式図（``schematic``）に必要な「縮尺不同」の表示が無いことは**構築時ではなく検証器の BLOCK**で
+  止める（INV-96）。作れなくするのではなく、BLOCK として記録に残す設計。
+
+この契約はどの workflow・worker にも接続されていない（ADR-0071。接続は後続の枝）。
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import Annotated, Literal
+
+from pydantic import Field, field_validator, model_validator
+
+from contracts.artifact_refs import SCRIPT_SCENE_ID_PATTERN, SHA256_HEX_PATTERN, FrozenModel
+from contracts.research import normalize_claim_text
+from contracts.research_evidence import CLAIM_ID_PATTERN, SOURCE_ID_PATTERN
+from contracts.untrusted import (
+    CHECK_NAME_PATTERN,
+    MAX_DETAIL_CHARS,
+    SAFE_ID_PATTERN,
+    UNTRUSTED_REF_PATTERN,
+    is_safe_detail,
+)
+from contracts.verdict import VERDICT_ORDER, Verdict, stricter
+
+GEO_SCHEMA_VERSION = "1.0"
+
+PLACE_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$"
+YEAR_MIN = -3000
+YEAR_MAX = 3000
+MAX_PLACES = 200
+MAX_LABELS = 400
+MAX_ASSERTIONS = 50
+MAX_CHECKS = 2000
+
+#: 座標は strict: bool・文字列を数値として受け取らない（``True`` が 1.0 度になる等を防ぐ）。
+Latitude = Annotated[float, Field(strict=True, ge=-90.0, le=90.0, allow_inf_nan=False)]
+Longitude = Annotated[float, Field(strict=True, ge=-180.0, le=180.0, allow_inf_nan=False)]
+Year = Annotated[int, Field(ge=YEAR_MIN, le=YEAR_MAX)]
+Crs = Literal["EPSG:4326"]
+
+#: 自己申告の不確かさ半径の上限（km）。manifest の作者（LLM）が書く値なので契約でも有界にする。
+#: 許容へ効く量はさらに ``domain.geo.tolerance`` が地物ごとに頭打ちにする（ADR-0071）。
+UNCERTAINTY_RADIUS_MAX_KM = 1000.0
+
+#: 模式図の表示として受け付ける句（NFKC・小文字化・空白畳みの後の部分一致）。INV-96。
+#: **縮尺が正確でないと述べる句だけ**。``Schematic`` だけ・``縮尺`` を含むだけでは足りない。
+SCHEMATIC_DISCLAIMER_PHRASES: tuple[str, ...] = (
+    "not to scale",
+    "縮尺不同",
+    "縮尺は正確ではありません",
+    "縮尺は正確ではない",
+    "縮尺通りではありません",
+    "縮尺通りではない",
+)
+#: 受け付ける句を取り除いた残りにあってはならない、縮尺の正確さを主張する語。
+SCHEMATIC_AFFIRMATIVE_SCALE_MARKERS: tuple[str, ...] = (
+    "to scale",
+    "縮尺通り",
+    "縮尺は正確",
+    "accurate",
+    "正確",
+)
+
+
+def schematic_disclaimer_ok(text: str | None) -> bool:
+    """模式図の表示文が INV-96 を満たすか（**定義はここだけ**）。"""
+    if text is None:
+        return False
+    folded = normalize_claim_text(text)
+    if not any(phrase in folded for phrase in SCHEMATIC_DISCLAIMER_PHRASES):
+        return False
+    remaining = folded
+    for phrase in sorted(SCHEMATIC_DISCLAIMER_PHRASES, key=len, reverse=True):
+        remaining = remaining.replace(phrase, " ")
+    return not any(marker in remaining for marker in SCHEMATIC_AFFIRMATIVE_SCALE_MARKERS)
+
+
+#: 地図の検証の結論。判定語彙は ``contracts.verdict.Verdict`` と同一（INV-105。別名）。
+GeoVerdict = Verdict
+
+#: 厳しさの順序（``contracts.verdict.VERDICT_ORDER`` と同一。ここで並べ直さない）。
+GEO_VERDICT_ORDER = VERDICT_ORDER
+
+
+class MapKind(StrEnum):
+    HISTORICAL = "historical"
+    MODERN_CONTEXT = "modern_context"
+    SCHEMATIC = "schematic"
+
+
+class LocationConfidence(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class GeoFeatureType(StrEnum):
+    """地物の種類。距離の許容は種類で変わる（一律の km 閾値を使わない）。"""
+
+    STRUCTURE = "structure"  # 城・寺・建物
+    SETTLEMENT = "settlement"  # 都市・町・宿場
+    BATTLEFIELD = "battlefield"
+    NATURAL = "natural"  # 山・岬・島
+    REGION = "region"  # 国・地方（代表点が重心）
+
+
+class BorderBasis(StrEnum):
+    """地図が国境・領域をどの時代の資料で描いているか。"""
+
+    NONE = "none"  # 国境を描かない
+    MODERN = "modern"  # 現代の国境
+    HISTORICAL = "historical"  # 当時の資料に基づく（``border_valid_year`` を持つ）
+
+
+class GeoBBox(FrozenModel):
+    """想定地域。軸の取り違えを避けるため名前付き（INV-95）。"""
+
+    min_lon: Longitude
+    min_lat: Latitude
+    max_lon: Longitude
+    max_lat: Latitude
+
+    @model_validator(mode="after")
+    def _ordered(self) -> GeoBBox:
+        if self.min_lon >= self.max_lon or self.min_lat >= self.max_lat:
+            raise ValueError("bbox must satisfy min_lon < max_lon and min_lat < max_lat")
+        return self
+
+    def contains(self, lat: float, lon: float) -> bool:
+        return self.min_lat <= lat <= self.max_lat and self.min_lon <= lon <= self.max_lon
+
+
+class GeoPlace(FrozenModel):
+    place_id: str = Field(pattern=PLACE_ID_PATTERN)
+    display_name: str = Field(min_length=1, max_length=200)
+    lat: Latitude
+    lon: Longitude
+    crs: Crs
+    feature_type: GeoFeatureType
+    location_confidence: LocationConfidence
+    #: 資料自体の位置の不確かさ（km）。``None`` は不明（許容は広げない）
+    uncertainty_radius_km: float | None = Field(
+        default=None, strict=True, ge=0.0, le=UNCERTAINTY_RADIUS_MAX_KM, allow_inf_nan=False
+    )
+    #: この地物が存在した期間（西暦。紀元前は負）。``None`` は不明
+    valid_start_year: Year | None = None
+    valid_end_year: Year | None = None
+    source_ids: tuple[Annotated[str, Field(pattern=SOURCE_ID_PATTERN)], ...] = ()
+    #: 位置の主張（``EvidenceClaim.claim_id``）。``schematic`` 以外では必須（manifest が検査）
+    claim_id: str | None = Field(default=None, pattern=CLAIM_ID_PATTERN)
+
+    @field_validator("display_name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("display_name must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _consistent(self) -> GeoPlace:
+        if (
+            self.valid_start_year is not None
+            and self.valid_end_year is not None
+            and self.valid_start_year > self.valid_end_year
+        ):
+            raise ValueError("valid_start_year must not be after valid_end_year")
+        if len(set(self.source_ids)) != len(self.source_ids):
+            raise ValueError("duplicate source_id")
+        return self
+
+
+class GeoLabel(FrozenModel):
+    """地図に描く文字。``place_id`` が指す地点の名前と一致していなければ検証器が止める。"""
+
+    place_id: str = Field(pattern=PLACE_ID_PATTERN)
+    text: str = Field(min_length=1, max_length=200)
+
+    @field_validator("text")
+    @classmethod
+    def _text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("label text must not be blank")
+        return value
+
+
+class GeoManifest(FrozenModel):
+    scene_id: str = Field(pattern=SCRIPT_SCENE_ID_PATTERN)
+    map_kind: MapKind
+    #: 地図の時間基準（``"1600"`` ``"1600-10"`` ``"-0200"``）。日付を捏造しない。解釈できなければ
+    #: 検証器が REVIEW にする
+    as_of: str = Field(max_length=32)
+    bbox: GeoBBox
+    places: Annotated[tuple[GeoPlace, ...], Field(max_length=MAX_PLACES)] = ()
+    labels: Annotated[tuple[GeoLabel, ...], Field(max_length=MAX_LABELS)] = ()
+    #: 「A は B の東」「経路が X を横切る」など。国境に触れる文は ``borders`` と突き合わせる
+    spatial_assertions: Annotated[
+        tuple[Annotated[str, Field(min_length=1, max_length=300)], ...],
+        Field(max_length=MAX_ASSERTIONS),
+    ] = ()
+    borders: BorderBasis = BorderBasis.NONE
+    border_valid_year: Year | None = None
+    #: ``schematic`` で必須（欠けていれば検証器が BLOCK。INV-96）
+    schematic_disclaimer: str | None = Field(default=None, max_length=200)
+    #: 描画結果の画像の sha256（描画後に結びつける。任意）
+    render_sha256: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> GeoManifest:
+        ids = [p.place_id for p in self.places]
+        if len(set(ids)) != len(ids):
+            raise ValueError("duplicate place_id")
+        if (self.borders is BorderBasis.HISTORICAL) != (self.border_valid_year is not None):
+            raise ValueError("border_valid_year is required iff borders == historical")
+        if self.map_kind is not MapKind.SCHEMATIC:
+            for place in self.places:
+                if place.claim_id is None or not place.source_ids:
+                    raise ValueError(
+                        f"{place.place_id}: a real-location place needs claim_id and source_ids"
+                    )
+        return self
+
+
+# ------------------------------------------------------------------ 参照データ（gazetteer）
+
+
+class ReferenceName(FrozenModel):
+    """参照地点の名前と、その名前が使われた期間（旧称・現称）。"""
+
+    name: str = Field(min_length=1, max_length=200)
+    start_year: Year | None = None
+    end_year: Year | None = None
+
+
+class ReferencePlace(FrozenModel):
+    """gazetteer 側の 1 地点。検証器へ**注入**される参照（検証器はネットワークに出ない）。"""
+
+    ref_id: str = Field(pattern=PLACE_ID_PATTERN)
+    names: Annotated[tuple[ReferenceName, ...], Field(min_length=1, max_length=50)]
+    lat: Latitude
+    lon: Longitude
+    feature_type: GeoFeatureType
+    uncertainty_radius_km: float = Field(
+        default=0.0, strict=True, ge=0.0, le=UNCERTAINTY_RADIUS_MAX_KM, allow_inf_nan=False
+    )
+    valid_start_year: Year | None = None
+    valid_end_year: Year | None = None
+
+
+# ------------------------------------------------------------------ 検証結果
+
+
+class GeoReason(StrEnum):
+    """検査の理由コード（**ここだけで定義**。INV-106）。PASS の検査は ``OK``。"""
+
+    OK = "ok"
+    MANIFEST_REQUIRED = "manifest_required"
+    SCHEMATIC_DISCLAIMER_MISSING = "schematic_disclaimer_missing"
+    SCHEMATIC_CLAIMS_REAL_LOCATION = "schematic_claims_real_location"
+    AS_OF_UNKNOWN = "as_of_unknown"
+    NO_PLACES = "no_places"
+    CLAIM_AMBIGUOUS = "claim_ambiguous"
+    BORDER_MODERN_ON_HISTORICAL = "border_modern_on_historical"
+    BORDER_YEAR_MISMATCH = "border_year_mismatch"
+    BORDER_ASSERTION_UNSUPPORTED = "border_assertion_unsupported"
+    REFERENCE_MISSING = "reference_missing"
+    REFERENCE_HOMONYM = "reference_homonym"
+    UNCERTAINTY_OVER_CAP = "uncertainty_over_cap"
+    NAME_UNKNOWN_TO_REFERENCE = "name_unknown_to_reference"
+    NAME_BELONGS_ELSEWHERE = "name_belongs_elsewhere"
+    COORDS_OUT_OF_RANGE = "coords_out_of_range"
+    OUTSIDE_REGION = "outside_region"
+    AXES_SWAPPED = "axes_swapped"
+    DISTANCE_OVER_TOLERANCE = "distance_over_tolerance"
+    VALID_TIME_MISMATCH = "valid_time_mismatch"
+    NAME_ANACHRONISTIC = "name_anachronistic"
+    CLAIM_UNRESOLVED = "claim_unresolved"
+    CLAIM_NOT_SUPPORTED = "claim_not_supported"
+    CLAIM_WRONG_KIND = "claim_wrong_kind"
+    CLAIM_TEXT_UNRELATED = "claim_text_unrelated"
+    SOURCES_UNRESOLVED = "sources_unresolved"
+    LABEL_UNKNOWN_PLACE = "label_unknown_place"
+    LABEL_MISMATCH = "label_mismatch"
+    CRITIC_CONCERN = "critic_concern"
+
+
+class GeoMeasureKey(StrEnum):
+    """検査した値の種類（数値だけ）。"""
+
+    YEAR = "year"
+    BORDER_YEAR = "border_year"
+    DISTANCE_KM = "distance_km"
+    TOLERANCE_KM = "tolerance_km"
+    DECLARED_UNCERTAINTY_KM = "declared_uncertainty_km"
+    UNCERTAINTY_CAP_KM = "uncertainty_cap_km"
+    CANDIDATE_COUNT = "candidate_count"
+
+
+class GeoMeasure(FrozenModel):
+    """検査した値。キーは enum、値は有限の数値。文字列は持てない。"""
+
+    key: GeoMeasureKey
+    value: float = Field(strict=True, allow_inf_nan=False)
+
+
+class GeoCheck(FrozenModel):
+    """1 つの検査結果。入力の文字列（地名・ラベル・主張）は持たない（INV-106）。
+
+    OpenSearch へは ``log_fields()`` の既存フィールド（``error_code`` / ``outcome`` / ``scene_id`` /
+    ``attributes``）で辿れる（ADR-0040）。
+    """
+
+    name: str = Field(min_length=1, pattern=CHECK_NAME_PATTERN)
+    outcome: GeoVerdict
+    #: 固定の説明。印字可能な ASCII のみ（改行・制御文字・非 ASCII なし）。入力の写しは入れない。
+    detail: str = Field(max_length=MAX_DETAIL_CHARS)
+    #: 理由コード。検証器が作る検査は必ず持つ。``None`` は理由を持たない旧来の記録。
+    reason: GeoReason | None = None
+    #: 対象（地点 id など）
+    target_id: str | None = Field(default=None, pattern=SAFE_ID_PATTERN)
+    #: 証拠への参照（claim_id / source_id / ref_id）
+    evidence_ref: str | None = Field(default=None, pattern=SAFE_ID_PATTERN)
+    #: 信頼できない値の参照（``untrusted_ref``: 長さと sha256 先頭だけ）
+    value_ref: str | None = Field(default=None, pattern=UNTRUSTED_REF_PATTERN)
+    measures: Annotated[tuple[GeoMeasure, ...], Field(max_length=8)] = ()
+
+    @field_validator("detail")
+    @classmethod
+    def _detail_is_plain(cls, value: str) -> str:
+        if not is_safe_detail(value):
+            raise ValueError("detail must be printable ascii without control characters")
+        return value
+
+    @model_validator(mode="after")
+    def _pass_iff_ok(self) -> GeoCheck:
+        if self.reason is not None and (self.outcome is GeoVerdict.PASS) != (
+            self.reason is GeoReason.OK
+        ):
+            raise ValueError("a check is PASS if and only if its reason is OK")
+        return self
+
+    def log_fields(self, *, scene_id: str | None = None) -> dict[str, object]:
+        """既存の構造化ログのフィールド名（``contracts.log_contract.LOG_FIELDS``）に載せる形。"""
+        fields: dict[str, object] = {
+            "outcome": self.outcome.value,
+            "attributes": {
+                "check": self.name,
+                **({"target_id": self.target_id} if self.target_id else {}),
+                **({"evidence_ref": self.evidence_ref} if self.evidence_ref else {}),
+                **({"value_ref": self.value_ref} if self.value_ref else {}),
+                **{m.key.value: m.value for m in self.measures},
+            },
+        }
+        if self.reason is not None:
+            fields["error_code"] = self.reason.value
+        if scene_id is not None:
+            fields["scene_id"] = scene_id
+        return fields
+
+
+class GeoVerification(FrozenModel):
+    """検証の結果。``verdict`` は check の最悪値と一致しなければ作れない（INV-94）。"""
+
+    verdict: GeoVerdict
+    checks: Annotated[tuple[GeoCheck, ...], Field(min_length=1, max_length=MAX_CHECKS)]
+
+    @model_validator(mode="after")
+    def _verdict_is_the_worst_check(self) -> GeoVerification:
+        worst = GeoVerdict.PASS
+        for check in self.checks:
+            worst = stricter(worst, check.outcome)
+        if self.verdict is not worst:
+            raise ValueError(
+                f"verdict {self.verdict.value} does not match the worst check ({worst.value})"
+            )
+        return self
+
+
+__all__ = [
+    "GEO_SCHEMA_VERSION",
+    "GEO_VERDICT_ORDER",
+    "PLACE_ID_PATTERN",
+    "SCHEMATIC_AFFIRMATIVE_SCALE_MARKERS",
+    "SCHEMATIC_DISCLAIMER_PHRASES",
+    "UNCERTAINTY_RADIUS_MAX_KM",
+    "BorderBasis",
+    "GeoBBox",
+    "GeoCheck",
+    "GeoFeatureType",
+    "GeoLabel",
+    "GeoManifest",
+    "GeoMeasure",
+    "GeoMeasureKey",
+    "GeoPlace",
+    "GeoReason",
+    "GeoVerdict",
+    "GeoVerification",
+    "LocationConfidence",
+    "MapKind",
+    "ReferenceName",
+    "ReferencePlace",
+    "schematic_disclaimer_ok",
+    "stricter",
+]

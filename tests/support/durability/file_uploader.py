@@ -74,5 +74,8 @@ class FileBackedFakeUploader(FakeVideoUploader):
     async def find_video_by_marker(self, marker_tag):  # type: ignore[override]
         return await self._around(super().find_video_by_marker, marker_tag)
 
+    async def lookup_video_by_marker(self, marker_tag):  # type: ignore[override]
+        return await self._around(super().lookup_video_by_marker, marker_tag)
+
     async def processing_status(self, video_id):  # type: ignore[override]
         return await self._around(super().processing_status, video_id)
