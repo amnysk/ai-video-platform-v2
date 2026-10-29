@@ -30,6 +30,10 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
 3. Temporal の replay 証跡を作る（staging の手順 `docs/operations/staging.md` §5）。結果を
    `release/evidence/<sha>-replay.json`: `{"sha": "<sha>", "result": "pass", "at": "<ISO8601 with TZ>"}`
    （`at` が未来、または 72 時間より古いと BLOCKED。上限は `--evidence-max-age-hours`、最大 168）
+3b. **API の token ファイル**（ADR-0080 §B。preflight の必須チェック `api_token_file`）。無いまま deploy すると API の
+   変更系ルートは全て 503 になる。作り方・権限・compose の渡し方は `docs/operations/api-auth.md`。preflight は
+   `${AVP_API_SECRETS_DIR:-$HOME/.config/avp2/api}/tokens` が在る・通常ファイル・0600・`AVP_UID` の所有・
+   owner と agent の token を含む、を確かめる（token の中身は読み出さず、出力しない）。BLOCKED なら先に直す
 4. バックアップ manifest（`python scripts/backup.py run` の出力 `<root>/<backup_id>/manifest.json` を渡す。
    DB dump / MinIO / Temporal 各 24h 以内。`--backup-max-age-hours` は最大 720。形式の最小形）:
    `{"components": {"db_dump": {"created_at": "<ISO8601 with TZ>"}, "minio": {...}, "temporal": {...}}}`
@@ -48,8 +52,12 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
    （**承認の種別を必ず述べる**（ADR-0080 / INV-123）。`approval_ref` は所有者本人がこの操作を承認したなら
    `OWNER-<yyyymmdd>-<id>`、エージェントが所有者の条件付き指示の下で承認したなら
    `AGENT-<yyyymmdd>-<id>:OWNER-<yyyymmdd>-<id>`（後ろが委任元の指示）。書かない・形が違うと UNKNOWN。
-   委任された承認は新 flag を ON にする・fal 予算を上げる・public/unlisted 投稿などの所有者専用の関門を開けない:
-   承認記録の任意キー `enables` にそれらの名前を書くと、委任では BLOCKED）
+   **`enables`（このリリースが開ける所有者専用の関門の名前の配列）は必須**。新機能 OFF のデプロイは明示的な `[]`。
+   書かないと UNKNOWN。さらに preflight が対象環境の `.env` を読み、新機能 flag
+   （`AVP_QUALITY_GATE_ENFORCE` / `BGM_ENABLED` / `GEO_MAPS_ENABLED` / `AVP_UPLOAD_DESCRIPTION_COMPOSED`。
+   一覧は `contracts/release.py::FEATURE_FLAG_ENV_KEYS`）が 1 つでも ON なら、**委任された承認は BLOCKED**
+   （自己申告の `enables` に依らない）。所有者本人の承認でも、flag が ON なら `enables` に `enable_new_feature` が要る。
+   明確な OFF（空・`false`・`0`・`no`・`off`）以外は ON として扱う。`.env` とプロセス環境の値が食い違えば UNKNOWN）
    （**承認は SHA 単位**。別 SHA・未来日付・72 時間超・出力の差し替えは BLOCKED。`report_sha256` が無いと UNKNOWN）
 6. 承認を付けて再実行する。これが deploy の可否の判定:
 

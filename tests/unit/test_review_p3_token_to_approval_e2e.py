@@ -16,7 +16,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
-from apps.api.auth import Actor, ApiTokens, get_api_tokens
+from apps.api.auth import Actor, ApiTokens, get_api_token_source
 from apps.api.dependencies import (
     get_quality_service,
     get_session_factory,
@@ -46,9 +46,9 @@ async def api(world):  # noqa: F811
     app = create_app()
     app.dependency_overrides[get_session_factory] = lambda: world.factory
     app.dependency_overrides[get_workflow_starter] = lambda: starter
-    app.dependency_overrides[get_api_tokens] = lambda: ApiTokens.from_pairs(
-        [(Actor.OWNER, OWNER_TOKEN), (Actor.AGENT, AGENT_TOKEN)]
-    )
+    tokens = ApiTokens.from_pairs([(Actor.OWNER, OWNER_TOKEN), (Actor.AGENT, AGENT_TOKEN)])
+    # 認証の依存は token の「読み出し口」（変更系のときだけ読む。ADR-0080 追補）を差し替える
+    app.dependency_overrides[get_api_token_source] = lambda: lambda: tokens
     settings = Settings(_env_file=None, **{QUALITY_GATE_ENFORCE_ENV: True})  # type: ignore[arg-type]
     app.dependency_overrides[get_settings] = lambda: settings
     service = world.service()

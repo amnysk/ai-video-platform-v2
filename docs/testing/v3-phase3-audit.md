@@ -117,3 +117,58 @@ API テスト（ASGI 直結）にする理由: 認証は HTTP の入口の性質
 既存の API テスト 10 ファイルは認証ではなく各ルートの挙動を試す。`create_app()` の戻り値の
 `dependency_overrides` で認証の依存だけを「所有者」に上書きする（本番コードに迂回は無い）。`real_api_auth` を付けた
 テストだけ本物の認証を使う。既存テストの本体は変更していない。
+
+## 4. 独立レビューの指摘への対応（M2 / M3 / M4 / minor a・b・c）
+
+### M2: owner / agent の token の保証を正直にする（tests/unit/test_api_auth.py）
+指摘: 同じ 0600 ファイルをエージェントの OS ユーザーが読めるなら、エージェントは owner token を使える。ADR-0080 / INV-125 の
+文言は「owner だけが REVIEW を承認できる」と読めて過大だった。文言を「帰属・意図の記録。分離は別ファイル構成のときだけ」に直し、
+実効のある選択肢（`AVP_API_OWNER_TOKEN_PATH`）を実装した。
+- `test_an_owner_file_supplies_the_owner_token_and_the_shared_file_the_agent_token`: 別ファイル構成が動く。
+- `test_with_an_owner_file_an_owner_token_in_the_shared_file_is_refused`: 分離を名乗りながら、エージェントが読める共有
+  ファイルに owner token が残る構成を通さない（設定ミスが分離を無効にするのを防ぐ）。
+- `test_an_owner_file_that_is_configured_but_unusable_closes_everything`（無い / 0640 / agent 行 / 空）:
+  owner ファイルが設定されているのに使えないとき、黙って共有ファイルだけで動かず全拒否（fail closed）。
+- `test_the_same_token_in_both_files_is_refused` / `test_the_owner_file_setting_is_read_from_the_environment`。
+- 残るリスク（root・docker グループ・API 外の面・失効の自動化なし）は api-auth.md に書き、テストでは保証しない。
+
+### minor a: 読み取りリクエストは token ファイルに触れない
+- `test_read_requests_never_read_the_token_file_or_log_about_it`: token の読み出しを呼ぶ回数を数え、GET では 0。
+  変更系では 1。以前は依存関係が GET でも評価され、壊れたファイルなら GET のたびに ERROR を出した。
+- `test_a_bad_token_file_logs_only_for_mutating_requests`: 実際の壊れたファイル（0644）で、GET は無音、POST は 503 と ERROR。
+
+### M3: `enables` を必須にし、対象環境の flag と突き合わせる（tests/unit/test_release_feature_flags.py）
+指摘: `enables` は自己申告で任意。委任された承認が書かなければ通る。
+- `test_enables_is_mandatory_even_for_an_owner_approval` / `test_an_explicit_empty_enables_is_a_flags_off_deploy`。
+- `test_a_delegated_approval_is_blocked_when_any_flag_is_on_in_the_target`（4 flag × 7 種の ON の書き方）:
+  宣言に依らず、`.env` の実際の値で BLOCKED。`test_flags_that_are_off_or_unset_...`（8 種の OFF）で過剰な BLOCK を防ぐ。
+- `test_an_owner_approval_with_a_flag_on_must_declare_enable_new_feature`: 本人の承認でも、flag が ON なら宣言が要る。
+- `test_an_unreadable_environment_is_unknown_never_pass` と collector 側
+  `test_a_process_environment_that_differs_from_the_dotenv_is_unknown`: `.env` とプロセス環境が食い違うとき READY にしない。
+- `test_the_flag_list_is_the_four_new_features_and_each_is_a_default_off_setting`: flag の一覧は
+  `contracts/release.py::FEATURE_FLAG_ENV_KEYS` の 1 箇所。各キーが実在する既定 OFF の設定であることを検査
+  （一覧と設定のずれ・存在しないキーを検査して緑になる事故を防ぐ）。
+
+### M4: compose の配線・runbook・preflight（tests/unit/test_release_api_token_check.py、tests/contract/test_api_token_wiring.py）
+指摘: compose に token の経路が無く、runbook にも手順が無かった。
+- `tests/contract/test_api_token_wiring.py`: compose の `api` が Settings と同じキー名で token ファイルの経路を持つ・
+  read-only bind・既定が repo の外・token の値を書かない・ポートの bind を変えていない・runbook に手順がある。
+  （env のキー名は `*_PATH`。既存の `test_secrets_are_interpolated_not_inline` の規約: 秘密のファイルへの経路は `_PATH`。）
+- `test_the_check_is_required_before_a_deploy_and_not_after`、`test_an_absent_file_blocks_the_deploy`、
+  `test_a_file_the_api_would_reject_blocks_the_deploy`、`test_a_file_owned_by_someone_other_than_the_container_user_blocks`
+  （0600 でも所有者が違えば API は読めない）、`test_both_an_owner_and_an_agent_token_are_required`、
+  `test_an_unreadable_probe_is_unknown`: token が無いまま出すと変更系が全て 503 になる事故を deploy の前に止める。
+- `tests/unit/test_release_collectors_flags_and_tokens.py`: 実ファイルで、probe が token を返さず・UID の期待値が
+  `AVP_UID` に従い・無い/緩いファイルを問題として報告し・owner 別ファイルも検査する。
+
+### minor c: project 名の規則の単一定義（tests/contract/test_apptest_project_pattern.py）
+- `contracts/apptest.py` が唯一の宣言元。guard はそれを import する。シェルの run-e2e.sh は Python を import
+  できないので、同じ接頭辞を書き、`test_run_e2e_uses_the_same_prefix_and_pattern` がずれを検出する。
+  `test_the_production_project_and_lookalikes_never_match` は `avp2` とそっくりな名前を通さない。
+- minor b（ADR が env 経由と書いていた）: コードはファイルだけを読む。env では渡せない（`docker inspect` に出るため）と
+  ADR / api-auth.md に直した。
+
+### 既存テストの変更（仕様変更が ADR-0080 で先に承認済み）
+`tests/unit/test_release_preflight.py` の `Fake` / `_approval` に `enables: []`・`flags`・`token_probe` を足した
+（承認記録の必須項目と、必須チェックの追加のため）。`tests/unit/test_api_auth.py` の fixture は token の読み出しが
+依存関係 `get_api_token_source` に変わった（読み取りで読まないため）。

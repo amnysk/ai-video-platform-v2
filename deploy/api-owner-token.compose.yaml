@@ -1,0 +1,15 @@
+# 任意: owner token を、共有の token ファイルとは別の場所から api コンテナへ渡す（ADR-0080 §B）。
+#
+#   docker compose -f compose.yaml -f deploy/api-owner-token.compose.yaml --profile core up -d api
+#   （.env に AVP_API_OWNER_TOKEN_PATH=/run/avp-secrets/api-owner/owner-token も書く。release preflight が読む）
+#
+# owner token を置くディレクトリ（既定 $HOME/.config/avp2/api-owner）は、エージェントの OS ユーザーが
+# 読めないようにする。api コンテナが AVP_UID（既定 1000）で動き、エージェントも同じ UID だと分離にならない:
+# その場合は api だけ別 UID で動かす（docs/operations/api-auth.md の「残るリスク」）。
+services:
+  api:
+    volumes:
+      - type: bind
+        source: ${AVP_API_OWNER_SECRETS_DIR:-${HOME}/.config/avp2/api-owner}
+        target: /run/avp-secrets/api-owner
+        read_only: true
