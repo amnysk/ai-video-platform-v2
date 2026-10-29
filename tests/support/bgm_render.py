@@ -52,3 +52,22 @@ def credit_track() -> BgmTrack:
 
 def file_shas(*tracks: BgmTrack) -> dict[str, str | None]:
     return {t.track_id: t.file_sha256 for t in tracks}
+
+
+def placement_plan(profile: str = "shorts_vertical") -> RenderPlan:
+    """配置テスト用: storyboard 5 本（各 4 秒、計 20 秒）と台本 scene 3 本。
+
+    s1 = sb1+sb2（0〜8 秒）、s2 = sb3（8〜12 秒）、s3 = sb4+sb5（12〜20 秒）。
+    """
+    base = make_plan(
+        profile=profile,
+        scenes=((4000, 4000),) * 5,
+        voices=((0, 7000), (8200, 3500), (12200, 7000)),
+        subtitles=False,
+    )
+    groups = (("sb1", "sb2"), ("sb3",), ("sb4", "sb5"))
+    voices = tuple(
+        v.model_copy(update={"storyboard_scene_ids": ids})
+        for v, ids in zip(base.voices, groups, strict=True)
+    )
+    return base.model_copy(update={"voices": voices})
