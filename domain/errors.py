@@ -563,6 +563,21 @@ class TopicPlanningExhaustedError(NeedsInputError):
     """
 
 
+class GeoMapRefusedError(NeedsInputError):
+    """指定した歴史地図が検証を通らない（位置違い・根拠不足・時代錯誤など。ADR-0084）。
+
+    地図の指定か根拠（research evidence）・gazetteer を人間が直せば回復するので needs_input。
+    有料呼び出しの前（production の plan）で止めるために使う。
+    """
+
+
+class GeoSourceInvalidError(NeedsInputError):
+    """地図の指定ファイルがある（地図を使う意図がある）のに読めない・契約違反（ADR-0084 §8）。
+
+    読めないものを「地図なし」として通すと検査が黙って外れるので、止めて人間に直させる。
+    """
+
+
 class InvalidTransitionError(DomainError):
     """表に無い状態遷移を永続化しようとした。"""
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 import ast
 import pathlib
 
+from tests.support.import_scan import modules_of_source, package_of
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
 MAP_MODULES: tuple[pathlib.Path, ...] = (
@@ -71,42 +73,8 @@ PRODUCTION_SIDE: tuple[str, ...] = (
 MAP_PREFIXES = ("infrastructure.media.map_", "domain.geo.map_", "contracts.geo_map")
 
 
-def _package_of(path: pathlib.Path) -> str:
-    """ファイルの属するパッケージ（相対 import の解決用）。"""
-    return ".".join(path.relative_to(REPO).parent.parts)
-
-
-def _modules_of_source(source: str, package: str = "") -> list[str]:
-    """import されうる全てのモジュール名。
-
-    ``from a import b`` は ``a`` と ``a.b`` の両方（b がサブモジュールのことがある）、相対 import は
-    ``package`` で絶対名に直し、``import_module("x")`` / ``__import__("x")`` の定数引数も拾う。
-    """
-    tree = ast.parse(source)
-    found: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            found.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            base = node.module or ""
-            if node.level:
-                parts = package.split(".") if package else []
-                parts = parts[: len(parts) - (node.level - 1)] if node.level > 1 else parts
-                base = ".".join([*parts, *([node.module] if node.module else [])])
-            if base:
-                found.append(base)
-            found.extend(f"{base}.{alias.name}" if base else alias.name for alias in node.names)
-        elif isinstance(node, ast.Call) and node.args:
-            func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            first = node.args[0]
-            if (
-                name in {"import_module", "__import__"}
-                and isinstance(first, ast.Constant)
-                and isinstance(first.value, str)
-            ):
-                found.append(first.value)
-    return found
+_package_of = package_of
+_modules_of_source = modules_of_source
 
 
 def _violations(source: str, package: str = "") -> list[str]:
