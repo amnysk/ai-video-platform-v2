@@ -401,7 +401,8 @@ async def _seed_one_row_per_table(pg) -> uuid.UUID:
     return ep
 
 
-async def test_delete_and_truncate_are_refused_on_every_table(pg) -> None:
+async def test_delete_and_truncate_are_refused_on_every_table(pg, probe_url: str) -> None:
+    assert_destructive_allowed(probe_url)  # 使い捨て DB であることを確かめてから破壊的な文を試す
     ep = await _seed_one_row_per_table(pg)
     for table in NEW_TABLES:
         with pytest.raises(DBAPIError, match="append-only"):
