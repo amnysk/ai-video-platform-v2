@@ -1436,6 +1436,93 @@ gate は marker 行（意図した内部 ID）だけを除いて lint し、組�
 **機械検査**: `tests/contract/test_migration_0019_quality.py`（全件）/ `tests/contract/test_migration_matches_models.py`
 / `tests/integration/test_quality_records_postgres.py::test_migration_0019_upgrade_and_downgrade_on_postgres`
 
+## AI. BGM のカタログ・配置・ナレーション優先・品質検査（ADR-0083。`BGM_ENABLED` の背後、既定 OFF）
+
+番号 INV-133〜138 は Phase 3 BGM 枝の予約。INV-121〜132 は他の枝の予約。
+
+### INV-133 曲の同一性は内容の sha256。同じ内容は再登録されず、承認は人の証拠なしに生まれない
+カタログの登録（`infrastructure/music/catalog_store.register_track`）は `ingest_check`（純粋）の判定どおり:
+同じ sha256 は `DUPLICATE`（何も書かず既存の曲・承認事実をそのまま使う。別名での再申告も新しい承認を作らない）、
+申告 sha と実バイトの不一致・`track_id` の内容衝突・content-addressed でない `object_key` は `REJECT`（何も書かない）。
+原本が名前と違う内容・壊れたカタログは `CatalogStoreError` で止まり上書きしない。書き手（登録）と読み手
+（`LocalDirectoryBgmSource`）が同じ配置を共有する。検証用の曲は標準ライブラリだけで合成し、第三者の音源を使わない
+（`source_kind=original` / `license_type=custom`）。
+**機械検査**: `tests/unit/test_bgm_catalog_store.py::test_registering_writes_the_content_addressed_original_and_the_catalog`
+/ `tests/unit/test_bgm_catalog_store.py::test_the_same_bytes_are_reused_not_registered_again`
+/ `tests/unit/test_bgm_catalog_store.py::test_a_lying_sha_or_a_swapped_track_id_is_rejected_and_nothing_is_written`
+/ `tests/unit/test_bgm_catalog_store.py::test_a_tampered_original_is_not_silently_accepted`
+/ `tests/unit/test_bgm_catalog_store.py::test_a_corrupt_catalog_stops_registration_instead_of_overwriting`
+/ `tests/unit/test_bgm_catalog_store.py::test_what_is_written_is_what_the_render_source_reads_back`
+/ `tests/unit/test_bgm_synth.py::test_the_same_arguments_give_the_same_bytes_and_the_expected_length`
+（object storage / DB への載せ替えは未実装。供給元は作業ディレクトリのファイル。実在の曲の登録は所有者の音源と証拠が要る）
+
+### INV-134 選曲と配置は決定的で、法的に通らない曲は選ばれず、silent の scene には音楽が掛からない
+`choose_track` は `select_approved`（INV-97）の後に energy を同順位内の並びにだけ使う安定ソートで、同じ入力は同じ曲、
+入力の並びに依らない。ライセンスの事実を満たさない曲は他に候補が無くても返さない。`plan_cue_sheet` は `RenderPlan` と役割
+（intro/body/climax/outro/silent）から `MusicCueSheet` を作る純粋関数で、silent の scene に cue を掛けず、連続区間では
+`source_offset_ms` で scene をまたいで同じ曲を続け、曲の実測ラウドネスが未測定・未承認・全 silent・未知の scene は配置を拒否する
+（推測しない）。gain は常に `BGM_NARRATION_PRIORITY_MAX_DB` 以下。作った cue sheet は描画側の再検査（`resolve_bgm`）を通る。
+**機械検査**: `tests/unit/test_bgm_placement.py::test_the_same_inputs_give_the_same_cue_sheet`
+/ `tests/unit/test_bgm_placement.py::test_default_roles_open_with_intro_and_close_with_outro_and_the_sheet_is_resolvable`
+/ `tests/unit/test_bgm_placement.py::test_one_continuous_run_keeps_the_same_music_position_across_scene_boundaries`
+/ `tests/unit/test_bgm_placement.py::test_a_silent_scene_has_no_music_and_the_music_restarts_after_it`
+/ `tests/unit/test_bgm_placement.py::test_roles_set_the_level_and_climax_is_louder_than_body_but_never_above_the_cap`
+/ `tests/unit/test_bgm_placement.py::test_placement_refuses_instead_of_guessing`
+/ `tests/unit/test_bgm_placement.py::test_choice_is_deterministic_and_prefers_mood_then_less_used_then_energy`
+/ `tests/unit/test_bgm_placement.py::test_choice_never_returns_a_track_that_fails_a_license_fact`
+/ `tests/unit/test_bgm_ffmpeg_graph.py::test_source_offset_starts_the_track_mid_way_and_zero_keeps_the_chain_unchanged`
+（`plan_cue_sheet` を呼ぶ運用側＝cue sheet を置く者は未配線）
+
+### INV-135 ナレーション優先は発話中の「声 - BGM」の差を実測して判定する。測れていないものは合格にしない
+`FfmpegSpeechMarginProbe` が本番と同じ filtergraph 部品（fade・level・ducking）で「ナレーションだけ」「BGM だけ」を書き出し、
+各台本 scene の発話区間で積分ラウドネスを測る。`evaluate_speech_intelligibility`（純粋）は最小の差が
+`SPEECH_MARGIN_MIN_CENTI_LU`（`contracts/music_render.py` の唯一の定義、12 LU）以上で合格。BGM が鳴っていない区間は不合格にせず、
+声が測れない区間だけでは合格しない。閾値と ducking 係数の根拠は ADR-0083 §5（本番 Episode の声 5 本 + 合成曲で校正、
+**1 Episode・合成曲 1 つ**）。
+**機械検査**: `tests/unit/test_bgm_intelligibility.py::test_margin_is_voice_minus_music_and_the_smallest_one_decides`
+/ `tests/unit/test_bgm_intelligibility.py::test_one_scene_below_the_threshold_fails_the_whole_episode`
+/ `tests/unit/test_bgm_intelligibility.py::test_a_scene_without_music_is_not_a_failure_but_unmeasured_voice_is_not_a_pass`
+/ `tests/unit/test_bgm_intelligibility.py::test_the_music_stem_reuses_the_real_bgm_chain_and_leaves_nothing_dangling`
+/ `tests/unit/test_bgm_intelligibility.py::test_the_voice_stem_is_the_narration_bus_of_the_bgm_less_render`
+/ `tests/unit/test_bgm_real_ffmpeg_margin.py::test_ducking_lowers_the_music_under_speech_and_the_probe_measures_it`
+/ `tests/architecture/test_bgm_phase3_boundaries.py::test_the_calibrated_constants_are_defined_only_in_the_contract`
+（Activity での実測・保存は未配線）
+
+### INV-136 BGM 入り動画のラウドネス不合格は needs_input の失敗のまま。BGM 無しへ自動で落とさない
+ADR-0077 §5（INV-115）を維持する。不合格は永続的な失敗（`FinalVideoValidationError` は `NeedsInputError`）で再試行しない。
+運用者の逃げ道は `BGM_ENABLED=false`（または cue sheet を外す）で、導入前と同じ描画に戻る。品質検査（INV-138）は保存された
+判定の真偽ではなく**数値から範囲を再計算する**。
+**機械検査**: `tests/unit/test_render_activities_bgm.py::test_out_of_range_loudness_is_a_structured_failure_and_nothing_is_stored`
+/ `tests/unit/test_bgm_quality_checks.py::test_out_of_range_loudness_in_the_evidence_is_blocked_on_the_music_gate`
+/ `tests/unit/test_bgm_quality_checks.py::test_the_check_recomputes_loudness_from_numbers_and_does_not_trust_the_stored_flag`
+/ `tests/unit/test_bgm_quality_checks.py::test_the_local_loudness_rule_agrees_with_evaluate_loudness_everywhere`
+
+### INV-137 BGM だけの変更は render だけを再実行し、fal を 1 回も呼ばず、production の成果物・入力 hash を動かさない
+曲・配置・役割のどれを変えても render の input_hash だけが変わる（BGM 無し + 3 通りが全て別）。fal クライアントの全メソッドを
+「呼ばれたら失敗」にして呼び出し回数 0、production の成果物（id・版・sha256・入力 hash・content_fingerprint）と
+予約台帳（0 件）と job の種類（render のみ）が不変、描画した回数は変更の数だけ、変更なしは再利用。配置の部品は production /
+provider を import しない。INV-116 の一般形を、本物の配置関数が作った cue sheet で検査する。
+**機械検査**: `tests/unit/test_bgm_only_change.py::test_changing_only_the_track_or_the_placement_reruns_render_and_nothing_else`
+/ `tests/architecture/test_bgm_phase3_boundaries.py::test_phase3_bgm_modules_do_not_import_production_or_provider_code`
+/ `tests/architecture/test_bgm_phase3_boundaries.py::test_the_render_worker_still_loads_no_fal_or_production_module_with_the_new_parts`
+
+### INV-138 `bgm_quality_checks` は純粋で fail-closed。使っていないことも、その動画に結び付いた PASS で明示する
+BGM を使っていない（証跡なし）なら MUSIC と LICENSE の両方に、`evidence_ref` = final_video の sha256 の PASS を返す
+（検査が無いことを PASS にしない）。使っているなら、証跡が今の動画のもの・実測ラウドネスが範囲内（数値から再計算）・発話中の差が閾値以上
+（未測定は REVIEW）・曲ごとのライセンスが今も有効で音源 sha と証拠 hash が一致・クレジット原文が一致、のどれが崩れても BLOCK。
+`detail` は固定の ASCII 文で ID や原文を持たない。`now` が naive なら例外。「証跡が無い」と「証跡を読めなかった」の区別は
+呼び出し側の責務（後者は例外にして gate を止める）。
+**機械検査**: `tests/unit/test_bgm_quality_checks.py::test_not_used_is_an_explicit_pass_bound_to_the_final_video_hash_for_both_gates`
+/ `tests/unit/test_bgm_quality_checks.py::test_a_clean_bgm_video_passes_every_check_and_each_is_bound_to_the_evidence`
+/ `tests/unit/test_bgm_quality_checks.py::test_credit_lines_must_equal_the_catalog_text`
+/ `tests/unit/test_bgm_quality_checks.py::test_evidence_of_another_video_is_blocked_on_both_gates`
+/ `tests/unit/test_bgm_quality_checks.py::test_a_track_no_longer_valid_or_changed_since_rendering_is_blocked`
+/ `tests/unit/test_bgm_quality_checks.py::test_a_track_missing_from_the_catalog_is_blocked`
+/ `tests/unit/test_bgm_quality_checks.py::test_speech_margin_unmeasured_is_review_and_too_small_is_block`
+/ `tests/unit/test_bgm_quality_checks.py::test_details_are_fixed_ascii_and_never_echo_ids_or_text`
+/ `tests/unit/test_bgm_quality_checks.py::test_naive_now_and_missing_evidence_hash_are_refused`
+（永続化と gate への接続は未配線＝`claude/v3-p3-quality` の責務）
+
 ## AJ. 歴史地図の Production / Render 結線（ADR-0084。INV-139〜145）
 
 ### INV-139 地図の座標は gazetteer だけから決まり、同じ依頼は同じ manifest になる

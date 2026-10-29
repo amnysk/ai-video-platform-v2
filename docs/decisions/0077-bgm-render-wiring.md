@@ -4,6 +4,8 @@
 
 Proposed（オーナーの承認待ち。番号 0077 と INV-113〜116 は Phase 2-E の予約）。
 **既定は OFF**で、OFF の間の挙動はバイト単位で現行と同じ（INV-113）。本番へ入れる判断は別途。
+**ADR-0083 が §4 の ducking 係数（実音声で校正して threshold=0.1 / ratio=3 へ）と `BGM_MIX_VERSION`（2）を置き換え、
+cue の `source_offset_ms`・配置・品質検査を足した。他の節はこのまま有効。**
 
 ## Context
 

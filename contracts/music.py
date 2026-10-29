@@ -126,6 +126,9 @@ class MusicCue(FrozenModel):
     source_sha256: str = Field(pattern=SHA256_HEX_PATTERN)
     start_ms: StrictInt = Field(ge=0)
     end_ms: StrictInt
+    #: 曲の何 ms 目から鳴らすか（既定 0 = 曲頭）。scene をまたいで同じ曲を途切れず続けるための
+    #: 位置（ADR-0083 §4）。曲より長い cue はループで続くので、曲の長さを超えてよい
+    source_offset_ms: StrictInt = Field(default=0, ge=0)
     fade_in_ms: StrictInt = Field(ge=0)
     fade_out_ms: StrictInt = Field(ge=0)
     target_relative_level_db: StrictInt = Field(ge=LEVEL_DB_MIN, le=LEVEL_DB_MAX)

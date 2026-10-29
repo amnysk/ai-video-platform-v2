@@ -31,7 +31,7 @@ FILTERGRAPH_FILE_NAME = "filtergraph.txt"
 _CHANNEL_LAYOUTS = {1: "mono", 2: "stereo"}
 
 #: ducking（sidechaincompress）と天井。変えるときは ``BGM_MIX_VERSION`` を上げる（ADR-0077 §4）。
-BGM_DUCK_FILTER = "sidechaincompress=threshold=0.03:ratio=9:attack=20:release=300:makeup=1"
+BGM_DUCK_FILTER = "sidechaincompress=threshold=0.1:ratio=3:attack=20:release=300:makeup=1"
 BGM_LIMITER = "alimiter=limit=0.9:level=0"
 
 
@@ -69,6 +69,20 @@ def _scene_chain(index: int, scene: RenderTimelineScene, profile: RenderProfile)
     )
 
 
+def _voice_lines(plan: RenderPlan, layout: str, total: str, n_scenes: int) -> list[str]:
+    """総尺の無音（abase）と、各ナレーションを揃えて開始位置へ遅延したもの（a0..）。"""
+    audio = plan.profile.audio
+    lines = [f"anullsrc=r={audio.sample_rate_hz}:cl={layout},atrim=duration={total}[abase]"]
+    for k, voice in enumerate(plan.voices):
+        lines.append(
+            f"[{n_scenes + k}:a:0]aresample={audio.sample_rate_hz},"
+            f"aformat=sample_fmts=fltp:sample_rates={audio.sample_rate_hz}:channel_layouts={layout},"
+            f"atrim=duration={seconds(voice.duration_ms)},asetpts=PTS-STARTPTS,"
+            f"adelay=delays={voice.start_ms}:all=1[a{k}]"
+        )
+    return lines
+
+
 def build_filtergraph(plan: RenderPlan, bgm: BgmMixPlan | None = None) -> str:
     profile = plan.profile
     audio = profile.audio
@@ -86,14 +100,7 @@ def build_filtergraph(plan: RenderPlan, bgm: BgmMixPlan | None = None) -> str:
     else:
         lines.append("[vcat]null[vout]")
 
-    lines.append(f"anullsrc=r={audio.sample_rate_hz}:cl={layout},atrim=duration={total}[abase]")
-    for k, voice in enumerate(plan.voices):
-        lines.append(
-            f"[{n_scenes + k}:a:0]aresample={audio.sample_rate_hz},"
-            f"aformat=sample_fmts=fltp:sample_rates={audio.sample_rate_hz}:channel_layouts={layout},"
-            f"atrim=duration={seconds(voice.duration_ms)},asetpts=PTS-STARTPTS,"
-            f"adelay=delays={voice.start_ms}:all=1[a{k}]"
-        )
+    lines.extend(_voice_lines(plan, layout, total, n_scenes))
     voice_labels = "".join(f"[a{k}]" for k in range(len(plan.voices)))
     if bgm is not None:
         lines.extend(_bgm_lines(plan, bgm, voice_labels, layout, total, n_scenes))
@@ -106,7 +113,14 @@ def build_filtergraph(plan: RenderPlan, bgm: BgmMixPlan | None = None) -> str:
 
 
 def _bgm_lines(
-    plan: RenderPlan, bgm: BgmMixPlan, voice_labels: str, layout: str, total: str, n_scenes: int
+    plan: RenderPlan,
+    bgm: BgmMixPlan,
+    voice_labels: str,
+    layout: str,
+    total: str,
+    n_scenes: int,
+    *,
+    stem: str | None = None,
 ) -> list[str]:
     """ナレーションバス + cue ごとの BGM（fade・遅延・ducking）→ 合算 → 天井。
 
@@ -131,7 +145,8 @@ def _bgm_lines(
         chain = (
             f"[{first + k}:a:0]aresample={audio.sample_rate_hz},"
             f"aformat=sample_fmts=fltp:sample_rates={audio.sample_rate_hz}:channel_layouts={layout},"
-            f"atrim=start=0:duration={seconds(length)},asetpts=PTS-STARTPTS,volume={cue.level_db}dB"
+            f"atrim=start={seconds(cue.source_offset_ms) if cue.source_offset_ms else '0'}:"
+            f"duration={seconds(length)},asetpts=PTS-STARTPTS,volume={cue.level_db}dB"
         )
         if cue.fade_in_ms:
             chain += f",afade=t=in:st=0:d={seconds(cue.fade_in_ms)}"
@@ -144,11 +159,46 @@ def _bgm_lines(
     for j, k in enumerate(ducked):
         out.append(f"[b{k}][sc{j}]{BGM_DUCK_FILTER}[d{k}]")
     bgm_labels = "".join(f"[d{k}]" for k in range(len(bgm.cues)))
+    if stem == "music":
+        # 計測用: ducking 後の BGM だけ（声は含めない）。本番の描画には使わない
+        out.append("[vmix]anullsink")
+        out.append(
+            f"{bgm_labels}amix=inputs={len(bgm.cues)}:duration=first:"
+            f"dropout_transition=0:normalize=0,atrim=duration={total}[aout]"
+        )
+        return out
     out.append(
         f"[vmix]{bgm_labels}amix=inputs={len(bgm.cues) + 1}:duration=first:"
         f"dropout_transition=0:normalize=0,{BGM_LIMITER},atrim=duration={total}[aout]"
     )
     return out
+
+
+def build_bgm_stem_filtergraph(plan: RenderPlan, bgm: BgmMixPlan) -> str:
+    """計測用: 本番と同じ ducking・fade・level を通した BGM だけの音声（出力ラベル ``[aout]``）。
+
+    入力の順は ナレーション → cue（scene 動画は入れない。映像を含まないので番号は 0 起点）。
+    発話中に BGM が声に対して何 LU 下がっているかを実測するための部品で、成果物は作らない。
+    """
+    layout = _CHANNEL_LAYOUTS[plan.profile.audio.channels]
+    total = seconds(plan.total_duration_ms)
+    lines = _voice_lines(plan, layout, total, 0)
+    voice_labels = "".join(f"[a{k}]" for k in range(len(plan.voices)))
+    lines.extend(_bgm_lines(plan, bgm, voice_labels, layout, total, 0, stem="music"))
+    return ";\n".join(lines) + "\n"
+
+
+def build_voice_stem_filtergraph(plan: RenderPlan) -> str:
+    """計測用: ナレーションだけの音声バス（本番の BGM 無しの音声と同じ合算。出力 ``[aout]``）。"""
+    layout = _CHANNEL_LAYOUTS[plan.profile.audio.channels]
+    total = seconds(plan.total_duration_ms)
+    lines = _voice_lines(plan, layout, total, 0)
+    voice_labels = "".join(f"[a{k}]" for k in range(len(plan.voices)))
+    lines.append(
+        f"[abase]{voice_labels}amix=inputs={len(plan.voices) + 1}:duration=first:"
+        f"dropout_transition=0:normalize=0,atrim=duration={total}[aout]"
+    )
+    return ";\n".join(lines) + "\n"
 
 
 def build_argv(
@@ -206,7 +256,9 @@ __all__ = [
     "BGM_DUCK_FILTER",
     "BGM_LIMITER",
     "build_argv",
+    "build_bgm_stem_filtergraph",
     "build_filtergraph",
+    "build_voice_stem_filtergraph",
     "fps_expr",
     "seconds",
     "should_burn_subtitles",
