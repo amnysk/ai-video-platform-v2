@@ -24,7 +24,7 @@ INV-138 の本文は「永続化と gate への接続は未配線」と自認し
   元のシーン動画で完成動画を作る（`workers/render/activities.py:695` のログは「the quality gate refuses the upload」と言う）。
   gate は地図の証跡を一切読まないので、**拒否された地図は gate から見えない**。INV-140 の「投稿を許さない」は、純関数が BLOCK を返すところまでしか機械検査されていない。
 - 証拠: `tests/unit/test_review_p3_unwired_quality.py::test_review_production_gate_has_bgm_and_map_producers`（FAIL）。
-  既存の `tests/unit/test_quality_approval_and_wiring.py::test_no_branch_producers_are_registered_yet` は `build_quality_producers() == ()` を**固定**している
+  既存の `test_no_branch_producers_are_registered_yet`（tests/unit/test_quality_approval_and_wiring.py。再レビュー時点で解消済み） は `build_quality_producers() == ()` を**固定**している
   （結線時に更新が要る。ADR-0081 §7 が根拠なので §2 違反にはならない）。
 - 修正案: `CheckKey.BGM` / `CheckKey.MAP` の producer（証跡を MinIO から読み、`evidence_ref` を持つ記録にする）を `build_quality_producers` に足す。
   「証跡を読めなかった」は例外にして記録を作らない（INV-138 の約束）。結線の end-to-end テスト（Render → gate → BLOCK）を足す。
@@ -142,3 +142,99 @@ migration 0019 は隔離 PostgreSQL に `migrate` サービスで適用済みで
 2. M1（説明欄のクレジット）を BGM を ON にする前に直す。
 3. flag OFF のまま deploy する場合は、M4（トークン設定の runbook への追記）を先に行う。
 4. M2・M3 は ADR-0080 / INV-123・125 の保証の書き方を実態に合わせる（コード変更は必須ではない）。
+
+---
+
+# Re-review（`7fd36e4..ba1e895`、Sonnet E）
+
+レビュー worktree に `claude/v3-phase3-integration`（ba1e895）を `git merge --no-ff` した（衝突は私の証拠テスト 2 ファイルのみ。wiring 側の更新版を採用）。
+
+## 結論
+
+| 問い | 判定 |
+|---|---|
+| (a) 4 flag OFF の本番 deploy | **現状の head ではそのまま deploy できない（新 BLOCKER R1）**。release preflight の `migration_compat` が migration 0019 を BLOCKED にする。コードの挙動（flag OFF の互換）は問題なし。R1 を直せば可。あわせて owner の token ファイルの用意が preflight の必須条件になった |
+| (b) 機能の完成度 | **B1・B2・M1 は解消**（実素材で PASS を確認）。BGM / GEO を ON にするには、R2（BGM ON でも説明欄の構成 flag が OFF だとクレジットが落ちる）と R3（flag を container に渡す経路が compose に無い）が残る |
+
+## 前回所見の状態
+
+| ID | 状態 | 根拠 |
+|---|---|---|
+| B1 producer 未登録 | **解消** | `build_quality_producers(settings, store)` が `BgmCheckProducer` / `MapCheckProducer` を返す。証跡が無い/読めない/別動画は例外（記録されず REVIEW）。`test_review_p3_unwired_quality.py` は緑 |
+| B2 使用宣言が書かれない | **解消** | Render が `final_video` 記録後に `declare_render_usage`（ENFORCE ON のときだけ writer を持つ。失敗は非致命＝REVIEW に倒れる）。下記の実素材で `bgm=used(ref あり)` / `map=not used` を確認 |
+| M1 クレジット | **部分解消（R2）** | `BgmCreditSource` を upload と gate の説明欄 lint が共有（INV-148）。ただし `AVP_UPLOAD_DESCRIPTION_COMPOSED` が OFF（既定）だと `build_upload_metadata` が credits を使わず、`credit_lines` は `()` を返す |
+| M2 トークン分離 | **解消（限界は明記）** | 任意の `AVP_API_OWNER_TOKEN_PATH`（owner だけの別ファイル。設定時は共有ファイルの `owner:` 行を拒否、owner ファイルが読めなければ全拒否）。同一 UID では分離にならない旨を ADR-0080 / api-auth.md に「残るリスク」として記載 |
+| M3 `enables` 自己申告 | **部分解消（R3）** | `enables` が必須（`[]` 明示）。対象環境の flag（`FEATURE_FLAG_ENV_KEYS`）が ON なら、委任承認は BLOCKED、本人承認でも `enable_new_feature` を `enables` に書かないと BLOCKED。ただし flag の値を読む先は repo の `.env` のみで、`compose.yaml` が container へ渡すのは `BGM_ENABLED` だけ |
+| M4 deploy 手順 | **解消（ただし deploy の前提条件が増えた）** | `compose.yaml` の api に `AVP_API_TOKENS_PATH` と bind mount、runbook に手順、preflight の必須チェック `api_token_file`（存在・0600・所有 UID = `AVP_UID`・owner と agent の token）。新しい preflight 前提は「owner が token ファイルを `~/.config/avp2/api/tokens` に作る」こと |
+| m1 GET で毎回ファイルを読む | 解消 | `get_api_token_source` は変更系のときだけ読む |
+| m2 ADR と実装の不一致（env） | 解消 | ADR-0080 を実装（ファイルのみ）に合わせた |
+| m3 DELETE/TRUNCATE | 解消 | 4 表に DELETE / TRUNCATE 拒否トリガ（行ごと/文ごと）。FK は `ON DELETE RESTRICT`。ただしこの編集が R1 を生んだ |
+| m4 承認 FK に episode_id が無い | 解消 | `(report_id, episode_id, final_video_sha256)` の複合 FK |
+| m5〜m9 | m5 未対応（定数の approver_id）／m6 未対応（承認は workflow に渡らない）／m7 解消（`contracts/apptest.py` に一本化・contract テスト）／m8 未対応／m9 未対応 |
+| m10 古い docstring | 未確認（軽微） |
+
+## 新しい所見
+
+### BLOCKER
+
+**R1. release 走査器が migration 0019 を BLOCKED にする（0019 の編集による回帰）。**
+0019 に `CREATE TRIGGER ... BEFORE TRUNCATE` を足したため、走査器（`_SQL_DESTRUCTIVE` の `\bTRUNCATE\b`）が 4 文を破壊的と数える（`scan_migration` の実測: destructive SQL line 236/246/256/266）。
+回避のために `# contract-migration: approved ADR-0081` を足したが、`domain/release_preflight.py::_check_migration` は承認 ADR を**デプロイ済みの revision**（`c.adr_text(deployed, n)`、=本番の e3c9555）から読む。
+ADR-0081 は今回の release で初めて入るので、e3c9555 には存在せず marker は無効になる。結果 `migration_compat` は
+`contract migration without a valid approved-ADR marker (ADR deployed, Accepted, names the revision)` で BLOCKED。pre-deploy の必須チェックなので **この head は preflight を通らない**。
+- 証拠: `tests/unit/test_review_p3_release_scan_0019.py`（FAIL。実物の 0019 と ADR-0081 を使い、ADR を target 側だけに置く。ADR をデプロイ済み側に置くと同じ 0019 が PASS になることも確認済み）。
+- 修正案（どれか）: (1) トリガ文から TRUNCATE の語を走査器に見せない（走査器へ「`CREATE TRIGGER ... BEFORE TRUNCATE` は拒否する側の文」という免除を足し、テストで固定）。(2) ADR-0081 を先に別 release（docs のみ）で入れてから 0019 を出す。(3) TRUNCATE の拒否を migration ではなく別手段にする。(1) が最小。走査器の変更は AGENTS.md §6（設計先行）に当たるので ADR に残す。
+
+### MAJOR
+
+**R2. BGM を ON にしても、説明欄の構成 flag（`AVP_UPLOAD_DESCRIPTION_COMPOSED`、既定 OFF）が OFF だと BGM のクレジットが説明欄に入らない。** `BgmCreditSource.credit_lines`（`infrastructure/music/credits.py`）は flag OFF で `()` を返し、`build_upload_metadata` も composition 無しでは credits を使わない。
+`attribution_required` の曲（CC-BY 等）を使うと帰属表示なしで公開されうる。gate の `bgm_quality_checks` が見るのは証跡のクレジット原文で、説明欄ではない。ADR-0086 §5 は「flag OFF では読まない」と書くだけで、BGM と構成 flag の組み合わせを禁じていない。
+修正案: `BGM_ENABLED` が ON で構成 flag が OFF のとき、worker 起動を止める（`require_quality_gate` と同じ形のガード）、または `attribution_required` の曲を cue に入れない。
+
+### MINOR
+
+- **R3.** `compose.yaml` が container へ渡す新機能 flag は `BGM_ENABLED` だけ（`AVP_QUALITY_GATE_ENFORCE`・`GEO_MAPS_ENABLED`・`AVP_UPLOAD_DESCRIPTION_COMPOSED` は無い。e3c9555 でも同じ）。
+  (a) これら 3 つを ON にする手段が runbook に無い（compose の編集が要る）。(b) preflight の `feature_flag_settings` は `.env` しか見ないので、compose の override や container の env で ON にされた flag は検出されない（`enables` の強制はその分だけ穴がある）。
+  修正案: preflight は `docker compose config` の解決後の `environment` を読む。flag の受け渡しを compose に明記する。
+- **R4.** 使用宣言は新しく描いた動画にしか書かれない。ENFORCE を ON にした時点で既に描画済みの動画（同じ入力で再描画は skip）は宣言を持たず、永久に REVIEW（手動承認は可）。自動投稿を待っている既存 Episode が止まる。ENFORCE を ON にする手順に「既存動画の扱い（再描画 or 宣言の補完）」を書く。
+- **R5.** preflight の `api_token_file` は `AVP_UID` の既定を 1000 とみなす。`.env` に無く実 UID が違う環境では BLOCKED（安全側。誤検知）。
+- **R6.** `FfmpegSpeechMarginProbe` は描画のたびに追加の ffmpeg を走らせる（BGM ON のときだけ）。実測で支障はなかった（下記）が、長尺での時間は未計測。
+
+## flag OFF の安全（変更ごとの再確認）
+
+| 変更 | flag OFF の影響 |
+|---|---|
+| compose api: bind mount + `AVP_API_TOKENS_PATH` | 隔離の使い捨て project で実験: bind 元ディレクトリが**無くても** container は起動する（compose が空ディレクトリを作る）。token が無いので変更系は 503（fail closed）で、api は落ちない。preflight が事前に BLOCKED にする |
+| `AVP_API_TOKENS_FILE` → `AVP_API_TOKENS_PATH` の改名 | 旧名の参照は repo に残っていない（grep 0 件）。まだ誰も設定していないので影響なし |
+| 新しい必須 preflight（`api_token_file`・`enables` 必須・flag 照合） | deploy の前提が増える（意図）。`enables: []` の承認ファイルと token ファイルが無いと pre-deploy が通らない。runbook に記載あり |
+| 走査器と TRUNCATE の marker | **R1（BLOCKER）** |
+| render: `quality_writer` / `speech_probe` | ENFORCE OFF / BGM OFF では `None`（導入前と同一）。起動時 import は問題なし |
+| upload: `BgmCreditSource` を常に構築 | 構成 flag OFF では `credit_lines` が DB にも MinIO にも触れず `()`。flag ON でも BGM 証跡が無ければ（`KeyError`）`()` |
+| BGM 証跡の key の変更 | BGM はまだ本番で一度も ON になっていない（証跡 0 件）。互換問題なし |
+| migration 0019 の編集 | 本番未適用なので編集可（ADR-0086 §6）。expand-only は保たれる（既存の表に触れない）。R1 のみ |
+
+## 実 ffmpeg での話者マージン検証（`scratchpad/bgm-verify-wired/`）
+
+固定版 ffmpeg 7.1.1（sha256 `810f9402…2bf5c`）、本番 Episode `48f4eddb` の export、合成曲（第三者の音源なし）。経路は本番の
+`RenderActivities.render_final_video` に **`speech_probe=FfmpegSpeechMarginProbe`・`quality_writer=SqlQualityRecordWriter`・BGM ON** を渡したもの
+（`scratchpad/wired_verify.py`。DB は SQLite メモリ、保存先はメモリ ArtifactStore）。その後、実物の `QualityGateService` を
+`build_quality_producers(settings, store)` と `BgmCreditSource` つきで構成して自動投稿の判定を実行。
+
+- 証跡に保存された `speech`: 最小マージン **14.80 LU**（`min_margin_centi_lu=1480`）、閾値 12.00 LU、`passed=true`。scene 別（声/BGM/差, LU）: s1 -16.2/-34.2/18.0、s2 -15.6/-36.2/20.6、s3 -16.8/-35.8/19.0、s4 -16.0/-30.8/**14.8**、s5 -17.0/-33.0/16.0。
+  ADR-0083 の検証（`bgm_verify_export`、手動で stem を測った値）と一桁目まで一致 = render 内の測定は検証スクリプトと同じ値を出す。
+- ラウドネス: 統合 -16.70 LUFS、LRA 14.60 LU、true peak -1.40 dBTP（`bgm_loudness` 合格）。
+- 使用宣言: `bgm = used（証跡 ref あり）`、`map = not used`。
+- 検査セット: `technical_qa` pass、`description_lint` pass、`bgm`（producer `bgm-quality`）pass（music×2・license×2 すべて pass）。
+- gate（自動投稿）: **allowed、verdict pass、reason `upload_allowed`**。`quality_reports` 1 件。
+- **fal 呼び出し 0 回**（FalQueueClient / FalStorageClient の全メソッドを spy して失敗させる設定）、`provider_reservations` 0 件。
+
+## テスト結果（ba1e895 + 本レビューの追加）
+
+| 検査 | 結果 |
+|---|---|
+| `ruff check .` / `ruff format --check .` | All checks passed / 1069 files already formatted |
+| `pyright` | 0 errors, 0 warnings |
+| `pytest tests/unit tests/contract tests/architecture` | **6391 passed, 1 failed**（6392 件）。唯一の失敗は私の旧レビュー文書が、解消済みで消えたテスト名を参照していた `test_docs_contract`（文書を修正済み。再実行で緑） |
+| Temporal replay（CI の 6 ファイル）+ `test_docs_contract` | 90 passed（replay 83 + docs contract 7） |
+| 隔離 integration（`run-e2e.sh`、`avp2-oslog-c-p3e`、`-m integration`） | **169 passed, 6 skipped**（rc=0、468 s）。skip 6 件は前回と同じ（`test_logging_collector_lua.py:43` docker が無い）。前回 166 → 169 の増分は wiring / audit の新しい integration（DELETE/TRUNCATE トリガ・FK） |
+| 本レビューの追加テスト | `test_review_p3_release_scan_0019.py` 1 **failed（意図。R1）**／`test_review_p3_unwired_quality.py`・`test_review_p3_token_to_approval_e2e.py` は緑 |
