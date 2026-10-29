@@ -60,6 +60,14 @@ PostgreSQL / MinIO には本番と隔離スタックを区別できる読み取�
   MinIO だけを本番に向ける場合。Temporal は動的検査で止まるが、PostgreSQL / MinIO は止まらない。
   対策は別インスタンスへの分離（docs/operations/db-role-separation.md）で、本 ADR の範囲外。
 
+## Alternatives
+
+- 拒否リスト（`localhost:7233` / `5432` / `9000` を弾く）だけにする: CI は同じ loopback の使い捨てサービスを使うので
+  例外が要り、綴り違い・別の LAN IP・別名で抜ける。許可リスト（宣言）にした。
+- 環境変数 `CI=true` を CI の印にする: 開発者の端末でも設定されうる。`GITHUB_ACTIONS=true` と `ci-ephemeral` の両方を要求する。
+- PostgreSQL / MinIO にも動的な本番判定を足す: 隔離スタックも同じ DB 名・bucket 名を持つので、読み取りだけで区別できる
+  指標が無い。別インスタンスへの分離（db-role-separation.md）が正しい解で、本 ADR では扱わない。
+
 ## 影響を受ける不変条件
 
 INV-121（宣言と接続先の規則）、INV-122（直書き禁止と動的検査）。

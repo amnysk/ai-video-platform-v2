@@ -60,7 +60,7 @@ def test_anything_that_does_not_state_a_valid_kind_is_not_an_approval(token: str
 def test_the_owner_only_gates_are_the_ones_that_spend_or_publish() -> None:
     assert {g.value for g in OWNER_ONLY_GATES} == {
         "enable_new_feature",
-        "raise_fal_budget",
+        "raise_provider_budget",
         "public_or_unlisted_upload",
         "release_provider_credit_hold",
         "resolve_reservation_manually",

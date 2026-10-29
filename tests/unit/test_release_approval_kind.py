@@ -64,7 +64,7 @@ def test_an_explicit_kind_that_contradicts_the_reference_is_rejected() -> None:
     "gate",
     [
         "enable_new_feature",
-        "raise_fal_budget",
+        "raise_provider_budget",
         "public_or_unlisted_upload",
         "release_provider_credit_hold",
         "resolve_reservation_manually",

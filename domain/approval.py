@@ -36,7 +36,7 @@ class OwnerGate(StrEnum):
     """所有者本人の承認だけが通せる関門（ADR-0080 §3）。追加はあっても緩めない。"""
 
     ENABLE_NEW_FEATURE = "enable_new_feature"
-    RAISE_FAL_BUDGET = "raise_fal_budget"
+    RAISE_PROVIDER_BUDGET = "raise_provider_budget"
     PUBLIC_OR_UNLISTED_UPLOAD = "public_or_unlisted_upload"
     RELEASE_PROVIDER_CREDIT_HOLD = "release_provider_credit_hold"
     RESOLVE_RESERVATION_MANUALLY = "resolve_reservation_manually"
