@@ -36,3 +36,36 @@ DB の構造（CHECK・一意・トリガ）は別の層（migration 契約・in
 | `test_the_provider_does_not_raise_on_empty_input` | gate は例外を PASS に倒さない / 空でも REVIEW を出す | 例外 |
 | `test_a_fake_producer_and_writer_satisfy_the_protocols_and_flow_to_an_allow` | ADR-0081 §7: BGM / 地図の枝が差し込む口の形（Protocol）が実際に繋がる | 口の形の食い違い（pyright と実行の両方） |
 | `test_a_producer_that_returns_nothing_leaves_the_set_missing` | producer の失敗は記録なし = 必須欠落 = 拒否 | 失敗の PASS 化 |
+
+## `tests/contract/test_migration_0019_quality.py`（migration 0019 の静的契約）
+
+層の理由: DDL が expand-only かどうかは migration ファイルの静的検査で十分で、DB を要さない（実 DB の挙動は
+integration で固定）。本番に `0019` を先に適用しても旧コード（e3c9555）が動くことの根拠。
+
+| テスト | リスク / 不変条件 | 捕まえるもの |
+|---|---|---|
+| `test_release_preflight_scanner_finds_nothing_in_0019` | INV-132: release gate が止める破壊的操作・読めない文（f-string の execute 等） | 破壊的 DDL / 走査不能な文 |
+| `test_0019_follows_0018_and_upgrade_only_adds` | INV-132: リビジョン連鎖と、upgrade が追加系の操作しか使わない | drop / alter_column の混入 |
+| `test_0019_creates_only_its_own_new_tables_and_touches_no_existing_one` | INV-132: 既存の表に触れない（旧コードへの影響ゼロ） | 既存表への ALTER |
+| `test_the_frozen_vocabulary_matches_the_contracts` | AGENTS.md §8: migration の凍結語彙と契約の enum が食い違う（片側だけ更新） | enum を足したのに DB の CHECK が古い |
+| `test_the_database_validity_limit_equals_the_contract` | INV-126: DB の 24h 上限と `MAX_REPORT_VALIDITY` の食い違い | 契約だけ変えて DB が旧値のまま |
+| `test_every_table_gets_the_append_only_guard` | INV-126: 追記専用のトリガが全表にある | 1 表だけ UPDATE が通る |
+
+`tests/contract/test_migration_matches_models.py`（既存・無変更）が、モデルと migration の列・CHECK・索引の一致を
+SQLite で固定する。
+
+## `tests/unit/test_quality_repositories.py`（SQLite。永続化の取り違え防止）
+
+層の理由: 世代・対象 hash での絞り込み・壊れた行の扱いは SQL とアプリの境界の挙動なので DB を使う（SQLite で十分な範囲）。
+Postgres 固有の保証は integration で固定する。
+
+| テスト | リスク / 不変条件 | 捕まえるもの |
+|---|---|---|
+| `test_a_written_set_round_trips_and_is_fresh` | 保存と読み戻しが同じ契約を通る。片側だけ変わると全件が欠落 = 拒否 | 直列化の食い違い |
+| `test_rechecking_adds_a_new_generation_and_never_rewrites` | INV-126: 再検査は新しい世代の行（書き換えない）。規則版ごとに世代が独立。最新世代が採用される | UPDATE による上書き / 世代の衝突 |
+| `test_reads_are_scoped_to_the_subject_hash` | INV-126: 別 hash の記録が読めてしまう | 取り違え |
+| `test_a_corrupt_row_is_treated_as_missing_not_as_pass` | INV-101: 壊れた行を PASS / 例外にしない（欠落 = REVIEW） | 壊れた JSON の PASS 化 |
+| `test_usage_declaration_is_idempotent_and_rejects_a_contradiction` | INV-127: 再 render（同 sha）で宣言が重複しても壊れない。同じ動画に矛盾する宣言を書けない | 宣言の上書き / 重複 |
+| `test_a_used_declaration_without_evidence_cannot_be_written` | INV-127: 根拠なしの「使用」 | 空の宣言 |
+| `test_report_and_approval_are_stored_with_who_when_and_which_hash` | INV-128/129: 誰が・いつ・どの hash・どの報告を承認したかが残る | 承認の記録欠落 |
+| `test_the_stored_report_is_the_exact_serialisation` | INV-128: 監査用の報告が `to_dict()` と一致し、hash 列が対象を指す | 報告の欠落 / 列の取り違え |
