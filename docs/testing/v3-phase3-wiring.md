@@ -50,9 +50,17 @@
 
 | テスト | 防ぐ失敗 |
 |---|---|
-| `test_every_table_rejects_delete_and_truncate_too` | 監査記録を DELETE / TRUNCATE で消せる |
+| `test_every_table_rejects_delete_and_0019_has_no_truncate_guard_yet` | 監査記録を DELETE で消せる。0019 に TRUNCATE 拒否が混ざり走査器が BLOCKED にする（0020 に分離。再レビュー R1） |
 | `test_episode_foreign_keys_restrict_and_the_approval_fk_includes_the_episode` | episode の削除に記録が巻き込まれる / 別 episode の報告を承認できる |
-| `test_release_preflight_scanner_finds_only_the_truncate_guard_triggers_in_0019` | 走査器が TRUNCATE 拒否トリガ以外の文を拾う / marker が無効 |
-| `test_delete_and_truncate_are_refused_on_every_table`（実 PG） | 上の契約が実 DB で効いていない |
+| `test_delete_is_refused_on_every_table`（実 PG） | 上の契約が実 DB で効いていない |
 | `test_an_approval_cannot_point_at_another_episodes_report`（実 PG） | 複合 FK が実 DB で効いていない |
 | `test_the_wired_gate_reads_real_postgres_records`（実 PG） | SQLite では通るが実 Postgres の記録・宣言の読み書きで配線が崩れる |
+
+## 再レビュー R1 / R2
+
+| テスト | 防ぐ失敗 |
+|---|---|
+| `test_release_preflight_scanner_finds_nothing_in_0019`（契約。旧「TRUNCATE トリガだけ拾う」テストを置換。自分が書いたテストで、marker 方式を捨てたため） | 0019 に走査器が拾う文・marker が戻る |
+| `test_review_real_0019_passes_the_release_scan_when_its_adr_ships_in_the_same_release`（レビューの証拠。`claude/v3-p3-review` からファイルを複製） | `migration_compat` が 0019 で BLOCKED になり release が出せない |
+| `test_bgm_on_with_composition_off_refuses_to_start` | BGM ON・説明欄構成 OFF で、帰属が必要な曲がクレジット無しで公開される |
+| `test_both_workers_call_the_guard` | ガードが worker の組み立てから外れる |
