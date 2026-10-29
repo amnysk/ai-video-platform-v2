@@ -102,6 +102,12 @@ class QualityReason(StrEnum):
     UPLOAD_ALLOWED_WITH_WARNINGS = "upload_allowed_with_warnings"
     REPORT_BLOCKED = "report_blocked"
     REPORT_NEEDS_REVIEW = "report_needs_review"
+    # --- 検査の記録と必須の集合（ADR-0081）
+    REQUIRED_CHECK_MISSING = "required_check_missing"
+    USAGE_DECLARATION_MISSING = "usage_declaration_missing"
+    # --- 手動承認（ADR-0081 §9）
+    APPROVER_UNKNOWN = "approver_unknown"
+    APPROVER_NOT_OWNER = "approver_not_owner"
 
 
 class QualityReportError(ValueError):
