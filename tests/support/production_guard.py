@@ -21,7 +21,6 @@ guard（tests/support/temporal.py / minio.py）は通っても**本番サーバ�
 from __future__ import annotations
 
 import contextlib
-import re
 import socket
 from collections.abc import Callable, Mapping
 from urllib.parse import urlsplit
@@ -29,11 +28,11 @@ from urllib.parse import urlsplit
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+from contracts.apptest import APPTEST_PROJECT_RE
+
 ENV_ISOLATION = "AVP_INTEGRATION_ISOLATION"
 ISOLATION_CI = "ci-ephemeral"
 ISOLATION_APPTEST_PREFIX = "apptest:"
-#: run-e2e.sh が許す project 名と同じ形（本番 ``avp2`` は含まない）
-_APPTEST_PROJECT = re.compile(r"avp2-oslog-c(?:[-_0-9a-z]*)")
 #: 隔離スタックの内部 network に在るサービス名（compose.apptest.yaml）
 APPTEST_SERVICE_HOSTS = frozenset({"temporal", "postgres", "minio"})
 LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
@@ -140,7 +139,7 @@ def assert_isolated_targets(
 
     if declared.startswith(ISOLATION_APPTEST_PREFIX):
         project = declared[len(ISOLATION_APPTEST_PREFIX) :]
-        if not _APPTEST_PROJECT.fullmatch(project):
+        if not APPTEST_PROJECT_RE.fullmatch(project):
             raise ProductionTargetError(
                 f"{ENV_ISOLATION} の project {project!r} は avp2-oslog-c* ではない"
                 "（本番 project avp2 は隔離スタックではない）"

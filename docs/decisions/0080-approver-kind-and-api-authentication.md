@@ -38,8 +38,10 @@ Episode（本番に 15 件）は API の `/resume` で再開でき、月が替�
    新機能の ON / fal 予算を上げる / public・unlisted 投稿 / provider 保留の解放・再開・breaker の半開と閉 /
    予約の手動確定（`failure` は再送→二重課金に、`success` は台帳を課金済みにする）。
    エージェントが単独で出来る委任の範囲は「新機能 OFF のコードデプロイ」と、その release 承認に限る。
-4. release 承認記録は `approval_ref` が必須（無い・不正は UNKNOWN）。任意の `approver_kind` を書くなら参照の種別と一致すること。
-   任意の `enables`（所有者専用の関門の名前の配列）に関門を書いた委任は BLOCKED。未知の名前は UNKNOWN。
+4. release 承認記録は `approval_ref` と `enables` が必須（無い・不正は UNKNOWN。新機能 OFF は明示的な `[]`）。任意の
+   `approver_kind` を書くなら参照の種別と一致すること。`enables` に所有者専用の関門を書いた委任は BLOCKED、未知の名前は
+   UNKNOWN。さらに自己申告に依らず、preflight が対象環境の `.env` の新機能 flag（`contracts/release.py::
+   FEATURE_FLAG_ENV_KEYS`）を読み、1 つでも ON なら委任は BLOCKED（本人でも `enable_new_feature` の宣言が要る）。
    PASS の結果に `approver_kind` と、委任なら `delegated_by` を残す。
 5. 予約 waiver・provider 資金操作・予約の手動確定は所有者本人の参照のみ（従来どおり `OWNER-…`）。
    保存は既存の文字列列に `<kind>:<name>`（`format_approver`）。種別の接頭辞が無い旧い値は
@@ -49,18 +51,24 @@ Episode（本番に 15 件）は API の `/resume` で再開でき、月が替�
 ### B. 変更系ルートの認証
 
 1. 変更系ルート（`POST`/`PUT`/`PATCH`/`DELETE` すべて）は `Authorization: Bearer <token>` を要求する。
-   トークンは Settings の secret ファイル（`AVP_API_TOKENS_FILE`）か env から読む。比較は定数時間。
+   トークンは Settings の secret **ファイル**（`AVP_API_TOKENS_PATH`）だけから読む（環境変数では渡せない:
+   `docker inspect` に出るため）。比較は定数時間。読むのは変更系のときだけ。
 2. **未設定なら変更系を全拒否**（503。fail closed）。GET（読み取り）は開けたまま: 運用者・監視・healthcheck が
    使い、データの変更・課金・投稿を起こさないため。ただし内部 ID を返すので、公開を狭める勧告は別（compose の
    bind を 127.0.0.1 にする。この枝では compose を変えない）。
-3. トークンは **actor を持つ**（`owner` / `agent`）。変更系の構造化ログに actor を残す（トークン値は出さない）。
+3. トークンは **actor を持つ**（帰属・意図の記録。同じファイルをエージェントが読めるなら**セキュリティ境界ではない**。
+   実効のある分離は owner token を別ファイル `AVP_API_OWNER_TOKEN_PATH` に置き、エージェントの OS ユーザーが読めない
+   ようにする任意の構成のときだけ。残るリスクは docs/operations/api-auth.md）。**actor を持つ**（`owner` / `agent`）。変更系の構造化ログに actor を残す（トークン値は出さない）。
    手動投稿の品質ゲートは、flag OFF の間は従来どおり。ON のとき手動投稿は BLOCK を迂回できない
-   （REVIEW を許すのは owner トークンの actor だけ。agent トークンの REVIEW は拒否）。
+   （REVIEW を許すのは owner トークンの actor だけ。agent トークンの REVIEW は拒否。分離が無い構成ではエージェントが
+   owner token を使えるので、これは意図の記録であり強制ではない）。
 4. 後方互換: 認証なしで API を呼んでいた運用スクリプトは 401/503 になる。呼び出し元の棚卸しと更新は
    v3-phase3-audit §4 に記す。
 
 ## Consequences
 
+- deploy 前の preflight に必須チェック `api_token_file` が増える（token ファイルの存在・0600・所有者・owner と agent の両方）。
+  compose の `api` に token ディレクトリの read-only bind が増える（ディレクトリが無くても起動し、API は 503）。
 - release 承認の書式に `approval_ref` が増える（runbook 更新）。旧書式の承認ファイルは UNKNOWN（再発行が要る）。
 - 保存された `approved_by` / `actor` は `owner:<name>` になる。表示・集計で旧い値（接頭辞なし）は「種別なし」と読む。
 - API はトークン設定をしないと変更系が動かない（デプロイ時の設定が要る）。
