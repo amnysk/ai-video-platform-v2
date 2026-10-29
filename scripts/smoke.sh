@@ -14,7 +14,7 @@ API="${API:-http://localhost:8000}"
 echo "== POST /episodes =="
 created=""
 for _ in $(seq 1 30); do
-  if created=$(curl -sS -f -X POST "$API/episodes" \
+  if created=$(curl -sS -f -X POST -H "Authorization: Bearer ${AVP_API_TOKEN:?AVP_API_TOKEN is required: mutating API routes need a bearer token (ADR-0080)}" "$API/episodes" \
       -H 'content-type: application/json' \
       -d '{"topic":"smoke test"}' 2>/dev/null); then
     break

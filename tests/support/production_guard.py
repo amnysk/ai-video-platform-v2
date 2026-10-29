@@ -50,7 +50,7 @@ Resolver = Callable[[str], list[str]]
 
 def _resolve(host: str) -> list[str]:
     try:
-        return sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
+        return sorted({str(info[4][0]) for info in socket.getaddrinfo(host, None)})
     except OSError:
         return []
 
@@ -59,7 +59,7 @@ def host_local_addresses() -> frozenset[str]:
     """このマシン自身の IP（パケットは送らない）。LAN IP に解決される名前もホストとみなす。"""
     found: set[str] = set()
     with contextlib.suppress(OSError):
-        found.update(info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None))
+        found.update(str(info[4][0]) for info in socket.getaddrinfo(socket.gethostname(), None))
     for family, probe in ((socket.AF_INET, "192.0.2.1"), (socket.AF_INET6, "2001:db8::1")):
         try:
             with socket.socket(family, socket.SOCK_DGRAM) as sock:

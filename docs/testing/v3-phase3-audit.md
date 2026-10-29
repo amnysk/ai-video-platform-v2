@@ -84,3 +84,36 @@ PostgreSQL / MinIO は同じホストの同じ番号で公開されており、`
   `tests/unit/test_release_preflight.py::_approval` に `approval_ref` を足した（承認記録の必須項目が増えたため）、
   `tests/unit/test_reconcile_reservations_script.py::test_audit_row_never_stores_the_raw_token` の `row.actor` の期待を
   `me` → `owner:me`（actor 列が種別つきになったため）。
+
+## 3. API の認証（ADR-0080 §B / INV-124・125）
+
+事故の型（監査 2026-10-29）: 全ての変更系ルートが無認証で `0.0.0.0:8000`（LAN）に公開。`/upload` は flag OFF の間
+品質ゲートを通らず、保留行のない古い `blocked` Episode（本番 15 件）は `/resume` で再開できる。
+
+### tests/unit/test_api_auth.py（`real_api_auth`: 本物の認証を使う）
+API テスト（ASGI 直結）にする理由: 認証は HTTP の入口の性質で、DB・workflow は偽物でよい。起動されたか（副作用）を
+偽の starter が **呼び出し記録**で断言する（拒否のつもりで handler まで届いていた、を検出する）。
+- `test_there_are_mutating_routes_to_protect` と全ルートを回すテスト: ルートは **OpenAPI から列挙**する。FastAPI の
+  `app.routes` は include した router を `_IncludedRouter` に包むので、`APIRoute` を走査する素朴な実装は 0 件で
+  全部通ってしまう（実装中にそれが起きた）。0 件で緑にならないよう件数も断言する。
+- `test_every_mutating_route_refuses_when_no_token_is_configured`: 未設定は 503（fail closed）。
+- `test_every_mutating_route_refuses_a_missing_or_wrong_credential`（8 種）: ヘッダ無し・`Bearer` のみ・`Basic`・
+  スキーム無し・1 文字違い・末尾空白・小文字スキーム。401 と `WWW-Authenticate`。
+- `test_a_valid_token_reaches_the_handler` / `test_read_only_routes_stay_open`: 正常系と、GET が開いたままであること
+  （過剰な閉鎖で監視・運用が止まるのを防ぐ）。
+- トークンファイル: `test_a_missing_or_malformed_token_file_...`（空・短い・未知の actor・同一 token の二重利用・形式違い）、
+  `test_an_unset_or_absent_path_...`、`test_a_token_file_readable_by_others_is_refused`（0644 / 0660 / 0604）。
+- `test_comparison_is_constant_time_and_checks_every_entry`: `compare_digest` を差し替えて、先頭一致でも全件を比較する
+  ことを固定（時間差で順序・長さを漏らす実装の検出）。
+- `test_the_credential_never_appears_in_a_refusal` / `test_every_authenticated_mutation_logs_its_actor_...`: token が
+  応答・ログに出ない。actor は残る。
+- INV-125: `test_manual_upload_cannot_bypass_a_block_with_any_token` / `test_review_is_approved_by_the_owner_token_...`
+  / `test_a_passing_report_lets_the_agent_token_upload`。既存の `test_quality_gate_wiring.py` の手動投稿テストは
+  所有者として走り続ける（挙動不変）。
+- `test_every_operator_script_that_posts_to_the_api_sends_a_token` / `test_the_resume_client_sends_the_token_...`:
+  認証なしで API を叩く運用スクリプトを残さない（呼び出し元の更新漏れ）。件数の下限も断言して走査の空振りを防ぐ。
+
+### tests/conftest.py（autouse）
+既存の API テスト 10 ファイルは認証ではなく各ルートの挙動を試す。`create_app()` の戻り値の
+`dependency_overrides` で認証の依存だけを「所有者」に上書きする（本番コードに迂回は無い）。`real_api_auth` を付けた
+テストだけ本物の認証を使う。既存テストの本体は変更していない。

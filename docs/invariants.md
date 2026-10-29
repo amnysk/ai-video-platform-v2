@@ -1338,3 +1338,27 @@ dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph �
 / `tests/unit/test_release_approval_kind.py::test_manual_reservation_resolution_accepts_only_the_owners_own_reference`
 / `tests/unit/test_release_approval_kind.py::test_the_release_reservation_waiver_stays_owner_only`
 
+### INV-124 API の変更系ルートは全て bearer token を要求し、未設定・不備なら閉じる（無認証に倒れない）
+`POST` / `PUT` / `PATCH` / `DELETE` の全ルート（OpenAPI から列挙。router を足してもここに入る）は、token 未設定
+（ファイル無し・読めない・壊れている・0600 以外・短い token・重複）なら 503、token が無い・違う（`Bearer` 以外、前後の
+空白、1 文字違い）なら 401、いずれも handler に到達せず workflow を起動しない。比較は digest を全件 `hmac.compare_digest`
+（打ち切らない）。読み取り（GET）は開けたまま。token は応答・ログに出ず、actor（`owner` / `agent`）だけが残る。
+**機械検査**: `tests/unit/test_api_auth.py::test_every_mutating_route_refuses_when_no_token_is_configured`
+/ `tests/unit/test_api_auth.py::test_every_mutating_route_refuses_a_missing_or_wrong_credential`
+/ `tests/unit/test_api_auth.py::test_a_valid_token_reaches_the_handler`
+/ `tests/unit/test_api_auth.py::test_read_only_routes_stay_open`
+/ `tests/unit/test_api_auth.py::test_a_missing_or_malformed_token_file_means_nothing_is_authenticated`
+/ `tests/unit/test_api_auth.py::test_a_token_file_readable_by_others_is_refused`
+/ `tests/unit/test_api_auth.py::test_comparison_is_constant_time_and_checks_every_entry`
+/ `tests/unit/test_api_auth.py::test_the_credential_never_appears_in_a_refusal`
+/ `tests/unit/test_api_auth.py::test_every_authenticated_mutation_logs_its_actor_without_the_token`
+/ `tests/unit/test_api_auth.py::test_every_operator_script_that_posts_to_the_api_sends_a_token`
+
+### INV-125 品質ゲート ON の手動投稿は、どのトークンでも BLOCK を迂回できず、REVIEW を承認できるのは owner トークンだけ
+`AVP_QUALITY_GATE_ENFORCE` ON のとき、`POST /episodes/{id}/upload` は BLOCK・レポート作成失敗を 409 にし（owner/agent
+どちらのトークンでも）、REVIEW は owner トークンのときだけ許可して actor 付きでログに残す。agent トークンの REVIEW は
+409 `quality: review_requires_owner`。flag OFF の挙動は変えない（ADR-0076）。
+**機械検査**: `tests/unit/test_api_auth.py::test_manual_upload_cannot_bypass_a_block_with_any_token`
+/ `tests/unit/test_api_auth.py::test_review_is_approved_by_the_owner_token_but_never_by_the_agent_token`
+/ `tests/unit/test_api_auth.py::test_a_passing_report_lets_the_agent_token_upload`
+

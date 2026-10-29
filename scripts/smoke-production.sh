@@ -88,7 +88,7 @@ if [ "${CONFIRM_PAID:-}" != "1" ]; then
 fi
 
 echo "== POST /episodes/$EPISODE_ID/production =="
-curl -sS -f -X POST "$API/episodes/$EPISODE_ID/production" | python3 -m json.tool
+curl -sS -f -X POST -H "Authorization: Bearer ${AVP_API_TOKEN:?AVP_API_TOKEN is required: mutating API routes need a bearer token (ADR-0080)}" "$API/episodes/$EPISODE_ID/production" | python3 -m json.tool
 
 echo "== assets_ready を待つ =="
 sleep 5

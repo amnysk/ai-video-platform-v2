@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from apps.api.auth import require_api_actor
 from apps.api.dependencies import get_session_factory, get_settings
 from contracts.research import ResearchKind, ResearchStatus, ResearchSubmit
 from domain.research.entities import ResearchRequest
@@ -38,7 +39,8 @@ from infrastructure.temporal.research_starter import (
     TemporalResearchStarter,
 )
 
-router = APIRouter(prefix="/research", tags=["research"])
+# 変更系は全て認証が要る（ADR-0080 §B / INV-124）。読み取りは通す
+router = APIRouter(prefix="/research", tags=["research"], dependencies=[Depends(require_api_actor)])
 
 
 @lru_cache(maxsize=1)

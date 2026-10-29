@@ -52,3 +52,30 @@ def artifact_store():
     from infrastructure.storage.memory_store import InMemoryArtifactStore
 
     return InMemoryArtifactStore()
+
+
+@pytest.fixture(autouse=True)
+def _api_requests_run_as_the_owner_unless_testing_auth(request, monkeypatch):
+    """API のテストは認証済み（所有者）で走る。実際の認証を試す試験は ``real_api_auth`` を付ける。
+
+    ADR-0080 §B: 本番の API は変更系に bearer token を要求する。個々の API テストは認証ではなく
+    各ルートの振る舞いを試すので、認証の依存だけを所有者として上書きする
+    （上書きは ``create_app()`` の戻り値の ``dependency_overrides`` だけ。本番コードに迂回は無い）。
+    """
+    if request.node.get_closest_marker("real_api_auth"):
+        return
+    import apps.api.main as api_main
+    from apps.api.auth import Actor, require_api_actor
+
+    original = api_main.create_app
+
+    def create_app_as_owner(*args, **kwargs):
+        app = original(*args, **kwargs)
+
+        async def as_owner() -> Actor:
+            return Actor.OWNER
+
+        app.dependency_overrides[require_api_actor] = as_owner
+        return app
+
+    monkeypatch.setattr(api_main, "create_app", create_app_as_owner)

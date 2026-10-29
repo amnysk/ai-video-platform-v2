@@ -130,13 +130,24 @@ class ResumeClient(Protocol):
 class ApiResumeClient:
     """既存の ``POST /episodes/{id}/resume`` を呼ぶ。新しい workflow 起動経路は持たない。"""
 
-    def __init__(self, base_url: str, *, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ):
         self._base = base_url.rstrip("/")
+        self._token = token
         self._transport = transport
 
     async def resume(self, episode_id: str) -> ResumeStarted:
         async with httpx.AsyncClient(transport=self._transport, timeout=30.0) as client:
-            response = await client.post(f"{self._base}/episodes/{episode_id}/resume")
+            # API の変更系は bearer token が要る（ADR-0080 §B）。token はここでしか使わない
+            headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
+            response = await client.post(
+                f"{self._base}/episodes/{episode_id}/resume", headers=headers
+            )
         if response.status_code != 202:
             raise ResumeRejected(
                 f"resume refused: HTTP {response.status_code}: {response.text[:300]}"

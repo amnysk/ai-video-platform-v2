@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import pathlib
 import sys
 from decimal import Decimal, InvalidOperation
@@ -94,7 +95,7 @@ async def run(
             ) from None
         client = resume_client
         if client is None and args.api_url:
-            client = credits.ApiResumeClient(args.api_url)
+            client = credits.ApiResumeClient(args.api_url, token=os.environ.get("AVP_API_TOKEN"))
         return EXIT_OK, await credits.resume_episodes(
             session_factory,
             health,

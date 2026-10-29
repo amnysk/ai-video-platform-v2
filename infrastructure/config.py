@@ -173,6 +173,9 @@ class Settings(BaseSettings):
     uploads_paused: bool = False
     #: 品質ゲートを投稿に効かせる（ADR-0076）。既定 OFF。キー名は contracts.quality が唯一の定義
     quality_gate_enforce: bool = Field(default=False, validation_alias=QUALITY_GATE_ENFORCE_ENV)
+    #: API の変更系ルートの bearer token ファイル（repo 外・0600。ADR-0080 §B）。
+    #: 未設定 = 変更系を全拒否
+    api_tokens_file: str | None = Field(default=None, validation_alias="AVP_API_TOKENS_FILE")
     #: resumable upload の chunk（256 KiB の倍数）
     youtube_chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES
 

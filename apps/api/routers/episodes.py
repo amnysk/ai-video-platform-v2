@@ -16,6 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
+from apps.api.auth import Actor, ApiActor, require_api_actor
 from apps.api.dependencies import (
     get_quality_clock,
     get_quality_providers,
@@ -64,7 +65,8 @@ from infrastructure.logging.quality_decision import log_quality_decision
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/episodes", tags=["episodes"])
+# 変更系は全て認証が要る（ADR-0080 §B / INV-124）。読み取りは通す
+router = APIRouter(prefix="/episodes", tags=["episodes"], dependencies=[Depends(require_api_actor)])
 
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 Starter = Annotated[WorkflowStarter, Depends(get_workflow_starter)]
@@ -256,6 +258,7 @@ async def start_upload(
     settings: AppSettings,
     quality_providers: QualityProviders,
     quality_clock: QualityClock,
+    actor: ApiActor,
 ) -> StartUploadResponse:
     """upload 工程を起動するだけ（INV-16 / ADR-0020）。本文は受け取らない。
 
@@ -297,7 +300,7 @@ async def start_upload(
             )
     if settings.quality_gate_enforce:
         await _require_quality_for_manual_upload(
-            episode.id, session_factory, quality_providers, quality_clock
+            episode.id, session_factory, quality_providers, quality_clock, actor
         )
     try:
         workflow_id = await starter.start_upload_workflow(episode_id=episode.id)
@@ -316,8 +319,15 @@ async def _require_quality_for_manual_upload(
     session_factory: SessionFactory,
     providers: Sequence[CheckProvider],
     clock: Callable[[], datetime],
+    actor: Actor | None,
 ) -> None:
-    """flag ON の手動投稿: BLOCK・作成失敗は 409。REVIEW は承認としてログに残す（ADR-0076 §4）。"""
+    """flag ON の手動投稿: BLOCK・作成失敗は 409。REVIEW は所有者トークンの承認だけ。
+
+    ADR-0076 §4 / ADR-0080。
+
+    エージェントのトークンは REVIEW を承認できない（人の承認とみなす根拠が無い）。承認は actor と
+    ともにログに残す。
+    """
     try:
         async with session_factory() as session:
             hashes = await ArtifactMetadataRepository(session).find_current_hashes(
@@ -339,6 +349,7 @@ async def _require_quality_for_manual_upload(
             final_video_sha256=sha256,
             rule_version=QUALITY_RULE_VERSION,
             assessment=assessment,
+            actor=actor.value if actor is not None else None,
         )
     except Exception as exc:  # noqa: BLE001 - fail-closed: 判定できないものは通さない
         raise HTTPException(
@@ -349,6 +360,10 @@ async def _require_quality_for_manual_upload(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"quality: {assessment.decision.reason_code.value}",
+        )
+    if assessment.review_approved and actor is not Actor.OWNER:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="quality: review_requires_owner"
         )
 
 

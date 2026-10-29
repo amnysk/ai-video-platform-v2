@@ -53,6 +53,7 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
   "integration: requires docker compose services",
   "live: calls the real Codex CLI (opt-in via AVP_LIVE_CODEX=1)",
+  "real_api_auth: keep the API's real bearer-token authentication (tests otherwise run as owner)",
 ]
 # 既定の実行では live テストを収集しない（tests/live/conftest.py と二重の防御）
 addopts = "-m 'not live'"

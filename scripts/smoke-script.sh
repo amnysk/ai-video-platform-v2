@@ -14,7 +14,7 @@ VENV="${VENV:-.venv}"
 [ -x "$VENV/bin/python" ] || VENV="../../.venv"
 
 echo "== POST /episodes (pipeline=script) =="
-created=$(curl -sS -f -X POST "$API/episodes" \
+created=$(curl -sS -f -X POST -H "Authorization: Bearer ${AVP_API_TOKEN:?AVP_API_TOKEN is required: mutating API routes need a bearer token (ADR-0080)}" "$API/episodes" \
   -H 'content-type: application/json' \
   -d "$(printf '{"topic":%s,"pipeline":"script"}' "$(printf '%s' "$TOPIC" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')")")
 echo "$created"
