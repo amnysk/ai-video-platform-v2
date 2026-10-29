@@ -1354,11 +1354,32 @@ dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph �
 / `tests/unit/test_api_auth.py::test_every_authenticated_mutation_logs_its_actor_without_the_token`
 / `tests/unit/test_api_auth.py::test_every_operator_script_that_posts_to_the_api_sends_a_token`
 
-### INV-125 品質ゲート ON の手動投稿は、どのトークンでも BLOCK を迂回できず、REVIEW を承認できるのは owner トークンだけ
+### INV-125 品質ゲート ON の手動投稿は、どのトークンでも BLOCK を迂回できず、REVIEW の承認は owner トークンの要求に結び付く（意図の記録）
 `AVP_QUALITY_GATE_ENFORCE` ON のとき、`POST /episodes/{id}/upload` は BLOCK・レポート作成失敗を 409 にし（owner/agent
 どちらのトークンでも）、REVIEW は owner トークンのときだけ許可して actor 付きでログに残す。agent トークンの REVIEW は
 409 `quality: review_requires_owner`。flag OFF の挙動は変えない（ADR-0076）。
+**これは意図の記録であって強制ではない**: owner と agent の token が同じファイルにあり、エージェントの OS ユーザーが
+読めるなら、エージェントは owner token を使える。owner token を別ファイル（`AVP_API_OWNER_TOKEN_PATH`）に置き、
+エージェントが読めない権限にした構成だけが実効を持つ（docs/operations/api-auth.md の「残るリスク」）。BLOCK を
+迂回できないこと（トークンの種別に依らない）は強制である。
 **機械検査**: `tests/unit/test_api_auth.py::test_manual_upload_cannot_bypass_a_block_with_any_token`
 / `tests/unit/test_api_auth.py::test_review_is_approved_by_the_owner_token_but_never_by_the_agent_token`
 / `tests/unit/test_api_auth.py::test_a_passing_report_lets_the_agent_token_upload`
+
+（INV-123 追補）release 承認の `enables` は必須（明示的な空 = 新機能 OFF）。preflight は対象環境の `.env` の新機能 flag
+（`contracts/release.py::FEATURE_FLAG_ENV_KEYS`: `AVP_QUALITY_GATE_ENFORCE` / `BGM_ENABLED` / `GEO_MAPS_ENABLED` /
+`AVP_UPLOAD_DESCRIPTION_COMPOSED`）を読み、1 つでも ON なら委任された承認を BLOCKED にする。
+**機械検査**: `tests/unit/test_release_feature_flags.py::test_enables_is_mandatory_even_for_an_owner_approval`
+/ `tests/unit/test_release_feature_flags.py::test_a_delegated_approval_is_blocked_when_any_flag_is_on_in_the_target`
+/ `tests/unit/test_release_feature_flags.py::test_an_owner_approval_with_a_flag_on_must_declare_enable_new_feature`
+/ `tests/unit/test_release_collectors_flags_and_tokens.py::test_a_process_environment_that_differs_from_the_dotenv_is_unknown`
+
+（INV-124 追補）deploy 前の release preflight は API の token ファイルの存在・0600・所有者（`AVP_UID`）・owner と agent の
+token を確かめる。compose が渡す。読むのは変更系のときだけ。owner を別ファイルにしたとき、共有ファイルの `owner:` 行は拒否。
+**機械検査**: `tests/unit/test_release_api_token_check.py::test_an_absent_file_blocks_the_deploy`
+/ `tests/unit/test_release_api_token_check.py::test_a_file_the_api_would_reject_blocks_the_deploy`
+/ `tests/contract/test_api_token_wiring.py::test_the_secret_directory_is_mounted_read_only_with_a_safe_default`
+/ `tests/unit/test_api_auth.py::test_with_an_owner_file_an_owner_token_in_the_shared_file_is_refused`
+/ `tests/unit/test_api_auth.py::test_read_requests_never_read_the_token_file_or_log_about_it`
+/ `tests/contract/test_apptest_project_pattern.py::test_run_e2e_uses_the_same_prefix_and_pattern`
 
