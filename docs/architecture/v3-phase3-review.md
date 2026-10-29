@@ -1,0 +1,144 @@
+# v3 Phase 3 独立レビュー（Sonnet E）
+
+対象: `claude/v3-phase3-integration` @ `7fd36e4`（`git diff 7ae20e8..7fd36e4`、133 ファイル、+12584/-142）。
+レビュアーは実装していない。コードは直していない。証拠のテストは `tests/unit/test_review_p3_*.py`（別コミット）。
+判定の基準は AGENTS.md（TDD / §2 テスト非緩和 / §3 無関係な変更 / §6 設計先行 / §7 設計書同時 / §8 定義1箇所 / §9 お金と外部副作用）。
+
+## 結論
+
+| 問い | 判定 |
+|---|---|
+| (a) 4 flag すべて OFF で本番（e3c9555）にデプロイしてよいか | **可（所有者の API トークン設定を前提に）**。BLOCKER 無し。起動・replay・render_input_hash・migration の互換は確認した。意図した変更（API の変更系が token 必須・503、release 承認の `approval_ref` 必須、integration の隔離宣言）以外の挙動差は見つからなかった |
+| (b) 機能として完成しているか | **未完成**。品質ゲートに BGM / 地図が**結線されていない**（B1・B2）。このため `AVP_QUALITY_GATE_ENFORCE=true` にした瞬間に全 Episode が REVIEW になり自動投稿が止まる。BGM / GEO を ON にするのは、B1〜B3 を直すまで不可 |
+
+## 所見
+
+### BLOCKER（flag を ON にする前に直す。flag OFF の deploy は止めない）
+
+**B1. 品質ゲートに BGM / 地図の producer が登録されていない。**
+`infrastructure/quality/wiring.py:18-27` の `build_quality_producers()` は `()` を返す（docstring は「他の枝がここへ足す」）。
+BGM（INV-138）・地図（INV-142）の純関数 `bgm_quality_checks` / `map_quality_checks` は、本番コードのどこからも呼ばれない
+（`grep -rn "bgm_quality_checks\|map_quality_checks" apps workers infrastructure` → 定義のみ）。
+INV-138 の本文は「永続化と gate への接続は未配線」と自認しているが、parent の統合でも接続されていない。
+- 失敗シナリオ: `GEO_MAPS_ENABLED=true`（`require_quality_gate` により `AVP_QUALITY_GATE_ENFORCE=true` が必須）で、Render が誤った地図を拒否し
+  元のシーン動画で完成動画を作る（`workers/render/activities.py:695` のログは「the quality gate refuses the upload」と言う）。
+  gate は地図の証跡を一切読まないので、**拒否された地図は gate から見えない**。INV-140 の「投稿を許さない」は、純関数が BLOCK を返すところまでしか機械検査されていない。
+- 証拠: `tests/unit/test_review_p3_unwired_quality.py::test_review_production_gate_has_bgm_and_map_producers`（FAIL）。
+  既存の `tests/unit/test_quality_approval_and_wiring.py::test_no_branch_producers_are_registered_yet` は `build_quality_producers() == ()` を**固定**している
+  （結線時に更新が要る。ADR-0081 §7 が根拠なので §2 違反にはならない）。
+- 修正案: `CheckKey.BGM` / `CheckKey.MAP` の producer（証跡を MinIO から読み、`evidence_ref` を持つ記録にする）を `build_quality_producers` に足す。
+  「証跡を読めなかった」は例外にして記録を作らない（INV-138 の約束）。結線の end-to-end テスト（Render → gate → BLOCK）を足す。
+  parent の worktree `claude-v3-p3-wiring` が既にこれを扱っているように見える（観測のみ。未確認）。
+
+**B2. Render が使用宣言（`quality_usage_declarations`）を書かない。`ENFORCE` ON だけで全 Episode が REVIEW。**
+`SqlQualityRecordWriter.declare_usage` の呼び出し元は本番コードに無い（テストのみ）。`domain/quality/records.py:305-314` は、宣言が無い機能を
+`USAGE_DECLARATION_MISSING`（REVIEW）にする（INV-127、意図した fail-closed）。結果、BGM も地図も使っていない通常の Episode でも、
+`AVP_QUALITY_GATE_ENFORCE=true` では自動投稿が `quality: report_needs_review` で止まり、手動投稿は owner の承認が毎回要る。
+e3c9555 では ENFORCE=true で PASS した動画が、この統合では PASS しない（回帰）。
+- 証拠: `tests/unit/test_review_p3_unwired_quality.py::test_review_render_declares_usage_for_the_gate`（FAIL: Render 後の宣言は 0 件）。
+  `tests/unit/test_quality_gate_service.py::test_without_usage_declarations_the_gate_refuses_as_review` が現挙動を固定している。
+- 修正案: Render の `_store_final` 後（final_video 行の記録と同じ transaction か、直後）に、BGM / 地図それぞれ使った（証跡 ref つき）か使わない（ref なし）かを宣言する。
+  flag OFF では `used=false` を宣言するのが INV-130（OFF は記録を読み書きしない）と衝突しないか ADR で決める（OFF は現状どおり gate 自体を通らないので衝突しない）。
+
+### MAJOR
+
+**M1. BGM の帰属表示（クレジット）が YouTube の説明欄に入らない。** `workers/upload/activities.py:445` と `infrastructure/quality/service.py:166` は
+`build_upload_metadata(upload_key=..., script=script)` で `credits=` を渡さない。`BgmResolution.credit_lines` は証跡（`workers/render/activities.py:672`）に残るだけ。
+CC-BY など `attribution_required` の曲を使うと、ライセンス条件（帰属）を満たさないまま公開される。ADR-0083:169 が「未配線（ADR-0077 から継続）」と自認。
+BGM を ON にする前に必須。`bgm_quality_checks` が見るのは「証跡のクレジット = カタログ原文」で、**説明欄に載ったか**ではない。
+
+**M2. 所有者トークンと agent トークンは同一ファイルに入り、同じ OS ユーザーが読める。** `docs/operations/api-auth.md` の手順は
+`~/.config/avp2/api-tokens`（0600、所有者 = 運用ユーザー）に owner と agent の両方を書く。本番ホストでエージェントは同じユーザーで動くので、
+エージェントは owner トークンを読んで REVIEW を承認できる。ADR-0080 は承認参照を「認証ではない」と明記しているが、トークンについては
+「owner だけが REVIEW を承認できる」と書いていて、**この限界を書いていない**。コードの不具合ではなく、保証の過大申告。
+修正案: owner トークンを別ユーザー/別ファイル（エージェントが読めない場所）に置く運用を必須として書く。または限界を ADR と INV-125 に明記する。
+
+**M3. release 承認の `enables` は自己申告で、省略すると所有者専用の関門の検査が空振りする。** `domain/release_preflight.py:1495`
+（`doc.get("enables", [])`）。委任（`AGENT-…:OWNER-…`）の承認が新 flag を ON にするデプロイを承認しても、`enables` を書かなければ PASS する。
+preflight は対象環境の実効 flag（`AVP_QUALITY_GATE_ENFORCE` / `BGM_ENABLED` / `GEO_MAPS_ENABLED` 等）を見て関門を導いていない。
+ADR-0080 §A.4 は「任意」と明記しているので設計どおりだが、「委任は新機能 ON を通さない」という INV-123 の保証の実効性は書き手の誠実さに依存する。
+修正案: preflight が対象の env/compose から flag の ON/OFF を実測し、ON なら `ENABLE_NEW_FEATURE` を暗黙に要求する。
+
+**M4. 出荷物としての deploy 手順が欠けている。** `AVP_API_TOKENS_FILE` は `compose.yaml` に無く、`docs/operations/release-runbook.md` にもトークン設定の手順が無い
+（`docs/operations/api-auth.md` にだけ在る）。デプロイ後、所有者が override を足すまで `POST /episodes` 系はすべて 503。
+日次 Schedule・watchdog は API を経由しないので自動運転は止まらない。runbook の事前条件に「トークンの作成と override」を足す。
+
+### MINOR
+
+- **m1.** `apps/api/auth.py:126-132` `get_api_tokens` は GET を含む `/episodes`・`/research` の**全リクエスト**でファイルを読む（同期 I/O）。ファイルが壊れていると全リクエストが ERROR ログ（`_refuse`）を出す。
+  再現: `AVP_API_TOKENS_FILE=/nonexistent` で `GET`。`SAFE_METHODS` 判定を先にして、トークン読み込みを変更系だけにする。未設定（既定）では `_refuse` を呼ばないので flag OFF の本番は静か。
+- **m2.** ADR-0080 §B.1 は「secret ファイルか env」から読むと書くが、実装はファイルだけ（`infrastructure/config.py` `api_tokens_file`）。設計書を実装に合わせる（§7）。
+- **m3.** 追記専用は UPDATE のトリガだけ（`0019_...py:_postgres_guards`）。DELETE / TRUNCATE は止めない。さらに全表の FK が `ON DELETE CASCADE`（Episode 削除で監査記録が消える）。
+  「追記専用」の表現は「UPDATE 拒否」に狭めるか、DELETE も拒否する。
+- **m4.** `quality_manual_approvals` の複合 FK は `(report_id, final_video_sha256)` で `episode_id` を含まない。同じ sha256 を持つ別 Episode の報告に承認を結べる（同一バイトの動画が 2 Episode にある場合のみ）。`episode_id` を FK に含める。
+- **m5.** `get_upload_approver` の `approver_id` は `api-owner-token` / `api-agent-token` の定数。承認記録から「どのトークンの持ち主か」は分からない（トークンが 1 owner 1 agent なので現状は足りる）。
+- **m6.** 承認は workflow に渡らない。manual 経路は API で承認 → `start_upload_workflow` で、upload 工程は起動時点の現行 final_video を再解決する。API 呼び出しから起動までの間に再 render が入ると、承認した hash と投稿される hash が別になりうる（既存の ADR-0076 から続く窓。狭い）。
+- **m7.** `tests/support/production_guard.py` の `_APPTEST_PROJECT`（正規表現）と `run-e2e.sh` の case パターンは同じ規則を 2 箇所に持つ（§8）。一致を検査する contract テストが無い。
+- **m8.** ガードは `os.environ` だけを見る。`Settings()`（`tests/support/minio.py` / `fake_upload_worker.py`）は `.env` も読むので、`.env` が本番を指していて環境変数が未設定のとき、ガードは何も見ない。ただし MinIO の integration は `MINIO_ENDPOINT` 未設定なら skip なので、実害の経路は狭い。
+- **m9.** `QualityGateService` は呼び出しのたびに `quality_reports` を 1 行足す（`upload_gate` の再試行・手動 POST の連打で増える）。上限・重複排除なし。
+- **m10.** `tests/architecture/test_geo_boundaries.py` の docstring（`test_production_billing_and_entrypoints_do_not_import_geo`: "ADR-0071 (not wired yet)"）が古い。許可リスト `GEO_CONSUMER_EXEMPT` に `infrastructure/geo` を足したのは ADR-0084 が根拠。
+
+## 確認した範囲（問題が見つからなかった項目）
+
+### 1. flag すべて OFF の本番互換
+- 起動: worker イメージ内で `apps.api.main` と全 `workers.*.run_worker` を import し、`Settings()` の 4 flag と `api_tokens_file` が既定（False/None）、`build_quality_service` が `None`（MinIO クライアントを作らない）。新しい必須 env は無い（`Settings` の追加は `api_tokens_file: str | None = None` の 1 個）。
+- replay: `workers/*/workflows.py`・`contracts/*_activities.py`・Activity 名・入出力 dataclass の差分は 0（`git diff --name-only` に無い）。CI の `temporal-replay` ジョブ相当のテストを明示実行して全部 PASS（結果は末尾）。
+- `render_input_hash`: `bgm=None` / `geo=None` のときキーごと入れない（`domain/render/identity.py`）。既存の golden hash テストが通る。`BGM_MIX_VERSION` 1→2 と ducking 係数の変更は BGM 入りの plan にだけ効く（OFF では BGM plan が無い）。production の入力 hash は動かない（INV-116/137 のテストあり）。
+- upload: `build_upload_metadata` は `AVP_UPLOAD_DESCRIPTION_COMPOSED` OFF で従来の `build_youtube_metadata(...)` と同じ引数・結果。`compute_upload_key` は変更なし。
+- 品質: `AVP_QUALITY_GATE_ENFORCE` OFF では `get_quality_service()` が `None`・`PipelineActivities._quality_service` が `None`で、手動投稿も upload_gate も従来どおり記録を読み書きしない（INV-130 のテストあり）。`QUALITY_RULE_VERSION` の 2 への更新は ENFORCE ON の経路にだけ効く。
+- migration 0019: 新しい表 4 個の追加のみ（既存の表・列・制約・索引に触れない）。e3c9555 のコードはこれらの表を知らないので、旧コードが走っている間に適用してよい。`downgrade` は行が 1 つでも在れば RuntimeError で拒否（空なら表を落とす）。単一 head（`0019`）。
+- 課金: 新しい fal / Codex / YouTube の呼び出し経路は無い。Render の地図・BGM は ffmpeg とローカルファイルのみ（`infrastructure/geo` はネットワーク・有料 provider を import しない: アーキテクチャテスト）。Production の地図 preflight は有料呼び出しの**前**に止める。
+  再 render が必要になるのは geo / bgm を ON にした Episode だけ（identity が変わる）。render は fal を呼ばない。`compute_upload_key` が変わらないので二重投稿の防止は従来どおり。
+
+### 2. API 認証（ADR-0080）
+- 両ルーターに `dependencies=[Depends(require_api_actor)]`。`/healthz` 以外の `@router.*` は POST と GET のみ。websocket・mount・method override は無い。HEAD/OPTIONS は `SAFE_METHODS` だが、変更系ルートに HEAD/OPTIONS は存在しない（TRACE 等は未許可で認証が要る）。
+- 比較は sha256 digest + `hmac.compare_digest` を全件、トークンは保存・ログ・応答に出ない。ファイルは 0600 以外・通常ファイル以外・重複・短い・未知の actor を全て拒否（503）。大文字小文字違いの `bearer` は 401（fail closed）。
+- `tests/conftest.py` の autouse override は `apps.api.main.create_app` の戻り値にだけ作用し、`real_api_auth` マークで外れる。`app = create_app(wire_quality_service=True)`（本番の app）には効かない。override が実際の穴を隠す経路は見つからなかった。
+  `from apps.api.main import create_app` を test の先頭で束縛するテストは override を受けないので、落ちて気づける側に倒れる。
+- 実トークン → actor → `get_upload_approver` → wired gate の連鎖は、既存テストが `get_upload_approver` を override していたため未検査だった。`tests/unit/test_review_p3_token_to_approval_e2e.py` で確認: agent トークン = 403 で何も起動しない・承認 0 件、無/誤/小文字 bearer = 401、owner トークン = 202 で `approver_kind=owner` の承認が記録される（3 件 PASS）。
+
+### 3. 承認の種別
+- `OwnerGate` の全関門（予約の手動確定・provider 保留の解放・breaker・waiver）は `require_gate_allowed` で `AGENT_DELEGATED` と種別なしを拒否する。`format_approver` は名前に種別の接頭辞を持たせない。旧い行（接頭辞なし）は `parse_approver` で `None`＝所有者承認ではない。
+- 変更された既存テスト 2 件は正当: `test_reconcile_reservations_script`（`actor` が `owner:me` に）は ADR-0080 §A.5 が先に決めた保存形式、`test_release_preflight._approval`（`approval_ref` を足す）は ADR-0080 §A.4 の新必須キー。どちらも期待を緩めず、仕様の追加に追随したもの。
+  `test_bgm_ffmpeg_graph.EXPECTED_TAIL`（ducking 係数）は ADR-0083 §（実測で係数変更・`BGM_MIX_VERSION` 2）が根拠。`test_geo_boundaries` の許可リスト拡張は ADR-0084。検出器を `tests/support/import_scan.py` へ移したのは検出を**強める**変更（`from x import submodule`・相対 import・動的 import を足す）。
+
+### 4. QualityGate fail-closed（構築を試みて破れなかった）
+- 他 hash / 他 input_hash / 他 rule_version / 期限切れ / 未来 / 壊れた期間の記録は `select_fresh_check_sets` が「無い」にする（SQL に依存しない）。現行でない（`superseded_at` あり）final_video は `current_final_video` が返さない。
+- 必須の検査が欠ける・producer が例外・保存失敗・報告が保存できない・`evaluate` の例外は全て拒否（`QualityGateService.evaluate` が包む）。承認を記録できなければ workflow を起動しない（409）。
+- 複合 FK は `(report_id, final_video_sha256)`（m4 を除き有効）。UPDATE はトリガで拒否（DELETE は m3）。
+- 破れなかったが、B1/B2 により「記録が揃って PASS する」経路自体が本番に存在しない（test の fake producer / 手書き宣言でしか通らない）。
+
+### 5. integration ガード（ADR-0079）
+- 宣言が無い・綴り違い・空・前後空白は全て例外（収集時）。`ci-ephemeral` は `GITHUB_ACTIONS=true` かつ loopback のみ。`apptest:` は `avp2-oslog-c*` とサービス名 `temporal/postgres/minio` のみで、ホストに解決される名前を拒否。Temporal は `default` namespace に日次 Schedule が在れば拒否（describe のみ、判定不能も拒否）。
+- 直書き禁止は `tests/architecture/test_integration_no_hardcoded_addresses.py` が検査。`test_pipeline_schedule.py` は直書きをやめ `TEMPORAL_ADDRESS` が無ければ skip。
+- CI への影響: `ci.yml` の integration / alembic ジョブに `AVP_INTEGRATION_ISOLATION: ci-ephemeral` が入っている。他のジョブは integration を走らせない。接続先は全て localhost。
+- 限界（ADR に明記済み）: PostgreSQL / MinIO は静的な宣言と接続先の規則だけに依存する。m8 を参照。
+
+### 6. 地図・BGM
+- 地図の座標は gazetteer からのみ（`manifest_builder` / `check_map_accuracy`。誤座標の manifest は BLOCK のテストあり）。時代錯誤・出典の解決・評価不足・同名の曖昧は `gate_map` が PASS にしない。地図に fal は使わない（`infrastructure/geo` はネットワーク・provider を import しない）。拒否された地図は描かず元のシーン動画を残す。ただし拒否が投稿を止めるのは B1 が直ってから。
+- BGM: ライセンスは描画のたびに `resolve_bgm` が再検査。`register_track` は sha256 で重複を排除し、承認は運ぶだけ。`object_key` は `..` と絶対パスを拒否。ラウドネス / 発話中の差は実測で判定。
+- INV-121〜145 の本文が挙げる「機械検査」のテスト（`tests/...::name`）は全て実在する（スクリプトで確認、欠落 0）。ただし INV-138 / INV-140 / INV-142 の「投稿を許さない」「gate に接続」は純関数の検査までで、end-to-end の検査は無い（B1）。
+
+## テスト結果（7fd36e4）
+
+| 検査 | 結果 |
+|---|---|
+| `ruff check .` / `ruff format --check .` | All checks passed / 1050 files already formatted |
+| `pyright` | 0 errors, 0 warnings |
+| `pytest tests/unit tests/contract tests/architecture -q` | **6268 passed**, 157 warnings（parent の数と一致。477 s。レビュー用テスト追加前） |
+| Temporal replay（CI `temporal-replay` ジョブと同じ 6 ファイル） | 83 passed |
+| 隔離 integration（`run-e2e.sh`、project `avp2-oslog-c-p3e`、`pytest tests/integration -m integration -rs`） | **166 passed, 6 skipped**（rc=0、445 s）。`-m "not integration"` は 0 件（マーク漏れなし） |
+| 追加したレビュー用テスト | `test_review_p3_token_to_approval_e2e.py` 3 passed／`test_review_p3_unwired_quality.py` 2 **failed（意図）** |
+
+skip 6 件は全て `tests/integration/test_logging_collector_lua.py:43`「docker が無い」（test-runner コンテナの中に docker が無い。隔離スタックの設計上の既知。Lua collector の検査は別手段）。
+migration 0019 は隔離 PostgreSQL に `migrate` サービスで適用済みで、`test_quality_records_postgres.py` と `test_migration_against_postgres.py` が通った（upgrade → 制約 → 追記専用トリガ → downgrade の拒否/実行）。
+
+本番には触れていない（`avp2-*` コンテナ・:7233/:5432/:9000/:8000 に接続なし）。隔離スタックは検査後に `down` 済み。
+
+## 推奨する次の手順
+
+1. B1・B2 を直す（producer の登録 + Render の使用宣言 + Render → gate → BLOCK の end-to-end テスト）。`test_review_p3_unwired_quality.py` が緑になることが完了条件。
+   その際 `test_no_branch_producers_are_registered_yet`（`== ()`）は ADR-0081 §7 を根拠に更新する。
+2. M1（説明欄のクレジット）を BGM を ON にする前に直す。
+3. flag OFF のまま deploy する場合は、M4（トークン設定の runbook への追記）を先に行う。
+4. M2・M3 は ADR-0080 / INV-123・125 の保証の書き方を実態に合わせる（コード変更は必須ではない）。
