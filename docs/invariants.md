@@ -1320,3 +1320,21 @@ dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph �
 / `tests/unit/test_temporal_production_probe.py::test_an_undecidable_answer_fails_closed`
 （PostgreSQL / MinIO を本番と区別する読み取りだけの指標は無い。静的な宣言と接続先の規則に依存する: ADR-0079 §2）
 
+### INV-123 承認記録は種別（所有者本人 / エージェントへの委任）を述べ、述べない記録・委任は所有者専用の関門を通さない
+承認の参照は `OWNER-<yyyymmdd>-<id>`（所有者本人）か `AGENT-<yyyymmdd>-<id>:OWNER-<yyyymmdd>-<id>`（委任。委任元の
+所有者の指示を必ず書く）。種別を述べない・形が違う・日付が実在しない参照は承認ではない。所有者専用の関門
+（`domain.approval.OwnerGate`: 新機能 ON / fal 予算を上げる / public・unlisted 投稿 / 保留の解放・再開 / 予約の手動確定）は
+`AGENT_DELEGATED` では通らない。release 承認記録は `approval_ref` が必須（無ければ UNKNOWN）で、`enables` に所有者専用の関門を
+書いた委任は BLOCKED。既存の文字列列（`provider_breakers.approved_by` / 予約照合の `actor`）には `<kind>:<name>` で保存し、
+種別の接頭辞が無い旧い値は所有者承認とは読まない（DB の変更なし）。種別の語彙は `contracts/approval.py::ApproverKind` の1箇所。
+認証ではない（誰でも書ける形式検査）: 目的は監査記録で所有者の判断と委任の範囲の判断を取り違えないこと。
+**機械検査**: `tests/unit/test_approval_kind.py::test_anything_that_does_not_state_a_valid_kind_is_not_an_approval`
+/ `tests/unit/test_approval_kind.py::test_an_agent_delegated_approval_never_satisfies_an_owner_gate`
+/ `tests/unit/test_approval_kind.py::test_the_owner_only_gates_are_the_ones_that_spend_or_publish`
+/ `tests/unit/test_approval_kind.py::test_the_stored_actor_states_its_kind_and_a_legacy_value_does_not`
+/ `tests/unit/test_release_approval_kind.py::test_a_record_that_does_not_state_its_kind_is_not_an_approval`
+/ `tests/unit/test_release_approval_kind.py::test_a_delegated_approval_cannot_enable_an_owner_gate`
+/ `tests/unit/test_release_approval_kind.py::test_provider_credit_actions_accept_only_the_owners_own_reference`
+/ `tests/unit/test_release_approval_kind.py::test_manual_reservation_resolution_accepts_only_the_owners_own_reference`
+/ `tests/unit/test_release_approval_kind.py::test_the_release_reservation_waiver_stays_owner_only`
+

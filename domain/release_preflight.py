@@ -29,6 +29,13 @@ from contracts.release import (
     STAGING_TEMPORAL_NAMESPACE,
     TEST_DB_SUFFIX,
 )
+from domain.approval import (
+    ApprovalError,
+    ApprovalReference,
+    OwnerGate,
+    parse_approval_reference,
+    require_gate_allowed,
+)
 from domain.backup.manifest import drill_problems
 from domain.budget_gate import evaluate_budget
 from domain.provider.reconciliation import is_owner_approval_reference
@@ -1436,6 +1443,9 @@ def _check_approval(req: Request, c: Collectors, now: datetime) -> CheckResult:
         return _unknown(
             CHECK_APPROVAL, "approval record lacks approver or a timezone-aware approved_at"
         )
+    kind = _approval_kind(doc)
+    if isinstance(kind, CheckResult):
+        return kind
     if not _bounded(req.evidence_max_age_hours, MAX_EVIDENCE_MAX_AGE_HOURS):
         return _unknown(
             CHECK_APPROVAL,
@@ -1461,7 +1471,46 @@ def _check_approval(req: Request, c: Collectors, now: datetime) -> CheckResult:
     problem = _approved_report_problem(text, req)
     if problem is not None:
         return _named(CHECK_APPROVAL, problem)
-    return CheckResult(CHECK_APPROVAL, Status.PASS, f"approved by {doc['approver']}")
+    return CheckResult(
+        CHECK_APPROVAL,
+        Status.PASS,
+        f"approved by {doc['approver']} ({kind.kind.value})",
+        {
+            "approver_kind": kind.kind.value,
+            "approval_ref_fingerprint": _sha256(kind.reference)[:16],
+            **({"delegated_by": kind.delegated_by} if kind.delegated_by else {}),
+        },
+    )
+
+
+def _approval_kind(doc: Mapping[str, Any]) -> ApprovalReference | CheckResult:
+    """承認記録が種別を述べているか、委任が所有者専用の関門を開けていないか（ADR-0080）。"""
+    try:
+        ref = parse_approval_reference(doc.get("approval_ref"))
+    except ApprovalError as exc:
+        return _unknown(CHECK_APPROVAL, f"approval record does not state a valid kind: {exc}")
+    declared = doc.get("approver_kind")
+    if declared is not None and declared != ref.kind.value:
+        return _unknown(CHECK_APPROVAL, "approver_kind contradicts the kind stated by approval_ref")
+    enables = doc.get("enables", [])
+    if not isinstance(enables, list) or not all(isinstance(g, str) for g in enables):
+        return _unknown(CHECK_APPROVAL, "enables must be a list of owner-gate names")
+    gates: list[OwnerGate] = []
+    for name in enables:
+        try:
+            gates.append(OwnerGate(name))
+        except ValueError:
+            return _unknown(CHECK_APPROVAL, f"enables names an unknown owner gate: {name!r}")
+    for gate in gates:
+        try:
+            require_gate_allowed(ref, gate)
+        except ApprovalError:
+            return CheckResult(
+                CHECK_APPROVAL,
+                Status.BLOCKED,
+                f"{gate.value} needs the owner's own approval; this one is {ref.kind.value}",
+            )
+    return ref
 
 
 # ---- deploy 後

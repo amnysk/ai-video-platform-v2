@@ -97,6 +97,8 @@ def _approval(
     doc: dict[str, Any] = {
         "sha": sha,
         "approver": "owner",
+        # ADR-0080: 承認の種別を述べる参照が必須（所有者本人の承認）
+        "approval_ref": "OWNER-20261029-chatmsg01",
         "approved_at": at.isoformat(),
         "report_sha256": sha256_text(_reviewed_report() if report is None else report),
     }

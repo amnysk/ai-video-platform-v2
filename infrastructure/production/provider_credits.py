@@ -35,6 +35,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from contracts.approval import ApproverKind
 from contracts.pipeline import PipelineStage
 from contracts.provider_health import (
     HELD_EPISODE_STATUSES,
@@ -44,9 +45,15 @@ from contracts.provider_health import (
     ProviderFamily,
 )
 from contracts.states import EpisodeStatus, ProviderCall, ReservationStatus
+from domain.approval import (
+    ApprovalError,
+    OwnerGate,
+    format_approver,
+    parse_approval_reference,
+    require_gate_allowed,
+)
 from domain.budget_gate import month_start_utc
 from domain.pipeline.resume_plan import ReservationSummary, build_resume_plan
-from domain.provider.reconciliation import is_owner_approval_reference
 from infrastructure.db.models import EpisodeRow, ProviderReservationRow
 from infrastructure.db.provider_health_repositories import PostgresProviderHealth
 from infrastructure.db.repositories import (
@@ -71,6 +78,7 @@ class CreditsRefused(Exception):
 @dataclass(frozen=True, slots=True)
 class Approval:
     fingerprint: str
+    #: 種別つきで保存する値 ``owner:<name>``（ADR-0080。既存の approved_by 列にそのまま入る）
     actor: str
     evidence: str
 
@@ -80,10 +88,16 @@ def validate_approval(*, owner_approval: str, evidence: str, actor: str) -> Appr
     token = owner_approval.strip()
     if not token:
         raise CreditsRefused("--owner-approval is required (OWNER-<yyyymmdd>-<id>)")
-    if not is_owner_approval_reference(token):
-        raise CreditsRefused(
-            "--owner-approval must be an owner approval reference like OWNER-<yyyymmdd>-<id>"
+    try:
+        # 保留の解放・再開は新しい課金を生む: 所有者本人の承認だけ（委任は通さない / ADR-0080）
+        require_gate_allowed(
+            parse_approval_reference(token), OwnerGate.RELEASE_PROVIDER_CREDIT_HOLD
         )
+    except ApprovalError as exc:
+        raise CreditsRefused(
+            f"--owner-approval must be the owner's own approval reference "
+            f"OWNER-<yyyymmdd>-<id> ({exc})"
+        ) from None
     if not evidence.strip():
         raise CreditsRefused(
             "--evidence is required: the owner's confirmation that the provider balance is "
@@ -92,7 +106,11 @@ def validate_approval(*, owner_approval: str, evidence: str, actor: str) -> Appr
     if not actor.strip():
         raise CreditsRefused("--actor is required")
     fingerprint = hashlib.sha256(token.encode()).hexdigest()[:16]
-    return Approval(fingerprint, actor.strip(), evidence.strip())
+    try:
+        stored_actor = format_approver(ApproverKind.OWNER, actor)
+    except ApprovalError as exc:
+        raise CreditsRefused(f"--actor is invalid: {exc}") from None
+    return Approval(fingerprint, stored_actor, evidence.strip())
 
 
 @dataclass(frozen=True, slots=True)

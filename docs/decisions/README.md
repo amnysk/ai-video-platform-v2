@@ -89,3 +89,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0077](./0077-bgm-render-wiring.md) | BGM の Render 結線（1 つの設定キーの背後・既定 OFF・ffmpeg で混合） | Proposed |
 | [0078](./0078-historical-map-accuracy-gate-and-deterministic-render.md) | 歴史地図の正確さの関門（理由コード・BLOCK 引き上げ）と決定論的な地図描画（既定 OFF・未接続） | Accepted |
 | [0079](./0079-integration-tests-must-prove-isolation-from-production.md) | integration テストは本番スタックから隔離されていると積極的に宣言できるときだけ走る（宣言・接続先規則・Temporal の動的検査・直書き禁止） | Accepted |
+| [0080](./0080-approver-kind-and-api-authentication.md) | 承認の種別（所有者本人 / エージェントへの委任）の明示と所有者専用の関門、API 変更系ルートの認証 | Accepted |

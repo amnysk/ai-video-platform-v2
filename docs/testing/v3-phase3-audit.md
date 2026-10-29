@@ -47,3 +47,40 @@ PostgreSQL / MinIO は同じホストの同じ番号で公開されており、`
 - `test_the_detector_catches_the_original_incident`: 検出器が今回の一行（`TEMPORAL_ADDRESS = "localhost:7233"`）を
   実際に捕まえる（何も検出しない正規表現で緑になる事故を防ぐ）。内部名 `temporal:7233` は捕まえない。
 - `test_integration_conftest_asserts_isolation_before_anything_else`: guard が他の guard より前（収集時）にある。
+
+## 2. 承認の種別（ADR-0080 §A / INV-123）
+
+事故の型: Phase 2 のデプロイで、所有者の条件付き指示を根拠にエージェントが release 承認ファイルを書いた。記録上は
+所有者本人の承認と区別できない（`approver` が自由文字列）。同型の記録が breaker・予約の手動確定・保留解放にもある。
+
+### tests/unit/test_approval_kind.py
+純粋関数（`domain/approval.py`）なので単体。DB・ファイルに触れずに全分岐を網羅できる。
+- `test_an_owner_reference_is_owner_kind` / `test_a_delegated_reference_names_the_owner_instruction_it_relies_on`: 種別が
+  接頭辞から決まり、委任は委任元の所有者の指示を返す。
+- `test_anything_that_does_not_state_a_valid_kind_is_not_an_approval`: 空・種別なし・実在しない日付・短い id・小文字・
+  委任元なし・委任元がエージェント・所有者承認に委任元を付ける・二重の委任元・末尾の改行を拒否。「種別を書かない記録は
+  所有者承認ではない」を fail closed で固定する。
+- `test_the_owner_only_gates_are_the_ones_that_spend_or_publish`: 所有者専用の関門の集合を固定（黙って減らす・
+  委任可へ移すのを検出）。`test_an_agent_delegated_approval_never_satisfies_an_owner_gate`: 全関門で委任は拒否、
+  所有者本人は通る。`test_a_missing_reference_never_satisfies_an_owner_gate`: 参照なしも拒否。
+- `test_the_stored_actor_states_its_kind_and_a_legacy_value_does_not` / `test_an_actor_name_cannot_forge_a_kind`:
+  DB を変えずに既存列へ `<kind>:<name>` で保存する方式の読み書き。旧い値（`owner` など）が所有者承認と読まれない
+  こと、名前に `owner:` を仕込んで偽装できないこと。
+
+### tests/unit/test_release_approval_kind.py
+実際の判定点（release preflight・CLI の検証）に規則が結線されていることを固定する。結線の抜け（規則だけ在って
+どこも使わない）を検出するため、純関数テストとは別に置く。
+- `test_an_owner_approval_passes_and_says_so` / `test_a_delegated_approval_passes_a_flags_off_deploy_...`: Phase 2 の
+  正当な委任デプロイは通り、結果に `approver_kind` / `delegated_by` が残る（後から監査で区別できる）。
+- `test_a_record_that_does_not_state_its_kind_...` / `test_a_record_without_any_approval_ref_key_is_unknown`:
+  旧書式の承認ファイルは UNKNOWN（デプロイを止める）。
+- `test_an_explicit_kind_that_contradicts_the_reference_is_rejected`: 種別を二重に書いて食い違う記録を拒否。
+- `test_a_delegated_approval_cannot_enable_an_owner_gate`（5 関門）/ `test_an_unknown_gate_name_in_enables_...`:
+  委任で所有者専用の関門を開く宣言は BLOCKED、未知の名前は UNKNOWN。
+- `test_the_release_reservation_waiver_stays_owner_only` / `test_provider_credit_actions_accept_only_the_owners_own_reference`
+  / `test_manual_reservation_resolution_accepts_only_the_owners_own_reference`: waiver・provider 資金操作・予約の手動確定が
+  委任を拒否し、保存される actor が `owner:<name>`、`reconciled_by` の既存の形（`operator:<name>`）は変わらない。
+- 既存テストの変更 2 点（仕様変更が ADR-0080 で先に承認済み。理由はコミットメッセージにも書く）:
+  `tests/unit/test_release_preflight.py::_approval` に `approval_ref` を足した（承認記録の必須項目が増えたため）、
+  `tests/unit/test_reconcile_reservations_script.py::test_audit_row_never_stores_the_raw_token` の `row.actor` の期待を
+  `me` → `owner:me`（actor 列が種別つきになったため）。

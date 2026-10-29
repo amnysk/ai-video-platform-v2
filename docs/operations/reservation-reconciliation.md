@@ -8,6 +8,7 @@ python scripts/reconcile-reservations.py resolve --reservation-id ID --outcome s
 # 書くときだけ --apply（監査行を追記し、resolve は台帳を spent / abandoned にする）
 ```
 
+- **所有者本人の承認だけ**（ADR-0080）: エージェントが条件付きの指示で書く `AGENT-…:OWNER-…` は拒否される。監査行の `actor` は `owner:<name>` で保存される。
 - `--owner-approval` は承認の参照番号 `OWNER-<yyyymmdd>-<id>`（実在する日付、id は英数字・`_`・`-` の
   6〜64 文字。例 `OWNER-20261021-TICKET42`）。**形式検査であって認証ではない**（誰でも書ける。承認の
   出所を後から辿るための参照を残させるだけ）。DB・ログには sha256 先頭16桁の指紋だけが残る。

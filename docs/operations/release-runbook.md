@@ -44,7 +44,12 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
    ```
 
    `release/approvals/<sha>.json`:
-   `{"sha": "<sha>", "approver": "<name>", "approved_at": "<ISO8601 with TZ>", "report_sha256": "<上の値>"}`
+   `{"sha": "<sha>", "approver": "<name>", "approval_ref": "<種別つきの参照>", "approved_at": "<ISO8601 with TZ>", "report_sha256": "<上の値>"}`
+   （**承認の種別を必ず述べる**（ADR-0080 / INV-123）。`approval_ref` は所有者本人がこの操作を承認したなら
+   `OWNER-<yyyymmdd>-<id>`、エージェントが所有者の条件付き指示の下で承認したなら
+   `AGENT-<yyyymmdd>-<id>:OWNER-<yyyymmdd>-<id>`（後ろが委任元の指示）。書かない・形が違うと UNKNOWN。
+   委任された承認は新 flag を ON にする・fal 予算を上げる・public/unlisted 投稿などの所有者専用の関門を開けない:
+   承認記録の任意キー `enables` にそれらの名前を書くと、委任では BLOCKED）
    （**承認は SHA 単位**。別 SHA・未来日付・72 時間超・出力の差し替えは BLOCKED。`report_sha256` が無いと UNKNOWN）
 6. 承認を付けて再実行する。これが deploy の可否の判定:
 
