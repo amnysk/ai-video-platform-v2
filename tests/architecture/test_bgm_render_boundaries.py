@@ -80,11 +80,13 @@ def test_the_setting_key_is_read_only_where_the_worker_is_assembled() -> None:
         for p in (REPO / layer).rglob("*.py")
         if "bgm_enabled" in p.read_text(encoding="utf-8")
     )
-    # 定義（Settings）・キー名の唯一の定義（contracts）・worker 組み立ての読み手 1 箇所
+    # 定義（Settings）・キー名の唯一の定義（contracts）・worker 組み立ての読み手（render と upload）
     assert readers == [
         "contracts/music_render.py",
         "infrastructure/config.py",
         "workers/render/run_worker.py",
+        # ADR-0086 §7: BGM ON で説明欄の構成 OFF なら起動しない（クレジット欠落の防止）
+        "workers/upload/run_worker.py",
     ]
 
 

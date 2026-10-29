@@ -152,6 +152,9 @@ LICENSE の両方で返す。使っているなら、証跡が今の動画のも
 
 ## Consequences
 
+**有効化の追加条件（ADR-0086 §7）**: `BGM_ENABLED` は `AVP_UPLOAD_DESCRIPTION_COMPOSED` が ON でなければ render / upload worker が起動しない
+（クレジットの欠落を防ぐ）。
+
 良い結果:
 - 曲の登録（重複排除・変造検知）・選曲・配置・実測・検査が揃い、`BGM_ENABLED` を ON にしたとき cue sheet を作る関数がある
 - scene をまたいで曲が途切れず、silent の scene は無音。役割で山場が持ち上がる

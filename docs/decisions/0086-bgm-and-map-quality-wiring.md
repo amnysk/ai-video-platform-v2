@@ -81,13 +81,22 @@ API プロセスも同じ `build_quality_service` を使う。API からカタ�
 `credit_lines` も**読まない**（MinIO へ触れない。従来と同一）。ON で BGM が無い動画は 1 回の読み取り（無ければ `()`）。
 証跡があるのに読めない場合は例外: upload は進まず（再試行）、lint は記録されず REVIEW。
 
-### 6. migration 0019 の追記専用を DELETE / TRUNCATE まで広げる（INV-126 の補足）
+### 6. migration 0019 の追記専用を DELETE まで広げる（INV-126 の補足）
 
-0019 は未適用なので編集する（追加の migration にしない）。4 表に DELETE / TRUNCATE 拒否のトリガを足し、episode への外部キーは
+0019 は未適用なので編集する（追加の migration にしない）。4 表に DELETE 拒否のトリガを足し、episode への外部キーは
 `ON DELETE RESTRICT` にする（episode を削除するコードは無い。CASCADE のままでも DELETE 拒否のトリガに当たるので、意図を FK に
 書く）。承認 → 報告の複合 FK に `episode_id` を含め、別 episode の報告を承認できない。downgrade は行が無ければ従来どおり
-戻せる（トリガを外してから表を落とす）。release 走査器は TRUNCATE の語を破壊的と数えるので、ADR-0081（Accepted・0019 に言及）の
-marker で承認する（拒否する側のトリガを作る文であり、データには触れない）。
+戻せる（トリガを外してから表を落とす）。
+
+**TRUNCATE の拒否は 0019 に入れない**（0020 に分ける。計画と残余リスクは ADR-0081 の追補）。release 走査器は
+`TRUNCATE` の語を破壊的と数え、marker の承認 ADR を**本番に載っている revision**から読むので、同じ release で出す ADR-0081 は
+効かず `migration_compat` が BLOCKED になる（再レビュー R1）。走査器は弱めない。
+
+### 7. BGM を有効にするなら説明欄の構成も有効でなければ起動しない（INV-148）
+
+`BGM_ENABLED` が ON で `AVP_UPLOAD_DESCRIPTION_COMPOSED` が OFF だと、`build_upload_metadata` は credits を使わず、
+帰属が必要な曲が**クレジット無しで公開されうる**（再レビュー R2）。render worker と upload worker は起動時に
+`require_description_composition_for_bgm` で止まる（地図の `require_quality_gate` と同じ起動時ガード。flag は各 run_worker が読む）。
 
 ## 設定キーの grep（AGENTS.md §8）
 
@@ -127,5 +136,5 @@ marker で承認する（拒否する側のトリガを作る文であり、デ�
 ## ON にする条件の更新（所有者の判断。本 ADR は判断しない）
 
 `AVP_QUALITY_GATE_ENFORCE` の条件 3（render が宣言を書く）が、本 ADR で満たされる。`BGM_ENABLED` / `GEO_MAPS_ENABLED` を ON に
-する前に: ENFORCE が ON であること（地図は起動時に強制。BGM は本 ADR 以降 ON を推奨）、worker と API が同じ
+する前に: ENFORCE が ON であること（地図は起動時に強制。BGM は本 ADR 以降 ON を推奨）、`AVP_UPLOAD_DESCRIPTION_COMPOSED` が ON であること（BGM は起動時に強制。§7）、worker と API が同じ
 `AI_VIDEO_WORK_ROOT` のカタログを読めること、実素材での閾値再校正。

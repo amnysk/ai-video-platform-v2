@@ -190,6 +190,20 @@ migration の語彙 literal（凍結値）と契約の enum の一致は `tests/
 - downgrade は行が残っていれば拒否する（監査記録を黙って消さない / ADR-0057 と同じ）。
 - 新しい INV-126〜132、機械検査は `docs/invariants.md`。テストの理由は `docs/testing/v3-phase3-quality.md`。
 
+## 追補: TRUNCATE の拒否は 0020 に分ける（再レビュー R1）
+
+0019 は DELETE / UPDATE を拒否するトリガまで。`BEFORE TRUNCATE` のトリガは release 走査器が `TRUNCATE` の語で破壊的と数え、
+marker（`# contract-migration: approved ADR-NNNN`）の承認 ADR を**デプロイ済みの revision**から読むため、同じ release で
+初めて載る ADR-0081 では承認にならない。走査器は弱めない。よって:
+
+- **0020**（TRUNCATE 拒否のトリガ 4 つ）を、ADR-0081 が本番の revision に載った**後**の release で出す。そのとき marker
+  `approved ADR-0081` が効く。
+- **残余リスク**: 0020 が入るまで TRUNCATE で記録を消せる。現状のアプリ接続は `DATABASE_URL` の `avp`（compose.yaml）で、
+  ADR-0055 Part 2 のとおり `avp` は superuser のまま・ロール分離（DML のみの `avp_app`）は**設計のみで未適用**。
+  superuser は権限検査を迂回するので、新しい表にも TRUNCATE の権限がある（確認は文書と compose の読み取りだけ。
+  本番 DB へは接続していない）。`avp_app` へ移した後は、DML の GRANT に TRUNCATE を含めない限り TRUNCATE は拒否される。
+  どちらも未適用の間、TRUNCATE への防壁はアプリが TRUNCATE を発行しないこと（コード上 0 箇所）だけ。
+
 ## ON にする条件（所有者の判断。本 ADR は判断しない）
 
 1. migration 0019 が本番に適用済み（expand-only。適用だけでは何も変わらない）。
