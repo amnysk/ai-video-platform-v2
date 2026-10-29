@@ -11,7 +11,7 @@ from contracts.approval import ApproverKind
 from contracts.quality import QualityReason
 from domain.quality.approval import UploadApprover, review_release_refusal
 from infrastructure.config import Settings
-from infrastructure.quality.wiring import build_quality_producers, build_quality_service
+from infrastructure.quality.wiring import build_quality_service
 
 
 def test_only_a_well_formed_owner_can_release_a_review() -> None:
@@ -64,8 +64,3 @@ def test_with_the_flag_on_a_service_is_built_from_the_one_wiring_function(
     )
     settings = Settings(_env_file=None, **{QUALITY_GATE_ENFORCE_ENV: True})  # type: ignore[arg-type]
     assert build_quality_service(settings, object()) is not None  # type: ignore[arg-type]
-
-
-def test_no_branch_producers_are_registered_yet() -> None:
-    """BGM / 地図の枝が統合時にここへ足す（ADR-0081 §7）。足されるまで必須欠落 = REVIEW。"""
-    assert build_quality_producers() == ()

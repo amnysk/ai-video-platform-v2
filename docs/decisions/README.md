@@ -94,3 +94,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0083](./0083-bgm-catalog-placement-and-intelligibility.md) | BGM の承認済みカタログ・scene への配置・ナレーション優先の実測・品質検査（`BGM_ENABLED` の背後・migration なし） | Proposed |
 | [0084](./0084-historical-map-wiring.md) | 歴史地図の結線（依頼 → 検証 → 決定論の描画 → Production の事前検査 → Render の差し替え・hash で結んだ証跡。既定 OFF・workflow 変更なし） | Proposed |
 | [0085](./0085-ai-quality-review-model-policy-and-escalation.md) | AI 品質レビューは Agent Runtime の LLM port と ModelPolicy を再利用し、決定論の判定を最後の安全装置にする（設計のみ・既定 OFF） | Proposed |
+| [0086](./0086-bgm-and-map-quality-wiring.md) | BGM・地図の品質検査を記録つきゲートへ結線する（使用宣言・証跡の結び付け・発話余裕の実測・クレジット。新しい flag なし・migration なし） | Proposed |

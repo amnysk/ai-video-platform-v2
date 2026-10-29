@@ -121,6 +121,7 @@ from infrastructure.db.repositories import (
     ProviderReservationRepository,
 )
 from infrastructure.logging.emit import emit, log_guard
+from infrastructure.music.credits import BgmCreditSource
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
 from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.temporal.run_inspector import WorkflowRunInspector
@@ -251,6 +252,7 @@ class UploadActivities:
         run_inspector: WorkflowRunInspector | None = None,
         heartbeat: HeartbeatFn = _activity_heartbeat,
         sleep: SleepFn = asyncio.sleep,
+        credit_source: BgmCreditSource | None = None,
     ) -> None:
         if chunk_bytes <= 0:
             raise ValueError("chunk_bytes must be positive")
@@ -271,6 +273,8 @@ class UploadActivities:
         self._run_inspector = run_inspector
         self._heartbeat = heartbeat
         self._sleep = sleep
+        #: gate の説明欄 lint と同じ BGM クレジットの読み口（ADR-0086 §5）。None なら ``credits=()``
+        self._credit_source = credit_source
         #: 認証中チャンネルの照合は worker（インスタンス）ごとに1回
         self._channel_verified = False
 
@@ -442,7 +446,14 @@ class UploadActivities:
         )
         script = await self._source_script(episode_id, final)
         # gate（品質検査）と同じ組み立て口。flag OFF では従来の呼び出しと同じ結果（ADR-0081 §5）
-        metadata = build_upload_metadata(upload_key=upload_key, script=script)
+        credits = (
+            await self._credit_source.credit_lines(
+                episode_id, final_video_sha256=final.meta.sha256, media_sha256=media.sha256
+            )
+            if self._credit_source is not None
+            else ()
+        )
+        metadata = build_upload_metadata(upload_key=upload_key, script=script, credits=credits)
         self._heartbeat("inputs_resolved")
 
         latest = await self._latest_reservation(episode_id, upload_key)

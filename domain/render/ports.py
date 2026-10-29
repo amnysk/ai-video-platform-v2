@@ -10,6 +10,7 @@ from typing import Protocol, runtime_checkable
 from contracts.music import BgmTrack, MusicCueSheet
 from contracts.music_render import BgmMixPlan, LoudnessMeasurement
 from contracts.render import RenderEngineIdentity, RenderPlan
+from domain.music.intelligibility import SceneSpeechLevels
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +105,18 @@ class LoudnessProbe(Protocol):
     """
 
     def measure_loudness(self, path: str) -> LoudnessMeasurement: ...
+
+
+@runtime_checkable
+class SpeechMarginProbe(Protocol):
+    """発話中の声と BGM のラウドネスを scene ごとに実測する（同期。ADR-0083 §5 / ADR-0086 §3）。
+
+    実測できなければ ``RenderEngineFailedError``。値を推測して返さない。
+    """
+
+    def measure(
+        self, plan: RenderPlan, bgm: BgmRenderInput, voice_paths: Mapping[str, Path]
+    ) -> tuple[SceneSpeechLevels, ...]: ...
 
 
 class BgmSourceError(Exception):

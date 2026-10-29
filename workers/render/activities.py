@@ -13,7 +13,7 @@ import errno
 import logging
 import os
 import shutil
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,7 +36,11 @@ from contracts.artifacts import (
     parse_storyboard_artifact,
 )
 from contracts.log_contract import EventName, LogStage, Outcome
-from contracts.music_render import BgmEvidenceTrack, BgmRenderEvidence
+from contracts.music_render import (
+    BgmEvidenceTrack,
+    BgmRenderEvidence,
+    SpeechIntelligibility,
+)
 from contracts.render import (
     FINAL_VIDEO_MIME_TYPE,
     RENDER_ARTIFACT_SCHEMA_VERSION,
@@ -79,6 +83,7 @@ from domain.errors import (
     FinalVideoCorruptError,
     FinalVideoValidationError,
     MediaValidationError,
+    RenderEngineFailedError,
     RenderEngineUnavailableError,
     RenderInputIntegrityError,
     RenderInputMissingError,
@@ -89,8 +94,10 @@ from domain.errors import (
     classify_failure,
 )
 from domain.job.transitions import JobEvent, episode_event_for_failure, job_event_for_failure
+from domain.music.intelligibility import evaluate_speech_intelligibility
 from domain.production.manifest import ArtifactRef
 from domain.production.media import MediaProbe
+from domain.quality.records import QualityRecordWriter
 from domain.render.bgm import BgmResolution, BgmSkipReason, resolve_bgm, skipped_for
 from domain.render.identity import render_input_hash, render_plan_sha256
 from domain.render.loudness import evaluate_loudness, loudness_check
@@ -104,6 +111,7 @@ from domain.render.ports import (
     LoudnessProbe,
     RenderEngine,
     RenderRequest,
+    SpeechMarginProbe,
 )
 from domain.render.qa import (
     CHECK_MEDIA_READBACK,
@@ -127,7 +135,9 @@ from infrastructure.geo.service import (
     refusal_summary,
 )
 from infrastructure.logging.emit import emit, log_guard
+from infrastructure.music.evidence import bgm_evidence_key, evidence_digest
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
+from infrastructure.quality.usage import declare_render_usage
 from infrastructure.render.binary import file_sha256
 from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.workdir import JobWorkDir, WorkDirectory
@@ -151,8 +161,6 @@ WORKFLOW_OWNED_JOB_TYPES = frozenset({JobType.RENDER_FINAL_VIDEO})
 #: 入力量から見積もる作業領域の使用量の倍率（ADR-0019 §10）。
 WORKSPACE_ESTIMATE_FACTOR = 4
 FINAL_VIDEO_FILENAME = "final.mp4"
-#: BGM の使用証跡の object key に使う種別名（ArtifactType ではない。行は作らない。ADR-0077 §6）
-BGM_EVIDENCE_OBJECT_TYPE = "bgm_render_evidence"
 
 DiskUsage = Callable[[str], Any]
 HeartbeatFn = Callable[..., None]
@@ -250,6 +258,8 @@ class RenderActivities:
         bgm_source: BgmSource | None = None,
         loudness_probe: LoudnessProbe | None = None,
         geo: GeoRenderService | None = None,
+        speech_probe: SpeechMarginProbe | None = None,
+        quality_writer: QualityRecordWriter | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
@@ -276,6 +286,10 @@ class RenderActivities:
         self._loudness_probe = loudness_probe
         #: 地図の結線（ADR-0084）。None（``GEO_MAPS_ENABLED`` が OFF）なら導入前と同一
         self._geo = geo
+        #: 発話中の声と BGM の差の実測（ADR-0086 §3）。None なら測らない（品質検査は REVIEW）
+        self._speech_probe = speech_probe
+        #: 使用宣言の書き込み口（``AVP_QUALITY_GATE_ENFORCE`` が ON のときだけ。ADR-0086 §2）
+        self._quality_writer = quality_writer
         self._clock = clock
 
     def state_activities(self) -> Sequence[Callable[..., object]]:
@@ -473,8 +487,17 @@ class RenderActivities:
                 heartbeat=lambda: self._heartbeat("rendering"),
             )
             self._heartbeat("rendered")
+            speech = await self._measure_speech(episode_id, plan, bgm, bgm_data, voice_paths)
             result = await self._store_final(
-                request, job_id, inputs, plan, input_hash, rendered.path, bgm=bgm, geo=geo_plan
+                request,
+                job_id,
+                inputs,
+                plan,
+                input_hash,
+                rendered.path,
+                bgm=bgm,
+                geo=geo_plan,
+                speech=speech,
             )
         except asyncio.CancelledError:
             self._cleanup(episode_id, job_id, attempt)
@@ -521,6 +544,7 @@ class RenderActivities:
         path: Path,
         bgm: BgmResolution | None = None,
         geo: GeoPlan | None = None,
+        speech: SpeechIntelligibility | None = None,
     ) -> RenderFinalVideoResult:
         episode_id = request.episode_id
         try:
@@ -626,12 +650,18 @@ class RenderActivities:
                 f"final_video readback sha256 mismatch at {stored.key}: expected={digest} "
                 f"put={stored.sha256} readback={readback}"
             )
+        bgm_ref: str | None = None
+        map_ref: str | None = None
         if bgm is not None and bgm.applied and loudness_verdict is not None:
             # 証跡は final_video の行を記録する前に保存する（証跡の無い BGM 入り動画を作らない）
-            await self._store_bgm_evidence(episode_id, input_hash, media_sha, bgm, loudness_verdict)
+            bgm_ref = await self._store_bgm_evidence(
+                episode_id, input_hash, media_sha, bgm, loudness_verdict, speech
+            )
         if geo is not None:
             # 地図の証跡も final_video の行より前に保存する（証跡の無い動画を作らない。INV-141）
-            await self._store_geo_evidence(episode_id, geo, media_sha, input_hash)
+            geo_digest = await self._store_geo_evidence(episode_id, geo, media_sha, input_hash)
+            # 地図の指定があれば（拒否された地図を含む）「使う」と宣言し、gate に検査させる
+            map_ref = geo_digest if geo.prepared else None
         async with self._session_factory() as session:
             meta = await ArtifactMetadataRepository(session).record(
                 episode_id=episode_id,
@@ -653,6 +683,17 @@ class RenderActivities:
             meta.version,
             size,
         )
+        if self._quality_writer is not None:
+            # final_video の行を記録した後に宣言する。失敗は非致命（宣言が無ければ gate は REVIEW）
+            await declare_render_usage(
+                self._quality_writer,
+                episode_id=episode_id,
+                final_video_sha256=meta.sha256,
+                input_hash=input_hash,
+                bgm_evidence_ref=bgm_ref,
+                map_evidence_ref=map_ref,
+                declared_at=self._clock(),
+            )
         return _result(meta, skipped=False, job_id=job_id)
 
     async def _store_bgm_evidence(
@@ -662,7 +703,8 @@ class RenderActivities:
         media_sha: str,
         bgm: BgmResolution,
         verdict: Any,
-    ) -> None:
+        speech: SpeechIntelligibility | None = None,
+    ) -> str:
         evidence = BgmRenderEvidence(
             episode_id=episode_id,
             input_hash=input_hash,
@@ -671,18 +713,48 @@ class RenderActivities:
             tracks=tuple(BgmEvidenceTrack.model_validate(t.model_dump()) for t in bgm.tracks),
             credit_lines=bgm.credit_lines,
             loudness=verdict,
+            speech=speech,
         )
         payload = evidence.model_dump(mode="json")
-        digest = sha256_hex(canonical_json_bytes(payload))
-        key = artifact_object_key(episode_id, BGM_EVIDENCE_OBJECT_TYPE, digest)
+        digest = evidence_digest(payload)
+        key = bgm_evidence_key(episode_id, media_sha, input_hash)
         stored = await self._store.put_json(key, payload)
         readback = sha256_hex(canonical_json_bytes(await self._store.get_json(stored.key)))
         if stored.sha256 != digest or readback != digest:
             raise FinalVideoCorruptError(f"bgm evidence readback sha256 mismatch at {stored.key}")
+        return digest
+
+    async def _measure_speech(
+        self,
+        episode_id: str,
+        plan: RenderPlan,
+        bgm: BgmResolution | None,
+        bgm_data: BgmSourceData | None,
+        voice_paths: Mapping[str, Path],
+    ) -> SpeechIntelligibility | None:
+        """BGM 入りのときだけ、発話中の声と BGM の差を実測する（ADR-0086 §3）。
+
+        測れない場合は ``None``（証跡に「未測定」を残し、品質検査は REVIEW）。描画は止めない。
+        BGM 無し・測定器無しは測らない（導入前と同一）。
+        """
+        bgm_input = _bgm_input(bgm, bgm_data)
+        if self._speech_probe is None or bgm_input is None:
+            return None
+        probe = self._speech_probe
+        try:
+            levels = await self._beating(
+                "speech_margin", asyncio.to_thread(probe.measure, plan, bgm_input, voice_paths)
+            )
+            return evaluate_speech_intelligibility(levels)
+        except (RenderEngineFailedError, OSError, ValueError) as exc:
+            logger.warning(
+                "bgm speech margin not measured episode=%s error=%s", episode_id, type(exc).__name__
+            )
+            return None
 
     async def _store_geo_evidence(
         self, episode_id: str, geo: GeoPlan, media_sha: str, input_hash: str
-    ) -> None:
+    ) -> str:
         payload = geo.evidence(media_sha, input_hash).model_dump(mode="json")
         key = geo_evidence_key(episode_id, media_sha, input_hash)
         stored = await self._store.put_json(key, payload)
@@ -698,6 +770,7 @@ class RenderActivities:
                 verdict,
                 codes,
             )
+        return stored.sha256
 
     async def _resolve_geo(
         self, episode_id: str, plan: RenderPlan, inputs: _Inputs
