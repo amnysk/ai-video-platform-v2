@@ -38,22 +38,11 @@ def _upgrade_source() -> str:
     return ast.unparse(node)
 
 
-def test_release_preflight_scanner_finds_only_the_truncate_guard_triggers_in_0019() -> None:
-    """走査器は TRUNCATE の語を破壊的と数える。該当は「TRUNCATE を拒否するトリガ」の作成文だけで、
-    ADR-0081（Accepted・0019 に言及）の marker で承認されている。他の文は 1 つも拾われない。"""
+def test_release_preflight_scanner_finds_nothing_in_0019() -> None:
+    """0019 は素の expand-only として走査を通る（走査器は弱めない。marker に頼らない）。"""
     text = MIGRATION.read_text(encoding="utf-8")
-    findings = rp.scan_migration(text)
-    assert {f.kind for f in findings} <= {"destructive"}
-    lines = text.splitlines()
-    for f in findings:
-        number = int(f.text.rsplit("line ", 1)[1].rstrip(")"))
-        statement = " ".join(lines[number - 1 : number + 2])
-        assert "BEFORE TRUNCATE ON" in statement, f
-    assert rp.contract_marker_numbers(text) == ["0081"]
-    adr = (REPO / "docs/decisions/0081-quality-check-records-and-required-set.md").read_text(
-        encoding="utf-8"
-    )
-    assert rp.adr_approves_migration(adr, "0019")
+    assert rp.scan_migration(text) == []
+    assert rp.contract_marker_numbers(text) == []
 
 
 def test_0019_follows_0018_and_upgrade_only_adds() -> None:
@@ -104,17 +93,16 @@ def test_every_table_gets_the_append_only_guard() -> None:
         assert re.search(rf"BEFORE UPDATE ON {table} ", text) or f"BEFORE UPDATE ON {table}" in text
 
 
-def test_every_table_rejects_delete_and_truncate_too() -> None:
-    """追記専用は UPDATE だけでなく DELETE / TRUNCATE も拒否する（ADR-0086 §6 / INV-126）。"""
+def test_every_table_rejects_delete_and_0019_has_no_truncate_guard_yet() -> None:
+    """DELETE は拒否する。TRUNCATE の拒否は 0020 に分ける（ADR-0081。走査器を通すため）。"""
     module = _load()
     source = MIGRATION.read_text(encoding="utf-8")
     flat = re.sub(r'"\s*\n\s*"', "", source)
     for table in NEW_TABLES:
         assert f"CREATE TRIGGER {table}_no_delete BEFORE DELETE ON {table} " in flat, table
-        assert f"CREATE TRIGGER {table}_no_truncate BEFORE TRUNCATE ON {table} " in flat, table
-    # downgrade は同じトリガを外す（空の表なら戻せる）
+    assert "BEFORE TRUNCATE" not in flat
     downgrade = source.split("def downgrade", 1)[1]
-    assert "_no_delete" in downgrade and "_no_truncate" in downgrade
+    assert "_no_delete" in downgrade and "_no_truncate" not in downgrade
     assert set(module.TABLES) == NEW_TABLES
 
 

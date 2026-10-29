@@ -20,13 +20,18 @@ from temporalio.worker import Worker
 
 from contracts.operations import OperationalSwitch
 from contracts.states import UPLOAD_MEDIA_TASK_QUEUE, UPLOAD_TASK_QUEUE
-from contracts.upload import DEFAULT_UPLOAD_CONCURRENCY, YOUTUBE_CHANNEL_ID_PATTERN
+from contracts.upload import (
+    DEFAULT_UPLOAD_CONCURRENCY,
+    YOUTUBE_CHANNEL_ID_PATTERN,
+    description_composition_enabled,
+)
 from domain.upload.ports import VideoUploader
 from infrastructure.config import Settings
 from infrastructure.db.repositories import OperationalSwitchRepository
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.music.credits import BgmCreditSource
+from infrastructure.music.guard import require_description_composition_for_bgm
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
@@ -145,6 +150,9 @@ def build_workers(client: Client, activities: UploadActivities) -> tuple[Worker,
 async def main() -> None:
     settings = Settings()
     channel_id = require_channel_id(settings)
+    require_description_composition_for_bgm(
+        bgm_on=settings.bgm_enabled, composition_enabled=description_composition_enabled()
+    )
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as http:
         uploader = build_uploader(settings, http)
         await verify_channel(uploader, channel_id)

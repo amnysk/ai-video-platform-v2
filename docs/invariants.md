@@ -1661,15 +1661,22 @@ ON では BGM（`applied` なら used・証跡の sha256、それ以外は not u
 ### INV-148 gate が lint する説明欄と upload が送る説明欄は、BGM クレジットを含めて同一の読み口から作られる
 両方が `BgmCreditSource.credit_lines` の結果を `build_upload_metadata(credits=...)` に渡す。説明欄の構成 flag が OFF なら
 読まない（従来と同一）。BGM が無ければ `()`、証跡があるのに読めなければ例外（黙って落とさない）。
+**追補（再レビュー R2）**: `BGM_ENABLED` が ON で説明欄の構成 flag が OFF だとクレジットが黙って落ちるので、render worker と
+upload worker はその組み合わせで**起動しない**（`require_description_composition_for_bgm`）。
 **機械検査**: `tests/unit/test_quality_wiring_gate.py::test_the_linted_description_equals_the_uploaded_one`
 / `tests/unit/test_quality_wiring_gate.py::test_credit_lines_are_not_read_while_the_description_flag_is_off`
 / `tests/unit/test_quality_wiring_gate.py::test_credit_lines_come_from_the_evidence_when_the_flag_is_on`
 / `tests/unit/test_quality_wiring_gate.py::test_an_unreadable_evidence_is_an_error_not_an_empty_credit`
+/ `tests/unit/test_bgm_credit_startup_guard.py::test_bgm_on_with_composition_off_refuses_to_start`
+/ `tests/unit/test_bgm_credit_startup_guard.py::test_both_workers_call_the_guard`
 
-### 補足（INV-126 の拡張。ADR-0086 §6）追記専用は DELETE / TRUNCATE も拒否し、承認は同じ episode の報告にしか結べない
-migration 0019（未適用のため編集）が 4 表に DELETE / TRUNCATE 拒否のトリガを足し、episode への FK は RESTRICT、
+### 補足（INV-126 の拡張。ADR-0086 §6）追記専用は DELETE も拒否し、承認は同じ episode の報告にしか結べない
+**TRUNCATE の拒否は 0020 に分ける**（ADR-0081 追補。0019 は走査器を素のまま通る。0020 が入るまで TRUNCATE は可能。残余リスク）。
+migration 0019（未適用のため編集）が 4 表に DELETE 拒否のトリガを足し、episode への FK は RESTRICT、
 承認の報告への複合 FK は `episode_id` を含む。
-**機械検査**: `tests/contract/test_migration_0019_quality.py::test_every_table_rejects_delete_and_truncate_too`
+**機械検査**: `tests/contract/test_migration_0019_quality.py::test_every_table_rejects_delete_and_0019_has_no_truncate_guard_yet`
+/ `tests/contract/test_migration_0019_quality.py::test_release_preflight_scanner_finds_nothing_in_0019`
+/ `tests/unit/test_review_p3_release_scan_0019.py::test_review_real_0019_passes_the_release_scan_when_its_adr_ships_in_the_same_release`
 / `tests/contract/test_migration_0019_quality.py::test_episode_foreign_keys_restrict_and_the_approval_fk_includes_the_episode`
-/ `tests/integration/test_quality_records_postgres.py::test_delete_and_truncate_are_refused_on_every_table`
+/ `tests/integration/test_quality_records_postgres.py::test_delete_is_refused_on_every_table`
 / `tests/integration/test_quality_records_postgres.py::test_an_approval_cannot_point_at_another_episodes_report`
