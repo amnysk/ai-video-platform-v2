@@ -73,3 +73,6 @@
 （リクエストごとに「認証が無効」のログが 1 行出る）。`disabled` 以外の値（綴り違いを含む）は `required` のまま。
 手動投稿の REVIEW は無認証のリクエストでは解放されない。課金の安全装置（live-hold、未照合予約、月間上限、
 provider-credits の所有者承認）は変わらない。リスク: LAN 上の誰でも変更系を呼べる。ADR-0080 追補を参照。
+
+無認証モードでは API から REVIEW の動画を承認できない。解放は所有者の host CLI `scripts/quality-approve.py` だけ
+（[quality-gate.md](./quality-gate.md)）。
