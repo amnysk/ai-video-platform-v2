@@ -161,9 +161,13 @@ UPDATE の条件は `status = 'abandoned' AND reconciled_by = 'reupload_approval
 
 ### 構成された description（`AVP_UPLOAD_DESCRIPTION_COMPOSED`。ADR-0075）
 
-既定 OFF（現行は台本の全文）。ON にしても、Activity が構成の入力（導入文・出典・クレジット）を渡す配線ができるまでは
-何も変わらない。入力を渡すようになった後は、必須部分（参照・クレジット）が入らないと投稿は `DescriptionBlockedError`
-で止まる（切り詰めない）。有効化は所有者の判断。
+既定 OFF（現行は台本の全文）。配線は済んでいる（`workers/upload/activities.py` が台本とクレジットを
+`build_upload_metadata` に渡し、flag が ON のときだけ構成する）。ON では、必須部分（参照・クレジット）が入らないと
+投稿は `DescriptionBlockedError` で止まる（切り詰めない）。有効化は所有者の判断。
+
+この flag は api / pipeline-worker / render-worker / upload-worker の 4 service が読む。`compose.yaml` が
+`AVP_UPLOAD_DESCRIPTION_COMPOSED: ${AVP_UPLOAD_DESCRIPTION_COMPOSED:-false}` で 4 つに同じ値（`.env` 一箇所）を渡す。
+有効化の手順は `docs/operations/release-runbook.md` の 3c。
 
 ### marker なし description への切替（`AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER`。ADR-0070 / ADR-0075）
 
