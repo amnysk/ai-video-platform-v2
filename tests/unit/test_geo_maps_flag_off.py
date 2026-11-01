@@ -77,7 +77,7 @@ def test_the_flag_is_exposed_only_as_an_off_default_in_compose() -> None:
     """flag を本番の env に出すのは compose.yaml の ``${GEO_MAPS_ENABLED:-false}`` だけ（R3）。
 
     ADR-0078 は「接続する枝が変えるまで 0 件」とした。接続（ADR-0084）後は、読む service への
-    既定 OFF の受け渡し（tests/contract/test_compose_feature_flags.py）以外のファイルには出さない。"""
+    既定 OFF の受け渡し（test_compose_feature_flags.py）以外のファイルには出さない。"""
     repo = pathlib.Path(__file__).resolve().parents[2]
     candidates = [
         *repo.glob("compose*.yaml"),
