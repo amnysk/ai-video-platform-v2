@@ -144,6 +144,7 @@ def resolve_bgm(
                 license_evidence_hash=c.license_evidence_hash,
                 start_ms=c.start_ms,
                 end_ms=c.end_ms,
+                source_offset_ms=c.source_offset_ms,
                 fade_in_ms=c.fade_in_ms,
                 fade_out_ms=c.fade_out_ms,
                 level_db=min(c.target_relative_level_db, BGM_NARRATION_PRIORITY_MAX_DB),

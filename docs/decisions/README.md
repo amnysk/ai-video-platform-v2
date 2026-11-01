@@ -88,3 +88,10 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0076](./0076-quality-gate-wiring-in-upload-gate.md) | 品質ゲートを `upload_gate` に結線する（既定 OFF・状態を足さない・Phase 2 は決定論の検査のみ。LLM レビューは未実装） | Accepted |
 | [0077](./0077-bgm-render-wiring.md) | BGM の Render 結線（1 つの設定キーの背後・既定 OFF・ffmpeg で混合） | Proposed |
 | [0078](./0078-historical-map-accuracy-gate-and-deterministic-render.md) | 歴史地図の正確さの関門（理由コード・BLOCK 引き上げ）と決定論的な地図描画（既定 OFF・未接続） | Accepted |
+| [0079](./0079-integration-tests-must-prove-isolation-from-production.md) | integration テストは本番スタックから隔離されていると積極的に宣言できるときだけ走る（宣言・接続先規則・Temporal の動的検査・直書き禁止） | Accepted |
+| [0080](./0080-approver-kind-and-api-authentication.md) | 承認の種別（所有者本人 / エージェントへの委任）の明示と所有者専用の関門、API 変更系ルートの認証 | Accepted |
+| [0081](./0081-quality-check-records-and-required-set.md) | 品質検査の記録（DB）・必須検査の集合・手動承認の記録（既定 OFF・fail-closed。migration 0019） | Accepted |
+| [0083](./0083-bgm-catalog-placement-and-intelligibility.md) | BGM の承認済みカタログ・scene への配置・ナレーション優先の実測・品質検査（`BGM_ENABLED` の背後・migration なし） | Proposed |
+| [0084](./0084-historical-map-wiring.md) | 歴史地図の結線（依頼 → 検証 → 決定論の描画 → Production の事前検査 → Render の差し替え・hash で結んだ証跡。既定 OFF・workflow 変更なし） | Proposed |
+| [0085](./0085-ai-quality-review-model-policy-and-escalation.md) | AI 品質レビューは Agent Runtime の LLM port と ModelPolicy を再利用し、決定論の判定を最後の安全装置にする（設計のみ・既定 OFF） | Proposed |
+| [0086](./0086-bgm-and-map-quality-wiring.md) | BGM・地図の品質検査を記録つきゲートへ結線する（使用宣言・証跡の結び付け・発話余裕の実測・クレジット。新しい flag なし・migration なし） | Proposed |

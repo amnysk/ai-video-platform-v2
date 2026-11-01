@@ -41,7 +41,7 @@ worker は `GenerationSpecUnavailableError`（needs_input）で止まる。
 ## 実行・確認
 
 ```bash
-curl -X POST http://localhost:8000/episodes/<episode_id>/storyboard   # 202
+curl -X POST -H "Authorization: Bearer $AVP_API_TOKEN" http://localhost:8000/episodes/<episode_id>/storyboard   # 202（bearer token: docs/operations/api-auth.md）
 EPISODE_ID=<episode_id> ./scripts/smoke-storyboard.sh                 # 課金あり
 ```
 

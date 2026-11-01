@@ -56,7 +56,7 @@ export RENDER_FFMPEG_SHA256=810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f
 ## 実行・確認
 
 ```bash
-curl -X POST http://localhost:8000/episodes/<episode_id>/render                      # 既定 profile（shorts_vertical）
+curl -X POST -H "Authorization: Bearer $AVP_API_TOKEN" http://localhost:8000/episodes/<episode_id>/render   # 既定 profile（shorts_vertical）。bearer token: docs/operations/api-auth.md
 curl -X POST http://localhost:8000/episodes/<episode_id>/render \
   -H 'content-type: application/json' -d '{"render_profile_id": "long_form_horizontal"}'
 curl http://localhost:8000/episodes/<episode_id>                                     # render_ready / final_video

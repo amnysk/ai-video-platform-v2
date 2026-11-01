@@ -19,11 +19,14 @@ from typing import Any
 
 from sqlalchemy.engine import make_url
 
+from contracts.approval import API_AUTH_MODE_ENV
+from contracts.release import FEATURE_FLAG_ENV_KEYS
 from domain.provider.reconciliation import request_id_from_ref
 from domain.release_preflight import (
     APP_IMAGES,
     COMPOSE_PROJECT,
     REVISION_LABEL,
+    ApiTokenProbe,
     CheckRun,
     CollectorUnavailable,
     HeadState,
@@ -31,6 +34,7 @@ from domain.release_preflight import (
     ReservationView,
     TargetInfo,
 )
+from infrastructure.api_tokens import read_token_file
 from infrastructure.config import Settings
 from infrastructure.release.app_services import expected_running_services
 from infrastructure.release.compose_queues import required_queues
@@ -268,6 +272,75 @@ class RealCollectors:
                 "FAL_MONTHLY_BUDGET_USD: process environment differs from the repo .env"
             )
         return from_file
+
+    def feature_flag_settings(self) -> dict[str, str | None]:
+        """新機能 flag の生の値。出所は repo の ``.env``（deploy が適用する値。ADR-0080 §A）。
+
+        プロセス環境に同じキーがあって ``.env`` と違うなら、どちらが効くか確定できないので
+        ``CollectorUnavailable``（→ UNKNOWN）。
+        """
+        values: dict[str, str | None] = {}
+        for key in FEATURE_FLAG_ENV_KEYS:
+            from_file = _dotenv_value(self._repo / ".env", key)
+            from_env = os.environ.get(key)
+            if from_env is not None and from_env.strip().strip("\"'") != from_file:
+                raise CollectorUnavailable(f"{key}: process environment differs from the repo .env")
+            values[key] = from_file
+        return values
+
+    def api_token_probe(self) -> ApiTokenProbe:
+        """API の token ファイル（host 側）の状態。token は返さない（ADR-0080 §B）。
+
+        共有ファイルは ``${AVP_API_SECRETS_DIR:-$HOME/.config/avp2/api}/tokens``。``.env`` に
+        ``AVP_API_OWNER_TOKEN_PATH`` があれば owner 別ファイル
+        ``${AVP_API_OWNER_SECRETS_DIR:-$HOME/.config/avp2/api-owner}/owner-token`` も検査する。
+        """
+
+        def setting(key: str) -> str | None:
+            return _dotenv_value(self._repo / ".env", key) or os.environ.get(key) or None
+
+        auth_from_file = _dotenv_value(self._repo / ".env", API_AUTH_MODE_ENV)
+        auth_from_env = os.environ.get(API_AUTH_MODE_ENV)
+        if auth_from_env is not None and auth_from_env.strip().strip("\"'") != auth_from_file:
+            raise CollectorUnavailable(
+                f"{API_AUTH_MODE_ENV}: process environment differs from the repo .env"
+            )
+        home = pathlib.Path(os.environ.get("HOME", "~")).expanduser()
+        shared_dir = pathlib.Path(setting("AVP_API_SECRETS_DIR") or home / ".config/avp2/api")
+        shared = read_token_file(str(shared_dir / "tokens"))
+        raw_uid = setting("AVP_UID")
+        expected_uid = int(raw_uid) if raw_uid and raw_uid.isdigit() else 1000
+        if not shared.exists or shared.problem is not None:
+            return ApiTokenProbe(
+                shared.path,
+                shared.exists,
+                shared.problem,
+                shared.mode,
+                shared.uid,
+                expected_uid,
+                (),
+                auth_from_file,
+            )
+        actors = {name for name, _t in shared.entries}
+        problem: str | None = None
+        if setting("AVP_API_OWNER_TOKEN_PATH"):
+            owner_dir = pathlib.Path(
+                setting("AVP_API_OWNER_SECRETS_DIR") or home / ".config/avp2/api-owner"
+            )
+            owner = read_token_file(str(owner_dir / "owner-token"))
+            if owner.problem is not None:
+                problem = f"owner token file {owner.path}: {owner.problem}"
+            actors |= {name for name, _t in owner.entries}
+        return ApiTokenProbe(
+            shared.path,
+            True,
+            problem,
+            shared.mode,
+            shared.uid,
+            expected_uid,
+            tuple(sorted(actors)),
+            auth_from_file,
+        )
 
     def unhealthy_services(self) -> list[str]:
         """compose project の container で Health が unhealthy のもの（読み取りのみ）。"""

@@ -8,6 +8,7 @@ from decimal import Decimal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from contracts.approval import API_AUTH_MODE_ENV, ApiAuthMode, parse_api_auth_mode
 from contracts.pipeline import (
     DAILY_SCHEDULE_ID,
     DEFAULT_DAILY_EPISODE_LIMIT,
@@ -173,6 +174,20 @@ class Settings(BaseSettings):
     uploads_paused: bool = False
     #: 品質ゲートを投稿に効かせる（ADR-0076）。既定 OFF。キー名は contracts.quality が唯一の定義
     quality_gate_enforce: bool = Field(default=False, validation_alias=QUALITY_GATE_ENFORCE_ENV)
+    #: API の変更系ルートの bearer token ファイル（repo 外・0600。ADR-0080 §B）。
+    #: 未設定 = 変更系を全拒否
+    api_tokens_file: str | None = Field(default=None, validation_alias="AVP_API_TOKENS_PATH")
+    #: owner token だけを置く別ファイル（任意。ADR-0080 §B）。エージェントの OS ユーザーが読めない
+    #: 場所・権限に置くと owner / agent の分離が実効を持つ。設定したら共有ファイルの
+    #: ``owner:`` 行は拒否
+    api_owner_token_file: str | None = Field(
+        default=None, validation_alias="AVP_API_OWNER_TOKEN_PATH"
+    )
+    #: API 認証方式（ADR-0080 追補）。``disabled`` と明示されたときだけ無認証。それ以外（未設定・
+    #: 綴り違い・未知の値）は ``required``（fail closed。起動は妨げない）
+    api_auth_mode: ApiAuthMode = Field(
+        default=ApiAuthMode.REQUIRED, validation_alias=API_AUTH_MODE_ENV
+    )
     #: resumable upload の chunk（256 KiB の倍数）
     youtube_chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES
 
@@ -247,6 +262,12 @@ class Settings(BaseSettings):
     def fal_budget(self) -> BudgetDecision:
         """ローカル月間予算の判定（ADR-0061）。worker は起動時に 1 回だけ読む。"""
         return evaluate_budget(self.fal_monthly_budget_usd)
+
+    @field_validator("api_auth_mode", mode="before")
+    @classmethod
+    def _api_auth_mode_fails_closed(cls, v: object) -> ApiAuthMode:
+        """``disabled`` 以外は全て ``required``。API は起動し、変更系は認証を要求する。"""
+        return parse_api_auth_mode(v)
 
     @field_validator("research_provider", mode="before")
     @classmethod

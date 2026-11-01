@@ -16,11 +16,19 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from contracts.states import RENDER_MEDIA_TASK_QUEUE, RENDER_TASK_QUEUE
+from contracts.upload import description_composition_enabled
 from domain.errors import RenderEngineUnavailableError
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.geo.clip import FfmpegMapClipEncoder
+from infrastructure.geo.guard import require_quality_gate
+from infrastructure.geo.service import GeoRenderService
+from infrastructure.geo.source import LocalDirectoryGeoSource
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.media.probe import PillowAvMediaProbe
+from infrastructure.music.guard import require_description_composition_for_bgm
+from infrastructure.quality.wiring import build_quality_record_writer
+from infrastructure.render.bgm_intelligibility import FfmpegSpeechMarginProbe
 from infrastructure.render.bgm_source import LocalDirectoryBgmSource
 from infrastructure.render.ffmpeg_engine import FfmpegRenderEngine
 from infrastructure.render.loudness import FfmpegLoudnessProbe
@@ -97,13 +105,31 @@ async def main() -> None:
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
     # ADR-0077: 設定 ON のときだけ供給元と測定を渡す。OFF は導入前と同一
+    require_description_composition_for_bgm(
+        bgm_on=settings.bgm_enabled, composition_enabled=description_composition_enabled()
+    )
     bgm_source = None
     loudness_probe = None
+    speech_probe = None
     if settings.bgm_enabled and settings.render_ffmpeg_path:
         bgm_source = LocalDirectoryBgmSource(Path(settings.ai_video_work_root) / "bgm")
         loudness_probe = FfmpegLoudnessProbe(settings.render_ffmpeg_path)
+        # ADR-0086 §3: 発話中の声と BGM の差を描画の中で実測する（BGM_ENABLED の背後）
+        speech_probe = FfmpegSpeechMarginProbe(settings.render_ffmpeg_path)
+    # ADR-0084: 設定 ON のときだけ地図の結線を渡す。OFF は導入前と同一
+    geo = None
+    if settings.geo_maps_enabled:
+        require_quality_gate(settings)
+        if not settings.render_ffmpeg_path:
+            raise SystemExit("render worker: GEO_MAPS_ENABLED needs RENDER_FFMPEG_PATH")
+        geo = GeoRenderService(
+            source=LocalDirectoryGeoSource(Path(settings.ai_video_work_root) / "geo"),
+            encoder=FfmpegMapClipEncoder(settings.render_ffmpeg_path),
+            font_path=Path(settings.render_font_path),
+        )
+    session_factory = session_factory_from_settings(settings)
     activities = RenderActivities(
-        session_factory=session_factory_from_settings(settings),
+        session_factory=session_factory,
         store=store,
         bucket=settings.minio_bucket,
         workdir=WorkDirectory(settings.ai_video_work_root),
@@ -118,6 +144,10 @@ async def main() -> None:
         run_inspector=TemporalWorkflowRunInspector(client),
         bgm_source=bgm_source,
         loudness_probe=loudness_probe,
+        geo=geo,
+        speech_probe=speech_probe,
+        # ADR-0086 §2: AVP_QUALITY_GATE_ENFORCE が ON のときだけ使用宣言を書く（OFF は None）
+        quality_writer=build_quality_record_writer(settings, session_factory),
     )
     state, media = build_workers(client, settings, activities)
     logger.info(

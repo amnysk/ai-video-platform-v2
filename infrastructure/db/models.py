@@ -20,6 +20,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -33,8 +34,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from contracts.approval import ApproverKind
 from contracts.operations import OperationalSwitch
 from contracts.provider_health import BreakerState, HoldReason, RefusalKind
+from contracts.quality_records import CheckKey, UsageFeature
 from contracts.research import (
     ResearchArtifactType,
     ResearchCall,
@@ -57,6 +60,7 @@ from contracts.states import (
 )
 from contracts.topic import TOPIC_MAX_CHARS
 from contracts.topic_planning import AnalyticsMode, DuplicateLevel, TopicPlanStatus
+from contracts.verdict import Verdict
 
 
 def _enum_values(enum_cls: type[Enum]) -> list[str]:
@@ -884,3 +888,166 @@ Index(
     sqlite_where=text("superseded_at IS NULL"),
     postgresql_where=text("superseded_at IS NULL"),
 )
+
+
+class QualityCheckRecordRow(Base):
+    """品質検査の 1 セット（``check_key`` 単位。ADR-0081 / INV-126）。**追記専用**。
+
+    対象 hash（``final_video_sha256`` = 現行 final_video の ``artifact_metadata.sha256``）・
+    入力 hash・規則版に結び付く。同じ key の再検査は ``generation`` を上げた新しい行。
+    UPDATE は Postgres のトリガが拒否する（migration 0019）。有効期間 24h 以内の CHECK も
+    Postgres だけ migration で足す（SQLite に区間演算が無い）。
+    """
+
+    __tablename__ = "quality_check_records"
+    __table_args__ = (
+        _check("check_key", CheckKey, "ck_quality_check_records_key"),
+        _check("verdict", Verdict, "ck_quality_check_records_verdict"),
+        CheckConstraint(
+            "length(final_video_sha256) = 64 AND length(input_hash) = 64",
+            name="ck_quality_check_records_hash_length",
+        ),
+        CheckConstraint("generation >= 1", name="ck_quality_check_records_generation"),
+        CheckConstraint("expires_at > checked_at", name="ck_quality_check_records_expiry"),
+        UniqueConstraint(
+            "episode_id",
+            "final_video_sha256",
+            "rule_version",
+            "check_key",
+            "generation",
+            name="uq_quality_check_records_subject_key",
+        ),
+        Index("ix_quality_check_records_subject", "episode_id", "final_video_sha256"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    final_video_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    check_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: ``QualityCheck.to_dict()`` の配列（detail は固定文 / evidence_ref は id のみ。INV-106）
+    checks: Mapped[list] = mapped_column(JSON, nullable=False)
+    producer: Mapped[str] = mapped_column(String(64), nullable=False)
+    producer_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class QualityUsageDeclarationRow(Base):
+    """render が書く BGM / 地図の使用・不使用の宣言（ADR-0081 §3 / INV-127）。追記専用。"""
+
+    __tablename__ = "quality_usage_declarations"
+    __table_args__ = (
+        _check("feature", UsageFeature, "ck_quality_usage_declarations_feature"),
+        CheckConstraint(
+            "length(final_video_sha256) = 64 AND length(input_hash) = 64",
+            name="ck_quality_usage_declarations_hash_length",
+        ),
+        CheckConstraint(
+            "(used = true AND evidence_ref IS NOT NULL) OR (used = false AND evidence_ref IS NULL)",
+            name="ck_quality_usage_declarations_evidence",
+        ),
+        UniqueConstraint(
+            "episode_id",
+            "final_video_sha256",
+            "feature",
+            name="uq_quality_usage_declarations_subject_feature",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    final_video_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature: Mapped[str] = mapped_column(String(16), nullable=False)
+    used: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    declared_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    declared_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    evidence_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class QualityReportRow(Base):
+    """gate が組み立てた ``QualityReport``（監査用。拒否も残す。INV-128）。追記専用。"""
+
+    __tablename__ = "quality_reports"
+    __table_args__ = (
+        _check("verdict", Verdict, "ck_quality_reports_verdict"),
+        CheckConstraint(
+            "length(final_video_sha256) = 64 AND length(input_hash) = 64 "
+            "AND length(report_sha256) = 64",
+            name="ck_quality_reports_hash_length",
+        ),
+        CheckConstraint("expires_at > generated_at", name="ck_quality_reports_expiry"),
+        # 承認が (report_id, sha) で参照できるようにする（別 hash の報告への承認を作れない）
+        UniqueConstraint(
+            "id", "episode_id", "final_video_sha256", name="uq_quality_reports_id_episode_sha"
+        ),
+        Index("ix_quality_reports_subject", "episode_id", "final_video_sha256"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    final_video_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    generator_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: ``QualityReport.to_dict()``。``report_sha256`` はその正準 JSON の sha256
+    report_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    report_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class QualityManualApprovalRow(Base):
+    """手動投稿で REVIEW を人が承認した記録（ADR-0081 §9 / INV-129）。追記専用。"""
+
+    __tablename__ = "quality_manual_approvals"
+    __table_args__ = (
+        _check("approver_kind", ApproverKind, "ck_quality_manual_approvals_kind"),
+        CheckConstraint("length(approver_id) >= 1", name="ck_quality_manual_approvals_approver"),
+        CheckConstraint("approved_verdict = 'review'", name="ck_quality_manual_approvals_verdict"),
+        ForeignKeyConstraint(
+            ["report_id", "episode_id", "final_video_sha256"],
+            [
+                "quality_reports.id",
+                "quality_reports.episode_id",
+                "quality_reports.final_video_sha256",
+            ],
+            name="fk_quality_manual_approvals_report",
+        ),
+        Index("ix_quality_manual_approvals_subject", "episode_id", "final_video_sha256"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), ForeignKey("episodes.id", ondelete="RESTRICT"), nullable=False
+    )
+    report_id: Mapped[uuid.UUID] = mapped_column(Uuid(), nullable=False)
+    final_video_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    approved_verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    approver_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    approver_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

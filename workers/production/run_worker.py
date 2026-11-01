@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 from temporalio.worker import Worker
 
 from contracts.states import PRODUCTION_WORKFLOW
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
+from infrastructure.geo.guard import require_quality_gate
+from infrastructure.geo.preflight import GeoPreflight
+from infrastructure.geo.source import LocalDirectoryGeoSource
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
@@ -31,11 +35,18 @@ async def main() -> None:
     client = await connect_with_retry(settings)
     store = MinioArtifactStore.from_settings(settings)
     await store.ensure_bucket()
+    geo_preflight = None
+    if settings.geo_maps_enabled:
+        require_quality_gate(settings)
+        geo_preflight = GeoPreflight(
+            LocalDirectoryGeoSource(Path(settings.ai_video_work_root) / "geo")
+        )
     activities = ProductionActivities(
         session_factory=session_factory_from_settings(settings),
         store=store,
         bucket=settings.minio_bucket,
         run_inspector=TemporalWorkflowRunInspector(client),
+        geo_preflight=geo_preflight,
     )
     logger.info("production workflow worker listening on task queue %s", PRODUCTION_TASK_QUEUE)
     async with Worker(

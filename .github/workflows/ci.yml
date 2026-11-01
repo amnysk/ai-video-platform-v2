@@ -113,6 +113,23 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build the app image
         run: docker compose --profile core build api dummy-worker migrate
+      - name: Provision an ephemeral API token file (ADR-0080 fail-closed auth stays on)
+        # api は既定 AVP_API_AUTH_MODE=required で、0600 の token ファイル（compose が
+        # ${HOME}/.config/avp2/api を bind）が無いと変更系を全て 503 にする。使い捨て VM 上で
+        # ランダム token を作り、smoke.sh へ AVP_API_TOKEN として渡す。container の user は
+        # AVP_UID（既定 1000）なので runner の uid/gid に合わせ、0600 のファイルを読めるようにする
+        run: |
+          owner_token=$(openssl rand -hex 24)
+          agent_token=$(openssl rand -hex 24)
+          echo "::add-mask::$owner_token"
+          echo "::add-mask::$agent_token"
+          dir="$HOME/.config/avp2/api"
+          mkdir -p "$dir"
+          (umask 077; printf 'owner:%s\nagent:%s\n' "$owner_token" "$agent_token" > "$dir/tokens")
+          chmod 0600 "$dir/tokens"
+          echo "AVP_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "AVP_GID=$(id -g)" >> "$GITHUB_ENV"
+          echo "AVP_API_TOKEN=$agent_token" >> "$GITHUB_ENV"
       - name: Start core services
         # 常駐 Worker は host の ffmpeg / Codex 認証 / OAuth を要するので CI では起動しない（ADR-0024）
         run: docker compose --profile core up -d --wait --no-build postgres minio temporal temporal-ui migrate api dummy-worker
@@ -143,6 +160,8 @@ jobs:
           docker pull "$image"
       - run: pytest tests/integration -q -m integration -rs | tee pytest-integration.log
         env:
+          # 使い捨てサービスへだけ繋ぐ宣言（ADR-0079 / INV-121。GITHUB_ACTIONS=true も要る）
+          AVP_INTEGRATION_ISOLATION: ci-ephemeral
           DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp
           # 破壊的なテストは *_test にだけ向く（ADR-0021）。avp_test は
           # deploy/postgres-init/01-test-db.sql が初回起動時に作る
@@ -273,6 +292,7 @@ jobs:
         # upgrade head -> 各 CHECK 制約 -> downgrade を検査する。skip は成功と数えない
         run: pytest tests/integration/test_migration_against_postgres.py -q -m integration -rs | tee pytest-alembic.log
         env:
+          AVP_INTEGRATION_ISOLATION: ci-ephemeral
           TEST_DATABASE_URL: postgresql+psycopg://avp:change-me@localhost:5432/avp_test
           # この job 専用の使い捨て DB にだけ、破壊的操作ガードの印を付ける（INV-83）
           AVP_MARK_TEST_DB: "1"

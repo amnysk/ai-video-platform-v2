@@ -46,6 +46,22 @@ class MapRenderSpec(FrozenModel):
 
 
 @dataclass(frozen=True, slots=True)
+class BaseMap:
+    """下地の陸地（経緯度の外周の列）。データは呼び出し側（owner 供給の GeoJSON 等）が持つ。
+
+    **現代の海岸線を当時の地形として見せない**ため、``caption``（読める文字）が必須で、
+    地図の上に描かれ、見た目の検査（コントラスト・収まり）の対象になる。
+    """
+
+    #: 各外周は (lon, lat) の列。**ここだけ**経度が先（GeoJSON の並び）。取り込み側が変換済みの前提
+    rings: tuple[tuple[tuple[float, float], ...], ...]
+    sha256: str
+    caption: str
+    land: Color = (58, 74, 92)
+    coast: Color = (120, 140, 160)
+
+
+@dataclass(frozen=True, slots=True)
 class RenderedMap:
     png: bytes
     sha256: str
@@ -96,13 +112,36 @@ def _text_size(
     return int(left), int(top), int(right - left), int(bottom - top)
 
 
+def _draw_base(
+    image: Image.Image, manifest: GeoManifest, spec: MapRenderSpec, base: BaseMap
+) -> None:
+    """陸地を下地として描く（枠の内側だけ）。外周の描画順は入力の順（呼び出し側が決定的に並べる）。"""
+    half = spec.margin_px // 2
+    layer = Image.new("RGB", (spec.width, spec.height), _rgb(spec.background))
+    layer_draw = ImageDraw.Draw(layer)
+    for ring in base.rings:
+        pts = [
+            project_point(manifest.bbox, spec.width, spec.height, spec.margin_px, lat, lon)
+            for lon, lat in ring
+        ]
+        if len(pts) >= 3:
+            layer_draw.polygon(pts, fill=base.land, outline=base.coast)
+    box = (half + 1, half + 1, spec.width - half - 1, spec.height - half - 1)
+    image.paste(layer.crop(box), box[:2])
+
+
 def render_map(
-    manifest: GeoManifest, spec: MapRenderSpec, font_bytes: bytes | None = None
+    manifest: GeoManifest,
+    spec: MapRenderSpec,
+    font_bytes: bytes | None = None,
+    base: BaseMap | None = None,
 ) -> RenderedMap:
     font, font_id = _load_font(font_bytes, spec.font_px)
     image = Image.new("RGB", (spec.width, spec.height), _rgb(spec.background))
-    draw = ImageDraw.Draw(image)
     half = spec.margin_px // 2
+    if base is not None:
+        _draw_base(image, manifest, spec, base)
+    draw = ImageDraw.Draw(image)
     draw.rectangle(
         (half, half, spec.width - half - 1, spec.height - half - 1), outline=_rgb(spec.frame)
     )
@@ -172,6 +211,30 @@ def render_map(
             plate_rgb=spec.label_plate,
         )
 
+    if base is not None:
+        off_x, off_y, w, h = _text_size(draw, base.caption, font)
+        plate_w, plate_h = w + 2 * LABEL_PAD_PX, h + 2 * LABEL_PAD_PX
+        x0 = spec.width - half - MARKER_GAP_PX - plate_w
+        y0 = spec.height - half - MARKER_GAP_PX - plate_h
+        draw.rectangle((x0, y0, x0 + plate_w - 1, y0 + plate_h - 1), fill=_rgb(spec.label_plate))
+        draw.text(
+            (x0 + LABEL_PAD_PX - off_x, y0 + LABEL_PAD_PX - off_y),
+            base.caption,
+            font=font,
+            fill=_rgb(spec.label_text),
+            anchor="lt",
+        )
+        texts.append(
+            LayoutText(
+                target_id=manifest.scene_id,
+                box=PixelBox(x0=x0, y0=y0, x1=x0 + plate_w, y1=y0 + plate_h),
+                font_px=spec.font_px,
+                glyphs_missing=_glyphs_missing(font, base.caption),
+                text_rgb=spec.label_text,
+                plate_rgb=spec.label_plate,
+            )
+        )
+
     buf = io.BytesIO()
     image.save(buf, format="PNG", compress_level=PNG_COMPRESS_LEVEL, optimize=False)
     png = buf.getvalue()
@@ -183,15 +246,14 @@ def render_map(
         disclaimer=disclaimer,
         disclaimer_required=schematic,
     )
-    identity = sha256_hex(
-        canonical_json_bytes(
-            {
-                "manifest": manifest.model_dump(mode="json"),
-                "spec": spec.model_dump(mode="json"),
-                "font_id": font_id,
-            }
-        )
-    )
+    identity_payload: dict[str, object] = {
+        "manifest": manifest.model_dump(mode="json"),
+        "spec": spec.model_dump(mode="json"),
+        "font_id": font_id,
+    }
+    if base is not None:  # 下地なしの identity は従来と同じ（INV-119）
+        identity_payload["base"] = {"sha256": base.sha256, "caption": base.caption}
+    identity = sha256_hex(canonical_json_bytes(identity_payload))
     manifest_sha256 = sha256_hex(canonical_json_bytes(manifest.model_dump(mode="json")))
     return RenderedMap(
         png=png,
@@ -204,4 +266,4 @@ def render_map(
     )
 
 
-__all__ = ["PNG_COMPRESS_LEVEL", "MapRenderSpec", "RenderedMap", "render_map"]
+__all__ = ["PNG_COMPRESS_LEVEL", "BaseMap", "MapRenderSpec", "RenderedMap", "render_map"]

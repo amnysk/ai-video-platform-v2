@@ -174,7 +174,7 @@ async def test_audit_row_never_stores_the_raw_token(session_factory) -> None:
     async with session_factory() as s:
         row = (await s.scalars(select(Row))).one()
     assert TOKEN not in repr(row.__dict__)
-    assert row.owner_approval_fingerprint and row.actor == "me" and row.evidence == "e"
+    assert row.owner_approval_fingerprint and row.actor == "owner:me" and row.evidence == "e"
 
 
 def test_script_has_no_network_or_provider_imports() -> None:

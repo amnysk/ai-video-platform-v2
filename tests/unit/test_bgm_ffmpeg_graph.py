@@ -15,7 +15,7 @@ EXPECTED_TAIL = """\
 [abase][a0][a1]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,atrim=duration=4.000,asplit=2[vmix][sc0];
 [4:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=start=0:duration=2.000,asetpts=PTS-STARTPTS,volume=-18dB,afade=t=in:st=0:d=0.200,afade=t=out:st=1.700:d=0.300,adelay=delays=0:all=1,apad=whole_dur=4.000[b0];
 [5:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,atrim=start=0:duration=2.000,asetpts=PTS-STARTPTS,volume=-18dB,afade=t=out:st=1.700:d=0.300,adelay=delays=2000:all=1,apad=whole_dur=4.000[d1];
-[b0][sc0]sidechaincompress=threshold=0.03:ratio=9:attack=20:release=300:makeup=1[d0];
+[b0][sc0]sidechaincompress=threshold=0.1:ratio=3:attack=20:release=300:makeup=1[d0];
 [vmix][d0][d1]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.9:level=0,atrim=duration=4.000[aout]
 """  # noqa: E501
 
@@ -84,3 +84,10 @@ def test_argv_refuses_misaligned_bgm_inputs() -> None:
         build_argv(**kwargs, bgm=_two_cues(), bgm_paths=["/m"])  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         build_argv(**kwargs, bgm_paths=["/m"])  # type: ignore[arg-type]
+
+
+def test_source_offset_starts_the_track_mid_way_and_zero_keeps_the_chain_unchanged() -> None:
+    """scene をまたいで同じ曲を続ける位置（ADR-0083 §4）。0 のときは offset 導入前と同じ文字列。"""
+    graph = build_filtergraph(bgm_plan(), _mix(cue(source_offset_ms=12_345, ducking_policy="none")))
+    assert "atrim=start=12.345:duration=2.000" in graph
+    assert "atrim=start=0:duration=2.000" in build_filtergraph(bgm_plan(), _mix(cue()))

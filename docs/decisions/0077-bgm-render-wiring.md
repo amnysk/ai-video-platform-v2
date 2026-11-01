@@ -4,6 +4,8 @@
 
 Proposed（オーナーの承認待ち。番号 0077 と INV-113〜116 は Phase 2-E の予約）。
 **既定は OFF**で、OFF の間の挙動はバイト単位で現行と同じ（INV-113）。本番へ入れる判断は別途。
+**ADR-0083 が §4 の ducking 係数（実音声で校正して threshold=0.1 / ratio=3 へ）と `BGM_MIX_VERSION`（2）を置き換え、
+cue の `source_offset_ms`・配置・品質検査を足した。他の節はこのまま有効。**
 
 ## Context
 
@@ -64,7 +66,7 @@ BGM を混ぜた完成動画だけ、保存前に ffmpeg の `ebur128`（`peak=t
 
 BGM を使った完成動画ごとに `BgmRenderEvidence`（episode / input_hash / final_video sha256 / 曲ごとの source sha256 と
 license_evidence_hash / 実測ラウドネス / `credit_lines`）を MinIO に JSON として保存する（DDL 無し・新しい ArtifactType 無し・
-キーは `artifacts/{episode}/bgm_render_evidence/{sha}.json`）。保存は final_video の行を記録する**前**で、
+キーは `artifacts/{episode}/bgm_render_evidence/{結び付け id}.json`（ADR-0086 §1 で内容 hash から変更））。保存は final_video の行を記録する**前**で、
 証跡の無い BGM 入り動画は存在しない。`credit_lines` はカタログの原文（Wave 1 の `credits_for`）で、説明欄の agent は
 これを読む。説明欄に収まるかの BLOCK（`fit_credits`）は説明欄側の責務。
 

@@ -25,6 +25,7 @@ from collections.abc import Iterable
 
 from temporalio.api.workflowservice.v1 import DescribeNamespaceRequest
 from temporalio.client import Client
+from temporalio.service import RPCError, RPCStatusCode
 
 DEFAULT_TEST_NAMESPACE = "avp-test"
 ENV_TEST_NAMESPACE = "TEST_TEMPORAL_NAMESPACE"
@@ -98,8 +99,48 @@ async def connect_test_client(address: str | None = None, *, timeout: float = 5.
     return client
 
 
+class ProductionTemporalError(RuntimeError):
+    """接続先の Temporal が本番（``default`` に日次 Schedule が在る）と判明した。"""
+
+
+async def assert_temporal_is_not_production(
+    address: str, *, timeout: float = 5.0, client: Client | None = None
+) -> None:
+    """本番 Temporal への誤接続を**読み取りだけ**で検出する（ADR-0079 / INV-121）。
+
+    ``default`` namespace に日次 Schedule が在れば本番。describe のみ（起動・作成・変更はしない）。
+    到達できない（接続失敗）なら何もしない（テストは各自 skip する）。到達できたのに
+    NOT_FOUND 以外で判定できないときは**拒否**（fail closed）。
+    """
+    from contracts.pipeline import DAILY_SCHEDULE_ID
+
+    if client is None:
+        try:
+            client = await asyncio.wait_for(
+                Client.connect(address, namespace=PRODUCTION_DEFAULT_NAMESPACE), timeout=timeout
+            )
+        except Exception:  # noqa: BLE001 - 到達不能は「本番ではない」ではなく「何も起きない」
+            return
+    try:
+        await asyncio.wait_for(client.get_schedule_handle(DAILY_SCHEDULE_ID).describe(), timeout)
+    except RPCError as exc:
+        if exc.status == RPCStatusCode.NOT_FOUND:
+            return
+        raise ProductionTemporalError(
+            f"{address}: 本番かどうかを判定できない（{exc.status.name}）。fail closed"
+        ) from exc
+    except Exception as exc:
+        raise ProductionTemporalError(f"{address}: 本番か判定できない。fail closed") from exc
+    raise ProductionTemporalError(
+        f"{address} の default namespace に本番の日次 Schedule {DAILY_SCHEDULE_ID!r} が在る。"
+        "本番 Temporal には繋がない"
+    )
+
+
 __all__ = [
     "DEFAULT_TEST_NAMESPACE",
+    "ProductionTemporalError",
+    "assert_temporal_is_not_production",
     "ENV_TEST_NAMESPACE",
     "PRODUCTION_DEFAULT_NAMESPACE",
     "UnsafeTestTemporalNamespaceError",

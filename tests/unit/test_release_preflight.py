@@ -87,6 +87,20 @@ def _reviewed_report(
     return json.dumps({"target_sha": sha, "mode": mode, "overall": overall, "results": results})
 
 
+def _good_token_probe(**kw: Any) -> rp.ApiTokenProbe:
+    base: dict[str, Any] = {
+        "path": "/home/o/.config/avp2/api/tokens",
+        "exists": True,
+        "problem": None,
+        "mode": 0o600,
+        "uid": 1000,
+        "expected_uid": 1000,
+        "actors": ("agent", "owner"),
+    }
+    base.update(kw)
+    return rp.ApiTokenProbe(**base)
+
+
 def _approval(
     sha: str = SHA,
     *,
@@ -97,6 +111,9 @@ def _approval(
     doc: dict[str, Any] = {
         "sha": sha,
         "approver": "owner",
+        # ADR-0080: 承認の種別を述べる参照が必須（所有者本人の承認）
+        "approval_ref": "OWNER-20261029-chatmsg01",
+        "enables": [],  # 明示的な空 = 新機能 OFF のデプロイ（ADR-0080。省略は UNKNOWN）
         "approved_at": at.isoformat(),
         "report_sha256": sha256_text(_reviewed_report() if report is None else report),
     }
@@ -141,6 +158,8 @@ class Fake:
             environment="",
         )
     )
+    flags: Any = field(default_factory=dict)
+    token_probe: Any = field(default_factory=lambda: _good_token_probe())
     texts: Any = field(
         default_factory=lambda: {
             "backup.json": _manifest(),
@@ -190,6 +209,12 @@ class Fake:
 
     def paid_budget_setting(self) -> str | None:
         return None
+
+    def feature_flag_settings(self) -> dict[str, str | None]:
+        return self._get(self.flags)
+
+    def api_token_probe(self) -> rp.ApiTokenProbe:
+        return self._get(self.token_probe)
 
     def unhealthy_services(self) -> list[str]:
         return self._get(self.unhealthy)

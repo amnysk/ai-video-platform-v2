@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -74,6 +75,7 @@ from infrastructure.db.repositories import (
     EpisodeRepository,
     JobRepository,
 )
+from infrastructure.geo.preflight import GeoPreflight
 from infrastructure.storage.artifact_store import ArtifactStore
 from workers.production.run_inspector import WorkflowRunInspector
 
@@ -131,12 +133,15 @@ class ProductionActivities:
         store: ArtifactStore,
         bucket: str,
         run_inspector: WorkflowRunInspector | None = None,
+        geo_preflight: GeoPreflight | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
         self._bucket = bucket
         #: 無ければ ``in_progress`` の引き継ぎをしない（安全側）
         self._run_inspector = run_inspector
+        #: 地図の指定を有料呼び出しの前に確かめる（ADR-0084）。None（flag OFF）なら導入前と同一
+        self._geo_preflight = geo_preflight
 
     def all_activities(self) -> Sequence[Callable[..., object]]:
         """``production`` queue の worker へ登録する Activity。メディア系は含めない。"""
@@ -206,6 +211,12 @@ class ProductionActivities:
         storyboard_loaded, storyboard = await self._load_current_storyboard(request.episode_id)
         script_loaded, script = await self._load_source_script(storyboard)
         work = plan_production(script, storyboard)
+        if self._geo_preflight is not None:
+            await asyncio.to_thread(
+                self._geo_preflight.check,
+                request.episode_id,
+                [(s.scene_id, s.script_scene_id) for s in storyboard.scenes],
+            )
         return ProductionPlan(
             storyboard_artifact_id=storyboard_loaded.meta.id,
             storyboard_sha256=storyboard_loaded.meta.sha256,

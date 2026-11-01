@@ -1,4 +1,4 @@
-"""Daily Schedule を実 Temporal（localhost:7233）に登録して trigger する（ADR-0023）。
+"""Daily Schedule を実 Temporal（隔離スタックか CI だけ）に登録して trigger する（ADR-0023）。
 
 - 本番の Schedule id（``avp-daily-episode``）と本番の task queue には触れない。
   一意な id / queue を作る
@@ -45,8 +45,6 @@ from contracts.topic_planning import TopicPlannerInput, TopicPlannerResult
 from infrastructure.temporal.schedules import ensure_daily_episode_schedule
 from workers.pipeline.workflows import DailyEpisodeWorkflow, EpisodePipelineWorkflow
 
-TEMPORAL_ADDRESS = "localhost:7233"
-
 
 @workflow.defn(name="TopicPlannerWorkflow")
 class StubTopicPlanner:
@@ -65,12 +63,15 @@ NEVER_CRON = "0 0 30 2 *"
 
 
 async def _connect() -> Client:
-    from tests.support.temporal import connect_test_client
+    from tests.support.temporal import connect_test_client, temporal_test_address
 
+    address = temporal_test_address()
+    if not address:
+        pytest.skip("TEMPORAL_ADDRESS is not set")
     try:
-        return await asyncio.wait_for(connect_test_client(TEMPORAL_ADDRESS), timeout=5)
+        return await asyncio.wait_for(connect_test_client(address), timeout=5)
     except Exception as exc:  # noqa: BLE001 - 到達不能なら skip
-        pytest.skip(f"Temporal not reachable at {TEMPORAL_ADDRESS}: {exc}")
+        pytest.skip(f"Temporal not reachable at {address}: {exc}")
 
 
 @pytest.mark.asyncio

@@ -13,20 +13,27 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from datetime import datetime as _datetime
 from decimal import Decimal
 from typing import Any, Literal
 
+from contracts.approval import ApproverKind
 from contracts.states import (
     RECONCILIATION_TERMINAL_VERDICTS,
     ProviderCall,
     ReconciliationVerdict,
     ReservationStatus,
+)
+from domain.approval import (
+    ApprovalError,
+    OwnerGate,
+    format_approver,
+    parse_approval_reference,
+    parse_approver,
+    require_gate_allowed,
 )
 
 V = ReconciliationVerdict
@@ -155,30 +162,24 @@ class ManualResolution:
     verdict: ReconciliationVerdict
     evidence: str
     owner_approval_fingerprint: str
+    #: 種別つきで保存する値 ``owner:<name>``（ADR-0080。監査行の actor 列にそのまま入る）
     actor: str
 
     @property
     def reconciled_by(self) -> str:
-        return f"operator:{self.actor}"
-
-
-_OWNER_APPROVAL_RE = re.compile(r"^OWNER-(\d{8})-[A-Za-z0-9][A-Za-z0-9_-]{5,63}$")
+        return f"operator:{parse_approver(self.actor)[1]}"
 
 
 def is_owner_approval_reference(token: str) -> bool:
-    """``OWNER-<yyyymmdd>-<id>`` の形か。**認証ではない**（誰でも書ける）。
+    """所有者本人の承認の参照 ``OWNER-<yyyymmdd>-<id>`` か。**認証ではない**（誰でも書ける）。
 
-    承認の参照番号（チケット・チャットの発言 id 等）を残させ、監査行から辿れるようにするための
-    形式検査。日付は実在する暦日であること。
+    規則の定義は ``domain.approval``（ADR-0080）の1箇所。エージェントが所有者の条件付き指示の下で
+    書く ``AGENT-…:OWNER-…`` は**所有者承認ではない**ので False。
     """
-    match = _OWNER_APPROVAL_RE.fullmatch(token)
-    if match is None:
-        return False
     try:
-        _datetime.strptime(match.group(1), "%Y%m%d")
-    except ValueError:
+        return parse_approval_reference(token).kind is ApproverKind.OWNER
+    except ApprovalError:
         return False
-    return True
 
 
 def validate_manual_resolution(
@@ -196,16 +197,25 @@ def validate_manual_resolution(
         raise ManualResolutionError("--evidence is required")
     if not owner_approval.strip():
         raise ManualResolutionError("--owner-approval is required")
-    if not is_owner_approval_reference(owner_approval.strip()):
+    try:
+        require_gate_allowed(
+            parse_approval_reference(owner_approval.strip()), OwnerGate.RESOLVE_RESERVATION_MANUALLY
+        )
+    except ApprovalError:
         raise ManualResolutionError(
             "--owner-approval must be an owner approval reference like OWNER-<yyyymmdd>-<id> "
             "(valid date, id of 6-64 chars [A-Za-z0-9_-]). This is a format check for "
-            "traceability, not authentication"
-        )
+            "traceability, not authentication. An agent-delegated approval (AGENT-…:OWNER-…) "
+            "does not satisfy this gate"
+        ) from None
     if not actor.strip():
         raise ManualResolutionError("--actor is required")
+    try:
+        stored_actor = format_approver(ApproverKind.OWNER, actor)
+    except ApprovalError as exc:
+        raise ManualResolutionError(f"--actor is invalid: {exc}") from exc
     fingerprint = hashlib.sha256(owner_approval.strip().encode()).hexdigest()[:16]
-    return ManualResolution(verdict, evidence.strip(), fingerprint, actor.strip())
+    return ManualResolution(verdict, evidence.strip(), fingerprint, stored_actor)
 
 
 def request_id_from_ref(ref: str | None) -> str | None:

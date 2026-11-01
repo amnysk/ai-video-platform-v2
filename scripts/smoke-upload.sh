@@ -75,7 +75,7 @@ PIDS+=($!)
 sleep 4
 kill -0 "${PIDS[-1]}" 2>/dev/null || { echo "NG: worker exited" >&2; tail -20 "$LOG_DIR/worker.log" >&2; exit 1; }
 
-code=$(curl -sS -o "$LOG_DIR/post.json" -w '%{http_code}' -X POST "$API/episodes/$EPISODE_ID/upload")
+code=$(curl -sS -o "$LOG_DIR/post.json" -w '%{http_code}' -X POST -H "Authorization: Bearer ${AVP_API_TOKEN:?AVP_API_TOKEN is required: mutating API routes need a bearer token (ADR-0080)}" "$API/episodes/$EPISODE_ID/upload")
 [ "$code" = 202 ] || { echo "NG: POST upload -> $code $(cat "$LOG_DIR/post.json")" >&2; exit 1; }
 echo "POST upload : $code"
 
@@ -95,7 +95,7 @@ echo "status : uploaded"
 result=$(py verify "$EPISODE_ID")
 echo "verify : $result"
 
-code=$(curl -sS -o "$LOG_DIR/post2.json" -w '%{http_code}' -X POST "$API/episodes/$EPISODE_ID/upload")
+code=$(curl -sS -o "$LOG_DIR/post2.json" -w '%{http_code}' -X POST -H "Authorization: Bearer ${AVP_API_TOKEN:?AVP_API_TOKEN is required: mutating API routes need a bearer token (ADR-0080)}" "$API/episodes/$EPISODE_ID/upload")
 [ "$code" = 409 ] || { echo "NG: re-POST upload -> $code (want 409)" >&2; exit 1; }
 echo "re-POST : 409 $(cat "$LOG_DIR/post2.json")"
 sleep 3

@@ -21,8 +21,12 @@ from contracts.artifact_refs import (
 )
 from contracts.music import BGM_TRACK_ID_PATTERN, DuckingPolicy, VideoFormat
 
-BGM_MIX_VERSION = 1
+#: 2: cue に ``source_offset_ms`` を足した（正準 JSON の形が変わる。ADR-0083 §4）。
+BGM_MIX_VERSION = 2
 BGM_EVIDENCE_SCHEMA_VERSION = "1.0"
+#: 証跡の object key の型（``artifacts/{episode}/bgm_render_evidence/{結び付け id}.json``）。
+#: key の組み立ては ``infrastructure.music.evidence.bgm_evidence_key``（唯一の口。ADR-0086）
+BGM_EVIDENCE_OBJECT_TYPE = "bgm_render_evidence"
 #: 結線を有効にする設定キー（``Settings.bgm_enabled``）。既定は OFF。
 BGM_SETTING_KEY = "bgm_enabled"
 
@@ -33,6 +37,13 @@ BGM_NARRATION_PRIORITY_MAX_DB = -12
 LOUDNESS_INTEGRATED_MIN_CENTI = -2400
 LOUDNESS_INTEGRATED_MAX_CENTI = -900
 LOUDNESS_TRUE_PEAK_MAX_CENTI = -100
+
+#: 発話中の「声 - BGM」のラウドネス差の下限（1/100 LU）。**ここが唯一の定義**（ADR-0083 §5）。
+#: 実素材（本番 Episode の声 5 本 + 合成 BGM）の実測で置いた暫定値で、実際の曲では再校正する。
+SPEECH_MARGIN_MIN_CENTI_LU = 1200
+#: 声のラウドネスの基準（LUFS 1/100）。曲の ``cue level_db`` は「曲を基準音量に正規化した上での」
+#: 声との相対値で、planner は ``BgmTrack.loudness_lufs`` とこの基準の差を補正する（ADR-0083 §3）。
+VOICE_REFERENCE_LUFS_CENTI = -1650
 
 BGM_LOUDNESS_CHECK_NAME = "bgm_loudness"
 
@@ -61,6 +72,8 @@ class BgmMixCue(FrozenModel):
     license_evidence_hash: str = Field(pattern=SHA256_HEX_PATTERN)
     start_ms: StrictInt = Field(ge=0)
     end_ms: StrictInt = Field(gt=0)
+    #: 曲の何 ms 目から鳴らすか（``MusicCue.source_offset_ms`` をそのまま運ぶ）
+    source_offset_ms: StrictInt = Field(default=0, ge=0)
     fade_in_ms: StrictInt = Field(ge=0)
     fade_out_ms: StrictInt = Field(ge=0)
     #: 声を基準 0 とした dB（``BGM_NARRATION_PRIORITY_MAX_DB`` 以下）
@@ -71,7 +84,7 @@ class BgmMixCue(FrozenModel):
 class BgmMixPlan(FrozenModel):
     """BGM の混合計画。**この正準 JSON が render の input_hash に入る**。"""
 
-    mix_version: Literal[1] = BGM_MIX_VERSION
+    mix_version: Literal[2] = BGM_MIX_VERSION
     cues: tuple[BgmMixCue, ...] = Field(min_length=1)
 
     def identity_payload(self) -> dict[str, object]:
@@ -95,6 +108,25 @@ class LoudnessVerdict(FrozenModel):
     true_peak_max_centi: int = LOUDNESS_TRUE_PEAK_MAX_CENTI
 
 
+class SpeechMarginScene(FrozenModel):
+    """発話区間 1 つ分の実測。``music_lufs_centi=None`` は BGM が鳴っていない（余裕は無限）。"""
+
+    scene_id: str = Field(pattern=SCRIPT_SCENE_ID_PATTERN)
+    voice_lufs_centi: int | None
+    music_lufs_centi: int | None
+    #: ``voice - music``（1/100 LU）。どちらかが測れないときは ``None``
+    margin_centi_lu: int | None
+
+
+class SpeechIntelligibility(FrozenModel):
+    """発話中の声と BGM の差（ナレーションの聞き取りやすさ）。各 scene の発話区間で測る。"""
+
+    scenes: tuple[SpeechMarginScene, ...] = Field(min_length=1)
+    min_margin_centi_lu: int | None
+    threshold_centi_lu: int
+    passed: bool
+
+
 class BgmEvidenceTrack(FrozenModel):
     track_id: str = Field(pattern=BGM_TRACK_ID_PATTERN)
     source_sha256: str = Field(pattern=SHA256_HEX_PATTERN)
@@ -115,12 +147,15 @@ class BgmRenderEvidence(FrozenModel):
     tracks: tuple[BgmEvidenceTrack, ...] = Field(min_length=1)
     credit_lines: tuple[str, ...]
     loudness: LoudnessVerdict
+    #: 発話中の声と BGM の差の実測（render が測れたときだけ。``None`` は未測定 = 品質検査は REVIEW）
+    speech: SpeechIntelligibility | None = None
 
     def model_post_init(self, __context: object) -> None:
         check_canonical_uuid(self.episode_id)
 
 
 __all__ = [
+    "BGM_EVIDENCE_OBJECT_TYPE",
     "BGM_VIDEO_FORMAT_BY_PROFILE_ID",
     "BGM_EVIDENCE_SCHEMA_VERSION",
     "BGM_LOUDNESS_CHECK_NAME",
@@ -130,6 +165,8 @@ __all__ = [
     "LOUDNESS_INTEGRATED_MAX_CENTI",
     "LOUDNESS_INTEGRATED_MIN_CENTI",
     "LOUDNESS_TRUE_PEAK_MAX_CENTI",
+    "SPEECH_MARGIN_MIN_CENTI_LU",
+    "VOICE_REFERENCE_LUFS_CENTI",
     "BgmEvidenceTrack",
     "BgmMixCue",
     "BgmMixPlan",
@@ -137,4 +174,6 @@ __all__ = [
     "LoudnessMeasurement",
     "LoudnessReason",
     "LoudnessVerdict",
+    "SpeechIntelligibility",
+    "SpeechMarginScene",
 ]

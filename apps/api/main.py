@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from apps.api.dependencies import build_wired_quality_service, get_quality_service
 from apps.api.routers import episodes, research
 from contracts.log_contract import EventName, Outcome
 from infrastructure.logging.asgi import RequestLoggingMiddleware
@@ -40,7 +41,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
 
 
-def create_app() -> FastAPI:
+def create_app(*, wire_quality_service: bool = False) -> FastAPI:
     app = FastAPI(
         title="ai-video-platform-v2 API",
         version="0.1.0",
@@ -49,6 +50,9 @@ def create_app() -> FastAPI:
     )
     # 1リクエスト = api.request.completed（uvicorn の access log の置き換え / ADR-0040 §1）
     app.add_middleware(RequestLoggingMiddleware)
+    if wire_quality_service:
+        # 本番の app だけ。flag OFF なら build_wired_quality_service は None（従来どおり）
+        app.dependency_overrides[get_quality_service] = build_wired_quality_service
     app.include_router(episodes.router)
     # ADR-0037 §8.5: Research の受け付け・再開・参照（追加だけ。Episode の API は変えない）
     app.include_router(research.router)
@@ -60,4 +64,4 @@ def create_app() -> FastAPI:
     return app
 
 
-app = create_app()
+app = create_app(wire_quality_service=True)

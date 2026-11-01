@@ -16,9 +16,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
+from apps.api.auth import Actor, ApiActor, get_upload_approver, require_api_actor
 from apps.api.dependencies import (
     get_quality_clock,
     get_quality_providers,
+    get_quality_service,
     get_session_factory,
     get_settings,
     get_workflow_starter,
@@ -50,6 +52,7 @@ from contracts.states import (
     ProviderCall,
 )
 from domain.pipeline.resume_plan import ReservationSummary, ResumePlan, build_resume_plan
+from domain.quality.approval import UploadApprover, review_release_refusal
 from domain.quality.deterministic import CheckProvider, QualityInputs, assess_for_manual_upload
 from infrastructure.config import Settings
 from infrastructure.db.provider_health_repositories import PostgresProviderHealth
@@ -61,16 +64,20 @@ from infrastructure.db.repositories import (
 )
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.logging.quality_decision import log_quality_decision
+from infrastructure.quality.service import QualityGateService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/episodes", tags=["episodes"])
+# 変更系は全て認証が要る（ADR-0080 §B / INV-124）。読み取りは通す
+router = APIRouter(prefix="/episodes", tags=["episodes"], dependencies=[Depends(require_api_actor)])
 
 SessionFactory = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 Starter = Annotated[WorkflowStarter, Depends(get_workflow_starter)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 QualityProviders = Annotated[Sequence[CheckProvider], Depends(get_quality_providers)]
 QualityClock = Annotated[Callable[[], datetime], Depends(get_quality_clock)]
+QualityService = Annotated[QualityGateService | None, Depends(get_quality_service)]
+UploadApproverDep = Annotated[UploadApprover | None, Depends(get_upload_approver)]
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=CreateEpisodeResponse)
@@ -256,6 +263,9 @@ async def start_upload(
     settings: AppSettings,
     quality_providers: QualityProviders,
     quality_clock: QualityClock,
+    actor: ApiActor,
+    quality_service: QualityService,
+    approver: UploadApproverDep,
 ) -> StartUploadResponse:
     """upload 工程を起動するだけ（INV-16 / ADR-0020）。本文は受け取らない。
 
@@ -296,9 +306,12 @@ async def start_upload(
                 ),
             )
     if settings.quality_gate_enforce:
-        await _require_quality_for_manual_upload(
-            episode.id, session_factory, quality_providers, quality_clock
-        )
+        if quality_service is not None:
+            await _require_recorded_quality_for_manual_upload(episode.id, quality_service, approver)
+        else:
+            await _require_quality_for_manual_upload(
+                episode.id, session_factory, quality_providers, quality_clock, actor
+            )
     try:
         workflow_id = await starter.start_upload_workflow(episode_id=episode.id)
     except WorkflowAlreadyStartedError as exc:
@@ -311,13 +324,59 @@ async def start_upload(
     )
 
 
+async def _require_recorded_quality_for_manual_upload(
+    episode_id: str, service: QualityGateService, approver: UploadApprover | None
+) -> None:
+    """検査記録に基づく手動投稿の判定（ADR-0081 §9）。
+
+    BLOCK・作成失敗・欠落は 409。REVIEW は所有者の承認がある場合だけ解放し、承認を DB に記録してから
+    進む（記録できなければ起動しない）。エージェントの委任承認・承認者不明は 403。
+    """
+    outcome = await service.evaluate(episode_id, manual=True)
+    log_quality_decision(
+        logger,
+        path="manual",
+        episode_id=episode_id,
+        final_video_sha256=outcome.final_video_sha256 or "",
+        rule_version=QUALITY_RULE_VERSION,
+        assessment=outcome.assessment,
+    )
+    if not outcome.assessment.decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"quality: {outcome.assessment.decision.reason_code.value}",
+        )
+    if not outcome.assessment.review_approved:
+        return
+    refusal = review_release_refusal(approver)
+    if refusal is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=f"quality: {refusal.value}"
+        )
+    assert approver is not None
+    try:
+        await service.record_manual_approval(outcome, episode_id=episode_id, approver=approver)
+    except Exception as exc:  # noqa: BLE001 - 承認を記録できないものは通さない
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"quality: {QualityReason.REPORT_PRODUCTION_FAILED.value}",
+        ) from exc
+
+
 async def _require_quality_for_manual_upload(
     episode_id: str,
     session_factory: SessionFactory,
     providers: Sequence[CheckProvider],
     clock: Callable[[], datetime],
+    actor: Actor | None,
 ) -> None:
-    """flag ON の手動投稿: BLOCK・作成失敗は 409。REVIEW は承認としてログに残す（ADR-0076 §4）。"""
+    """flag ON の手動投稿: BLOCK・作成失敗は 409。REVIEW は所有者トークンの承認だけ。
+
+    ADR-0076 §4 / ADR-0080。
+
+    エージェントのトークンは REVIEW を承認できない（人の承認とみなす根拠が無い）。承認は actor と
+    ともにログに残す。
+    """
     try:
         async with session_factory() as session:
             hashes = await ArtifactMetadataRepository(session).find_current_hashes(
@@ -339,6 +398,7 @@ async def _require_quality_for_manual_upload(
             final_video_sha256=sha256,
             rule_version=QUALITY_RULE_VERSION,
             assessment=assessment,
+            actor=actor.value if actor is not None else None,
         )
     except Exception as exc:  # noqa: BLE001 - fail-closed: 判定できないものは通さない
         raise HTTPException(
@@ -349,6 +409,10 @@ async def _require_quality_for_manual_upload(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"quality: {assessment.decision.reason_code.value}",
+        )
+    if assessment.review_approved and actor is not Actor.OWNER:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="quality: review_requires_owner"
         )
 
 
