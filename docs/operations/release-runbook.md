@@ -33,7 +33,10 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
 3b. **API の token ファイル**（ADR-0080 §B。preflight の必須チェック `api_token_file`）。無いまま deploy すると API の
    変更系ルートは全て 503 になる。作り方・権限・compose の渡し方は `docs/operations/api-auth.md`。preflight は
    `${AVP_API_SECRETS_DIR:-$HOME/.config/avp2/api}/tokens` が在る・通常ファイル・0600・`AVP_UID` の所有・
-   owner と agent の token を含む、を確かめる（token の中身は読み出さず、出力しない）。BLOCKED なら先に直す
+   owner と agent の token を含む、を確かめる（token の中身は読み出さず、出力しない）。BLOCKED なら先に直す。
+   所有者が無認証で deploy すると決めたとき（家庭内 LAN・単独利用）は、対象の `.env` に `AVP_API_AUTH_MODE=disabled` を
+   書く。このときだけ `api_token_file` は PASS（"api auth disabled by owner decision"）。プロセス環境と `.env` が
+   食い違えば UNKNOWN。既定は `required`（ADR-0080 追補 2026-11-01）
 4. バックアップ manifest（`python scripts/backup.py run` の出力 `<root>/<backup_id>/manifest.json` を渡す。
    DB dump / MinIO / Temporal 各 24h 以内。`--backup-max-age-hours` は最大 720。形式の最小形）:
    `{"components": {"db_dump": {"created_at": "<ISO8601 with TZ>"}, "minio": {...}, "temporal": {...}}}`

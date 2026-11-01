@@ -21,6 +21,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "AVP_UID",
         "AVP_API_SECRETS_DIR",
         "AVP_API_OWNER_TOKEN_PATH",
+        "AVP_API_AUTH_MODE",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("AVP_API_OWNER_SECRETS_DIR", raising=False)
@@ -109,3 +110,27 @@ def test_a_separate_owner_file_is_probed_when_configured(tmp_path: Path) -> None
     assert probe.problem is None and probe.actors == ("agent", "owner")
     owner_file.chmod(0o644)
     assert RealCollectors(repo).api_token_probe().problem is not None
+
+
+def test_the_probe_reads_the_auth_mode_from_the_dotenv(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, "AVP_API_AUTH_MODE=disabled\n")
+    assert RealCollectors(repo).api_token_probe().auth_mode == "disabled"
+    (tmp_path / "x").mkdir()
+    assert RealCollectors(_repo(tmp_path / "x")).api_token_probe().auth_mode is None
+
+
+def test_an_auth_mode_in_the_process_environment_that_differs_from_the_dotenv_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path, "AVP_API_AUTH_MODE=disabled\n")
+    monkeypatch.setenv("AVP_API_AUTH_MODE", "required")
+    with pytest.raises(CollectorUnavailable):
+        RealCollectors(repo).api_token_probe()
+
+
+def test_a_matching_process_environment_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path, "AVP_API_AUTH_MODE=disabled\n")
+    monkeypatch.setenv("AVP_API_AUTH_MODE", "disabled")
+    assert RealCollectors(repo).api_token_probe().auth_mode == "disabled"

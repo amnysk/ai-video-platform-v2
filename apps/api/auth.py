@@ -25,7 +25,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request, status
 
 from apps.api.dependencies import get_settings
-from contracts.approval import ApproverKind
+from contracts.approval import API_AUTH_MODE_ENV, ApiAuthMode, ApproverKind
 from contracts.log_contract import EventName
 from domain.quality.approval import UploadApprover
 from infrastructure.api_tokens import TOKEN_MIN_LENGTH, read_token_file
@@ -127,10 +127,29 @@ def get_api_token_source(settings: Annotated[Settings, Depends(get_settings)]) -
 
 
 async def require_api_actor(
-    request: Request, source: Annotated[TokenSource, Depends(get_api_token_source)]
+    request: Request,
+    source: Annotated[TokenSource, Depends(get_api_token_source)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> Actor | None:
-    """変更系ルートの認証。読み取りは通す（None）。未設定は 503、不正は 401。"""
+    """変更系ルートの認証。読み取りは通す（None）。未設定は 503、不正は 401。
+
+    ``AVP_API_AUTH_MODE=disabled``（所有者の明示。ADR-0080 追補）なら token ファイルを読まず通す。
+    actor は None なので ``get_upload_approver`` も None（REVIEW は解放されない）。
+    """
     if request.method in SAFE_METHODS:
+        return None
+    if settings.api_auth_mode is ApiAuthMode.DISABLED:
+        with log_guard():
+            emit(
+                logger,
+                EventName.LOG_RECORD,
+                logging.INFO,
+                "api authentication disabled by %s=disabled: %s %s",
+                API_AUTH_MODE_ENV,
+                request.method,
+                request.url.path,
+                attributes={"auth_mode": ApiAuthMode.DISABLED.value, "method": request.method},
+            )
         return None
     tokens = source()
     if tokens.is_empty():

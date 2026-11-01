@@ -30,7 +30,7 @@ from infrastructure.db.repositories import EpisodeRepository, ProviderReservatio
 from infrastructure.production.paid_job import PaidJobRunner, PaidJobSpec, Submitted
 from infrastructure.workdir import WorkDirectory
 from tests.support.log_capture import capture_json
-from tests.support.monthly_cap import count_rows, reserve_capped, seed
+from tests.support.monthly_cap import count_rows, reserve_capped, seed, this_month_seed_at
 from tests.support.production import FakeImageGenerator
 
 D = Decimal
@@ -75,7 +75,7 @@ async def _episode_rows(session_factory, spec):
 
 
 async def test_a_submit_within_the_cap_goes_through(session_factory, artifact_store, tmp_path):
-    await seed(session_factory, "10")
+    await seed(session_factory, "10", reserved_at=this_month_seed_at())
     spec = await _spec(session_factory)
     gen = FakeImageGenerator(cost_usd=5.0)
     outcome = await _runner(session_factory, artifact_store, tmp_path).submit(spec, gen, REQUEST)
@@ -85,7 +85,7 @@ async def test_a_submit_within_the_cap_goes_through(session_factory, artifact_st
 
 
 async def test_exactly_at_the_cap_goes_through(session_factory, artifact_store, tmp_path):
-    await seed(session_factory, "55")
+    await seed(session_factory, "55", reserved_at=this_month_seed_at())
     spec = await _spec(session_factory)
     gen = FakeImageGenerator(cost_usd=5.0)
     outcome = await _runner(session_factory, artifact_store, tmp_path).submit(spec, gen, REQUEST)
@@ -95,7 +95,7 @@ async def test_exactly_at_the_cap_goes_through(session_factory, artifact_store, 
 async def test_over_the_cap_holds_for_credits_with_no_row_and_no_fal_call(
     session_factory, artifact_store, tmp_path
 ):
-    await seed(session_factory, "58")
+    await seed(session_factory, "58", reserved_at=this_month_seed_at())
     spec = await _spec(session_factory)
     gen = FakeImageGenerator(cost_usd=5.0)
     runner = _runner(session_factory, artifact_store, tmp_path)
@@ -128,7 +128,7 @@ async def test_the_cap_hold_is_needs_input_so_the_workflow_ends_normally() -> No
 async def test_the_cap_hold_is_idempotent_per_scene_and_resumable_after_raising_the_budget(
     session_factory, artifact_store, tmp_path
 ):
-    await seed(session_factory, "58")
+    await seed(session_factory, "58", reserved_at=this_month_seed_at())
     spec = await _spec(session_factory)
     for _ in range(3):
         with pytest.raises(ProviderBudgetHeldError):
@@ -148,7 +148,9 @@ async def test_the_cap_hold_is_idempotent_per_scene_and_resumable_after_raising_
 async def test_the_cap_covers_the_video_path_too(
     session_factory, artifact_store, tmp_path, provider
 ):
-    await seed(session_factory, "60", provider=ProviderCall.FAL_VIDEO)
+    await seed(
+        session_factory, "60", provider=ProviderCall.FAL_VIDEO, reserved_at=this_month_seed_at()
+    )
     spec = await _spec(session_factory, provider=provider)
     gen = FakeImageGenerator(cost_usd=0.01)
     with pytest.raises(ProviderMonthlyBudgetExceededError):
@@ -183,7 +185,7 @@ async def test_an_unknown_estimate_fails_closed(session_factory, artifact_store,
 async def test_a_null_estimate_row_in_the_month_fails_closed(
     session_factory, artifact_store, tmp_path
 ):
-    await seed(session_factory, None)
+    await seed(session_factory, None, reserved_at=this_month_seed_at())
     spec = await _spec(session_factory)
     gen = FakeImageGenerator(cost_usd=1.0)
     with pytest.raises(ProviderBudgetHeldError):

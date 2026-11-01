@@ -237,6 +237,8 @@ class ApiTokenProbe:
     expected_uid: int | None
     #: 読めた token の actor（``owner`` / ``agent``）。owner 別ファイルがあれば合算
     actors: tuple[str, ...]
+    #: 対象環境の ``AVP_API_AUTH_MODE`` の生の値（``.env``。ADR-0080 追補）。未設定は None
+    auth_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1587,6 +1589,13 @@ def _check_flags_against_approval(
 def _check_api_tokens(c: Collectors) -> CheckResult:
     """API の token ファイルが在り、API が受け付ける権限・所有者・内容か（読み取りのみ）。"""
     p = c.api_token_probe()
+    if (p.auth_mode or "").strip().strip("\"'").lower() == "disabled":
+        return CheckResult(
+            CHECK_API_TOKENS,
+            Status.PASS,
+            "api auth disabled by owner decision (AVP_API_AUTH_MODE=disabled)",
+            {"auth_mode": "disabled"},
+        )
     if not p.exists:
         return CheckResult(
             CHECK_API_TOKENS,

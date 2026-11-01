@@ -1367,6 +1367,15 @@ ADR-0084 が既存 Activity の内側へ結線した。OFF の同一性は INV-1
 / `tests/unit/test_api_auth.py::test_review_is_approved_by_the_owner_token_but_never_by_the_agent_token`
 / `tests/unit/test_api_auth.py::test_a_passing_report_lets_the_agent_token_upload`
 
+（INV-124 追補 2026-11-01）所有者が `AVP_API_AUTH_MODE=disabled` と**明示した**ときだけ、変更系の bearer 認証を外す
+（ADR-0080 追補。家庭内 LAN・単独利用）。既定は `required`。未設定・綴り違い・未知の値は `required`（fail closed）。
+disabled では actor は None で、手動投稿の REVIEW は解放されない（INV-125）。課金の安全装置は変えない。
+**機械検査**: `tests/unit/test_api_auth_mode.py::test_only_an_explicit_disabled_turns_authentication_off`
+/ `tests/unit/test_api_auth_mode.py::test_any_other_value_stays_required_and_does_not_stop_the_boot`
+/ `tests/unit/test_api_auth_mode.py::test_required_with_no_tokens_is_still_503`
+/ `tests/unit/test_api_auth_mode.py::test_disabled_lets_a_mutation_through_without_reading_any_token_file`
+/ `tests/unit/test_api_auth_mode.py::test_an_unauthenticated_request_never_becomes_an_approver`
+
 （INV-123 追補）release 承認の `enables` は必須（明示的な空 = 新機能 OFF）。preflight は対象環境の `.env` の新機能 flag
 （`contracts/release.py::FEATURE_FLAG_ENV_KEYS`: `AVP_QUALITY_GATE_ENFORCE` / `BGM_ENABLED` / `GEO_MAPS_ENABLED` /
 `AVP_UPLOAD_DESCRIPTION_COMPOSED`）を読み、1 つでも ON なら委任された承認を BLOCKED にする。

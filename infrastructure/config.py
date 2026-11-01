@@ -8,6 +8,7 @@ from decimal import Decimal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from contracts.approval import API_AUTH_MODE_ENV, ApiAuthMode, parse_api_auth_mode
 from contracts.pipeline import (
     DAILY_SCHEDULE_ID,
     DEFAULT_DAILY_EPISODE_LIMIT,
@@ -182,6 +183,11 @@ class Settings(BaseSettings):
     api_owner_token_file: str | None = Field(
         default=None, validation_alias="AVP_API_OWNER_TOKEN_PATH"
     )
+    #: API 認証方式（ADR-0080 追補）。``disabled`` と明示されたときだけ無認証。それ以外（未設定・
+    #: 綴り違い・未知の値）は ``required``（fail closed。起動は妨げない）
+    api_auth_mode: ApiAuthMode = Field(
+        default=ApiAuthMode.REQUIRED, validation_alias=API_AUTH_MODE_ENV
+    )
     #: resumable upload の chunk（256 KiB の倍数）
     youtube_chunk_bytes: int = DEFAULT_UPLOAD_CHUNK_BYTES
 
@@ -256,6 +262,12 @@ class Settings(BaseSettings):
     def fal_budget(self) -> BudgetDecision:
         """ローカル月間予算の判定（ADR-0061）。worker は起動時に 1 回だけ読む。"""
         return evaluate_budget(self.fal_monthly_budget_usd)
+
+    @field_validator("api_auth_mode", mode="before")
+    @classmethod
+    def _api_auth_mode_fails_closed(cls, v: object) -> ApiAuthMode:
+        """``disabled`` 以外は全て ``required``。API は起動し、変更系は認証を要求する。"""
+        return parse_api_auth_mode(v)
 
     @field_validator("research_provider", mode="before")
     @classmethod

@@ -26,6 +26,16 @@ NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
 SEED_AT = datetime(2026, 10, 10, 8, 0, tzinfo=UTC)
 CAP = Decimal("60")
 
+
+def this_month_seed_at() -> datetime:
+    """実時計（``paid_job`` は ``datetime.now(UTC)`` で月を数える）の現在の月に入る reserved_at。
+
+    固定日付の ``SEED_AT`` は、実時計が翌月になると前月の行になり cap が働かなくなる。
+    月境界でのずれを避けるため、現在時刻そのものを使う。
+    """
+    return datetime.now(UTC)
+
+
 #: 費用区分 → その区分の行を作る手順。区分の導出は ``cost_state`` が行うので、
 #: 種まきの正しさは ``test_seeded_rows_have_the_intended_cost_state`` が確かめる
 SEEDABLE_STATES: tuple[str, ...] = (
