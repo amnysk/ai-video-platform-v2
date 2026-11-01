@@ -149,6 +149,7 @@ Render は完成動画 1 本ごとに `GeoRenderEvidence` を MinIO に保存す
 （属性アクセスの AST 検査）が守る。
 `compose.yaml` / `.env.example` には**出さない**（既存の `test_the_flag_is_not_exposed_in_any_deployment_file`
 が 0 件を要求。有効化の判断時にオーナーが compose へ通し、その検査を ADR で更新する）。
+**追補（2026-11-02, R3）**: compose は `${GEO_MAPS_ENABLED:-false}` として渡す（既定 OFF。`contracts/release.py::FEATURE_FLAG_SERVICES`）。検査は `test_the_flag_is_exposed_only_as_an_off_default_in_compose` に置き換えた。ON は `.env` で所有者が行う。
 
 有効化の前提（起動時に `require_quality_gate` が検査し、満たさなければ worker が起動しない）:
 `AVP_QUALITY_GATE_ENFORCE=true`（拒否された地図の投稿を止めるのが品質ゲートなので）。加えて運用の前提:
