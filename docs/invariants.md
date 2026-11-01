@@ -1441,6 +1441,11 @@ gate を過不足なく含まなければ書けない・読んでも無効。技
 / `tests/unit/test_quality_approval_and_wiring.py::test_anything_unknown_is_refused_and_never_raises`
 / `tests/unit/test_quality_gate_service.py::test_only_a_known_owner_can_have_an_approval_recorded`
 
+（INV-129 追補 2026-11-02）API 認証が無効（`AVP_API_AUTH_MODE=disabled`）のとき、REVIEW を解放する経路は所有者の host CLI
+`scripts/quality-approve.py`（`--owner-approval OWNER-…` と `--execute`）だけ。委任（`AGENT-…`）は拒否し、承認の記録は同じ
+`start_upload` を通す（承認が書けなければ起動しない）。新しい不変条件は足さない。
+**機械検査**: `tests/unit/test_quality_approve_script.py`（各テストの理由は `docs/testing/quality-approve-rationale.md`）
+
 ### INV-130 `AVP_QUALITY_GATE_ENFORCE` が OFF（既定）のとき、gate・手動経路は検査記録を読まず書かず、挙動は導入前と同一
 OFF ではサービスを組み立てず（`build_quality_service` は `None`。MinIO クライアントも作らない）、`upload_gate`・
 `start_upload` は記録の表に触れない。migration 0019 を適用しても OFF の挙動は変わらない。ON でもサービスが結線されていない
