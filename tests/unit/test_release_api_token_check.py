@@ -69,3 +69,20 @@ def test_one_blocked_token_check_makes_the_whole_report_blocked() -> None:
     fake = Fake()
     fake.token_probe = _good_token_probe(exists=False, problem="absent", actors=())
     assert _run(fake).overall is rp.Overall.BLOCKED
+
+
+# ---- AVP_API_AUTH_MODE=disabled（ADR-0080 追補 2026-11-01）
+
+
+def test_an_owner_disabled_auth_passes_without_a_token_file() -> None:
+    result = _result(
+        exists=False, problem="absent", mode=None, uid=None, actors=(), auth_mode="disabled"
+    )
+    assert result.status is rp.Status.PASS
+    assert result.detail == ("api auth disabled by owner decision (AVP_API_AUTH_MODE=disabled)")
+
+
+@pytest.mark.parametrize("mode", [None, "required", "off", ""])
+def test_anything_but_an_explicit_disabled_keeps_the_token_check(mode) -> None:
+    result = _result(exists=False, problem="absent", mode=None, uid=None, actors=(), auth_mode=mode)
+    assert result.status is rp.Status.BLOCKED

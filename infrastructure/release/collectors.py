@@ -19,6 +19,7 @@ from typing import Any
 
 from sqlalchemy.engine import make_url
 
+from contracts.approval import API_AUTH_MODE_ENV
 from contracts.release import FEATURE_FLAG_ENV_KEYS
 from domain.provider.reconciliation import request_id_from_ref
 from domain.release_preflight import (
@@ -298,6 +299,12 @@ class RealCollectors:
         def setting(key: str) -> str | None:
             return _dotenv_value(self._repo / ".env", key) or os.environ.get(key) or None
 
+        auth_from_file = _dotenv_value(self._repo / ".env", API_AUTH_MODE_ENV)
+        auth_from_env = os.environ.get(API_AUTH_MODE_ENV)
+        if auth_from_env is not None and auth_from_env.strip().strip("\"'") != auth_from_file:
+            raise CollectorUnavailable(
+                f"{API_AUTH_MODE_ENV}: process environment differs from the repo .env"
+            )
         home = pathlib.Path(os.environ.get("HOME", "~")).expanduser()
         shared_dir = pathlib.Path(setting("AVP_API_SECRETS_DIR") or home / ".config/avp2/api")
         shared = read_token_file(str(shared_dir / "tokens"))
@@ -312,6 +319,7 @@ class RealCollectors:
                 shared.uid,
                 expected_uid,
                 (),
+                auth_from_file,
             )
         actors = {name for name, _t in shared.entries}
         problem: str | None = None
@@ -331,6 +339,7 @@ class RealCollectors:
             shared.uid,
             expected_uid,
             tuple(sorted(actors)),
+            auth_from_file,
         )
 
     def unhealthy_services(self) -> list[str]:

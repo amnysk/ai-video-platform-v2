@@ -86,3 +86,28 @@ Episode（本番に 15 件）は API の `/resume` で再開でき、月が替�
 ## 影響を受ける不変条件
 
 INV-123（承認の種別）、INV-124・125（API 認証）。ADR-0076 §4（手動投稿の REVIEW は許可）を、REVIEW の承認は owner トークンだけに狭める。
+
+## Amendment 2026-11-01: 明示的な無認証モード（`AVP_API_AUTH_MODE=disabled`）
+
+**所有者の判断**: 本番は家庭内 LAN・単独利用。Phase 3 の deploy で API token ファイルを作らない。
+
+- 設定 `AVP_API_AUTH_MODE`（`contracts/approval.py::ApiAuthMode` が唯一の定義）。`required`（**既定**）/ `disabled`。
+  `disabled` と明示したときだけ `require_api_actor` が token ファイルを読まずに変更系を通す（actor は None）。
+  変更系ごとに「`AVP_API_AUTH_MODE=disabled` で認証が無効」の構造化ログを 1 行出す（secret なし）。
+- **fail closed**: 未設定・空・綴り違い・未知の値は全て `required`。設定検証エラーにはしない（API は起動する。
+  Research Provider と同じ方針）。`required` の挙動（token 無し 503 / 不正 401）は不変。
+- actor が None のため `get_upload_approver(None)` は None のまま。品質ゲート ON でも REVIEW を無認証のリクエストは解放しない
+  （INV-125）。flag OFF では手動投稿・resume・cancel は e3c9555 と同じ（Phase 3 は flag OFF の経路に承認者を要求しない）。
+- **課金の安全装置は不変**: live-hold・未照合予約の拒否、fal 月間上限、provider-credits の所有者承認 token / 証跡 / `--apply`、
+  `RESUME_MAX_CONCURRENCY`。`scripts/provider-credits.py resume --apply` の `AVP_API_TOKEN` は元から任意で、無認証モードで動く。
+- release preflight の `api_token_file`: 対象環境の `.env` が `AVP_API_AUTH_MODE=disabled` なら PASS
+  （"api auth disabled by owner decision (AVP_API_AUTH_MODE=disabled)"）。プロセス環境と `.env` が食い違えば UNKNOWN。
+  他のチェックは緩めない。
+- **リスク**: LAN 上の誰でも、e3c9555 と同じく変更系ルートを呼べる（認証の層は無い）。API の port の公開範囲を
+  LAN 内に留めるのは所有者の責任。token ファイルを後から作れば、`AVP_API_AUTH_MODE` を外すだけで INV-124 の保護に戻る。
+- rule 8 の件数（`grep -rn "AVP_API_AUTH_MODE\|api_auth_mode" apps/ workers/ domain/ infrastructure/ contracts/ scripts/ compose*.yaml`、
+  tests と docs を除く）: 定義 2（`contracts/approval.py`、`infrastructure/config.py`）、書き手 1（`compose.yaml`）、
+  読み手 3（`apps/api/auth.py`、`infrastructure/release/collectors.py` が `.env`/環境から、`domain/release_preflight.py` が probe 経由）、
+  無関係 0。`workers/` `scripts/` は 0 件（resume スクリプトは API の認証方式を読まない）。
+
+影響を受ける不変条件: INV-124（追補）。新しい不変条件は足さない。

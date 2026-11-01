@@ -202,6 +202,8 @@ services:
       # host 側は ${AVP_API_SECRETS_DIR:-$HOME/.config/avp2/api}/tokens（0600、AVP_UID の所有）。
       # release preflight の api_token_file が deploy 前に存在と権限を確かめる
       AVP_API_TOKENS_PATH: /run/avp-secrets/api/tokens
+      # ADR-0080 追補 2026-11-01: 認証方式。既定 required。disabled は所有者の明示（家庭内 LAN・単独利用）のときだけ
+      AVP_API_AUTH_MODE: ${AVP_API_AUTH_MODE:-required}
       # 任意: owner token を別ファイルにする（deploy/api-owner-token.compose.yaml と .env の同名キー）。空 = 使わない
       AVP_API_OWNER_TOKEN_PATH: ${AVP_API_OWNER_TOKEN_PATH:-}
     volumes:
