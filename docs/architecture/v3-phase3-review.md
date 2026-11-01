@@ -193,6 +193,7 @@ ADR-0081 は今回の release で初めて入るので、e3c9555 には存在せ
 
 ### MINOR
 
+- **R3（解消: claude/p4-flag-wiring）.** 4 flag を読む service にだけ `${FLAG:-false}` で渡す配線（`contracts/release.py::FEATURE_FLAG_SERVICES`、契約テスト `tests/contract/test_compose_feature_flags.py`）と、preflight が `docker compose config` の解決値も見る（`.env` と食い違えば UNKNOWN）対応を入れた。手順は release-runbook 3c。以下は発見時の記述。
 - **R3.** `compose.yaml` が container へ渡す新機能 flag は `BGM_ENABLED` だけ（`AVP_QUALITY_GATE_ENFORCE`・`GEO_MAPS_ENABLED`・`AVP_UPLOAD_DESCRIPTION_COMPOSED` は無い。e3c9555 でも同じ）。
   (a) これら 3 つを ON にする手段が runbook に無い（compose の編集が要る）。(b) preflight の `feature_flag_settings` は `.env` しか見ないので、compose の override や container の env で ON にされた flag は検出されない（`enables` の強制はその分だけ穴がある）。
   修正案: preflight は `docker compose config` の解決後の `environment` を読む。flag の受け渡しを compose に明記する。
@@ -292,7 +293,7 @@ pre-deploy の必須チェック全 16 件と、通すために必要なこと�
 
 | ID | 重大度 | 内容 |
 |---|---|---|
-| R3 | MINOR（機能を ON にする前に対応） | `compose.yaml` が container に渡す新機能 flag は `BGM_ENABLED` だけ。`AVP_QUALITY_GATE_ENFORCE` / `GEO_MAPS_ENABLED` / `AVP_UPLOAD_DESCRIPTION_COMPOSED` を ON にする手段が runbook に無く、preflight の flag 検出は `.env` しか見ない（compose override での ON は検出できない） |
+| R3 | **解消**（claude/p4-flag-wiring）。元の内容: | `compose.yaml` が container に渡す新機能 flag は `BGM_ENABLED` だけ。`AVP_QUALITY_GATE_ENFORCE` / `GEO_MAPS_ENABLED` / `AVP_UPLOAD_DESCRIPTION_COMPOSED` を ON にする手段が runbook に無く、preflight の flag 検出は `.env` しか見ない（compose override での ON は検出できない） |
 | R4 | MINOR | ENFORCE を ON にする前に描画済みの動画は使用宣言が無く、永久に REVIEW |
 | R5 | MINOR | preflight の `AVP_UID` 既定 1000（誤検知は安全側） |
 | R6 | MINOR | 追加の話者マージン測定の所要時間（長尺）は未計測 |

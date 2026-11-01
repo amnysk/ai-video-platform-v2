@@ -73,8 +73,11 @@ def test_render_identity_and_filtergraph_are_byte_identical_to_before(profile: s
     assert hashlib.sha256(build_filtergraph(plan).encode()).hexdigest() == graph_sha
 
 
-def test_the_flag_is_not_exposed_in_any_deployment_file() -> None:
-    """未接続の flag を本番の env に出さない（ADR-0078）。接続する枝が変えるまで 0 件。"""
+def test_the_flag_is_exposed_only_as_an_off_default_in_compose() -> None:
+    """flag を本番の env に出すのは compose.yaml の ``${GEO_MAPS_ENABLED:-false}`` だけ（R3）。
+
+    ADR-0078 は「接続する枝が変えるまで 0 件」とした。接続（ADR-0084）後は、読む service への
+    既定 OFF の受け渡し（tests/contract/test_compose_feature_flags.py）以外のファイルには出さない。"""
     repo = pathlib.Path(__file__).resolve().parents[2]
     candidates = [
         *repo.glob("compose*.yaml"),
@@ -91,4 +94,6 @@ def test_the_flag_is_not_exposed_in_any_deployment_file() -> None:
         for p in candidates
         if "geo_maps_enabled" in p.read_text(encoding="utf-8", errors="ignore").lower()
     ]
-    assert not hits, hits
+    assert hits == ["compose.yaml"], hits
+    text = (repo / "compose.yaml").read_text(encoding="utf-8")
+    assert text.count("GEO_MAPS_ENABLED") == text.count("${GEO_MAPS_ENABLED:-false}") * 2

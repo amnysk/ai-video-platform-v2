@@ -16,8 +16,9 @@ FILES = [
     REPO / "infrastructure" / "release" / "compose_queues.py",
     REPO / "scripts" / "release-preflight.py",
 ]
-#: collector が組み立ててよい docker のサブコマンド（inspect / ps だけ。restart・up・exec は不可）
-DOCKER_SUBCOMMANDS = {"inspect", "ps"}
+#: collector が組み立ててよい docker のサブコマンド（inspect / ps / compose config だけ。
+#: restart・up・exec は不可）
+DOCKER_SUBCOMMANDS = {"inspect", "ps", "config"}
 #: git の読み取り系だけ
 GIT_SUBCOMMANDS = {"cat-file", "rev-parse", "status", "merge-base", "ls-tree", "show", "remote"}
 GH_ALLOWED_PREFIX = ("api",)
