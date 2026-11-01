@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed（オーナーの承認待ち。INV-146〜148 は本 ADR の予約）。
+Proposed（オーナーの承認待ち。INV-146〜149 は本 ADR の予約）。
 **新しい設定キーは無い**。`AVP_QUALITY_GATE_ENFORCE`（ADR-0081）・`BGM_ENABLED`（ADR-0077）・
 `GEO_MAPS_ENABLED`（ADR-0084）の既存 3 つの背後にだけ入り、すべて OFF なら DB にも MinIO にも書かず、
 挙動は結線前とバイト単位で同じ。migration なし。workflow・Activity の追加/変更なし。
@@ -47,8 +47,7 @@ render と gate と説明欄が同じ関数を使う）。object type 名は `co
 - MAP: `GeoPlan.prepared` が 1 件以上のとき **used**、`evidence_ref` = 証跡の sha256。**拒否された地図（BLOCK / REVIEW）も used**
   （使わないと宣言すると gate が検査せず BLOCK に届かない）。地図の指定が無い・`GEO_MAPS_ENABLED` が OFF は **not used**。
 - 失敗は非致命: 例外は型名だけログに出し、描画は成功のまま。宣言が無い動画は gate が REVIEW にする（PASS に倒れない）。
-- 既存の final_video を再利用する経路（同じ input_hash でスキップ）では書かない。ENFORCE を ON にする前に描画された動画は
-  宣言が無く REVIEW（手動承認の対象）。ON 後に再描画すれば宣言が付く。
+- 既存の final_video を再利用する経路（同じ input_hash でスキップ）の扱いは **追補 R4** に移した（当初は書かない設計だった）。
 
 ### 3. 発話中の声と BGM の差は render で実測する（`BGM_ENABLED` の背後）
 
@@ -125,8 +124,8 @@ API プロセスも同じ `build_quality_service` を使う。API からカタ�
 - 説明欄に載せた BGM クレジットは、lint した文と投稿した文が同一の組み立て口の結果。
 
 悪い結果・引き受けた負債:
-- ENFORCE を ON にする前に描画された動画と、ON 後に宣言の書き込みだけ失敗した動画は、再描画するまで REVIEW。
-  同じ入力のスキップ経路では宣言を書き直さない（再描画が要る）。
+- ENFORCE を ON にする前に描画された動画と、ON 後に宣言の書き込みだけ失敗した動画の扱いは追補 R4。
+  入力 hash に BGM・地図が入っている動画（BGM / 地図 ON で描画済み）は、再描画するまで REVIEW のまま。
 - 発話余裕の閾値は ADR-0083 の暫定校正のまま。実在の曲では再校正が要る。測定は ffmpeg の実行で、極端に長い動画では描画後の
   待ちが増える（音声のみ）。
 - API でカタログが読めない構成では、手動投稿の BGM 入り動画は常に REVIEW。
@@ -138,3 +137,31 @@ API プロセスも同じ `build_quality_service` を使う。API からカタ�
 `AVP_QUALITY_GATE_ENFORCE` の条件 3（render が宣言を書く）が、本 ADR で満たされる。`BGM_ENABLED` / `GEO_MAPS_ENABLED` を ON に
 する前に: ENFORCE が ON であること（地図は起動時に強制。BGM は本 ADR 以降 ON を推奨）、`AVP_UPLOAD_DESCRIPTION_COMPOSED` が ON であること（BGM は起動時に強制。§7）、worker と API が同じ
 `AI_VIDEO_WORK_ROOT` のカタログを読めること、実素材での閾値再校正。
+
+## 追補 R4（再レビュー R4。INV-149）: 再利用する動画に、入力 hash が証明できる「使っていない」だけを宣言する
+
+問題: 使用宣言は新しく描いた動画にしか書かれず、ENFORCE を ON にする前に描画済みの動画は、同じ入力の再描画が skip されるため
+宣言を持たず永久に REVIEW になる（自動投稿を待つ既存 Episode が止まる）。
+
+採用: **skip 経路（`find_and_verify_current` が現行の final_video を返した経路）で、writer があり、かつ現行の入力 hash に
+BGM の識別子も地図の識別子も入っていないときだけ、BGM・地図とも `used=false` を宣言する**（`RenderActivities._declare_for_reused`、
+Activity の内部だけ。workflow・Activity の名前・dataclass・Temporal の履歴は変わらない）。
+
+- **なぜ「使っていない」と言えるか**: 再利用が成立した = 保存済みの行の `input_hash` が、いま計算した `input_hash` と等しい。
+  `render_input_hash` は `bgm` / `geo` が `None` のとき**キーごと入れない**（INV-113 / INV-143）ので、「いまの hash に bgm・geo が
+  無い」と「その動画は bgm・geo を入れずに描かれた」は同値。導入前（Phase 3 以前）の動画はこれに当たる。
+  宣言の対象は `(episode_id, 行の sha256, input_hash)` で、描画経路と同じ組。動画の bytes にも成果物の行にも触れない。
+- **宣言しない場合（fail-closed、REVIEW のまま）**: `BgmResolution.identity` が非 `None`、または `GeoPlan` が非 `None`
+  （識別子が hash に入っている）。使用していた可能性があり、`used=true` には証跡の sha256 が要る。それは再描画でしか作れない。
+  地図の `maps: []`（指定なし）も保守的にここへ含める（hash が証明するのは「識別子が入っている」まで）。
+  未知は「使っていない」と書かない。
+- **決定性・冪等**: 内容は入力 hash だけで決まり、`declare_usage` は同じ主張なら既存を返す（unique 制約と併せて二重行なし）。
+  追記専用（0019 の DELETE 拒否）と矛盾しない（INSERT のみ）。矛盾する既存宣言は `CheckSetInvalid` で、非致命として型名だけログ。
+  `declared_by` は `render` のまま（同じ導出）。時刻は先に書かれたものが残る。
+- **flag OFF**: writer が `None` なら何もしない（INV-130 / INV-146）。課金経路・外部呼び出しは無い。
+- **ON にする手順**: ENFORCE を ON にしたあと、止まっている Episode の pipeline を再実行して render Activity を通す
+  （skip なので動画は描き直されず、宣言だけが付く）。対象の数え方は `docs/operations/render-reuse-declaration.md`。
+- **捨てた案**: owner 実行の backfill CLI は、Activity 内の補完で足りる範囲（hash が証明できるもの）を超えない。DB を直接書く
+  経路を増やすより、render と同じ書き込み口を通す方が小さく安全。証跡が要るもの（used=true）は両案とも再描画が要る。
+
+追加する設定キー: なし。`quality_gate_enforce` の読み手は増えない（writer の有無だけを見る）。

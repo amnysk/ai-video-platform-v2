@@ -457,6 +457,7 @@ class RenderActivities:
                 episode_id,
                 existing.id,
             )
+            await self._declare_for_reused(existing, input_hash, bgm, geo_plan)
             return _result(existing, skipped=True, job_id=job_id)
 
         self._preflight_disk(inputs.input_bytes)
@@ -695,6 +696,37 @@ class RenderActivities:
                 declared_at=self._clock(),
             )
         return _result(meta, skipped=False, job_id=job_id)
+
+    async def _declare_for_reused(
+        self,
+        existing: ArtifactMetadata,
+        input_hash: str,
+        bgm: BgmResolution | None,
+        geo_plan: GeoPlan | None,
+    ) -> None:
+        """再利用する動画に、入力 hash が証明できる範囲だけ宣言を補う（ADR-0086 追補 / INV-149）。
+
+        ENFORCE が OFF（writer なし）は何もしない。BGM・地図の識別子のどちらかが現行の入力 hash に
+        入っているなら、動画は「使った」可能性があり、証跡の参照も要る。それは描画し直さないと
+        作れないので宣言しない（gate は REVIEW のまま。``not used`` を推測で書かない）。
+        """
+        if self._quality_writer is None:
+            return
+        if (bgm is not None and bgm.identity is not None) or geo_plan is not None:
+            logger.info(
+                "quality usage not declared episode=%s reason=identity_has_bgm_or_geo",
+                existing.episode_id,
+            )
+            return
+        await declare_render_usage(
+            self._quality_writer,
+            episode_id=existing.episode_id,
+            final_video_sha256=existing.sha256,
+            input_hash=input_hash,
+            bgm_evidence_ref=None,
+            map_evidence_ref=None,
+            declared_at=self._clock(),
+        )
 
     async def _store_bgm_evidence(
         self,
