@@ -284,7 +284,7 @@ class SqlBgmCatalogRepository:
         )
         return None if row is None else BgmSelectionDecision.model_validate(row.decision)
 
-    async def is_finalized(self, episode_id: str) -> bool:
+    async def is_selection_finalized(self, episode_id: str) -> bool:
         async with self._session_factory() as session:
             value = await session.scalar(
                 select(BgmSelectionRow.finalized).where(

@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 
-from contracts.music import BgmTrack
+from contracts.music import BgmTrack, VideoFormat
 from contracts.music_selection import MusicRequirements, ScoreBreakdown, ScoreItem, TempoBand
 from contracts.music_sources import BGM_LICENSE_POLICY_VERSION
 from domain.music.ports import CatalogEntry
@@ -47,15 +47,20 @@ def _tempo_band(bpm: int) -> TempoBand:
     return "fast" if bpm >= _FAST_BPM_FROM else "moderate"
 
 
+def passes_license_gate(track: BgmTrack, *, now: datetime, fmt: VideoFormat) -> bool:
+    """法的な門（INV-97）+ policy 承認の規則の版（INV-151）。選曲と描画直前の再検査で共有。"""
+    if reject_reasons(track, now=now, fmt=fmt, platform="youtube"):
+        return False
+    return not (
+        track.license_approver_kind == "policy"
+        and track.license_policy_version != BGM_LICENSE_POLICY_VERSION
+    )
+
+
 def eligible(entry: CatalogEntry, requirements: MusicRequirements, *, now: datetime) -> bool:
     """選曲の対象か。隔離・未検証・期限切れ・版違いの自動承認・ブランド不許可は対象外。"""
     track = entry.track
-    if reject_reasons(track, now=now, fmt=requirements.fmt, platform="youtube"):
-        return False
-    if (
-        track.license_approver_kind == "policy"
-        and track.license_policy_version != BGM_LICENSE_POLICY_VERSION
-    ):
+    if not passes_license_gate(track, now=now, fmt=requirements.fmt):
         return False
     if track.allowed_brands and requirements.brand_id not in track.allowed_brands:
         return False
@@ -132,4 +137,4 @@ def score_candidates(
     return tuple(out)
 
 
-__all__ = ["eligible", "score_candidates"]
+__all__ = ["eligible", "passes_license_gate", "score_candidates"]

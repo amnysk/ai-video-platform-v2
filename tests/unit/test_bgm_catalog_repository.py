@@ -170,7 +170,7 @@ async def test_finalize_sets_the_outcome_once_and_a_second_finalize_returns_the_
 ) -> None:
     repo = SqlBgmCatalogRepository(session_factory)
     saved = await repo.save_selection_once(_decision(), decided_at=NOW)
-    assert not await repo.is_finalized(EPISODE)
+    assert not await repo.is_selection_finalized(EPISODE)
     final = saved.model_copy(
         update={
             "applied_gain_offset_db": 3,
@@ -182,7 +182,7 @@ async def test_finalize_sets_the_outcome_once_and_a_second_finalize_returns_the_
         }
     )
     assert await repo.finalize_selection(final, finalized_at=NOW) == final
-    assert await repo.is_finalized(EPISODE)
+    assert await repo.is_selection_finalized(EPISODE)
     loser = final.model_copy(update={"track_id": None, "applied_gain_offset_db": 0})
     assert await repo.finalize_selection(loser, finalized_at=NOW) == final
     assert await repo.get_selection(EPISODE) == final
@@ -194,7 +194,7 @@ async def test_finalize_without_a_saved_row_inserts_a_finalized_one(session_fact
     repo = SqlBgmCatalogRepository(session_factory)
     decision = _decision()
     assert await repo.finalize_selection(decision, finalized_at=NOW) == decision
-    assert await repo.is_finalized(EPISODE)
+    assert await repo.is_selection_finalized(EPISODE)
 
 
 async def test_recent_usage_counts_the_last_window_of_finalized_selections_with_a_track(
