@@ -101,6 +101,9 @@ class AnomalyKind(StrEnum):
     DAILY_WORKFLOW_FAILED = "DAILY_WORKFLOW_FAILED"
     #: 日次 workflow の終了状態を確認できなかった日（読み取り失敗・保持期間切れ。ADR-0054）
     DAILY_WORKFLOW_UNOBSERVABLE = "DAILY_WORKFLOW_UNOBSERVABLE"
+    #: 品質ゲートが直近 10 件中 5 件以上を保留した（ADR-0087 §11。Schedule 系 = episode_id なし、
+    #: 日ごとに 1 行）。詳細に品質の保留と検査系の故障の内訳を残す
+    QUALITY_GATE_HOLD_RATE_HIGH = "QUALITY_GATE_HOLD_RATE_HIGH"
 
 
 #: ``ScheduleHealth`` → 記録する異常（無ければ異常ではない）

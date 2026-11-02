@@ -51,3 +51,4 @@ FEATURE_CHECK_KEY: Mapping[UsageFeature, CheckKey] = {
 DETAIL_DECLARED_NOT_USED = "feature declared not used for this final video"
 DETAIL_REQUIRED_MISSING = "required check set is missing or not fresh"
 DETAIL_USAGE_MISSING = "usage of this feature was not declared"
+DETAIL_INSPECTION_UNAVAILABLE = "required check could not be produced: inspection unavailable"

@@ -59,6 +59,7 @@ from infrastructure.db.repositories import (
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.logging.quality_decision import log_quality_decision
 from infrastructure.observability.anomaly_notifier import LoggingAnomalyNotifier
+from infrastructure.quality.hold_alarm import record_hold_rate_alarm
 from infrastructure.quality.service import QualityGateService
 from infrastructure.temporal.daily_runs import TemporalDailyRunReader
 from infrastructure.temporal.schedules import TemporalScheduleControl
@@ -415,9 +416,12 @@ class PipelineActivities:
                 final_video_sha256=outcome.final_video_sha256 or "",
                 rule_version=QUALITY_RULE_VERSION,
                 assessment=outcome.assessment,
+                inspection_retries=outcome.recovered_faults,
             )
         except Exception:  # noqa: BLE001 - fail-closed
             return "quality: report_evaluation_error"
+        # 保留率の警報（ADR-0087 §11）。通報だけで、判定には触れず、失敗しても投げない
+        await record_hold_rate_alarm(self._session_factory, now=self._quality_clock())
         if outcome.assessment.decision.allowed:
             return None
         return f"quality: {outcome.assessment.decision.reason_code.value}"

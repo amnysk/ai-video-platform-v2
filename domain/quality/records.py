@@ -29,6 +29,7 @@ from contracts.quality_records import (
     ALWAYS_REQUIRED_KEYS,
     CHECK_KEY_GATES,
     DETAIL_DECLARED_NOT_USED,
+    DETAIL_INSPECTION_UNAVAILABLE,
     DETAIL_REQUIRED_MISSING,
     DETAIL_USAGE_MISSING,
     FEATURE_CHECK_KEY,
@@ -280,9 +281,15 @@ def _missing(
 
 
 def recorded_checks_provider(
-    fresh: FreshCheckSets, usage: Mapping[UsageFeature, UsageDeclaration]
+    fresh: FreshCheckSets,
+    usage: Mapping[UsageFeature, UsageDeclaration],
+    *,
+    unavailable: frozenset[CheckKey] = frozenset(),
 ) -> CheckProvider:
     """有効な記録 + 欠落の REVIEW + 宣言された不使用の PASS を、1 つの ``CheckProvider`` にする。
+
+    ``unavailable`` は検査系の一時障害で作れなかった必須のセット（ADR-0087 §8）。欠落の REVIEW の
+    理由だけを ``INSPECTION_UNAVAILABLE`` にする（判定は同じ REVIEW。PASS にならない）。
 
     返す provider は ``QualityInputs`` を使わない（記録が全てを持つ）。例外を投げない。
     """
@@ -295,11 +302,14 @@ def recorded_checks_provider(
                 checks.extend(record.checks)
         for key in required_keys(usage):
             if key not in fresh.fresh:
+                lost = key in unavailable
                 checks.extend(
                     _missing(
                         CHECK_KEY_GATES[key],
-                        QualityReason.REQUIRED_CHECK_MISSING,
-                        DETAIL_REQUIRED_MISSING,
+                        QualityReason.INSPECTION_UNAVAILABLE
+                        if lost
+                        else QualityReason.REQUIRED_CHECK_MISSING,
+                        DETAIL_INSPECTION_UNAVAILABLE if lost else DETAIL_REQUIRED_MISSING,
                     )
                 )
         for feature, key in FEATURE_CHECK_KEY.items():
