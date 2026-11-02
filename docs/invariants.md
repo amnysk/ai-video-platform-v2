@@ -1531,6 +1531,8 @@ ADR-0077 §5（INV-115）を維持する。不合格は永続的な失敗（`Fin
 / `tests/unit/test_bgm_quality_checks.py::test_out_of_range_loudness_in_the_evidence_is_blocked_on_the_music_gate`
 / `tests/unit/test_bgm_quality_checks.py::test_the_check_recomputes_loudness_from_numbers_and_does_not_trust_the_stored_flag`
 / `tests/unit/test_bgm_quality_checks.py::test_the_local_loudness_rule_agrees_with_evaluate_loudness_everywhere`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_final_loudness_out_of_range_rerenders_once_without_bgm_and_records_why`（ADR-0087 §7 の改訂後。INV-155）
+/ `tests/unit/test_render_activities_bgm_auto.py::test_when_the_bgm_less_video_is_also_out_of_range_it_is_still_needs_input`
 
 ### INV-137 BGM だけの変更は render だけを再実行し、fal を 1 回も呼ばず、production の成果物・入力 hash を動かさない
 曲・配置・役割のどれを変えても render の input_hash だけが変わる（BGM 無し + 3 通りが全て別）。fal クライアントの全メソッドを
@@ -1724,15 +1726,50 @@ migration 0019（未適用のため編集）が 4 表に DELETE 拒否のトリ�
 
 
 ### INV-153 選曲は決定的で説明可能（項目ごとの点）。Episode ごとに 1 回だけ決めて保存し、再実行は保存した決定を使う
-（本文と **機械検査** は担当の枝が記入する）
+選曲は純粋関数の列（`derive_requirements` -> `score_candidates` -> `select_for_episode`）で、語彙表は `domain/music/lexicon.py`
+だけが定義し、LLM を使わない。同じ入力は同じ要件・同じ順序で、カタログの並びに依らず、同点は `track_id`。点は項目ごとの加点
+（`ScoreBreakdown`）で説明でき、隔離・未検証・失効・形式不可・版違いの `policy` 承認（INV-151）・ブランド不許可・ラウドネス未測定の
+曲には点を付けない。決定は Render の内側で Episode ごとに 1 回だけ作り、`save_selection_once`（`episode_id` UNIQUE。同時でも 1 行、
+上書きしない）で保存する。確定（`finalize_selection`）後の再実行・再試行は保存した決定を使い、梯子も再選曲も走らない。
+適切な曲が無いときは待たずに需要を積むだけで BGM 無しで進む。
+**機械検査**: `tests/unit/test_bgm_auto_select.py::test_the_same_episode_rerun_and_a_shuffled_catalog_give_the_same_decision`
+/ `tests/unit/test_bgm_auto_select.py::test_ties_break_by_track_id_and_input_order_never_matters`
+/ `tests/unit/test_bgm_auto_select.py::test_quarantined_unverified_expired_and_wrong_format_tracks_are_never_scored`
+/ `tests/unit/test_bgm_auto_select.py::test_policy_approval_with_a_stale_rule_version_is_not_scored_but_owner_approval_is`
+/ `tests/unit/test_bgm_catalog_repository.py::test_concurrent_saves_leave_one_row_and_every_caller_sees_the_same_decision`
+/ `tests/unit/test_bgm_catalog_repository.py::test_finalize_sets_the_outcome_once_and_a_second_finalize_returns_the_first`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_a_retry_after_finalize_reuses_the_decision_and_the_same_input_hash`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_no_approved_track_renders_without_bgm_and_queues_a_demand_without_waiting`
+/ `tests/contract/test_migration_0021_bgm.py::test_uniqueness_that_makes_selection_once_and_dedupe_enforceable`
 
 
 ### INV-154 適用する gain は曲の持ち上げ幅 + 役割の値で上限を超えず、発話中の差 12 LU 以上を描画前に実測する
-（本文と **機械検査** は担当の枝が記入する）
+曲ごとの `mix_gain_offset_db`（所有者が試聴で決めた持ち上げ幅）は `plan_cue_sheet` / `gain_db_for` で役割ごとの gain に足され、
+フォールバックの追加の減衰も足されるが、結果は常に `BGM_NARRATION_PRIORITY_MAX_DB` 以下・`LEVEL_DB_MIN..MAX` の範囲。
+CK61（-14.5 LUFS, +6 dB）は既定の役割で全 cue が -12 dB になり、所有者が承認した試聴（`shift_levels(+6)`）と同一の
+`BgmMixPlan` になる。発話中の「声 - BGM」差 12 LU 以上（`SPEECH_MARGIN_MIN_CENTI_LU`）は**描画の前**に音声だけの stem で実測し、
+実際に適用した gain と最小の差は `bgm_selections` と BGM 証跡に残る。
+**機械検査**: `tests/unit/test_bgm_mix_offset.py::test_ck61_with_a_plus_six_offset_is_the_same_mix_plan_as_the_approved_preview`
+/ `tests/unit/test_bgm_mix_offset.py::test_the_offset_and_the_fallback_attenuation_add_and_the_cap_still_holds`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_the_first_render_selects_finalizes_and_applies_the_owner_offset`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_too_small_a_margin_attenuates_once_then_passes`
 
 
 ### INV-155 フォールバックは上限つきの 1 本の梯子（減衰 1 回 → 次点 1 曲 → BGM 無し）で、fal・production に触れず理由が残る
-（本文と **機械検査** は担当の枝が記入する）
+梯子は有限の 1 本: 選んだ曲で差を実測 -> 足りなければ同じ曲を 3 dB 下げて 1 回だけ再測定 -> 足りない・原本が読めない/sha256 不一致・
+ライセンス再検査に落ちた・配置できない -> 次点の曲（合計 `FALLBACK_MAX_TRACKS` 曲）-> BGM 無し。BGM 入りの完成動画のラウドネスが
+範囲外なら BGM 無しで 1 回だけ再描画して再検査し、それも範囲外なら従来どおり `FinalVideoValidationError`（needs_input）。
+どの段も fal・provider・production に触れず（呼び出し 0 回・production の成果物と予約台帳が不変）、理由コードつきで
+`bgm_selections.fallback` に残る（黙って落とさない）。BGM 無しの動画は `render_input_hash` に BGM の識別子が無く、証跡も作らない
+（使用宣言は「不使用」）。確定は `final_video` の行より前。
+**機械検査**: `tests/unit/test_render_activities_bgm_auto.py::test_when_a_track_cannot_pass_the_next_ranked_track_is_tried_once`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_when_every_track_fails_the_video_has_no_bgm_and_says_so`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_an_unreadable_or_altered_original_falls_to_the_next_track`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_an_original_with_the_wrong_sha256_is_never_mixed`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_an_expired_track_is_rejected_at_the_recheck_before_rendering`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_final_loudness_out_of_range_rerenders_once_without_bgm_and_records_why`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_when_the_bgm_less_video_is_also_out_of_range_it_is_still_needs_input`
+/ `tests/architecture/test_bgm_phase3_boundaries.py::test_phase3_bgm_modules_do_not_import_production_or_provider_code`
 
 
 ### INV-156 品質ゲートは検査系の一時障害を上限つきで内部再試行し、記録できない必須検査は PASS にせず `inspection_unavailable` で区別する

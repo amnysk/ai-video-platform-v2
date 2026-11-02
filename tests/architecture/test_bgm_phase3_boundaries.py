@@ -20,6 +20,15 @@ PHASE3_MODULES = [
     "domain/music/quality_checks.py",
     "infrastructure/music/catalog_store.py",
     "infrastructure/render/bgm_intelligibility.py",
+    # ADR-0087: 自動選曲・DB カタログ・梯子・取込（fal / production を import しない）
+    "domain/music/lexicon.py",
+    "domain/music/requirements.py",
+    "domain/music/scoring.py",
+    "domain/music/auto_select.py",
+    "infrastructure/music/db_source.py",
+    "infrastructure/db/bgm_repositories.py",
+    "workers/render/bgm_ladder.py",
+    "scripts/bgm_catalog_import.py",
 ]
 FORBIDDEN_PREFIXES = (
     "domain.production",

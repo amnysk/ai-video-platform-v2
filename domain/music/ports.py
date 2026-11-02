@@ -83,4 +83,14 @@ class BgmCatalogRepository(Protocol):
     ) -> BgmSelectionDecision: ...
 
 
-__all__ = ["BgmCatalogRepository", "CatalogEntry"]
+class FinalizableCatalogRepository(BgmCatalogRepository, Protocol):
+    """``BgmCatalogRepository`` に確定状態の読み出しを足したもの（Render の選曲が使う）。
+
+    ``BgmCatalogRepository`` 自体は変えない（収集側の fake が壊れない）。
+    """
+
+    #: その Episode の選曲が確定済み（梯子の結果を保存済み）か。行が無ければ False
+    async def is_selection_finalized(self, episode_id: str) -> bool: ...
+
+
+__all__ = ["BgmCatalogRepository", "CatalogEntry", "FinalizableCatalogRepository"]

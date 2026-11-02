@@ -154,11 +154,19 @@ def default_roles(windows: tuple[SceneWindow, ...]) -> dict[str, SceneRole]:
     return roles
 
 
-def gain_db_for(track: BgmTrack, role: SceneRole, policy: PlacementPolicy) -> int:
-    """曲に掛ける gain（dB, 整数）。目標 = 声の基準 + 役割の相対値、gain = 目標 - 曲の実測。"""
+def gain_db_for(
+    track: BgmTrack, role: SceneRole, policy: PlacementPolicy, *, extra_offset_db: int = 0
+) -> int:
+    """曲に掛ける gain（dB, 整数）。目標 = 声の基準 + 役割の相対値、gain = 目標 - 曲の実測。
+
+    ADR-0087 §6: 所有者が試聴で決めた持ち上げ幅 ``track.mix_gain_offset_db`` と、フォールバックの
+    追加の減衰 ``extra_offset_db`` を足す。足した後でも上限は ``BGM_NARRATION_PRIORITY_MAX_DB``
+    （持ち上げても声より ``MAX`` を超えて大きくならない）と ``LEVEL_DB_MIN`` / ``LEVEL_DB_MAX``。
+    """
     assert track.loudness_lufs is not None
     target_centi = VOICE_REFERENCE_LUFS_CENTI + policy.role_relative_db[role] * 100
     gain = round((target_centi - track.loudness_lufs * 100) / 100)
+    gain += track.mix_gain_offset_db + extra_offset_db
     return max(LEVEL_DB_MIN, min(gain, BGM_NARRATION_PRIORITY_MAX_DB, LEVEL_DB_MAX))
 
 
@@ -168,6 +176,7 @@ def plan_cue_sheet(
     *,
     roles: Mapping[str, SceneRole] | None = None,
     policy: PlacementPolicy = DEFAULT_POLICY,
+    extra_gain_offset_db: int = 0,
 ) -> PlacementResult:
     """scene ごとの役割から cue sheet を作る。
 
@@ -228,7 +237,9 @@ def plan_cue_sheet(
                     source_offset_ms=start - run_start,
                     fade_in_ms=fade_in,
                     fade_out_ms=fade_out,
-                    target_relative_level_db=gain_db_for(track, assigned[w.scene_id], policy),
+                    target_relative_level_db=gain_db_for(
+                        track, assigned[w.scene_id], policy, extra_offset_db=extra_gain_offset_db
+                    ),
                     ducking_policy="duck_under_voice",
                     license_evidence_hash=track.license_evidence_sha256,
                     credits_text=track.exact_attribution_text

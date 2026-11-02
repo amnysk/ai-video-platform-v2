@@ -1051,3 +1051,146 @@ class QualityManualApprovalRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+def _json() -> JSON:
+    """JSON（PostgreSQL では JSONB。SQLite のテストは素の JSON）。"""
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    return JSON().with_variant(JSONB(), "postgresql")
+
+
+class BgmTrackRow(Base):
+    """BGM カタログの 1 曲（ADR-0087 §4 / migration 0021）。他の表への FK は張らない。
+
+    ``BgmTrack`` の全列 + 承認の主体・規則の版・Content ID リスク・持ち上げ幅・使ってよいブランド・
+    取得の来歴。``analysis``（実測）と ``inferred_tags``（推定）はライセンスの列と分ける。
+    """
+
+    __tablename__ = "bgm_tracks"
+    __table_args__ = (
+        UniqueConstraint("file_sha256", name="uq_bgm_tracks_file_sha256"),
+        CheckConstraint("length(file_sha256) = 64", name="ck_bgm_tracks_sha_length"),
+        CheckConstraint("duration_ms > 0", name="ck_bgm_tracks_duration"),
+        CheckConstraint(
+            "mix_gain_offset_db >= -24 AND mix_gain_offset_db <= 12", name="ck_bgm_tracks_offset"
+        ),
+        Index("ix_bgm_tracks_status", "status"),
+    )
+
+    track_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    file_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    artist: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    license_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    license_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    license_evidence_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    license_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    allowed_platforms: Mapped[list] = mapped_column(_json(), nullable=False)
+    allowed_formats: Mapped[list] = mapped_column(_json(), nullable=False)
+    commercial_use_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reuse_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    modification_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    attribution_required: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    exact_attribution_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    mood_tags: Mapped[list] = mapped_column(_json(), nullable=False)
+    genre_tags: Mapped[list] = mapped_column(_json(), nullable=False)
+    energy: Mapped[str] = mapped_column(String(16), nullable=False)
+    bpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    loudness_lufs: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # --- ADR-0087
+    license_approver_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    license_policy_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_id_risk: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="unknown"
+    )
+    mix_gain_offset_db: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    allowed_brands: Mapped[list] = mapped_column(_json(), nullable=False)
+    acquired_from: Mapped[str] = mapped_column(String(64), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    evidence_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analysis: Mapped[dict] = mapped_column(_json(), nullable=False)
+    inferred_tags: Mapped[dict] = mapped_column(_json(), nullable=False)
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class BgmSelectionRow(Base):
+    """Episode ごとの選曲の決定（1 Episode 1 行。ADR-0087 §5 / INV-153）。FK なし。
+
+    ``decision`` に決定の正準 JSON を、検索・集計に使う項目は列にも持つ。``finalized`` が真の行は
+    梯子の結果（適用 gain・実測・経過）を含み、再実行はそのまま使う。
+    """
+
+    __tablename__ = "bgm_selections"
+    __table_args__ = (
+        UniqueConstraint("episode_id", name="uq_bgm_selections_episode_id"),
+        CheckConstraint(
+            "(finalized = true AND finalized_at IS NOT NULL) "
+            "OR (finalized = false AND finalized_at IS NULL)",
+            name="ck_bgm_selections_finalized",
+        ),
+        Index("ix_bgm_selections_finalized_at", "finalized", "finalized_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    episode_id: Mapped[uuid.UUID] = mapped_column(Uuid(), nullable=False)
+    track_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cue_sheet_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requirements_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    rule_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    finalized: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
+    decision: Mapped[dict] = mapped_column(_json(), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class BgmAcquisitionRunRow(Base):
+    """収集の実行ごとの監査（ADR-0087 §3 / INV-152）。追記のみ。"""
+
+    __tablename__ = "bgm_acquisition_runs"
+    __table_args__ = (
+        CheckConstraint("length(demand_sha256) = 64", name="ck_bgm_acquisition_runs_sha_length"),
+        Index("ix_bgm_acquisition_runs_demand", "demand_sha256", "finished_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    demand_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    searches: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidates: Mapped[list] = mapped_column(_json(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class BgmAcquisitionDemandRow(Base):
+    """収集の需要（適切な曲が無かった要件。要件の hash が主キー = 冪等。ADR-0087 §5）。"""
+
+    __tablename__ = "bgm_acquisition_demands"
+    __table_args__ = (
+        CheckConstraint("length(demand_sha256) = 64", name="ck_bgm_acquisition_demands_sha_length"),
+    )
+
+    demand_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    requirements: Mapped[dict] = mapped_column(_json(), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
