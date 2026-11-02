@@ -155,6 +155,7 @@ async def test_review_license_is_registered_quarantined_and_never_promoted() -> 
     assert "promote" not in repo.calls
     for e in await repo.list_entries():
         assert e.track.status == "quarantined" and e.track.license_status == "unverified"
+    assert summary is not None
     reasons = {r for c in summary.candidates for r in c.license_reasons}
     assert LicenseReason.ATTRIBUTION_LICENSE_NEEDS_REVIEW in reasons
     assert LicenseReason.PUBLIC_DOMAIN_NEEDS_REVIEW in reasons
