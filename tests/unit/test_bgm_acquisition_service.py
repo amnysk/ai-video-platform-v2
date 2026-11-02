@@ -323,3 +323,35 @@ async def test_run_deadline_stops_the_run() -> None:
     summary = await svc.run(DEMAND, REQ)
     assert len(source.downloads) == 1
     assert outcomes(summary)[-1] is AcquisitionOutcome.LIMIT_REACHED
+
+
+async def test_end_to_end_with_the_real_inspector_on_a_synthesised_track() -> None:
+    import os
+
+    from infrastructure.music.audio_inspect import FfmpegAudioInspector
+    from tests.support.bgm_synth import synthesize
+
+    ffmpeg = Path(
+        os.environ.get(
+            "RENDER_FFMPEG_PATH", str(Path.home() / ".local/share/avp/ffmpeg/7.1.1/ffmpeg")
+        )
+    )
+    if not ffmpeg.is_file():
+        pytest.skip("static ffmpeg not installed")
+    data = synthesize(32)
+    page = fixture_page("ck61", data, ext="wav", duration_s=32.0)
+    page["imageinfo"][0]["mime"] = "audio/x-wav"
+    source = FakeSource([page], {page["imageinfo"][0]["url"]: data})
+    repo = InMemoryBgmCatalog()
+    svc = AcquisitionService(
+        source=source,
+        repo=repo,
+        store=InMemoryArtifactStore(),
+        inspector=FfmpegAudioInspector(ffmpeg),
+        clock=Clock(),
+    )
+    summary = await svc.run(DEMAND, REQ)
+    assert outcomes(summary) == [AcquisitionOutcome.REGISTERED_APPROVED]
+    [entry] = await repo.list_entries()
+    assert entry.track.duration_ms == pytest.approx(32_000, abs=100)
+    assert -30 < entry.analysis["integrated_lufs"] < -5
