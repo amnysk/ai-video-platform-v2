@@ -2,7 +2,7 @@
 
 - 入力は**保存する証拠そのもの**（``build_evidence_payload`` の payload）。
   判定は保存した証拠からいつでも再現できる。
-  証拠の sha256 は payload の正準 JSON（``canonical_json_bytes``）の sha256
+  証拠の sha256（payload の正準 JSON）は domain が実装を持たないので呼び出し側が渡す
 - 推定を入れない。欠けている項目は ``None``、HTML は決定的に除去する
 - 危険なマークアップ（script / style / iframe / コメント）を含む値は、除去後の文字列に目印を付けて
   「きれいな Own work」に潰れないようにする（判定側の完全一致を通らない）
@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from contracts.music_sources import LicenseFacts, MusicSourceId
-from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 
 EVIDENCE_SCHEMA = "commons-evidence-1"
 COMMONS_PAGE_URL_PREFIX = "https://commons.wikimedia.org/wiki/"
@@ -85,10 +84,6 @@ def build_evidence_payload(
     return payload
 
 
-def evidence_sha256(payload: Mapping[str, Any]) -> str:
-    return sha256_hex(canonical_json_bytes(payload))
-
-
 @dataclass(frozen=True, slots=True)
 class CommonsFileInfo:
     facts: LicenseFacts
@@ -146,7 +141,8 @@ def _dispute(page: Mapping[str, Any], categories_meta: str | None) -> bool:
     return False
 
 
-def parse_commons_evidence(payload: Mapping[str, Any]) -> CommonsFileInfo:
+def parse_commons_evidence(payload: Mapping[str, Any], *, evidence_sha256: str) -> CommonsFileInfo:
+    """``evidence_sha256`` = payload の正準 JSON の sha256（``commons_evidence`` で計算）。"""
     page = payload.get("page")
     if not isinstance(page, Mapping):
         raise ValueError("evidence payload has no page")
@@ -176,7 +172,7 @@ def parse_commons_evidence(payload: Mapping[str, Any]) -> CommonsFileInfo:
         restrictions=_meta(ext, "Restrictions"),
         deletion_or_dispute=_dispute(page, categories_meta),
         title=_meta(ext, "ObjectName") or (title.removeprefix("File:") or None),
-        evidence_sha256=evidence_sha256(payload),
+        evidence_sha256=evidence_sha256,
     )
     size = info.get("size")
     return CommonsFileInfo(
@@ -193,7 +189,6 @@ def parse_commons_evidence(payload: Mapping[str, Any]) -> CommonsFileInfo:
 __all__ = [
     "CommonsFileInfo",
     "build_evidence_payload",
-    "evidence_sha256",
     "pages_from_response",
     "parse_commons_evidence",
     "strip_html",

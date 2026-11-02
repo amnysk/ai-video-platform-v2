@@ -43,13 +43,13 @@ from domain.errors import ArtifactConflictError
 from domain.music.commons_facts import (
     CommonsFileInfo,
     build_evidence_payload,
-    parse_commons_evidence,
 )
 from domain.music.ingest import ORIGINALS_PREFIX
 from domain.music.license_policy import approve_track, build_quarantined_track, decide_license
 from domain.music.ports import BgmCatalogRepository
 from domain.music.search_terms import build_search_queries
 from infrastructure.music.audio_inspect import AudioInvalidError, AudioReport
+from infrastructure.music.commons_evidence import parse_evidence
 from infrastructure.music.sources.commons import COMMONS_API_URL, extension_of
 from infrastructure.music.sources.errors import CandidateInvalidError, SourceUnavailableError
 from infrastructure.music.sources.types import DownloadedFile
@@ -153,7 +153,7 @@ class AcquisitionService:
         total_bytes = 0
         for page in pages:
             if self._clock() >= deadline or downloads >= ACQUISITION_MAX_DOWNLOADS_PER_RUN:
-                info = parse_commons_evidence(build_evidence_payload(page, fetched_at="-"))
+                info = parse_evidence(build_evidence_payload(page, fetched_at="-"))
                 candidates.append(_result(info, AcquisitionOutcome.LIMIT_REACHED))
                 break
             result, spent = await self._candidate(page, total_bytes)
@@ -209,7 +209,7 @@ class AcquisitionService:
         payload = build_evidence_payload(
             page, fetched_at=now.isoformat(), api_endpoint=COMMONS_API_URL
         )
-        info = parse_commons_evidence(payload)
+        info = parse_evidence(payload)
         facts = info.facts
         decision = decide_license(facts)
         if decision.kind is LicenseDecisionKind.REJECT:

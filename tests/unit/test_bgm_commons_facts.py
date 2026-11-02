@@ -12,9 +12,9 @@ from domain.artifact.hashing import canonical_json_bytes, sha256_hex
 from domain.music.commons_facts import (
     build_evidence_payload,
     pages_from_response,
-    parse_commons_evidence,
     strip_html,
 )
+from infrastructure.music.commons_evidence import parse_evidence
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "bgm_commons"
 FETCHED = "2026-11-02T00:00:00+00:00"
@@ -25,7 +25,7 @@ def _page(name: str) -> dict:
 
 
 def _parse(name: str):
-    return parse_commons_evidence(build_evidence_payload(_page(name), fetched_at=FETCHED))
+    return parse_evidence(build_evidence_payload(_page(name), fetched_at=FETCHED))
 
 
 def test_ck61_is_cc0_own_work_with_machine_facts() -> None:
@@ -52,11 +52,11 @@ def test_ck61_is_cc0_own_work_with_machine_facts() -> None:
 
 def test_evidence_sha256_is_the_canonical_json_hash_of_the_stored_payload() -> None:
     payload = build_evidence_payload(_page("ck61"), fetched_at=FETCHED)
-    info = parse_commons_evidence(payload)
+    info = parse_evidence(payload)
     assert info.facts.evidence_sha256 == sha256_hex(canonical_json_bytes(payload))
     # 取得時刻が違えば別の証拠
     other = build_evidence_payload(_page("ck61"), fetched_at="2026-11-03T00:00:00+00:00")
-    assert parse_commons_evidence(other).facts.evidence_sha256 != info.facts.evidence_sha256
+    assert parse_evidence(other).facts.evidence_sha256 != info.facts.evidence_sha256
 
 
 def test_other_fixtures_are_parsed_as_what_they_are() -> None:
@@ -94,21 +94,21 @@ def test_dangerous_markup_never_collapses_to_a_clean_own_work(raw: str) -> None:
 def test_deletion_and_dispute_signals_from_categories_and_templates() -> None:
     page = _page("ck61")
     page = {**page, "categories": [{"ns": 14, "title": "Category:Copyright violations"}]}
-    assert parse_commons_evidence(
+    assert parse_evidence(
         build_evidence_payload(page, fetched_at=FETCHED)
     ).facts.deletion_or_dispute
     page = {**_page("ck61"), "templates": [{"ns": 10, "title": "Template:Copyvio"}]}
-    assert parse_commons_evidence(
+    assert parse_evidence(
         build_evidence_payload(page, fetched_at=FETCHED)
     ).facts.deletion_or_dispute
     page = {**_page("ck61"), "templates": [{"ns": 10, "title": "Template:Delete"}]}
-    assert parse_commons_evidence(
+    assert parse_evidence(
         build_evidence_payload(page, fetched_at=FETCHED)
     ).facts.deletion_or_dispute
     # extmetadata の Categories にあっても検出する
     page = _page("ck61")
     page["imageinfo"][0]["extmetadata"]["Categories"]["value"] += "|Pages nominated for deletion"
-    assert parse_commons_evidence(
+    assert parse_evidence(
         build_evidence_payload(page, fetched_at=FETCHED)
     ).facts.deletion_or_dispute
 
@@ -122,8 +122,6 @@ def test_formatversion_2_list_pages_are_accepted() -> None:
 def test_missing_imageinfo_means_no_info() -> None:
     page = {"pageid": 1, "ns": 6, "title": "File:x.ogg", "missing": ""}
     assert (
-        parse_commons_evidence(
-            build_evidence_payload(page, fetched_at=FETCHED)
-        ).facts.license_short_name
+        parse_evidence(build_evidence_payload(page, fetched_at=FETCHED)).facts.license_short_name
         is None
     )

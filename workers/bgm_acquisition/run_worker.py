@@ -21,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from contracts.music_sources import BGM_ACQUISITION_TASK_QUEUE
+from contracts.music_render import BGM_SETTING_KEY
+from contracts.music_sources import BGM_ACQUISITION_SETTING_KEY, BGM_ACQUISITION_TASK_QUEUE
 from domain.music.ports import BgmCatalogRepository
 from infrastructure.config import Settings
 from infrastructure.db.session import session_factory_from_settings
@@ -42,12 +43,12 @@ USER_AGENT_TEMPLATE = "avp2-bgm-acquisition/1.0 ({contact}) httpx"
 
 def require_enabled(settings: Settings) -> None:
     """起動の前提。満たさなければ ``SystemExit``（Temporal にも DB にも繋ぐ前）。"""
-    if not settings.bgm_acquisition_enabled:
+    if not getattr(settings, BGM_ACQUISITION_SETTING_KEY):
         raise SystemExit(
             "bgm acquisition worker: BGM_ACQUISITION_ENABLED is not true; refusing to start "
             "(this worker is the only one that touches the network for music)"
         )
-    if not settings.bgm_enabled:
+    if not getattr(settings, BGM_SETTING_KEY):
         raise SystemExit(
             "bgm acquisition worker: BGM_ACQUISITION_ENABLED requires BGM_ENABLED=true "
             "(ADR-0087 §10)"

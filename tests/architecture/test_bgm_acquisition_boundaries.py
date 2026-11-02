@@ -139,7 +139,7 @@ def test_acquisition_worker_checks_both_flags_before_connecting() -> None:
     assert "BGM_ACQUISITION_TASK_QUEUE" in text
     guard = text.index("require_enabled(settings)")
     assert guard < text.index("connect_with_retry(settings)")
-    assert "bgm_acquisition_enabled" in text and "bgm_enabled" in text
+    assert "BGM_ACQUISITION_SETTING_KEY" in text and "BGM_SETTING_KEY" in text
     assert "Client.connect(" not in text
 
 

@@ -20,7 +20,6 @@ from contracts.music_sources import (
 from domain.music.commons_facts import (
     build_evidence_payload,
     pages_from_response,
-    parse_commons_evidence,
 )
 from domain.music.license_policy import (
     approve_track,
@@ -28,6 +27,7 @@ from domain.music.license_policy import (
     decide_license,
     track_id_for_sha256,
 )
+from infrastructure.music.commons_evidence import parse_evidence
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "bgm_commons"
 A, R, X = LicenseDecisionKind.AUTO_APPROVE, LicenseDecisionKind.REVIEW, LicenseDecisionKind.REJECT
@@ -58,7 +58,7 @@ def _facts(**over: Any) -> LicenseFacts:
 
 def _real(name: str) -> LicenseFacts:
     page = pages_from_response(json.loads((FIX / f"{name}.json").read_text("utf-8")))[0]
-    return parse_commons_evidence(build_evidence_payload(page, fetched_at=NOW.isoformat())).facts
+    return parse_evidence(build_evidence_payload(page, fetched_at=NOW.isoformat())).facts
 
 
 def test_baseline_is_auto_approved() -> None:
