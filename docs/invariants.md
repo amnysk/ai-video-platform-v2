@@ -1736,11 +1736,42 @@ migration 0019（未適用のため編集）が 4 表に DELETE 拒否のトリ�
 
 
 ### INV-156 品質ゲートは検査系の一時障害を上限つきで内部再試行し、記録できない必須検査は PASS にせず `inspection_unavailable` で区別する
-（本文と **機械検査** は担当の枝が記入する）
+producer・記録の書き込み・報告の保存・DB の読み出しの失敗は、`infrastructure/quality/inspection.py` の分類表（唯一の定義）で
+一時（`InspectionFault`: タイムアウト・接続・I/O・DB の接続障害・MinIO の 5xx 系）か恒久（`InspectionDefect`: hash 不一致・
+別 Episode/別動画の証跡・契約違反・不明）に分ける。**迷えば恒久**。一時障害だけを `QualityGateService` の内側で
+**3 回試行・指数バックオフ（1 秒・2 秒）・評価全体で 30 秒以内**に再試行し（時計と sleep は注入）、恒久は再試行しない。
+再試行しても記録できない必須の検査は、これまでどおり**決定論の REVIEW（PASS に倒さない・BLOCK にもしない）**だが、理由を
+`QualityReason.INSPECTION_UNAVAILABLE` にする（品質の保留 `REPORT_NEEDS_REVIEW` / 本物の欠落 `REQUIRED_CHECK_MISSING` と区別）。
+保留の原因が全て検査系の故障のときだけ投稿可否の理由が `inspection_unavailable` になり、品質の保留・BLOCK が 1 つでも
+混じれば本来の理由が残る。報告の各検査の `reason_code`・`quality.decision` の構造化ログ（`hold_cause` / `inspection_retries`）
+に区別が残る。偽の記録は書かない。判定語彙・Episode の状態は増やさない（RETRY は gate の内部処理）。
+直近 10 件中 5 件以上が保留なら `QUALITY_GATE_HOLD_RATE_HIGH`（`operational_anomalies`、日ごとに 1 行、migration 0022）を
+自動経路の判定の直後に記録する。警報の失敗は gate を止めず、判定に触れない。内訳（品質 / 検査系）は
+`scripts/quality_rates.py`（読み取り専用）と `scripts/quality_shadow.py`（インメモリで旧・新 gate を比較）で見る。
+**機械検査**: `tests/unit/test_quality_inspection_classification.py::test_classification_table`
+/ `tests/unit/test_quality_gate_inspection_recovery.py::test_a_transient_store_fault_is_retried_and_the_episode_recovers`
+/ `...::test_a_persistent_transient_fault_is_review_with_inspection_unavailable`
+/ `...::test_a_permanent_defect_is_not_retried_and_stays_a_quality_review`
+/ `...::test_the_total_budget_stops_retrying_before_thirty_seconds`
+/ `...::test_no_failure_pattern_ever_yields_an_allowance_unless_recovered_cleanly`
+/ `...::test_a_genuine_block_is_not_hidden_behind_inspection_unavailable`
+/ `tests/unit/test_quality_inspection_domain.py`（再試行の方針・欠落の理由の区別・`refine_hold_reason`）
+/ `tests/unit/test_quality_hold_rate.py` / `tests/unit/test_quality_hold_alarm_wiring.py`
+/ `tests/unit/test_quality_gate_persisted_wiring.py::test_upload_gate_reports_inspection_unavailable_and_records_the_hold_alarm`
+/ `tests/contract/test_migration_0022_check_widening.py`
 
 
 ### INV-157 WARN は決定論の検査が WARN と判定したものだけで、BLOCK・REVIEW を緩める経路は無い
-（本文と **機械検査** は担当の枝が記入する）
+`aggregate` は、決定論の検査の最も厳しい判定より緩い結果を返さず、LLM の検査は判定を厳しくする方向（上限 REVIEW）にしか
+働かず、決定論の根拠が無ければ PASS/WARN にしない（INV-102）。投稿可は PASS / WARN の報告だけ。検査系の故障の区別
+（`refine_hold_reason`）は拒否の**理由**を変えるだけで、拒否を許可にしない。WARN を書いてよい場所は監査表
+（生産者 = 地図の許容距離の超過だけ、消費者 = 判定の読み取り）に限り、新しい「軽微」を足すには表と INV の根拠を同じ変更で
+更新する。説明欄の任意部分の切り詰め・BGM の差の未測定などは、検査自身が軽微と判定できない（切り詰めは INV-112 で止める、
+未測定は REVIEW）ので WARN にしない。
+**機械検査**: `tests/unit/test_quality_warn_policy.py::test_aggregate_can_only_be_as_strict_as_the_strictest_deterministic_check`
+（検査 0〜3 個 × 判定 4 × 決定論/LLM の総当たり）/ `...::test_only_pass_and_warn_reports_are_ever_allowed`
+/ `...::test_refining_a_hold_reason_never_produces_an_allowance` / `...::test_warn_is_produced_only_by_the_audited_deterministic_checks`
+/ `tests/unit/test_quality_aggregate.py`
 
 
 ### INV-158 `AVP_QUALITY_GATE_ENFORCE` が ON なら、全ての投稿経路が YouTube を呼ぶ前に同じ gate を通り、PASS / WARN 以外は投稿しない
