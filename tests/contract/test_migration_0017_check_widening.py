@@ -106,8 +106,11 @@ def test_declared_old_set_is_what_0016_actually_accepts(at_0016: tuple[Engine, C
             assert not _accepts(engine, kind), kind
 
 
-def test_new_set_is_every_AnomalyKind_the_code_can_write() -> None:
-    assert set(_widening()["new"]) == {k.value for k in AnomalyKind}
+def test_new_set_is_a_subset_of_AnomalyKind_the_code_can_write() -> None:
+    # 0017 は凍結された語彙。AnomalyKind は後続の migration（0022 の
+    # QUALITY_GATE_HOLD_RATE_HIGH 等）で増えるので、等号ではなく部分集合を確かめる。
+    # 「コードが書く値の全て」は最新の拡張の側（test_migration_0022_check_widening）が等号で守る
+    assert set(_widening()["new"]) <= {k.value for k in AnomalyKind}
 
 
 def test_after_upgrade_old_kinds_still_work_new_kinds_work_unknown_still_rejected(
