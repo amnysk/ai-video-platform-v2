@@ -1,0 +1,118 @@
+{
+ "batchcomplete": "",
+ "query": {
+  "normalized": [
+   {
+    "from": "File:Eastern_Thought_(ISRC_USUAN1100682).mp3",
+    "to": "File:Eastern Thought (ISRC USUAN1100682).mp3"
+   }
+  ],
+  "pages": {
+   "64740612": {
+    "imageinfo": [
+     {
+      "descriptionshorturl": "https://commons.wikimedia.org/w/index.php?curid=64740612",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Eastern_Thought_(ISRC_USUAN1100682).mp3",
+      "duration": 261.87755,
+      "extmetadata": {
+       "Artist": {
+        "source": "commons-desc-page",
+        "value": "<bdi><a href=\"https://en.wikipedia.org/wiki/en:Kevin_MacLeod\" class=\"extiw\" title=\"w:en:Kevin MacLeod\"><span title=\"American composer and music producer (born 1972)\">Kevin MacLeod</span></a></bdi>"
+       },
+       "Assessments": {
+        "hidden": "",
+        "source": "commons-categories",
+        "value": ""
+       },
+       "Attribution": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "Eastern Thought Kevin MacLeod (incompetech.com)"
+       },
+       "AttributionRequired": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "true"
+       },
+       "Categories": {
+        "hidden": "",
+        "source": "commons-categories",
+        "value": "World music from Incompetech|Music files uploaded by Fæ"
+       },
+       "CommonsMetadataExtension": {
+        "hidden": "",
+        "source": "extension",
+        "value": 1.2
+       },
+       "Copyrighted": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "True"
+       },
+       "Credit": {
+        "source": "commons-desc-page",
+        "value": "<p>mp3: <a rel=\"nofollow\" class=\"external free\" href=\"https://incompetech.com/music/royalty-free/mp3-royaltyfree/Eastern%20Thought.mp3\">https://incompetech.com/music/royalty-free/mp3-royaltyfree/Eastern%20Thought.mp3</a>\n</p>\n<br>Info: <a rel=\"nofollow\" class=\"external free\" href=\"https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100682\">https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100682</a>"
+       },
+       "DateTime": {
+        "hidden": "",
+        "source": "mediawiki-metadata",
+        "value": "2017-12-11 08:55:36"
+       },
+       "DateTimeOriginal": {
+        "source": "commons-desc-page",
+        "value": "2010-02-22"
+       },
+       "ImageDescription": {
+        "source": "commons-desc-page",
+        "value": "Eastern Thought\n<br>Eastern Thought Kevin MacLeod (incompetech.com)Licensed under Creative Commons: By Attribution 3.0 Licensehttps://creativecommons.org/licenses/by/3.0/"
+       },
+       "License": {
+        "hidden": "",
+        "source": "commons-templates",
+        "value": "cc-by-3.0"
+       },
+       "LicenseShortName": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "CC BY 3.0"
+       },
+       "LicenseUrl": {
+        "source": "commons-desc-page",
+        "value": "https://creativecommons.org/licenses/by/3.0"
+       },
+       "ObjectName": {
+        "source": "mediawiki-metadata",
+        "value": "Eastern Thought (ISRC USUAN1100682)"
+       },
+       "Permission": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "<a rel=\"nofollow\" class=\"external free\" href=\"https://creativecommons.org/licenses/by/3.0/\">https://creativecommons.org/licenses/by/3.0/</a>"
+       },
+       "Restrictions": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": ""
+       },
+       "UsageTerms": {
+        "source": "commons-desc-page",
+        "value": "Creative Commons Attribution 3.0"
+       }
+      },
+      "height": 0,
+      "mime": "audio/mpeg",
+      "sha1": "414469f4d19516a3256cb5a38d06e566a8339c6b",
+      "size": 10477322,
+      "timestamp": "2017-12-11T08:55:36Z",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/6/6d/Eastern_Thought_%28ISRC_USUAN1100682%29.mp3?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "width": 0
+     }
+    ],
+    "imagerepository": "local",
+    "ns": 6,
+    "pageid": 64740612,
+    "title": "File:Eastern Thought (ISRC USUAN1100682).mp3"
+   }
+  }
+ }
+}

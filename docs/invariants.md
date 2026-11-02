@@ -1714,15 +1714,62 @@ migration 0019（未適用のため編集）が 4 表に DELETE 拒否のトリ�
 番号 INV-150〜159 は ADR-0087 の予約。各条件の本文と**機械検査**は、それを強制するテストと同じコミットで書く。
 
 ### INV-150 自動承認は「自動取得が許されたソースの CC0・本人の作品・制限なし・係争なし」だけ。それ以外は REVIEW（隔離）か REJECT
-（本文と **機械検査** は担当の枝が記入する）
+`domain.music.license_policy.decide_license`（純関数）が `AUTO_APPROVE` を返すのは、ソースが `auto_acquire_allowed`、
+`LicenseShortName` と `License` が正規化後に**どちらも** CC0 1.0（記号の混じる表記・片方だけ・食い違いは不可）、`LicenseUrl` が
+CC0 1.0 の公開宣言、`AttributionRequired` が明示的に false、`Credit` が HTML 除去後に「Own work」と完全一致、`Restrictions` が空、
+削除・係争の印が無く、作者名と原本 URL がある、の**全部**が成り立つときだけ。CC BY / BY-SA / PD / 作者が本人でない CC0 /
+メタデータの欠け / 自動取得が許されないソースは REVIEW、NC / ND / ライセンス不明 / 食い違い / 係争 / 出典不明は REJECT。
+曖昧な入力（`CC0?`、`Public domain / CC0`、危険なマークアップを含む Credit 等）は自動承認に倒さない。
+承認の入力は保存した API 応答（証拠）から作る `LicenseFacts` だけで、承認済みの `BgmTrack` は `approve_track` が規則を
+もう一度適用してからしか作れない。
+**機械検査**: `tests/unit/test_bgm_license_policy.py::test_adversarial_table`
+/ `tests/unit/test_bgm_license_policy.py::test_only_one_input_combination_class_approves`
+/ `tests/unit/test_bgm_license_policy.py::test_real_commons_responses`
+/ `tests/unit/test_bgm_license_policy.py::test_non_auto_acquirable_source_never_auto_approves`
+/ `tests/unit/test_bgm_license_policy.py::test_approve_track_requires_an_auto_approve_decision`
+/ `tests/unit/test_bgm_commons_facts.py::test_dangerous_markup_never_collapses_to_a_clean_own_work`
+/ `tests/unit/test_bgm_commons_facts.py::test_deletion_and_dispute_signals_from_categories_and_templates`
+/ `tests/contract/test_bgm_source_policy_doc.py::test_only_commons_is_auto_acquirable_and_the_doc_says_so`
 
 
 ### INV-151 `policy` の承認は規則の版と証拠の sha256 に結び付き、版が今と違う曲は選曲に出ない
-（本文と **機械検査** は担当の枝が記入する）
+（収集側の約束。選曲側の「版が今と違う曲は出さない」は選曲の枝が強制する。）`policy` 承認は常に
+`license_policy_version = BGM_LICENSE_POLICY_VERSION` と `license_evidence_sha256`（保存した API 応答の正準 JSON の sha256）と
+`license_checked_at` を持つ。版を持たない `policy` 承認は契約（`BgmTrack`）で作れない。収集は承認時にこの 3 つを書き、
+証拠の本体を MinIO `music/evidence/<sha256>.json` に残して読み戻して sha256 を照合する。
+**機械検査**: `tests/contract/test_music_acquisition_contracts.py::test_a_policy_approval_must_name_its_policy_version`
+/ `tests/unit/test_bgm_license_policy.py::test_approve_track_requires_an_auto_approve_decision`
+/ `tests/unit/test_bgm_commons_facts.py::test_evidence_sha256_is_the_canonical_json_hash_of_the_stored_payload`
+/ `tests/unit/test_bgm_acquisition_service.py::test_cc0_own_work_is_registered_then_promoted_with_evidence`
 
 
 ### INV-152 収集した曲は隔離（`quarantined`）で登録され、上限（回数・容量・時間）を超えず、ネットワークは収集の部品だけが触る
-（本文と **機械検査** は担当の枝が記入する）
+収集は曲を**常に** `quarantined` + `unverified` で登録し（`register_quarantined`）、`AUTO_APPROVE` かつ音源の検査（形式・尺・
+デコード・ラウドネス）が成功したときだけ `promote` する。上限は `contracts/music_sources.py`: 検索 4 回・ダウンロード 3 件・1 件
+40MB・合計 120MB・尺 30 秒〜15 分・実行 10 分、同じ需要は 24 時間に 1 回。ダウンロードは streaming でバイト数を打ち切り、Commons
+の sha1 と照合する。同じ sha256 は何も書かない。候補の失敗は結果に残して run を続け、run は例外を外へ出さない（プログラム誤りを除く）。
+Temporal の収集 Workflow は決定的で、需要を逐次・上限件数まで、Activity は最大 2 回の試行。worker は `BGM_ACQUISITION_ENABLED` と
+`BGM_ENABLED` が両方 true でなければ起動しない。音楽でネットワーク（httpx / socket / urllib）に触れてよいのは
+`infrastructure/music/sources/` だけで、render / production / upload は収集・ソース・収集 worker を import しない。
+テストは通信しない（ソケットの接続を禁じる fixture）。
+**機械検査**: `tests/unit/test_bgm_acquisition_service.py::test_review_license_is_registered_quarantined_and_never_promoted`
+/ `tests/unit/test_bgm_acquisition_service.py::test_rejected_license_downloads_and_writes_nothing`
+/ `tests/unit/test_bgm_acquisition_service.py::test_analysis_failure_registers_nothing`
+/ `tests/unit/test_bgm_acquisition_service.py::test_download_cap_per_run`
+/ `tests/unit/test_bgm_acquisition_service.py::test_run_byte_budget_stops_further_downloads`
+/ `tests/unit/test_bgm_acquisition_service.py::test_run_deadline_stops_the_run`
+/ `tests/unit/test_bgm_acquisition_service.py::test_rate_limit_per_demand_and_release_after_interval`
+/ `tests/unit/test_bgm_acquisition_service.py::test_duplicate_sha256_writes_nothing`
+/ `tests/unit/test_bgm_acquisition_service.py::test_corrupted_storage_readback_is_not_registered`
+/ `tests/unit/test_bgm_acquisition_service.py::test_download_failure_continues_the_run`
+/ `tests/unit/test_bgm_commons_client.py::test_download_byte_cap_declared_and_streamed`
+/ `tests/unit/test_bgm_commons_client.py::test_download_url_and_extension_allowlist_no_request_made`
+/ `tests/unit/test_bgm_commons_client.py::test_requests_are_serialised`
+/ `tests/unit/test_bgm_acquisition_worker.py::test_worker_refuses_to_start_unless_both_flags_are_on`
+/ `tests/unit/test_bgm_acquisition_worker.py::test_workflow_processes_demands_sequentially_and_bounded`
+/ `tests/unit/test_bgm_acquisition_worker.py::test_one_failing_demand_does_not_stop_the_others_and_retries_are_bounded`
+/ `tests/architecture/test_bgm_acquisition_boundaries.py::test_only_the_sources_package_imports_a_network_library_for_music`
+/ `tests/architecture/test_bgm_acquisition_boundaries.py::test_render_production_upload_do_not_import_acquisition`
 
 
 ### INV-153 選曲は決定的で説明可能（項目ごとの点）。Episode ごとに 1 回だけ決めて保存し、再実行は保存した決定を使う
