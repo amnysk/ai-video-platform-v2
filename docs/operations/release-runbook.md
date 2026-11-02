@@ -43,13 +43,15 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
 
    | flag | 渡す service |
    |---|---|
-   | `AVP_QUALITY_GATE_ENFORCE` | api, pipeline-worker, render-worker, production-worker |
-   | `BGM_ENABLED` | render-worker, upload-worker |
+   | `AVP_QUALITY_GATE_ENFORCE` | api, pipeline-worker, render-worker, production-worker, upload-worker |
+   | `BGM_ENABLED` | render-worker, upload-worker, bgm-acquisition-worker |
+   | `BGM_ACQUISITION_ENABLED` | bgm-acquisition-worker（profile `bgm-acquisition`。既定では起動しない） |
    | `GEO_MAPS_ENABLED` | render-worker, production-worker |
    | `AVP_UPLOAD_DESCRIPTION_COMPOSED` | api, pipeline-worker, render-worker, upload-worker |
 
    ON にするには対象の `.env` に 1 行書く（値は全 service に同じものが渡る）。前提: `BGM_ENABLED` は
-   `AVP_UPLOAD_DESCRIPTION_COMPOSED=true` が要り（render / upload の起動ガード）、`GEO_MAPS_ENABLED` は
+   `AVP_UPLOAD_DESCRIPTION_COMPOSED=true` **と `AVP_QUALITY_GATE_ENFORCE=true`** が要り（render / upload の起動ガード）、
+   `BGM_ACQUISITION_ENABLED` は `BGM_ENABLED=true` が要り（収集 worker の起動ガード。手順は `docs/operations/bgm-auto-rollout.md`）、`GEO_MAPS_ENABLED` は
    `AVP_QUALITY_GATE_ENFORCE=true` が要る（render / production の起動ガード）。`AVP_QUALITY_GATE_ENFORCE` を ON にする前に、
    描画済みで使用宣言の無い動画の扱いを決める（R4）。変更の反映は該当 service の再作成（deploy-workers）。
    preflight は `.env`・プロセス環境に加えて `docker compose --profile core config` の解決後の environment も読み、
@@ -75,7 +77,8 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
    `AGENT-<yyyymmdd>-<id>:OWNER-<yyyymmdd>-<id>`（後ろが委任元の指示）。書かない・形が違うと UNKNOWN。
    **`enables`（このリリースが開ける所有者専用の関門の名前の配列）は必須**。新機能 OFF のデプロイは明示的な `[]`。
    書かないと UNKNOWN。さらに preflight が対象環境の `.env` を読み、新機能 flag
-   （`AVP_QUALITY_GATE_ENFORCE` / `BGM_ENABLED` / `GEO_MAPS_ENABLED` / `AVP_UPLOAD_DESCRIPTION_COMPOSED`。
+   （`AVP_QUALITY_GATE_ENFORCE` / `BGM_ENABLED` / `GEO_MAPS_ENABLED` / `AVP_UPLOAD_DESCRIPTION_COMPOSED` /
+   `BGM_ACQUISITION_ENABLED`。
    一覧は `contracts/release.py::FEATURE_FLAG_ENV_KEYS`）が 1 つでも ON なら、**委任された承認は BLOCKED**
    （自己申告の `enables` に依らない）。所有者本人の承認でも、flag が ON なら `enables` に `enable_new_feature` が要る。
    明確な OFF（空・`false`・`0`・`no`・`off`）以外は ON として扱う。`.env` とプロセス環境の値が食い違えば UNKNOWN）

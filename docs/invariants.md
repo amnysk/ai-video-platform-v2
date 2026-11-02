@@ -1531,6 +1531,8 @@ ADR-0077 §5（INV-115）を維持する。不合格は永続的な失敗（`Fin
 / `tests/unit/test_bgm_quality_checks.py::test_out_of_range_loudness_in_the_evidence_is_blocked_on_the_music_gate`
 / `tests/unit/test_bgm_quality_checks.py::test_the_check_recomputes_loudness_from_numbers_and_does_not_trust_the_stored_flag`
 / `tests/unit/test_bgm_quality_checks.py::test_the_local_loudness_rule_agrees_with_evaluate_loudness_everywhere`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_final_loudness_out_of_range_rerenders_once_without_bgm_and_records_why`（ADR-0087 §7 の改訂後。INV-155）
+/ `tests/unit/test_render_activities_bgm_auto.py::test_when_the_bgm_less_video_is_also_out_of_range_it_is_still_needs_input`
 
 ### INV-137 BGM だけの変更は render だけを再実行し、fal を 1 回も呼ばず、production の成果物・入力 hash を動かさない
 曲・配置・役割のどれを変えても render の input_hash だけが変わる（BGM 無し + 3 通りが全て別）。fal クライアントの全メソッドを
@@ -1706,3 +1708,199 @@ migration 0019（未適用のため編集）が 4 表に DELETE 拒否のトリ�
 / `tests/contract/test_migration_0019_quality.py::test_episode_foreign_keys_restrict_and_the_approval_fk_includes_the_episode`
 / `tests/integration/test_quality_records_postgres.py::test_delete_is_refused_on_every_table`
 / `tests/integration/test_quality_records_postgres.py::test_an_approval_cannot_point_at_another_episodes_report`
+
+## AL. BGM の自動収集・自動選曲・フォールバック、品質ゲートの検査障害（ADR-0087。INV-150〜159）
+
+番号 INV-150〜159 は ADR-0087 の予約。各条件の本文と**機械検査**は、それを強制するテストと同じコミットで書く。
+
+### INV-150 自動承認は「自動取得が許されたソースの CC0・本人の作品・制限なし・係争なし」だけ。それ以外は REVIEW（隔離）か REJECT
+`domain.music.license_policy.decide_license`（純関数）が `AUTO_APPROVE` を返すのは、ソースが `auto_acquire_allowed`、
+`LicenseShortName` と `License` が正規化後に**どちらも** CC0 1.0（記号の混じる表記・片方だけ・食い違いは不可）、`LicenseUrl` が
+CC0 1.0 の公開宣言、`AttributionRequired` が明示的に false、`Credit` が HTML 除去後に「Own work」と完全一致、`Restrictions` が空、
+削除・係争の印が無く、作者名と原本 URL がある、の**全部**が成り立つときだけ。CC BY / BY-SA / PD / 作者が本人でない CC0 /
+メタデータの欠け / 自動取得が許されないソースは REVIEW、NC / ND / ライセンス不明 / 食い違い / 係争 / 出典不明は REJECT。
+曖昧な入力（`CC0?`、`Public domain / CC0`、危険なマークアップを含む Credit 等）は自動承認に倒さない。
+承認の入力は保存した API 応答（証拠）から作る `LicenseFacts` だけで、承認済みの `BgmTrack` は `approve_track` が規則を
+もう一度適用してからしか作れない。
+**機械検査**: `tests/unit/test_bgm_license_policy.py::test_adversarial_table`
+/ `tests/unit/test_bgm_license_policy.py::test_only_one_input_combination_class_approves`
+/ `tests/unit/test_bgm_license_policy.py::test_real_commons_responses`
+/ `tests/unit/test_bgm_license_policy.py::test_non_auto_acquirable_source_never_auto_approves`
+/ `tests/unit/test_bgm_license_policy.py::test_approve_track_requires_an_auto_approve_decision`
+/ `tests/unit/test_bgm_commons_facts.py::test_dangerous_markup_never_collapses_to_a_clean_own_work`
+/ `tests/unit/test_bgm_commons_facts.py::test_deletion_and_dispute_signals_from_categories_and_templates`
+/ `tests/contract/test_bgm_source_policy_doc.py::test_only_commons_is_auto_acquirable_and_the_doc_says_so`
+
+
+### INV-151 `policy` の承認は規則の版と証拠の sha256 に結び付き、版が今と違う曲は選曲に出ない
+（収集側の約束。選曲側の「版が今と違う曲は出さない」は選曲の枝が強制する。）`policy` 承認は常に
+`license_policy_version = BGM_LICENSE_POLICY_VERSION` と `license_evidence_sha256`（保存した API 応答の正準 JSON の sha256）と
+`license_checked_at` を持つ。版を持たない `policy` 承認は契約（`BgmTrack`）で作れない。収集は承認時にこの 3 つを書き、
+証拠の本体を MinIO `music/evidence/<sha256>.json` に残して読み戻して sha256 を照合する。
+**機械検査**: `tests/unit/test_render_activities_bgm_auto.py::test_a_finalized_decision_is_rechecked_before_it_is_reused`
+/ `tests/contract/test_music_acquisition_contracts.py::test_a_policy_approval_must_name_its_policy_version`
+/ `tests/unit/test_bgm_license_policy.py::test_approve_track_requires_an_auto_approve_decision`
+/ `tests/unit/test_bgm_commons_facts.py::test_evidence_sha256_is_the_canonical_json_hash_of_the_stored_payload`
+/ `tests/unit/test_bgm_acquisition_service.py::test_cc0_own_work_is_registered_then_promoted_with_evidence`
+
+
+### INV-152 収集した曲は隔離（`quarantined`）で登録され、上限（回数・容量・時間）を超えず、ネットワークは収集の部品だけが触る
+収集は曲を**常に** `quarantined` + `unverified` で登録し（`register_quarantined`）、`AUTO_APPROVE` かつ音源の検査（形式・尺・
+デコード・ラウドネス）が成功したときだけ `promote` する。上限は `contracts/music_sources.py`: 検索 4 回・ダウンロード 3 件・1 件
+40MB・合計 120MB・尺 30 秒〜15 分・実行 10 分、同じ需要は 24 時間に 1 回。ダウンロードは streaming でバイト数を打ち切り、Commons
+の sha1 と照合する。同じ sha256 は何も書かない。候補の失敗は結果に残して run を続け、run は例外を外へ出さない（プログラム誤りを除く）。
+Temporal の収集 Workflow は決定的で、需要を逐次・上限件数まで、Activity は最大 2 回の試行。worker は `BGM_ACQUISITION_ENABLED` と
+`BGM_ENABLED` が両方 true でなければ起動しない。音楽でネットワーク（httpx / socket / urllib）に触れてよいのは
+`infrastructure/music/sources/` だけで、render / production / upload は収集・ソース・収集 worker を import しない。
+テストは通信しない（ソケットの接続を禁じる fixture）。
+**機械検査**: `tests/unit/test_bgm_acquisition_service.py::test_review_license_is_registered_quarantined_and_never_promoted`
+/ `tests/unit/test_bgm_acquisition_service.py::test_rejected_license_downloads_and_writes_nothing`
+/ `tests/unit/test_bgm_acquisition_service.py::test_analysis_failure_registers_nothing`
+/ `tests/unit/test_bgm_acquisition_service.py::test_download_cap_per_run`
+/ `tests/unit/test_bgm_acquisition_service.py::test_run_byte_budget_stops_further_downloads`
+/ `tests/unit/test_bgm_acquisition_service.py::test_run_deadline_stops_the_run`
+/ `tests/unit/test_bgm_acquisition_service.py::test_rate_limit_per_demand_and_release_after_interval`
+/ `tests/unit/test_bgm_acquisition_service.py::test_duplicate_sha256_writes_nothing`
+/ `tests/unit/test_bgm_acquisition_service.py::test_corrupted_storage_readback_is_not_registered`
+/ `tests/unit/test_bgm_acquisition_service.py::test_download_failure_continues_the_run`
+/ `tests/unit/test_bgm_commons_client.py::test_download_byte_cap_declared_and_streamed`
+/ `tests/unit/test_bgm_commons_client.py::test_download_url_and_extension_allowlist_no_request_made`
+/ `tests/unit/test_bgm_commons_client.py::test_requests_are_serialised`
+/ `tests/unit/test_bgm_acquisition_worker.py::test_worker_refuses_to_start_unless_both_flags_are_on`
+/ `tests/unit/test_bgm_acquisition_worker.py::test_workflow_processes_demands_sequentially_and_bounded`
+/ `tests/unit/test_bgm_acquisition_worker.py::test_one_failing_demand_does_not_stop_the_others_and_retries_are_bounded`
+/ `tests/architecture/test_bgm_acquisition_boundaries.py::test_only_the_sources_package_imports_a_network_library_for_music`
+/ `tests/architecture/test_bgm_acquisition_boundaries.py::test_render_production_upload_do_not_import_acquisition`
+
+
+### INV-153 選曲は決定的で説明可能（項目ごとの点）。Episode ごとに 1 回だけ決めて保存し、再実行は保存した決定を使う
+「適切な曲」は最低点 `MIN_SELECTION_SCORE` に**加えて** mood が（主・副のどちらかで）合う曲だけ（`is_suitable`。規則 select-2）。
+合わない曲しか無ければ BGM 無しで需要を積む（mood 以外の項目だけで最低点に届くため、点だけでは判定しない）。
+選曲は純粋関数の列（`derive_requirements` -> `score_candidates` -> `select_for_episode`）で、語彙表は `domain/music/lexicon.py`
+だけが定義し、LLM を使わない。同じ入力は同じ要件・同じ順序で、カタログの並びに依らず、同点は `track_id`。点は項目ごとの加点
+（`ScoreBreakdown`）で説明でき、隔離・未検証・失効・形式不可・版違いの `policy` 承認（INV-151）・ブランド不許可・ラウドネス未測定の
+曲には点を付けない。決定は Render の内側で Episode ごとに 1 回だけ作り、`save_selection_once`（`episode_id` UNIQUE。同時でも 1 行、
+上書きしない）で保存する。確定（`finalize_selection`）後の再実行・再試行は保存した決定を使い、梯子も再選曲も走らない。
+適切な曲が無いときは待たずに需要を積むだけで BGM 無しで進む。
+**機械検査**: `tests/unit/test_bgm_review_findings.py::test_a_track_whose_mood_does_not_match_is_never_suitable_even_at_the_minimum_score`
+/ `tests/unit/test_bgm_auto_select.py::test_the_same_episode_rerun_and_a_shuffled_catalog_give_the_same_decision`
+/ `tests/unit/test_bgm_auto_select.py::test_ties_break_by_track_id_and_input_order_never_matters`
+/ `tests/unit/test_bgm_auto_select.py::test_quarantined_unverified_expired_and_wrong_format_tracks_are_never_scored`
+/ `tests/unit/test_bgm_auto_select.py::test_policy_approval_with_a_stale_rule_version_is_not_scored_but_owner_approval_is`
+/ `tests/unit/test_bgm_catalog_repository.py::test_concurrent_saves_leave_one_row_and_every_caller_sees_the_same_decision`
+/ `tests/unit/test_bgm_catalog_repository.py::test_finalize_sets_the_outcome_once_and_a_second_finalize_returns_the_first`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_a_retry_after_finalize_reuses_the_decision_and_the_same_input_hash`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_no_approved_track_renders_without_bgm_and_queues_a_demand_without_waiting`
+/ `tests/contract/test_migration_0021_bgm.py::test_uniqueness_that_makes_selection_once_and_dedupe_enforceable`
+
+
+### INV-154 適用する gain は曲の持ち上げ幅 + 役割の値で上限を超えず、発話中の差 12 LU 以上を描画前に実測する
+曲ごとの `mix_gain_offset_db`（所有者が試聴で決めた持ち上げ幅）は `plan_cue_sheet` / `gain_db_for` で役割ごとの gain に足され、
+フォールバックの追加の減衰も足されるが、結果は常に `BGM_NARRATION_PRIORITY_MAX_DB` 以下・`LEVEL_DB_MIN..MAX` の範囲。
+CK61（-14.5 LUFS, +6 dB）は既定の役割で全 cue が -12 dB になり、所有者が承認した試聴（`shift_levels(+6)`）と同一の
+`BgmMixPlan` になる。発話中の「声 - BGM」差 12 LU 以上（`SPEECH_MARGIN_MIN_CENTI_LU`）は**描画の前**に音声だけの stem で実測し、
+実際に適用した gain と最小の差は `bgm_selections` と BGM 証跡に残る。
+**機械検査**: `tests/unit/test_bgm_mix_offset.py::test_ck61_with_a_plus_six_offset_is_the_same_mix_plan_as_the_approved_preview`
+/ `tests/unit/test_bgm_mix_offset.py::test_the_offset_and_the_fallback_attenuation_add_and_the_cap_still_holds`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_the_first_render_selects_finalizes_and_applies_the_owner_offset`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_too_small_a_margin_attenuates_once_then_passes`
+
+
+### INV-155 フォールバックは上限つきの 1 本の梯子（減衰 1 回 → 次点 1 曲 → BGM 無し）で、fal・production に触れず理由が残る
+梯子は有限の 1 本: 選んだ曲で差を実測 -> 足りなければ同じ曲を 3 dB 下げて 1 回だけ再測定 -> 足りない・原本が読めない/sha256 不一致・
+ライセンス再検査に落ちた・配置できない -> 次点の曲（合計 `FALLBACK_MAX_TRACKS` 曲）-> BGM 無し。BGM 入りの完成動画のラウドネスが
+範囲外なら BGM 無しで 1 回だけ再描画して再検査し、それも範囲外なら従来どおり `FinalVideoValidationError`（needs_input）。
+どの段も fal・provider・production に触れず（呼び出し 0 回・production の成果物と予約台帳が不変）、理由コードつきで
+`bgm_selections.fallback` に残る（黙って落とさない）。BGM 無しの動画は `render_input_hash` に BGM の識別子が無く、証跡も作らない
+（使用宣言は「不使用」）。確定は `final_video` の行より前。
+**機械検査**: `tests/unit/test_render_activities_bgm_auto.py::test_when_a_track_cannot_pass_the_next_ranked_track_is_tried_once`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_when_every_track_fails_the_video_has_no_bgm_and_says_so`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_an_unreadable_or_altered_original_falls_to_the_next_track`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_an_original_with_the_wrong_sha256_is_never_mixed`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_an_expired_track_is_rejected_at_the_recheck_before_rendering`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_final_loudness_out_of_range_rerenders_once_without_bgm_and_records_why`
+/ `tests/unit/test_render_activities_bgm_auto.py::test_when_the_bgm_less_video_is_also_out_of_range_it_is_still_needs_input`
+/ `tests/architecture/test_bgm_phase3_boundaries.py::test_phase3_bgm_modules_do_not_import_production_or_provider_code`
+
+
+### INV-156 品質ゲートは検査系の一時障害を上限つきで内部再試行し、記録できない必須検査は PASS にせず `inspection_unavailable` で区別する
+producer・記録の書き込み・報告の保存・DB の読み出しの失敗は、`infrastructure/quality/inspection.py` の分類表（唯一の定義）で
+一時（`InspectionFault`: タイムアウト・接続・I/O・DB の接続障害・MinIO の 5xx 系）か恒久（`InspectionDefect`: hash 不一致・
+別 Episode/別動画の証跡・契約違反・不明）に分ける。**迷えば恒久**。一時障害だけを `QualityGateService` の内側で
+**3 回試行・指数バックオフ（1 秒・2 秒）・評価全体で 30 秒以内**に再試行し（時計と sleep は注入）、恒久は再試行しない。
+再試行しても記録できない必須の検査は、これまでどおり**決定論の REVIEW（PASS に倒さない・BLOCK にもしない）**だが、理由を
+`QualityReason.INSPECTION_UNAVAILABLE` にする（品質の保留 `REPORT_NEEDS_REVIEW` / 本物の欠落 `REQUIRED_CHECK_MISSING` と区別）。
+保留の原因が全て検査系の故障のときだけ投稿可否の理由が `inspection_unavailable` になり、品質の保留・BLOCK が 1 つでも
+混じれば本来の理由が残る。報告の各検査の `reason_code`・`quality.decision` の構造化ログ（`hold_cause` / `inspection_retries`）
+に区別が残る。偽の記録は書かない。判定語彙・Episode の状態は増やさない（RETRY は gate の内部処理）。
+直近 10 件中 5 件以上が保留なら `QUALITY_GATE_HOLD_RATE_HIGH`（`operational_anomalies`、日ごとに 1 行、migration 0022）を
+自動経路の判定の直後に記録する。警報の失敗は gate を止めず、判定に触れない。内訳（品質 / 検査系）は
+`scripts/quality_rates.py`（読み取り専用）と `scripts/quality_shadow.py`（インメモリで旧・新 gate を比較）で見る。
+**機械検査**: `tests/unit/test_quality_inspection_classification.py::test_classification_table`
+/ `tests/unit/test_quality_gate_inspection_recovery.py::test_a_transient_store_fault_is_retried_and_the_episode_recovers`
+/ `...::test_a_persistent_transient_fault_is_review_with_inspection_unavailable`
+/ `...::test_a_permanent_defect_is_not_retried_and_stays_a_quality_review`
+/ `...::test_the_total_budget_stops_retrying_before_thirty_seconds`
+/ `...::test_no_failure_pattern_ever_yields_an_allowance_unless_recovered_cleanly`
+/ `...::test_a_genuine_block_is_not_hidden_behind_inspection_unavailable`
+/ `tests/unit/test_quality_inspection_domain.py`（再試行の方針・欠落の理由の区別・`refine_hold_reason`）
+/ `tests/unit/test_quality_hold_rate.py` / `tests/unit/test_quality_hold_alarm_wiring.py`
+/ `tests/unit/test_quality_gate_persisted_wiring.py::test_upload_gate_reports_inspection_unavailable_and_records_the_hold_alarm`
+/ `tests/contract/test_migration_0022_check_widening.py`
+
+
+### INV-157 WARN は決定論の検査が WARN と判定したものだけで、BLOCK・REVIEW を緩める経路は無い
+`aggregate` は、決定論の検査の最も厳しい判定より緩い結果を返さず、LLM の検査は判定を厳しくする方向（上限 REVIEW）にしか
+働かず、決定論の根拠が無ければ PASS/WARN にしない（INV-102）。投稿可は PASS / WARN の報告だけ。検査系の故障の区別
+（`refine_hold_reason`）は拒否の**理由**を変えるだけで、拒否を許可にしない。WARN を書いてよい場所は監査表
+（生産者 = 地図の許容距離の超過だけ、消費者 = 判定の読み取り）に限り、新しい「軽微」を足すには表と INV の根拠を同じ変更で
+更新する。説明欄の任意部分の切り詰め・BGM の差の未測定などは、検査自身が軽微と判定できない（切り詰めは INV-112 で止める、
+未測定は REVIEW）ので WARN にしない。
+**機械検査**: `tests/unit/test_quality_warn_policy.py::test_aggregate_can_only_be_as_strict_as_the_strictest_deterministic_check`
+（検査 0〜3 個 × 判定 4 × 決定論/LLM の総当たり）/ `...::test_only_pass_and_warn_reports_are_ever_allowed`
+/ `...::test_refining_a_hold_reason_never_produces_an_allowance` / `...::test_warn_is_produced_only_by_the_audited_deterministic_checks`
+/ `tests/unit/test_quality_aggregate.py`
+
+
+### INV-158 `AVP_QUALITY_GATE_ENFORCE` が ON なら、全ての投稿経路が YouTube を呼ぶ前に同じ gate を通り、PASS / WARN 以外は投稿しない
+YouTube を呼べる経路は 5 つで、全てが `QualityGateService.evaluate` の判定に従う: ① 通常の Episode Workflow（`upload_gate` が
+自動の規則で判定）、② 手動 API `POST /episodes/{id}/upload`（手動の規則。REVIEW は所有者の承認を記録してから起動）、
+③ `UploadWorkflow` の直接起動（Temporal CLI・スクリプト）、④ `upload` Activity の再試行・再配送、⑤ 過去 Episode の再投稿。
+③④⑤は ①② の門を通らずに `upload` Activity に届きうるため、**ENFORCE が ON のとき `upload` Activity 自身が、予約・session
+の前（YouTube に触れる前）に同じ `evaluate(manual=True)` を呼ぶ**（多層防御。`workers/upload/activities.py::_require_quality_gate`）。
+PASS / WARN は通る。REVIEW は、現行 final_video の hash に結び付いた**所有者**（`approver_kind=owner`）の承認記録
+（`quality_manual_approvals`。INV-129）があるときだけ通り、`agent_delegated` の行・別 Episode の承認は数えない。BLOCK・
+作成失敗・例外・サービス無し・古い/欠けた記録は `UploadQualityRefusedError`（needs_input・retry しない）で、予約も session も
+作らない。投稿済み（spent）の予約は gate より前に既存の受領を返し、YouTube を呼ばない。過去の PASS 記録は hash・入力 hash・
+規則版が一致し有効期間内のときだけ再利用され、期限切れで再検査できなければ拒否される（INV-126）。OFF のときはこの門は何も
+読まず書かない（INV-130）。二重投稿は予約台帳（spent / dispatched）・マーカー・upload key（`compute_upload_key`）が引き続き止める。
+**機械検査**: `tests/unit/test_upload_path_quality_gate.py`（`test_a_refused_decision_never_reaches_youtube` /
+`...::test_a_producer_block_never_reaches_youtube_even_with_an_owner_approval` / `...::test_a_review_with_the_owner_approval_recorded_proceeds` /
+`...::test_a_review_with_only_a_delegated_agent_approval_is_refused` / `...::test_enforce_off_never_touches_the_service_or_the_quality_tables` /
+`...::test_a_past_pass_is_reused_for_the_same_video_without_new_check_records` / `...::test_a_past_pass_is_refused_once_it_is_stale_and_cannot_be_regenerated`)
+/ `tests/unit/test_upload_double_upload_paths.py`（再配送・応答喪失・dispatched・マーカー・uploaded の再入場・`upload_gate` の spent）
+/ `tests/unit/test_quality_gate_persisted_wiring.py`（①②の経路）/ `tests/unit/test_bgm_auto_billing_safety.py`（再描画・拒否・再試行で fal の台帳が増えない）
+/ `tests/unit/test_bgm_auto_replay.py`（workflow の replay。決定性を崩さない）
+
+
+### INV-159 `BGM_ENABLED` は説明欄の構成と `AVP_QUALITY_GATE_ENFORCE` を、`BGM_ACQUISITION_ENABLED` は `BGM_ENABLED` を要求し、全 OFF は導入前と同一
+有効化の順序は `AVP_UPLOAD_DESCRIPTION_COMPOSED` → `AVP_QUALITY_GATE_ENFORCE` → `BGM_ENABLED` → `BGM_ACQUISITION_ENABLED`。
+worker が起動時に強制する（`infrastructure/music/guard.py`）: `BGM_ENABLED=true` は説明欄の構成（`require_description_composition_for_bgm`）
+**と** `AVP_QUALITY_GATE_ENFORCE=true`（`require_quality_gate_enforce_for_bgm`）を render / upload worker で要求し、
+`BGM_ACQUISITION_ENABLED=true` は `BGM_ENABLED=true`（`require_bgm_for_acquisition`）を収集 worker で要求する。満たさなければ
+`SystemExit` で Temporal に繋ぐ前に止まる。収集 worker は compose の profile `bgm-acquisition` にだけ置き、`--profile core` の
+deploy では起動しない（Temporal Schedule は所有者だけが作る）。新しい flag はキー名を `contracts.music_sources` が、release の
+flag 一覧と読み手 service を `contracts/release.py` が唯一の宣言元として持ち、release record に載る。`GEO_MAPS_ENABLED` は
+既定 OFF のまま。4 つ全て OFF のとき、品質サービス・使用宣言の writer・BGM の供給元・収集 worker のどれも組み立てない。
+**機械検査**: `tests/unit/test_bgm_flag_chain_guard.py`（各ガードの全組み合わせ・render / upload の呼び出し・全 OFF の組み立て）
+/ `tests/contract/test_compose_feature_flags.py`（compose の渡し先と既定 false・収集 worker が profile 限定・`GEO_MAPS_ENABLED` の既定）
+/ `tests/contract/test_deploy_workers.py::test_opt_in_services_are_exactly_the_declared_ones_and_outside_core`
+/ `tests/unit/test_release_feature_flags.py` / `tests/unit/test_release_effective_flags.py`（release record に新 flag が載る）
+
+
+**INV-133 の改訂（ADR-0087 §2）**: 「承認は人の証拠なしに生まれない」を「承認は証拠なしに生まれない。人の承認（`owner`）か、
+規則の版と保存した API 応答の sha256 を持つ規則の承認（`policy`、INV-150/151）のどちらか」と読み替える。内容 sha256 による同一性・
+重複の扱いは変えない。
+
+**INV-136 の改訂（ADR-0087 §7）**: 「BGM 入りのラウドネス不合格は BGM 無しへ自動で落とさない」を廃止し、INV-155 の梯子
+（BGM 無しで 1 回だけ再描画し再検査。BGM 無しでも不合格なら従来どおり needs_input）に置き換える。黙って落とさず理由を記録する点は維持。

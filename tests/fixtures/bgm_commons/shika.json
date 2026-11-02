@@ -1,0 +1,104 @@
+{
+ "batchcomplete": "",
+ "query": {
+  "normalized": [
+   {
+    "from": "File:Shikanotoone_new.ogg",
+    "to": "File:Shikanotoone new.ogg"
+   }
+  ],
+  "pages": {
+   "4722291": {
+    "imageinfo": [
+     {
+      "descriptionshorturl": "https://commons.wikimedia.org/w/index.php?curid=4722291",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Shikanotoone_new.ogg",
+      "duration": 375.08913832199545,
+      "extmetadata": {
+       "Artist": {
+        "source": "commons-desc-page",
+        "value": "<ul><li>derivative work: <a href=\"//commons.wikimedia.org/wiki/User:Torsodog\" title=\"User:Torsodog\">Torsodog</a> (<a href=\"//commons.wikimedia.org/wiki/User_talk:Torsodog\" title=\"User talk:Torsodog\"><span class=\"signature-talk\">talk</span></a>)</li>\n<li><a href=\"//commons.wikimedia.org/wiki/File:Shikanotoone.ogg\" title=\"File:Shikanotoone.ogg\">Shikanotoone.ogg</a>: Araki Kodō III (1879–1935)</li></ul>"
+       },
+       "Assessments": {
+        "hidden": "",
+        "source": "commons-categories",
+        "value": ""
+       },
+       "AttributionRequired": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "false"
+       },
+       "Categories": {
+        "hidden": "",
+        "source": "commons-categories",
+        "value": "Retouched pictures|Author died more than 100 years ago public domain images|Shakuhachi|Self-published work|PD-self|Audio files of Japan|CC-PD-Mark|Uploaded with derivativeFX|PD-Japan-audio|Audio files of music of Japan"
+       },
+       "CommonsMetadataExtension": {
+        "hidden": "",
+        "source": "extension",
+        "value": 1.2
+       },
+       "Copyrighted": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "False"
+       },
+       "Credit": {
+        "source": "commons-desc-page",
+        "value": "<ul><li><a href=\"//commons.wikimedia.org/wiki/File:Shikanotoone.ogg\" title=\"File:Shikanotoone.ogg\">Shikanotoone.ogg</a></li></ul>"
+       },
+       "DateTime": {
+        "hidden": "",
+        "source": "mediawiki-metadata",
+        "value": "2008-09-05 04:08:31"
+       },
+       "DateTimeOriginal": {
+        "source": "commons-desc-page",
+        "value": "Original recording: Between 1925 and 1937; Derivative version: 2008-09-05 04:06 (UTC)"
+       },
+       "ImageDescription": {
+        "source": "commons-desc-page",
+        "value": "A <a href=\"https://en.wikipedia.org/wiki/honkyoku\" class=\"extiw\" title=\"w:honkyoku\">honkyoku</a> piece entitled <i>Shika no Tōne</i> played on a <a href=\"https://en.wikipedia.org/wiki/shakuhachi\" class=\"extiw\" title=\"w:shakuhachi\">shakuhachi</a>. Published as <a href=\"https://en.wikipedia.org/wiki/en:Victor_Talking_Machine_Company\" class=\"extiw\" title=\"w:en:Victor Talking Machine Company\">Victor</a> 13029."
+       },
+       "License": {
+        "hidden": "",
+        "source": "commons-templates",
+        "value": "pd"
+       },
+       "LicenseShortName": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "Public domain"
+       },
+       "ObjectName": {
+        "source": "mediawiki-metadata",
+        "value": "Shikanotoone new"
+       },
+       "Restrictions": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": ""
+       },
+       "UsageTerms": {
+        "source": "commons-desc-page",
+        "value": "Public domain"
+       }
+      },
+      "height": 0,
+      "mime": "application/ogg",
+      "sha1": "d49336c4f57c2e3a40f222191b4c1e22fe85484a",
+      "size": 3746614,
+      "timestamp": "2008-09-05T04:08:31Z",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Shikanotoone_new.ogg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "width": 0
+     }
+    ],
+    "imagerepository": "local",
+    "ns": 6,
+    "pageid": 4722291,
+    "title": "File:Shikanotoone new.ogg"
+   }
+  }
+ }
+}

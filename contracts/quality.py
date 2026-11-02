@@ -106,6 +106,9 @@ class QualityReason(StrEnum):
     # --- 検査の記録と必須の集合（ADR-0081）
     REQUIRED_CHECK_MISSING = "required_check_missing"
     USAGE_DECLARATION_MISSING = "usage_declaration_missing"
+    #: 必須の検査を、検査系の一時障害（I/O・タイムアウト・接続）で記録できなかった（ADR-0087 §8）。
+    #: 品質の問題ではない。判定は REVIEW のまま（PASS に倒さない）で、理由だけを区別する
+    INSPECTION_UNAVAILABLE = "inspection_unavailable"
     # --- 手動承認（ADR-0081 §9）
     APPROVER_UNKNOWN = "approver_unknown"
     APPROVER_NOT_OWNER = "approver_not_owner"

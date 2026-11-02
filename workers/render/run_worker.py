@@ -18,7 +18,9 @@ from temporalio.worker import Worker
 from contracts.states import RENDER_MEDIA_TASK_QUEUE, RENDER_TASK_QUEUE
 from contracts.upload import description_composition_enabled
 from domain.errors import RenderEngineUnavailableError
+from domain.render.ports import BgmSource, SelectingBgmSource
 from infrastructure.config import Settings
+from infrastructure.db.bgm_repositories import SqlBgmCatalogRepository
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.geo.clip import FfmpegMapClipEncoder
 from infrastructure.geo.guard import require_quality_gate
@@ -26,10 +28,13 @@ from infrastructure.geo.service import GeoRenderService
 from infrastructure.geo.source import LocalDirectoryGeoSource
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.media.probe import PillowAvMediaProbe
-from infrastructure.music.guard import require_description_composition_for_bgm
+from infrastructure.music.db_source import DbBgmSource
+from infrastructure.music.guard import (
+    require_description_composition_for_bgm,
+    require_quality_gate_enforce_for_bgm,
+)
 from infrastructure.quality.wiring import build_quality_record_writer
 from infrastructure.render.bgm_intelligibility import FfmpegSpeechMarginProbe
-from infrastructure.render.bgm_source import LocalDirectoryBgmSource
 from infrastructure.render.ffmpeg_engine import FfmpegRenderEngine
 from infrastructure.render.loudness import FfmpegLoudnessProbe
 from infrastructure.storage.minio_store import MinioArtifactStore
@@ -108,11 +113,16 @@ async def main() -> None:
     require_description_composition_for_bgm(
         bgm_on=settings.bgm_enabled, composition_enabled=description_composition_enabled()
     )
-    bgm_source = None
+    require_quality_gate_enforce_for_bgm(
+        bgm_on=settings.bgm_enabled, enforce_on=settings.quality_gate_enforce
+    )
+    session_factory = session_factory_from_settings(settings)
+    bgm_source: BgmSource | SelectingBgmSource | None = None
     loudness_probe = None
     speech_probe = None
     if settings.bgm_enabled and settings.render_ffmpeg_path:
-        bgm_source = LocalDirectoryBgmSource(Path(settings.ai_video_work_root) / "bgm")
+        # ADR-0087 §4: カタログ・選曲は DB。LocalDirectoryBgmSource は scripts/bgm_preview.py 用
+        bgm_source = DbBgmSource(SqlBgmCatalogRepository(session_factory), store)
         loudness_probe = FfmpegLoudnessProbe(settings.render_ffmpeg_path)
         # ADR-0086 §3: 発話中の声と BGM の差を描画の中で実測する（BGM_ENABLED の背後）
         speech_probe = FfmpegSpeechMarginProbe(settings.render_ffmpeg_path)
@@ -127,7 +137,6 @@ async def main() -> None:
             encoder=FfmpegMapClipEncoder(settings.render_ffmpeg_path),
             font_path=Path(settings.render_font_path),
         )
-    session_factory = session_factory_from_settings(settings)
     activities = RenderActivities(
         session_factory=session_factory,
         store=store,

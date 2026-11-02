@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from contracts.artifacts import ScriptArtifact, StoryboardArtifact
 from contracts.music import BgmTrack, MusicCueSheet
 from contracts.music_render import BgmMixPlan, LoudnessMeasurement
+from contracts.music_selection import BgmSelectionDecision, FallbackReason
 from contracts.render import RenderEngineIdentity, RenderPlan
 from domain.music.intelligibility import SceneSpeechLevels
 
@@ -140,3 +143,57 @@ class BgmSource(Protocol):
     """BGM の供給元。同期（呼び出し側がスレッドで待つ）。DB 版への差し替え口（ADR-0077 §1）。"""
 
     def load(self, episode_id: str) -> BgmSourceData: ...
+
+
+@dataclass(frozen=True, slots=True)
+class BgmRenderContext:
+    """選曲に必要な、Render が持っている文脈（ADR-0087 §5）。Activity の入出力には現れない。"""
+
+    episode_id: str
+    plan: RenderPlan
+    script: ScriptArtifact
+    storyboard: StoryboardArtifact
+    #: 原本を取り出す作業領域（sha256 照合済みのキャッシュ置き場）
+    work_dir: Path
+    now: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class BgmRenderSelection:
+    """``load_for_render`` の結果。``finalized`` なら梯子は走らせず、``data`` をそのまま使う。"""
+
+    decision: BgmSelectionDecision
+    finalized: bool
+    #: 確定済みで曲があるときだけ。確定済みの cue sheet と取り出し済みの原本
+    data: BgmSourceData | None = None
+    #: 未確定のとき、梯子で試す曲（最上位から）
+    candidates: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class BgmCandidate:
+    """梯子の 1 段分の準備結果。``failure`` があれば ``data`` は無く、次の曲へ進む。"""
+
+    data: BgmSourceData | None = None
+    failure: FallbackReason | None = None
+    #: 曲の ``mix_gain_offset_db`` に追加の減衰を足した、実際に適用する値
+    applied_gain_offset_db: int = 0
+
+
+@runtime_checkable
+class SelectingBgmSource(Protocol):
+    """Episode 単位の自動選曲つきの供給元（DB 版。ADR-0087 §5）。
+
+    旧 ``BgmSource.load`` と並ぶ別の口で、``LocalDirectoryBgmSource`` は変わらない。
+    ネットワークで収集しない・待たない（需要を積むだけ）。
+    """
+
+    async def load_for_render(self, ctx: BgmRenderContext) -> BgmRenderSelection: ...
+
+    async def prepare_candidate(
+        self, ctx: BgmRenderContext, track_id: str, *, extra_gain_offset_db: int
+    ) -> BgmCandidate: ...
+
+    async def finalize(
+        self, decision: BgmSelectionDecision, *, finalized_at: datetime
+    ) -> BgmSelectionDecision: ...

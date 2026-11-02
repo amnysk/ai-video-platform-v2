@@ -161,6 +161,9 @@ class Settings(BaseSettings):
     #: BGM の Render 結線（ADR-0077）。既定 OFF。OFF の間は導入前と同一の描画。
     #: 供給元は ``${ai_video_work_root}/bgm/``（catalog.json と cues/<episode_id>.json、音源）
     bgm_enabled: bool = False
+    #: BGM の自動収集（ADR-0087 §3 / §10）。既定 OFF。ON は ``bgm_enabled`` を要求する（INV-159）。
+    #: OFF の間は収集 worker が起動せず、ネットワークに触れない
+    bgm_acquisition_enabled: bool = False
 
     # --- upload（Phase 6） ---
     #: OAuth installed app の client。secret は ``SecretStr``。

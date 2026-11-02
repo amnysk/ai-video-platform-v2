@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
 
@@ -39,8 +40,10 @@ from contracts.log_contract import EventName, LogStage, Outcome
 from contracts.music_render import (
     BgmEvidenceTrack,
     BgmRenderEvidence,
+    LoudnessVerdict,
     SpeechIntelligibility,
 )
+from contracts.music_selection import BgmSelectionDecision
 from contracts.render import (
     FINAL_VIDEO_MIME_TYPE,
     RENDER_ARTIFACT_SCHEMA_VERSION,
@@ -103,7 +106,9 @@ from domain.render.identity import render_input_hash, render_plan_sha256
 from domain.render.loudness import evaluate_loudness, loudness_check
 from domain.render.plan import Pinned, build_render_plan
 from domain.render.ports import (
+    BgmRenderContext,
     BgmRenderInput,
+    BgmRenderSelection,
     BgmSource,
     BgmSourceData,
     BgmSourceError,
@@ -111,6 +116,7 @@ from domain.render.ports import (
     LoudnessProbe,
     RenderEngine,
     RenderRequest,
+    SelectingBgmSource,
     SpeechMarginProbe,
 )
 from domain.render.qa import (
@@ -141,6 +147,7 @@ from infrastructure.quality.usage import declare_render_usage
 from infrastructure.render.binary import file_sha256
 from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.workdir import JobWorkDir, WorkDirectory
+from workers.render.bgm_ladder import log_selection, run_ladder, without_bgm_after_loudness
 from workers.render.run_inspector import WorkflowRunInspector
 
 logger = logging.getLogger(__name__)
@@ -255,7 +262,7 @@ class RenderActivities:
         run_inspector: WorkflowRunInspector | None = None,
         disk_usage: DiskUsage = shutil.disk_usage,
         heartbeat: HeartbeatFn = _activity_heartbeat,
-        bgm_source: BgmSource | None = None,
+        bgm_source: BgmSource | SelectingBgmSource | None = None,
         loudness_probe: LoudnessProbe | None = None,
         geo: GeoRenderService | None = None,
         speech_probe: SpeechMarginProbe | None = None,
@@ -423,46 +430,66 @@ class RenderActivities:
             policy=self._policy,
             engine=engine,
         )
-        bgm, bgm_data = await self._resolve_bgm(episode_id, plan)
+        attempt = _attempt()
+        work: JobWorkDir | None = None
+        selecting = self._selecting_source()
+        selection: BgmRenderSelection | None = None
+        bgm_ctx: BgmRenderContext | None = None
+        bgm: BgmResolution | None = None
+        bgm_data: BgmSourceData | None = None
+        if selecting is not None:
+            # 自動選曲（ADR-0087 §5）: 原本の取り出し先が要るので作業領域を先に作る（冪等）
+            work = self._workdir.create(episode_id, job_id, attempt=attempt)
+            bgm_ctx = BgmRenderContext(
+                episode_id=episode_id,
+                plan=plan,
+                script=inputs.script.artifact,
+                storyboard=inputs.storyboard.artifact,
+                work_dir=work.tmp,
+                now=self._clock(),
+            )
+            selection = await self._select_bgm(selecting, bgm_ctx)
+            if selection is None:
+                bgm = skipped_for(BgmSkipReason.SOURCE_UNREADABLE)
+            elif selection.finalized:
+                bgm, bgm_data = self._resolve_finalized(selection, plan)
+        else:
+            bgm, bgm_data = await self._resolve_bgm(episode_id, plan)
         geo_plan = await self._resolve_geo(episode_id, plan, inputs)
-        input_hash = render_input_hash(
-            manifest_sha256=inputs.manifest_meta.sha256,
-            script_sha256=inputs.script.ref.sha256,
-            storyboard_sha256=inputs.storyboard.ref.sha256,
-            profile=profile,
-            policy=self._policy,
-            engine=engine,
-            font_sha256=self._font_sha256,
-            engine_threads=self._render_threads,
-            bgm=bgm.identity if bgm is not None else None,
-            geo=geo_plan.identity if geo_plan is not None else None,
+        ladder_pending = (
+            selection is not None and not selection.finalized and bool(selection.candidates)
         )
+        #: 梯子の結果（または候補の無い決定）で、描画の前に確定する決定（INV-153）
+        decision = selection.decision if selection is not None else None
+        to_finalize = selection is not None and not selection.finalized
 
-        async with self._session_factory() as session:
+        def _hash(res: BgmResolution | None) -> str:
+            return render_input_hash(
+                manifest_sha256=inputs.manifest_meta.sha256,
+                script_sha256=inputs.script.ref.sha256,
+                storyboard_sha256=inputs.storyboard.ref.sha256,
+                profile=profile,
+                policy=self._policy,
+                engine=engine,
+                font_sha256=self._font_sha256,
+                engine_threads=self._render_threads,
+                bgm=res.identity if res is not None else None,
+                geo=geo_plan.identity if geo_plan is not None else None,
+            )
+
+        input_hash = _hash(bgm)
+        if not ladder_pending:
             # 再利用の唯一のゲート（ADR-0033）: 欠落・破損・版不一致は自前で readback して
             # 判定し直さない。工程ごとに判定ロジックを複製しない（AGENTS §8）
-            existing = await find_and_verify_current(
-                repo=ArtifactMetadataRepository(session),
-                store=self._store,
-                episode_id=episode_id,
-                artifact_type=ArtifactType.FINAL_VIDEO,
-                input_hash=input_hash,
-            )
-        if existing is not None:
-            async with self._session_factory() as session:
-                await self._finish_job(session, job_id, skipped=True)
-                await session.commit()
-            logger.info(
-                "render skipped episode=%s: current final_video %s has the same input",
-                episode_id,
-                existing.id,
-            )
-            await self._declare_for_reused(existing, input_hash, bgm, geo_plan)
-            return _result(existing, skipped=True, job_id=job_id)
+            existing = await self._find_current(episode_id, input_hash)
+            if existing is not None:
+                if to_finalize and selecting is not None and decision is not None:
+                    await self._finalize_bgm(selecting, decision)
+                return await self._reuse(existing, job_id, input_hash, bgm, geo_plan, work)
 
         self._preflight_disk(inputs.input_bytes)
-        attempt = _attempt()
-        work = self._workdir.create(episode_id, job_id, attempt=attempt)
+        if work is None:
+            work = self._workdir.create(episode_id, job_id, attempt=attempt)
         try:
             video_paths, voice_paths = await self._download_media(inputs, work)
             self._heartbeat("media_downloaded")
@@ -471,8 +498,51 @@ class RenderActivities:
                 await self._beating(
                     "geo_clips", asyncio.to_thread(geo_plan.materialize, video_paths, work.tmp)
                 )
-            rendered = await self._engine.render(
-                RenderRequest(
+            speech: SpeechIntelligibility | None = None
+            if ladder_pending and selecting is not None and bgm_ctx is not None and selection:
+                # 描画の前に、音声だけの stem で発話中の差を実測して梯子を下りる（INV-154 / 155）
+                async def _measure(bgm_input: BgmRenderInput) -> SpeechIntelligibility | None:
+                    return await self._measure_speech_input(
+                        episode_id, plan, bgm_input, voice_paths
+                    )
+
+                ladder = await run_ladder(
+                    selecting,
+                    bgm_ctx,
+                    selection,
+                    resolve=lambda data: resolve_bgm(
+                        data.cue_sheet,
+                        data.catalog,
+                        plan=plan,
+                        now=self._clock(),
+                        file_sha256_by_track=data.file_sha256_by_track,
+                    ),
+                    measure=_measure if self._speech_probe is not None else None,
+                    heartbeat=lambda: self._heartbeat("bgm_ladder"),
+                )
+                decision, bgm, bgm_data, speech = (
+                    ladder.decision,
+                    ladder.resolution,
+                    ladder.data,
+                    ladder.speech,
+                )
+                input_hash = _hash(bgm)
+                existing = await self._find_current(episode_id, input_hash)
+                if existing is not None:
+                    await self._finalize_bgm(selecting, ladder.decision)
+                    return await self._reuse(existing, job_id, input_hash, bgm, geo_plan, work)
+            if decision is not None:
+                log_selection(
+                    decision,
+                    brand_id=decision.requirements.brand_id,
+                    finalized=not to_finalize,
+                    reused=selection is not None and selection.finalized,
+                )
+
+            def _request(res: BgmResolution | None, data: BgmSourceData | None, *, retry: bool):
+                tmp = work.tmp / "no-bgm" if retry else work.tmp
+                tmp.mkdir(parents=True, exist_ok=True)
+                return RenderRequest(
                     plan=plan,
                     scene_video_paths=video_paths,
                     voice_paths=voice_paths,
@@ -480,15 +550,56 @@ class RenderActivities:
                         inputs.script.artifact, plan.subtitle_cues, profile.subtitles
                     ),
                     font_path=self._font_path,
-                    work_dir=work.tmp,
-                    output_path=work.output / FINAL_VIDEO_FILENAME,
+                    work_dir=tmp,
+                    output_path=work.output
+                    / ("final-no-bgm.mp4" if retry else FINAL_VIDEO_FILENAME),
                     timeout_seconds=self._timeout_seconds,
-                    bgm=_bgm_input(bgm, bgm_data),
-                ),
-                heartbeat=lambda: self._heartbeat("rendering"),
+                    bgm=_bgm_input(res, data),
+                )
+
+            rendered = await self._engine.render(
+                _request(bgm, bgm_data, retry=False), heartbeat=lambda: self._heartbeat("rendering")
             )
             self._heartbeat("rendered")
-            speech = await self._measure_speech(episode_id, plan, bgm, bgm_data, voice_paths)
+            verdict = None
+            gate_loudness = False
+            if bgm is not None and bgm.applied:
+                if speech is None:
+                    speech = await self._measure_speech(
+                        episode_id, plan, bgm, bgm_data, voice_paths
+                    )
+                verdict = await self._loudness_verdict(rendered.path)
+                if not verdict.passed:
+                    # BGM 入りの完成動画のラウドネスが範囲外: 黙って落とさず、理由を記録して
+                    # BGM 無しで 1 回だけ描き直し、それを再検査する（ADR-0087 §7 / INV-155）
+                    logger.warning(
+                        "bgm final loudness out of range episode=%s reason=%s; re-rendering "
+                        "without bgm",
+                        episode_id,
+                        verdict.reason_code,
+                    )
+                    if decision is not None:
+                        decision = without_bgm_after_loudness(
+                            decision,
+                            brand_id=decision.requirements.brand_id,
+                            measured_min_margin=speech.min_margin_centi_lu if speech else None,
+                        )
+                    bgm, bgm_data, speech, verdict = None, None, None, None
+                    gate_loudness = True
+                    input_hash = _hash(None)
+                    existing = await self._find_current(episode_id, input_hash)
+                    if existing is not None:
+                        if to_finalize and selecting is not None and decision is not None:
+                            await self._finalize_bgm(selecting, decision)
+                        return await self._reuse(existing, job_id, input_hash, None, geo_plan, work)
+                    rendered = await self._engine.render(
+                        _request(None, None, retry=True),
+                        heartbeat=lambda: self._heartbeat("rendering"),
+                    )
+                    self._heartbeat("rendered")
+            if to_finalize and selecting is not None and decision is not None:
+                # final_video の行より前に、実際に描いた結果を確定する（再試行は保存値を使う）
+                await self._finalize_bgm(selecting, decision)
             result = await self._store_final(
                 request,
                 job_id,
@@ -499,6 +610,8 @@ class RenderActivities:
                 bgm=bgm,
                 geo=geo_plan,
                 speech=speech,
+                loudness=verdict,
+                gate_loudness=gate_loudness,
             )
         except asyncio.CancelledError:
             self._cleanup(episode_id, job_id, attempt)
@@ -515,6 +628,98 @@ class RenderActivities:
             raise
         self._cleanup(episode_id, job_id, attempt)
         return result
+
+    async def _find_current(self, episode_id: str, input_hash: str) -> ArtifactMetadata | None:
+        async with self._session_factory() as session:
+            return await find_and_verify_current(
+                repo=ArtifactMetadataRepository(session),
+                store=self._store,
+                episode_id=episode_id,
+                artifact_type=ArtifactType.FINAL_VIDEO,
+                input_hash=input_hash,
+            )
+
+    async def _reuse(
+        self,
+        existing: ArtifactMetadata,
+        job_id: str,
+        input_hash: str,
+        bgm: BgmResolution | None,
+        geo_plan: GeoPlan | None,
+        work: JobWorkDir | None,
+    ) -> RenderFinalVideoResult:
+        async with self._session_factory() as session:
+            await self._finish_job(session, job_id, skipped=True)
+            await session.commit()
+        logger.info(
+            "render skipped episode=%s: current final_video %s has the same input",
+            existing.episode_id,
+            existing.id,
+        )
+        await self._declare_for_reused(existing, input_hash, bgm, geo_plan)
+        if work is not None:
+            self._cleanup(existing.episode_id, job_id, _attempt())
+        return _result(existing, skipped=True, job_id=job_id)
+
+    def _selecting_source(self) -> SelectingBgmSource | None:
+        """自動選曲つきの供給元。測定器（ラウドネス）が無ければ使わない（導入前と同一）。"""
+        if self._loudness_probe is None or not isinstance(self._bgm_source, SelectingBgmSource):
+            return None
+        return self._bgm_source
+
+    async def _select_bgm(
+        self, source: SelectingBgmSource, ctx: BgmRenderContext
+    ) -> BgmRenderSelection | None:
+        """選曲を読む/決める。DB・MinIO の故障で動画を止めない（BGM 無しで進め、確定もしない）。"""
+        try:
+            return await self._beating("bgm_select", source.load_for_render(ctx))
+        except (BgmSourceError, OSError, SQLAlchemyError) as exc:
+            logger.warning(
+                "bgm not used episode=%s reason=selection_unavailable (%s)",
+                ctx.episode_id,
+                type(exc).__name__,
+            )
+            return None
+
+    def _resolve_finalized(
+        self, selection: BgmRenderSelection, plan: RenderPlan
+    ) -> tuple[BgmResolution | None, BgmSourceData | None]:
+        """確定済みの決定（INV-153）を再選曲せずに再検査して使う。曲が無い決定は BGM 無し。"""
+        data = selection.data
+        if selection.decision.track_id is None or data is None or data.cue_sheet is None:
+            return None, None
+        resolution = resolve_bgm(
+            data.cue_sheet,
+            data.catalog,
+            plan=plan,
+            now=self._clock(),
+            file_sha256_by_track=data.file_sha256_by_track,
+        )
+        if not resolution.applied:
+            logger.warning(
+                "bgm not used episode=%s reasons=%s",
+                selection.decision.episode_id,
+                [(r.reason.value, r.track_id, r.detail) for r in resolution.rejections],
+            )
+        return resolution, data
+
+    async def _finalize_bgm(
+        self, source: SelectingBgmSource, decision: BgmSelectionDecision
+    ) -> None:
+        saved = await source.finalize(decision, finalized_at=self._clock())
+        if saved.model_dump(mode="json") != decision.model_dump(mode="json"):
+            logger.warning(
+                "bgm selection was already finalized episode=%s; the stored decision is kept",
+                decision.episode_id,
+            )
+
+    async def _loudness_verdict(self, path: Path) -> LoudnessVerdict:
+        assert self._loudness_probe is not None
+        probe = self._loudness_probe
+        measured = await self._beating(
+            "loudness", asyncio.to_thread(probe.measure_loudness, str(path))
+        )
+        return evaluate_loudness(measured)
 
     def _cleanup(self, episode_id: str, job_id: str, attempt: int) -> None:
         try:
@@ -546,7 +751,11 @@ class RenderActivities:
         bgm: BgmResolution | None = None,
         geo: GeoPlan | None = None,
         speech: SpeechIntelligibility | None = None,
+        loudness: LoudnessVerdict | None = None,
+        gate_loudness: bool = False,
     ) -> RenderFinalVideoResult:
+        """``loudness`` は測定済みの判定（無ければここで測る）。``gate_loudness`` は BGM 無しへ
+        落とした動画の再検査: 測って範囲外なら検査に落とすが、BGM の証跡・記録には含めない。"""
         episode_id = request.episode_id
         try:
             info = await self._beating(
@@ -570,12 +779,11 @@ class RenderActivities:
         loudness_verdict = None
         if bgm is not None and bgm.applied:
             # BGM 入りだけ実測する。測れない/範囲外/無音は例外（黙って通さない。INV-115）
-            assert self._loudness_probe is not None
-            measured = await self._beating(
-                "loudness", asyncio.to_thread(self._loudness_probe.measure_loudness, str(path))
-            )
-            loudness_verdict = evaluate_loudness(measured)
+            loudness_verdict = loudness or await self._loudness_verdict(path)
             qa_checks.append(loudness_check(loudness_verdict))
+        elif gate_loudness:
+            # BGM 無しへ落とした動画も黙って通さない: 範囲外なら従来どおり needs_input
+            qa_checks.append(loudness_check(await self._loudness_verdict(path)))
         _log_validation(episode_id, qa_checks, "pre_upload")
         raise_for_failed_checks(qa_checks)
 
@@ -772,6 +980,17 @@ class RenderActivities:
         bgm_input = _bgm_input(bgm, bgm_data)
         if self._speech_probe is None or bgm_input is None:
             return None
+        return await self._measure_speech_input(episode_id, plan, bgm_input, voice_paths)
+
+    async def _measure_speech_input(
+        self,
+        episode_id: str,
+        plan: RenderPlan,
+        bgm_input: BgmRenderInput,
+        voice_paths: Mapping[str, Path],
+    ) -> SpeechIntelligibility | None:
+        if self._speech_probe is None:
+            return None
         probe = self._speech_probe
         try:
             levels = await self._beating(
@@ -834,12 +1053,11 @@ class RenderActivities:
 
         使えない理由は戻り値とログに残す。使えない場合の描画は BGM 無しと同一（INV-113/114）。
         """
-        if self._bgm_source is None or self._loudness_probe is None:
+        source = self._bgm_source
+        if source is None or self._loudness_probe is None or not isinstance(source, BgmSource):
             return None, None
         try:
-            data = await self._beating(
-                "bgm_source", asyncio.to_thread(self._bgm_source.load, episode_id)
-            )
+            data = await self._beating("bgm_source", asyncio.to_thread(source.load, episode_id))
         except (BgmSourceError, OSError) as exc:
             logger.warning("bgm not used episode=%s reason=source_unreadable (%s)", episode_id, exc)
             return skipped_for(BgmSkipReason.SOURCE_UNREADABLE), None

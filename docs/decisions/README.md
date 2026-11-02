@@ -95,3 +95,4 @@ Alternatives と Consequences の悪い側を書いていないADRは未完成�
 | [0084](./0084-historical-map-wiring.md) | 歴史地図の結線（依頼 → 検証 → 決定論の描画 → Production の事前検査 → Render の差し替え・hash で結んだ証跡。既定 OFF・workflow 変更なし） | Proposed |
 | [0085](./0085-ai-quality-review-model-policy-and-escalation.md) | AI 品質レビューは Agent Runtime の LLM port と ModelPolicy を再利用し、決定論の判定を最後の安全装置にする（設計のみ・既定 OFF） | Proposed |
 | [0086](./0086-bgm-and-map-quality-wiring.md) | BGM・地図の品質検査を記録つきゲートへ結線する（使用宣言・証跡の結び付け・発話余裕の実測・クレジット。新しい flag なし・migration なし） | Proposed |
+| [0087](./0087-bgm-auto-acquisition-selection-and-gate-recovery.md) | BGM の自動収集（Commons・CC0 のみ自動承認・隔離登録）・Render 内の決定的な自動選曲と永続化・上限つきフォールバック、品質ゲートの検査障害の内部再試行（ADR-0083 §1/§6 を改める。migration 0021・新 flag `BGM_ACQUISITION_ENABLED`） | Proposed |

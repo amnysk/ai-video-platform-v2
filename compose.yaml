@@ -450,6 +450,7 @@ services:
       AVP_SERVICE_NAME: upload-worker
       # 新機能 flag（ADR-0080 §A / R3）。既定 OFF。読む service にだけ渡す（一覧は contracts/release.py::
       # FEATURE_FLAG_SERVICES、検査は tests/contract/test_compose_feature_flags.py）。値は .env 一箇所
+      AVP_QUALITY_GATE_ENFORCE: ${AVP_QUALITY_GATE_ENFORCE:-false}
       AVP_UPLOAD_DESCRIPTION_COMPOSED: ${AVP_UPLOAD_DESCRIPTION_COMPOSED:-false}
       BGM_ENABLED: ${BGM_ENABLED:-false}
       <<: *app-env
@@ -506,6 +507,40 @@ services:
     healthcheck:
       <<: *worker-health
       test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "research"]
+
+  bgm-acquisition-worker:
+    # ADR-0087 §3 / §10（INV-152 / INV-159）: BGM の自動収集 worker。**既定では起動しない**
+    # （profile `bgm-acquisition` を明示したときだけ。`--profile core` には含まれない）。
+    # 起動には BGM_ACQUISITION_ENABLED=true と BGM_ENABLED=true が要る（起動ガード）。
+    # 収集の Temporal Schedule はこの compose では作らない。所有者だけが作る
+    # （docs/operations/bgm-auto-rollout.md）。YOUTUBE_* / CODEX_* / FAL_KEY は持たせない
+    <<: *worker
+    profiles: [bgm-acquisition]
+    depends_on: *deps-minio
+    environment:
+      AVP_SERVICE_NAME: bgm-acquisition-worker
+      AVP_QUALITY_GATE_ENFORCE: ${AVP_QUALITY_GATE_ENFORCE:-false}
+      BGM_ENABLED: ${BGM_ENABLED:-false}
+      BGM_ACQUISITION_ENABLED: ${BGM_ACQUISITION_ENABLED:-false}
+      # Wikimedia User-Agent 方針の連絡先（メール / URL）。未設定なら worker は起動しない
+      BGM_ACQUISITION_CONTACT: ${BGM_ACQUISITION_CONTACT:-}
+      <<: *app-env
+      AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
+      # 音源の検査（形式・尺・ラウドネス）。render-worker と同じ固定版
+      RENDER_FFMPEG_PATH: /opt/avp/ffmpeg/ffmpeg
+      RENDER_FFMPEG_SHA256: ${RENDER_FFMPEG_SHA256:-810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f3a15b0bf2c5c}
+      RENDER_FFPROBE_PATH: /opt/avp/ffmpeg/ffprobe
+      RENDER_FFPROBE_SHA256: ${RENDER_FFPROBE_SHA256:-4818b8964b5d7b699370628a4154c97e88205678ee506ca72e9330600e917667}
+    volumes:
+      - type: bind
+        source: ${AVP_FFMPEG_DIR:-${HOME}/.local/share/avp/ffmpeg/7.1.1}
+        target: /opt/avp/ffmpeg
+        read_only: true
+      - *work-root
+    command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.bgm_acquisition.run_worker"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "infrastructure.temporal.poller_check", "--queue", "bgm-acquisition"]
 
   prometheus:
     logging: *logging

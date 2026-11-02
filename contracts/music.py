@@ -30,7 +30,8 @@ MUSIC_CONTRACT_SCHEMA_VERSION = "1.0"
 BGM_TRACK_ID_PATTERN = r"^bgm-[A-Za-z0-9._-]+$"
 
 SourceKind = Literal["youtube_audio_library", "licensed_external", "original"]
-LicenseType = Literal["youtube_audio_library_standard", "cc_by", "custom"]
+#: ``cc0`` は ADR-0087 で追加（自動承認できる唯一の種類）。既存の値の意味は変えない
+LicenseType = Literal["youtube_audio_library_standard", "cc_by", "cc0", "custom"]
 LicenseStatus = Literal["approved", "unverified", "revoked", "expired"]
 Platform = Literal["youtube"]
 VideoFormat = Literal["shorts", "longform"]
@@ -86,6 +87,17 @@ class BgmTrack(FrozenModel):
     duration_ms: int = Field(gt=0)
     loudness_lufs: float | None = None
     status: TrackStatus
+    # --- ADR-0087（既定値つき。既存の catalog.json はそのまま読める） ---
+    #: 承認の主体。``policy`` は自動承認の規則（``BGM_LICENSE_POLICY_VERSION``）による
+    license_approver_kind: Literal["owner", "policy"] | None = None
+    #: ``policy`` 承認のときの規則の版。版が今と違えば選曲に出ない（INV-151）
+    license_policy_version: str | None = Field(default=None, max_length=64)
+    #: Content ID の申し立てリスク。ライセンスの有効性とは別の項目（ADR-0087 §2）
+    content_id_risk: Literal["unknown", "low", "elevated"] = "unknown"
+    #: 所有者が試聴で決めた持ち上げ幅（dB 整数）。上限は従来どおり ``BGM_NARRATION_PRIORITY_MAX_DB``
+    mix_gain_offset_db: int = Field(default=0, ge=-24, le=12)
+    #: 使ってよいブランド。空なら全ブランド
+    allowed_brands: tuple[str, ...] = ()
 
     @field_validator("license_checked_at", "valid_until")
     @classmethod
@@ -117,6 +129,8 @@ class BgmTrack(FrozenModel):
             self.license_evidence_sha256 is None or self.license_checked_at is None
         ):
             raise ValueError("approved needs license_evidence_sha256 and license_checked_at")
+        if self.license_approver_kind == "policy" and not self.license_policy_version:
+            raise ValueError("a policy approval needs license_policy_version (INV-151)")
         return self
 
 

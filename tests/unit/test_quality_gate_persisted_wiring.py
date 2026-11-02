@@ -308,3 +308,45 @@ async def test_the_default_dependencies_are_the_pre_existing_path_and_no_approve
     agent = get_upload_approver(Actor.AGENT)
     assert owner is not None and owner.kind is ApproverKind.OWNER
     assert agent is not None and agent.kind is ApproverKind.AGENT_DELEGATED
+
+
+# --- ADR-0087 §8 / §11: 検査系の故障の区別と保留率の警報 ------------------------------------
+
+
+async def test_upload_gate_reports_inspection_unavailable_and_records_the_hold_alarm(
+    world: World,
+) -> None:
+    from contracts.schedule_guard import AnomalyKind
+    from infrastructure.db.models import OperationalAnomalyRow
+    from tests.support.log_capture import capture_json
+
+    await world.declare()
+
+    class DownStore:
+        async def get_json(self, key: str):  # type: ignore[no-untyped-def]
+            raise ConnectionResetError("minio down")
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    service = QualityGateService(
+        session_factory=world.factory,
+        store=DownStore(),  # type: ignore[arg-type]
+        clock=lambda: NOW,
+        sleep=no_sleep,
+    )
+    acts = _acts(world, enforce=True, service=service)
+    with capture_json() as captured:
+        # 同じ判定を 5 回（直近 5 件が保留 = 警報）
+        results = [await _gate(acts, world.episode_id) for _ in range(5)]
+    assert all(not r.allowed for r in results)
+    assert all(r.reason == "quality: inspection_unavailable" for r in results)
+    async with world.factory() as s:
+        rows = (await s.execute(select(OperationalAnomalyRow))).scalars().all()
+    assert [r.kind for r in rows] == [AnomalyKind.QUALITY_GATE_HOLD_RATE_HIGH.value]
+    assert rows[0].detail["inspection_holds"] == 5
+    assert rows[0].detail["quality_holds"] == 0
+    skipped = captured.events("upload.skipped")
+    assert skipped
+    assert all(e["attributes"]["hold_cause"] == "inspection" for e in skipped)
+    assert all(e["error_code"] == "inspection_unavailable" for e in skipped)

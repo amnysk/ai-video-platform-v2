@@ -40,6 +40,7 @@
 | `upload` | 現行の `final_video`（と、メタデータを導出する `script`） | `upload_receipt`（ADR-0020） | **YouTube private 投稿**（予約台帳 `youtube_upload`、1ラウンドのみ） |
 | `pipeline` | DB の Episode 状態・operational switch | `episodes` 行の claim（`topic_plan_id` を結ぶ） | なし（工程の起動は子 workflow） |
 | `research` | `research_requests` の依頼（依頼 ID だけを受け取る） | `research_artifacts`（`research_trend` / `research_evidence`。本番の Artifact ではない。ADR-0037） | 検索・本文取得は `RESEARCH_PROVIDER`（`fake` / `none`。既定 `none` = 呼ばずに `blocked`）。実 Provider は未配線。呼び出しは `research_calls` 台帳（INV-36）。Episode の工程はこの worker を起動しない・待たない（INV-37） |
+| `bgm_acquisition`（task queue `bgm-acquisition`。`BGM_ACQUISITION_ENABLED` かつ `BGM_ENABLED` のときだけ起動。ADR-0087） | 需要（`bgm_acquisition_demands`）と Wikimedia Commons の API 応答 | `bgm_tracks`（隔離登録。CC0・本人の作品のときだけ承認）・MinIO `music/originals/` と `music/evidence/`・`bgm_acquisition_runs` | **Wikimedia Commons の API と原本 URL の取得だけ**（無料・直列・User-Agent つき）。Episode の工程とは独立 |
 | `analytics`（**未実装**。`workers/analytics` は空） | `upload_receipt` | `performance_report`（予定） | YouTube Analytics。現状は Topic Planner が `analytics_snapshots` へ読み取るだけ |
 
 - **Research への opt-in 接続（B6、既定 OFF。ADR-0039 §B6 / ADR-0038 §B6）**: `planning` だけが Research を呼べる。

@@ -24,8 +24,28 @@ def _compose_services() -> dict[str, dict]:
     return data["services"]
 
 
+#: deploy-workers.sh（``--profile core``）の対象に入れない、所有者が明示する opt-in service。
+#: 名前を挙げて up すると compose はその profile を自動で有効にするので、APP_SERVICES に入れると
+#: 既定で起動してしまう（INV-159）。増やすときは ADR か設計書で理由を残す
+OPT_IN_SERVICES = {"bgm-acquisition-worker": "bgm-acquisition"}
+
+
 def _built_services() -> dict[str, dict]:
-    return {name: svc for name, svc in _compose_services().items() if "build" in svc}
+    return {
+        name: svc
+        for name, svc in _compose_services().items()
+        if "build" in svc and name not in OPT_IN_SERVICES
+    }
+
+
+def test_opt_in_services_are_exactly_the_declared_ones_and_outside_core() -> None:
+    services = _compose_services()
+    opt_in = {
+        n for n, s in services.items() if "build" in s and "core" not in s.get("profiles", [])
+    }
+    assert opt_in == set(OPT_IN_SERVICES)
+    for name, profile in OPT_IN_SERVICES.items():
+        assert services[name]["profiles"] == [profile]
 
 
 def _bash_array(name: str) -> list[str]:

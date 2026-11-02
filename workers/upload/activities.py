@@ -34,8 +34,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio import activity
 
+from contracts.approval import ApproverKind
 from contracts.artifacts import ScriptArtifact, parse_script_artifact
 from contracts.log_contract import EventName, LogStage, Outcome
+from contracts.quality import QualityReason
 from contracts.render import FinalVideoArtifact
 from contracts.states import (
     JOB_TERMINAL_STATUSES,
@@ -97,6 +99,7 @@ from domain.errors import (
     UploadOwnershipLostError,
     UploadProcessingFailedError,
     UploadProcessingPendingError,
+    UploadQualityRefusedError,
     UploadsPausedError,
     classify_failure,
 )
@@ -113,6 +116,7 @@ from domain.upload.ports import (
 )
 from domain.upload.processing import ProcessingOutcome, classify_processing
 from infrastructure.artifact.verify import find_and_verify_current
+from infrastructure.db.quality_repositories import QualityRecordRepository
 from infrastructure.db.repositories import (
     ArtifactMetadataRepository,
     EpisodeRepository,
@@ -123,6 +127,7 @@ from infrastructure.db.repositories import (
 from infrastructure.logging.emit import emit, log_guard
 from infrastructure.music.credits import BgmCreditSource
 from infrastructure.production.activity_errors import raise_activity_error, translate_error
+from infrastructure.quality.service import QualityGateService
 from infrastructure.storage.artifact_store import ArtifactStore
 from infrastructure.temporal.run_inspector import WorkflowRunInspector
 from infrastructure.workdir import WorkDirectory
@@ -253,6 +258,8 @@ class UploadActivities:
         heartbeat: HeartbeatFn = _activity_heartbeat,
         sleep: SleepFn = asyncio.sleep,
         credit_source: BgmCreditSource | None = None,
+        quality_enforce: bool = False,
+        quality_service: QualityGateService | None = None,
     ) -> None:
         if chunk_bytes <= 0:
             raise ValueError("chunk_bytes must be positive")
@@ -275,6 +282,10 @@ class UploadActivities:
         self._sleep = sleep
         #: gate の説明欄 lint と同じ BGM クレジットの読み口（ADR-0086 §5）。None なら ``credits=()``
         self._credit_source = credit_source
+        #: 投稿 Activity 内の最後の品質 gate（ADR-0087 §9 / INV-158）。
+        #: OFF なら何も読まず書かない（INV-130）
+        self._quality_enforce = quality_enforce
+        self._quality_service = quality_service
         #: 認証中チャンネルの照合は worker（インスタンス）ごとに1回
         self._channel_verified = False
 
@@ -466,6 +477,8 @@ class UploadActivities:
             )
 
         await self._refuse_if_paused("refusing to start or resume an upload")
+        # YouTube に触れる前の最後の門。どの経路（直接起動・再試行・手動）でもここを通る（INV-158）
+        await self._require_quality_gate(episode_id)
 
         work = self._workdir.create(episode_id, job_id, attempt=attempt)
         path = work.input / FINAL_VIDEO_FILENAME
@@ -525,6 +538,48 @@ class UploadActivities:
         return await self._finish(
             episode_id, job_id, final, metadata, upload_key, reservation, outcome, called=True
         )
+
+    async def _require_quality_gate(self, episode_id: str) -> None:
+        """ENFORCE が ON のとき、PASS / WARN（または所有者が承認済みの REVIEW）以外は止める。
+
+        ``upload_gate``（自動）と手動 API が見るのと同じ ``QualityGateService.evaluate`` を、
+        手動の規則（REVIEW は許可候補）で呼ぶ。許可候補の REVIEW は、現行 final_video の hash に
+        結び付いた **所有者**の承認記録（``quality_manual_approvals``。INV-129）があるときだけ通す。
+        例外・サービス無しは PASS に倒さず拒否する（fail-closed）。
+        """
+        if not self._quality_enforce:
+            return
+        service = self._quality_service
+        if service is None:
+            raise self._quality_refusal(QualityReason.REPORT_PRODUCTION_FAILED)
+        try:
+            outcome = await service.evaluate(episode_id, manual=True)
+        except Exception:  # noqa: BLE001 - fail-closed
+            raise self._quality_refusal(QualityReason.REPORT_EVALUATION_ERROR) from None
+        decision = outcome.assessment.decision
+        if not decision.allowed:
+            raise self._quality_refusal(decision.reason_code)
+        if not outcome.assessment.review_approved:
+            return  # PASS / WARN
+        if await self._owner_approved(episode_id, outcome.final_video_sha256):
+            return
+        raise self._quality_refusal(QualityReason.APPROVER_UNKNOWN)
+
+    async def _owner_approved(self, episode_id: str, final_video_sha256: str | None) -> bool:
+        if not final_video_sha256:
+            return False
+        try:
+            async with self._session_factory() as session:
+                approvals = await QualityRecordRepository(session).list_manual_approvals(
+                    episode_id, final_video_sha256
+                )
+        except Exception:  # noqa: BLE001 - 読めない承認は無いのと同じ
+            return False
+        return any(a.approver_kind == ApproverKind.OWNER.value for a in approvals)
+
+    @staticmethod
+    def _quality_refusal(reason: QualityReason) -> UploadQualityRefusedError:
+        return UploadQualityRefusedError(f"quality: {reason.value}")
 
     # ------------------------------------------------------------------ 台帳
 

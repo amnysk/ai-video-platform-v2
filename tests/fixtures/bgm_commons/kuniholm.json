@@ -1,0 +1,108 @@
+{
+ "batchcomplete": "",
+ "query": {
+  "normalized": [
+   {
+    "from": "File:Paul_Kuniholm_Ambient_Seattle_2024_(WayVSumtInThWay).wav",
+    "to": "File:Paul Kuniholm Ambient Seattle 2024 (WayVSumtInThWay).wav"
+   }
+  ],
+  "pages": {
+   "146041004": {
+    "imageinfo": [
+     {
+      "descriptionshorturl": "https://commons.wikimedia.org/w/index.php?curid=146041004",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Paul_Kuniholm_Ambient_Seattle_2024_(WayVSumtInThWay).wav",
+      "duration": 219.34933333333333,
+      "extmetadata": {
+       "Artist": {
+        "source": "commons-desc-page",
+        "value": "<a href=\"//commons.wikimedia.org/w/index.php?title=User:1stArtHistorian&amp;action=edit&amp;redlink=1\" class=\"new\" title=\"User:1stArtHistorian (page does not exist)\">1stArtHistorian</a>"
+       },
+       "Assessments": {
+        "hidden": "",
+        "source": "commons-categories",
+        "value": ""
+       },
+       "AttributionRequired": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "false"
+       },
+       "Categories": {
+        "hidden": "",
+        "source": "commons-categories",
+        "value": "Polymaths|CC-Zero|Ambient music|Paul Kuniholm Pauper|Self-published work"
+       },
+       "CommonsMetadataExtension": {
+        "hidden": "",
+        "source": "extension",
+        "value": 1.2
+       },
+       "Copyrighted": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "True"
+       },
+       "Credit": {
+        "source": "commons-desc-page",
+        "value": "<span class=\"int-own-work\" lang=\"en\">Own work</span>"
+       },
+       "DateTime": {
+        "hidden": "",
+        "source": "mediawiki-metadata",
+        "value": "2024-03-03 20:24:22"
+       },
+       "DateTimeOriginal": {
+        "source": "commons-desc-page",
+        "value": "2024-03-02"
+       },
+       "ImageDescription": {
+        "source": "commons-desc-page",
+        "value": "POLYMATH Paul Kuniholm is an Ambient composer and performative artist. Paul Kuniholm is a composer of Ambient sound. Kuniholm's familial line has shared space with Duwamish People since 1890."
+       },
+       "License": {
+        "hidden": "",
+        "source": "commons-templates",
+        "value": "cc0"
+       },
+       "LicenseShortName": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "CC0"
+       },
+       "LicenseUrl": {
+        "source": "commons-desc-page",
+        "value": "http://creativecommons.org/publicdomain/zero/1.0/deed.en"
+       },
+       "ObjectName": {
+        "source": "mediawiki-metadata",
+        "value": "Paul Kuniholm Ambient Seattle 2024 (WayVSumtInThWay)"
+       },
+       "Restrictions": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": ""
+       },
+       "UsageTerms": {
+        "source": "commons-desc-page",
+        "value": "Creative Commons Zero, Public Domain Dedication"
+       }
+      },
+      "height": 0,
+      "mime": "audio/wav",
+      "sha1": "2b4374a4e7478c96b074c10b502088ab69eb1f6f",
+      "size": 21057636,
+      "timestamp": "2024-03-03T20:24:22Z",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/5/54/Paul_Kuniholm_Ambient_Seattle_2024_%28WayVSumtInThWay%29.wav?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "width": 0
+     }
+    ],
+    "imagerepository": "local",
+    "ns": 6,
+    "pageid": 146041004,
+    "title": "File:Paul Kuniholm Ambient Seattle 2024 (WayVSumtInThWay).wav"
+   }
+  }
+ }
+}

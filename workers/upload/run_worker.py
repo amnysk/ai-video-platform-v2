@@ -31,7 +31,11 @@ from infrastructure.db.repositories import OperationalSwitchRepository
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.music.credits import BgmCreditSource
-from infrastructure.music.guard import require_description_composition_for_bgm
+from infrastructure.music.guard import (
+    require_description_composition_for_bgm,
+    require_quality_gate_enforce_for_bgm,
+)
+from infrastructure.quality.wiring import build_quality_service
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
@@ -153,6 +157,9 @@ async def main() -> None:
     require_description_composition_for_bgm(
         bgm_on=settings.bgm_enabled, composition_enabled=description_composition_enabled()
     )
+    require_quality_gate_enforce_for_bgm(
+        bgm_on=settings.bgm_enabled, enforce_on=settings.quality_gate_enforce
+    )
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as http:
         uploader = build_uploader(settings, http)
         await verify_channel(uploader, channel_id)
@@ -171,6 +178,9 @@ async def main() -> None:
             chunk_bytes=uploader.chunk_bytes,
             run_inspector=TemporalWorkflowRunInspector(client),
             credit_source=BgmCreditSource(store, session_factory),
+            # INV-158: ENFORCE が ON なら YouTube の直前に同じ gate を通す（OFF は None）
+            quality_enforce=settings.quality_gate_enforce,
+            quality_service=build_quality_service(settings, session_factory),
         )
         state, media = build_workers(client, activities)
         logger.info(
