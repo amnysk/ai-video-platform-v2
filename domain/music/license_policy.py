@@ -3,7 +3,8 @@
 ``AUTO_APPROVE`` になるのは次が**全部**成り立つときだけ:
 
 - ソースが ``auto_acquire_allowed``（``contracts.music_sources.SOURCE_POLICIES``）
-- ``LicenseShortName`` と ``License``（機械可読の識別子）が正規化後に**どちらも CC0 1.0**（片方だけ・食い違いは不可）
+- ``LicenseShortName`` と ``License``（機械可読の識別子）が正規化後に**どちらも CC0 1.0**
+  （片方だけ・食い違いは不可）
 - ``LicenseUrl`` が CC0 1.0 の公開宣言、``AttributionRequired`` が明示的に false
 - ``Credit`` が「Own work」（HTML 除去後に完全一致。余計な文字・危険なマークアップは不可）
 - ``Restrictions`` が空、削除・係争の印が無い、作者名と原本 URL がある
@@ -64,7 +65,12 @@ def _family(text: str | None) -> str | None:
 
 
 def _has_marker(facts: LicenseFacts, markers: frozenset[str], phrases: tuple[str, ...]) -> bool:
-    for text in (facts.license_short_name, facts.license_code, facts.license_url, facts.usage_terms):
+    for text in (
+        facts.license_short_name,
+        facts.license_code,
+        facts.license_url,
+        facts.usage_terms,
+    ):
         if not text:
             continue
         tokens = _tokens(text)
@@ -110,9 +116,9 @@ def decide_license(facts: LicenseFacts) -> LicenseDecision:
     family = short or code
     if family == "cc0" and facts.attribution_required is True:
         return LicenseDecision(_K.REJECT, (_R.METADATA_CONFLICT,))
-    if family == "cc0" and not _blank(facts.license_url):
-        if "publicdomain/zero/1.0" not in (facts.license_url or "").casefold():
-            return LicenseDecision(_K.REJECT, (_R.METADATA_CONFLICT,))
+    url = (facts.license_url or "").casefold()
+    if family == "cc0" and url and "publicdomain/zero/1.0" not in url:
+        return LicenseDecision(_K.REJECT, (_R.METADATA_CONFLICT,))
 
     review: list[LicenseReason] = []
     if not policy.auto_acquire_allowed:
@@ -213,7 +219,7 @@ def build_quarantined_track(
 def approve_track(
     track: BgmTrack, facts: LicenseFacts, decision: LicenseDecision, *, checked_at: datetime
 ) -> BgmTrack:
-    """``promote`` に渡す承認済みの版。規則を**ここでもう一度**適用し、AUTO_APPROVE 以外は拒否する。"""
+    """``promote`` に渡す承認済みの版。規則を**もう一度**適用し、AUTO_APPROVE 以外は拒否する。"""
     again = decide_license(facts)
     if decision.kind is not _K.AUTO_APPROVE or again != decision:
         raise ValueError("approve_track needs an AUTO_APPROVE decision for these facts")

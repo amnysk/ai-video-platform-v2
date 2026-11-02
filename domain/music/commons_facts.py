@@ -1,7 +1,8 @@
 """Wikimedia Commons の MediaWiki API 応答 → ``LicenseFacts``（ADR-0087 §2、純関数）。
 
-- 入力は**保存する証拠そのもの**（``build_evidence_payload`` が作る payload）。判定は保存した証拠から
-  いつでも再現できる。証拠の sha256 は payload の正準 JSON（``canonical_json_bytes``）の sha256
+- 入力は**保存する証拠そのもの**（``build_evidence_payload`` の payload）。
+  判定は保存した証拠からいつでも再現できる。
+  証拠の sha256 は payload の正準 JSON（``canonical_json_bytes``）の sha256
 - 推定を入れない。欠けている項目は ``None``、HTML は決定的に除去する
 - 危険なマークアップ（script / style / iframe / コメント）を含む値は、除去後の文字列に目印を付けて
   「きれいな Own work」に潰れないようにする（判定側の完全一致を通らない）

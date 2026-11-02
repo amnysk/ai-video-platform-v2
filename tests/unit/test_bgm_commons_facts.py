@@ -40,7 +40,10 @@ def test_ck61_is_cc0_own_work_with_machine_facts() -> None:
     assert f.restrictions == ""
     assert f.deletion_or_dispute is False
     assert f.original_file_url and f.original_file_url.startswith("https://upload.wikimedia.org/")
-    assert f.source_page_url == "https://commons.wikimedia.org/wiki/File:Ambient_music_test,_Yamaha_CK61.flac"
+    assert (
+        f.source_page_url
+        == "https://commons.wikimedia.org/wiki/File:Ambient_music_test,_Yamaha_CK61.flac"
+    )
     assert info.sha1 == "fbe9e5fbe4b727fac1608dec68c94a956d9cbd65"
     assert info.size_bytes == 10185435
     assert info.mime == "audio/flac"
@@ -91,15 +94,23 @@ def test_dangerous_markup_never_collapses_to_a_clean_own_work(raw: str) -> None:
 def test_deletion_and_dispute_signals_from_categories_and_templates() -> None:
     page = _page("ck61")
     page = {**page, "categories": [{"ns": 14, "title": "Category:Copyright violations"}]}
-    assert parse_commons_evidence(build_evidence_payload(page, fetched_at=FETCHED)).facts.deletion_or_dispute
+    assert parse_commons_evidence(
+        build_evidence_payload(page, fetched_at=FETCHED)
+    ).facts.deletion_or_dispute
     page = {**_page("ck61"), "templates": [{"ns": 10, "title": "Template:Copyvio"}]}
-    assert parse_commons_evidence(build_evidence_payload(page, fetched_at=FETCHED)).facts.deletion_or_dispute
+    assert parse_commons_evidence(
+        build_evidence_payload(page, fetched_at=FETCHED)
+    ).facts.deletion_or_dispute
     page = {**_page("ck61"), "templates": [{"ns": 10, "title": "Template:Delete"}]}
-    assert parse_commons_evidence(build_evidence_payload(page, fetched_at=FETCHED)).facts.deletion_or_dispute
+    assert parse_commons_evidence(
+        build_evidence_payload(page, fetched_at=FETCHED)
+    ).facts.deletion_or_dispute
     # extmetadata の Categories にあっても検出する
     page = _page("ck61")
     page["imageinfo"][0]["extmetadata"]["Categories"]["value"] += "|Pages nominated for deletion"
-    assert parse_commons_evidence(build_evidence_payload(page, fetched_at=FETCHED)).facts.deletion_or_dispute
+    assert parse_commons_evidence(
+        build_evidence_payload(page, fetched_at=FETCHED)
+    ).facts.deletion_or_dispute
 
 
 def test_formatversion_2_list_pages_are_accepted() -> None:
@@ -110,4 +121,9 @@ def test_formatversion_2_list_pages_are_accepted() -> None:
 
 def test_missing_imageinfo_means_no_info() -> None:
     page = {"pageid": 1, "ns": 6, "title": "File:x.ogg", "missing": ""}
-    assert parse_commons_evidence(build_evidence_payload(page, fetched_at=FETCHED)).facts.license_short_name is None
+    assert (
+        parse_commons_evidence(
+            build_evidence_payload(page, fetched_at=FETCHED)
+        ).facts.license_short_name
+        is None
+    )

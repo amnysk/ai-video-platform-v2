@@ -1,4 +1,4 @@
-"""取得した音源の検査（ADR-0087 §3）。ffprobe / ffmpeg を子プロセスで呼ぶ（ネットワークには触れない）。
+"""取得した音源の検査（ADR-0087 §3）。ffprobe / ffmpeg を子プロセスで呼ぶ（通信しない）。
 
 - 音声ストリームがあり、映像（アルバムアート以外）が無い
 - 尺が範囲内（``ACQUISITION_MIN/MAX_DURATION_MS``）
@@ -85,9 +85,8 @@ class FfmpegAudioInspector:
     def _probe(self, path: Path) -> tuple[str, str, int, int, int]:
         """(container, codec, duration_ms, sample_rate, channels)。"""
         if self._ffprobe is not None:
-            proc = self._run(
-                [self._ffprobe, "-v", "error", "-show_format", "-show_streams", "-of", "json", str(path)]
-            )  # fmt: skip
+            argv = [self._ffprobe, "-v", "error", "-show_format", "-show_streams"]
+            proc = self._run([*argv, "-of", "json", str(path)])
             if proc.returncode != 0:
                 raise AudioInvalidError("not_media", proc.stderr.strip()[:200])
             try:
@@ -97,9 +96,11 @@ class FfmpegAudioInspector:
             streams = data.get("streams") or []
             audio = [s for s in streams if s.get("codec_type") == "audio"]
             video = [
-                s for s in streams
-                if s.get("codec_type") == "video" and not (s.get("disposition") or {}).get("attached_pic")
-            ]  # fmt: skip
+                s
+                for s in streams
+                if s.get("codec_type") == "video"
+                and not (s.get("disposition") or {}).get("attached_pic")
+            ]
             if not audio:
                 raise AudioInvalidError("no_audio_stream")
             if video:
@@ -120,11 +121,21 @@ class FfmpegAudioInspector:
         text = proc.stderr
         dur = _DURATION.search(text)
         aud = _AUDIO.search(text)
-        if dur is None or aud is None or "Video:" in text.replace("Video: mjpeg", "").replace("Video: png", ""):
+        if (
+            dur is None
+            or aud is None
+            or "Video:" in text.replace("Video: mjpeg", "").replace("Video: png", "")
+        ):
             raise AudioInvalidError("not_audio")
         h, m, s = dur.groups()
         duration_ms = round((int(h) * 3600 + int(m) * 60 + float(s)) * 1000)
-        return "unknown", aud.group(1), duration_ms, int(aud.group(2)), 2 if aud.group(3) == "stereo" else 1
+        return (
+            "unknown",
+            aud.group(1),
+            duration_ms,
+            int(aud.group(2)),
+            2 if aud.group(3) == "stereo" else 1,
+        )
 
     def inspect(self, path: Path) -> AudioReport:
         container, codec, duration_ms, rate, channels = self._probe(path)

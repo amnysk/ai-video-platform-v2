@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -33,8 +34,8 @@ A, R, X = LicenseDecisionKind.AUTO_APPROVE, LicenseDecisionKind.REVIEW, LicenseD
 NOW = datetime(2026, 11, 2, tzinfo=UTC)
 
 
-def _facts(**over) -> LicenseFacts:
-    base = dict(
+def _facts(**over: Any) -> LicenseFacts:
+    base: dict[str, Any] = dict(
         source=MusicSourceId.WIKIMEDIA_COMMONS,
         source_page_url="https://commons.wikimedia.org/wiki/File:x.flac",
         original_file_url="https://upload.wikimedia.org/wikipedia/commons/x.flac",
@@ -76,27 +77,84 @@ def test_real_commons_responses(name: str, kind: LicenseDecisionKind) -> None:
 
 
 def test_real_review_reasons() -> None:
-    assert LicenseReason.ATTRIBUTION_LICENSE_NEEDS_REVIEW in decide_license(_real("eastern")).reasons
+    assert (
+        LicenseReason.ATTRIBUTION_LICENSE_NEEDS_REVIEW in decide_license(_real("eastern")).reasons
+    )
     assert LicenseReason.PUBLIC_DOMAIN_NEEDS_REVIEW in decide_license(_real("shika")).reasons
 
 
 # (説明, 上書き, 期待の kind, 期待の理由)
 ADVERSARIAL = [
     ("CC0 with question mark", dict(license_short_name="CC0?"), X, LicenseReason.LICENSE_UNKNOWN),
-    ("pd slash cc0", dict(license_short_name="Public domain / CC0"), X, LicenseReason.LICENSE_UNKNOWN),
-    ("cc-zero short name not recognised", dict(license_short_name="cc-zero"), X, LicenseReason.LICENSE_UNKNOWN),
-    ("cc by nc short", dict(license_short_name="CC BY-NC 4.0", license_code="cc-by-nc-4.0"), X, LicenseReason.NON_COMMERCIAL),
-    ("nc only in url", dict(license_url="https://creativecommons.org/licenses/by-nc/4.0/"), X, LicenseReason.NON_COMMERCIAL),
+    (
+        "pd slash cc0",
+        dict(license_short_name="Public domain / CC0"),
+        X,
+        LicenseReason.LICENSE_UNKNOWN,
+    ),
+    (
+        "cc-zero short name not recognised",
+        dict(license_short_name="cc-zero"),
+        X,
+        LicenseReason.LICENSE_UNKNOWN,
+    ),
+    (
+        "cc by nc short",
+        dict(license_short_name="CC BY-NC 4.0", license_code="cc-by-nc-4.0"),
+        X,
+        LicenseReason.NON_COMMERCIAL,
+    ),
+    (
+        "nc only in url",
+        dict(license_url="https://creativecommons.org/licenses/by-nc/4.0/"),
+        X,
+        LicenseReason.NON_COMMERCIAL,
+    ),
     ("nd only in code", dict(license_code="cc-by-nd-4.0"), X, LicenseReason.NO_DERIVATIVES),
-    ("noncommercial in usage terms", dict(usage_terms="Creative Commons Attribution-NonCommercial"), X, LicenseReason.NON_COMMERCIAL),
+    (
+        "noncommercial in usage terms",
+        dict(usage_terms="Creative Commons Attribution-NonCommercial"),
+        X,
+        LicenseReason.NON_COMMERCIAL,
+    ),
     ("short cc0 code pd", dict(license_code="pd"), X, LicenseReason.METADATA_CONFLICT),
     ("short cc0 code by", dict(license_code="cc-by-4.0"), X, LicenseReason.METADATA_CONFLICT),
-    ("short by code cc0", dict(license_short_name="CC BY 4.0", license_code="cc0"), X, LicenseReason.METADATA_CONFLICT),
-    ("cc0 attribution required", dict(attribution_required=True), X, LicenseReason.METADATA_CONFLICT),
-    ("cc0 url is by", dict(license_url="https://creativecommons.org/licenses/by/4.0/"), X, LicenseReason.METADATA_CONFLICT),
-    ("cc0 url is cc0 1.0 variant", dict(license_url="https://creativecommons.org/publicdomain/zero/1.0/"), A, LicenseReason.CC0_OWN_WORK),
-    ("no license at all", dict(license_short_name=None, license_code=None, license_url=None, usage_terms=None), X, LicenseReason.LICENSE_UNKNOWN),
-    ("empty license", dict(license_short_name="", license_code=""), X, LicenseReason.LICENSE_UNKNOWN),
+    (
+        "short by code cc0",
+        dict(license_short_name="CC BY 4.0", license_code="cc0"),
+        X,
+        LicenseReason.METADATA_CONFLICT,
+    ),
+    (
+        "cc0 attribution required",
+        dict(attribution_required=True),
+        X,
+        LicenseReason.METADATA_CONFLICT,
+    ),
+    (
+        "cc0 url is by",
+        dict(license_url="https://creativecommons.org/licenses/by/4.0/"),
+        X,
+        LicenseReason.METADATA_CONFLICT,
+    ),
+    (
+        "cc0 url is cc0 1.0 variant",
+        dict(license_url="https://creativecommons.org/publicdomain/zero/1.0/"),
+        A,
+        LicenseReason.CC0_OWN_WORK,
+    ),
+    (
+        "no license at all",
+        dict(license_short_name=None, license_code=None, license_url=None, usage_terms=None),
+        X,
+        LicenseReason.LICENSE_UNKNOWN,
+    ),
+    (
+        "empty license",
+        dict(license_short_name="", license_code=""),
+        X,
+        LicenseReason.LICENSE_UNKNOWN,
+    ),
     ("no code", dict(license_code=None), R, LicenseReason.METADATA_INCOMPLETE),
     ("no url", dict(license_url=None), R, LicenseReason.METADATA_INCOMPLETE),
     ("attribution unknown", dict(attribution_required=None), R, LicenseReason.METADATA_INCOMPLETE),
@@ -105,23 +163,77 @@ ADVERSARIAL = [
     ("no original url", dict(original_file_url=None), R, LicenseReason.METADATA_INCOMPLETE),
     ("empty credit", dict(credit=""), R, LicenseReason.METADATA_INCOMPLETE),
     ("no credit", dict(credit=None), R, LicenseReason.METADATA_INCOMPLETE),
-    ("credit other source", dict(credit="https://example.com/track.mp3"), R, LicenseReason.NOT_OWN_WORK),
-    ("own work plus extra", dict(credit="Own work from https://evil.example"), R, LicenseReason.NOT_OWN_WORK),
+    (
+        "credit other source",
+        dict(credit="https://example.com/track.mp3"),
+        R,
+        LicenseReason.NOT_OWN_WORK,
+    ),
+    (
+        "own work plus extra",
+        dict(credit="Own work from https://evil.example"),
+        R,
+        LicenseReason.NOT_OWN_WORK,
+    ),
     ("not own work", dict(credit="Kevin MacLeod"), R, LicenseReason.NOT_OWN_WORK),
-    ("unsafe markup marker", dict(credit="Own work [unsafe-markup]"), R, LicenseReason.NOT_OWN_WORK),
+    (
+        "unsafe markup marker",
+        dict(credit="Own work [unsafe-markup]"),
+        R,
+        LicenseReason.NOT_OWN_WORK,
+    ),
     ("restrictions", dict(restrictions="trademarked"), R, LicenseReason.RESTRICTIONS_PRESENT),
     ("deletion", dict(deletion_or_dispute=True), X, LicenseReason.DELETION_OR_DISPUTE),
-    ("cc by", dict(license_short_name="CC BY 4.0", license_code="cc-by-4.0", license_url="https://creativecommons.org/licenses/by/4.0/", attribution_required=True), R, LicenseReason.ATTRIBUTION_LICENSE_NEEDS_REVIEW),
-    ("cc by sa", dict(license_short_name="CC BY-SA 3.0", license_code="cc-by-sa-3.0", license_url="https://creativecommons.org/licenses/by-sa/3.0/", attribution_required=True), R, LicenseReason.SHARE_ALIKE_NEEDS_REVIEW),
-    ("pd", dict(license_short_name="Public domain", license_code="pd", license_url=None, attribution_required=False), R, LicenseReason.PUBLIC_DOMAIN_NEEDS_REVIEW),
+    (
+        "cc by",
+        dict(
+            license_short_name="CC BY 4.0",
+            license_code="cc-by-4.0",
+            license_url="https://creativecommons.org/licenses/by/4.0/",
+            attribution_required=True,
+        ),
+        R,
+        LicenseReason.ATTRIBUTION_LICENSE_NEEDS_REVIEW,
+    ),
+    (
+        "cc by sa",
+        dict(
+            license_short_name="CC BY-SA 3.0",
+            license_code="cc-by-sa-3.0",
+            license_url="https://creativecommons.org/licenses/by-sa/3.0/",
+            attribution_required=True,
+        ),
+        R,
+        LicenseReason.SHARE_ALIKE_NEEDS_REVIEW,
+    ),
+    (
+        "pd",
+        dict(
+            license_short_name="Public domain",
+            license_code="pd",
+            license_url=None,
+            attribution_required=False,
+        ),
+        R,
+        LicenseReason.PUBLIC_DOMAIN_NEEDS_REVIEW,
+    ),
     ("lowercase cc0 short ok", dict(license_short_name="cc0"), A, LicenseReason.CC0_OWN_WORK),
-    ("CC0 1.0 short ok", dict(license_short_name="CC0 1.0", license_code="cc0-1.0"), A, LicenseReason.CC0_OWN_WORK),
+    (
+        "CC0 1.0 short ok",
+        dict(license_short_name="CC0 1.0", license_code="cc0-1.0"),
+        A,
+        LicenseReason.CC0_OWN_WORK,
+    ),
     ("own work lowercase ok", dict(credit="own work"), A, LicenseReason.CC0_OWN_WORK),
 ]
 
 
-@pytest.mark.parametrize(("label", "over", "kind", "reason"), ADVERSARIAL, ids=[a[0] for a in ADVERSARIAL])
-def test_adversarial_table(label: str, over: dict, kind: LicenseDecisionKind, reason: LicenseReason) -> None:
+@pytest.mark.parametrize(
+    ("label", "over", "kind", "reason"), ADVERSARIAL, ids=[a[0] for a in ADVERSARIAL]
+)
+def test_adversarial_table(
+    label: str, over: dict, kind: LicenseDecisionKind, reason: LicenseReason
+) -> None:
     d = decide_license(_facts(**over))
     assert d.kind is kind, (label, d)
     assert reason in d.reasons, (label, d)
@@ -131,7 +243,12 @@ def test_adversarial_table(label: str, over: dict, kind: LicenseDecisionKind, re
 
 @pytest.mark.parametrize(
     "source",
-    [MusicSourceId.INCOMPETECH, MusicSourceId.PIXABAY_MUSIC, MusicSourceId.CCMIXTER, MusicSourceId.FREE_MUSIC_ARCHIVE],
+    [
+        MusicSourceId.INCOMPETECH,
+        MusicSourceId.PIXABAY_MUSIC,
+        MusicSourceId.CCMIXTER,
+        MusicSourceId.FREE_MUSIC_ARCHIVE,
+    ],
 )
 def test_non_auto_acquirable_source_never_auto_approves(source: MusicSourceId) -> None:
     d = decide_license(_facts(source=source))

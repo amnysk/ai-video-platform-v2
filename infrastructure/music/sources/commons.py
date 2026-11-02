@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -26,6 +25,7 @@ from contracts.music_sources import (
 )
 from domain.music.commons_facts import pages_from_response
 from infrastructure.music.sources.errors import CandidateInvalidError, SourceUnavailableError
+from infrastructure.music.sources.types import DownloadedFile
 
 COMMONS_API_URL = "https://commons.wikimedia.org/w/api.php"
 ORIGINAL_FILE_HOST = "upload.wikimedia.org"
@@ -51,14 +51,6 @@ def validate_user_agent(user_agent: str) -> str:
             "(Wikimedia User-Agent policy)"
         )
     return ua
-
-
-@dataclass(frozen=True, slots=True)
-class DownloadedFile:
-    data: bytes
-    sha256: str
-    sha1: str
-    extension: str
 
 
 def extension_of(url: str) -> str:
@@ -192,13 +184,19 @@ class CommonsClient:
             try:
                 async with self._client.stream("GET", url) as response:
                     if 300 <= response.status_code < 400:
-                        raise CandidateInvalidError("redirect_not_followed", str(response.status_code))
+                        raise CandidateInvalidError(
+                            "redirect_not_followed", str(response.status_code)
+                        )
                     if response.status_code in (404, 410):
                         raise CandidateInvalidError("gone", str(response.status_code))
                     if response.status_code >= 400:
                         raise SourceUnavailableError(f"download: HTTP {response.status_code}")
                     declared = response.headers.get("Content-Length")
-                    if declared is not None and declared.isdigit() and int(declared) > self._max_bytes:
+                    if (
+                        declared is not None
+                        and declared.isdigit()
+                        and int(declared) > self._max_bytes
+                    ):
                         raise CandidateInvalidError("too_large", declared)
                     async for chunk in response.aiter_bytes():
                         total += len(chunk)

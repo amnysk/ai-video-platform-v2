@@ -55,12 +55,18 @@ def test_garbage_and_text_are_rejected(tmp_path: Path) -> None:
     bad.write_bytes(b"this is not audio" * 100)
     with pytest.raises(AudioInvalidError) as exc:
         FfmpegAudioInspector(FFMPEG).inspect(bad)
-    assert exc.value.reason in {"not_media", "not_audio", "no_duration", "no_audio_stream", "too_short"}
+    assert exc.value.reason in {
+        "not_media",
+        "not_audio",
+        "no_duration",
+        "no_audio_stream",
+        "too_short",
+    }
 
 
 def test_truncated_file_fails_to_decode_or_is_short(wav: Path, tmp_path: Path) -> None:
     cut = tmp_path / "cut.wav"
-    cut.write_bytes(wav.read_bytes()[: 1_000_000])
+    cut.write_bytes(wav.read_bytes()[:1_000_000])
     # ヘッダの尺と実体が食い違う → デコードの失敗、または尺の不足
     try:
         r = FfmpegAudioInspector(FFMPEG).inspect(cut)

@@ -34,10 +34,17 @@ def _client(handler, **kw) -> tuple[CommonsClient, Recorder, list[float]]:
     async def sleep(s: float) -> None:
         slept.append(s)
 
-    return CommonsClient(user_agent=UA, transport=httpx.MockTransport(rec), sleep=sleep, **kw), rec, slept
+    return (
+        CommonsClient(user_agent=UA, transport=httpx.MockTransport(rec), sleep=sleep, **kw),
+        rec,
+        slept,
+    )
 
 
-@pytest.mark.parametrize("ua", ["", "python-requests/2.0", "curl/8", "Mozilla/5.0 (X11)", "bot/1.0", "bot/1 (no contact)"])
+@pytest.mark.parametrize(
+    "ua",
+    ["", "python-requests/2.0", "curl/8", "Mozilla/5.0 (X11)", "bot/1.0", "bot/1 (no contact)"],
+)
 def test_user_agent_must_identify_the_client(ua: str) -> None:
     with pytest.raises(ValueError):
         validate_user_agent(ua)
@@ -46,10 +53,15 @@ def test_user_agent_must_identify_the_client(ua: str) -> None:
 
 async def test_search_sends_policy_headers_and_params() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"query": {"search": [{"title": "File:A.flac"}, {"title": "File:B.ogg"}]}})
+        return httpx.Response(
+            200, json={"query": {"search": [{"title": "File:A.flac"}, {"title": "File:B.ogg"}]}}
+        )
 
     c, rec, _ = _client(handler)
-    assert await c.search_titles('filetype:audio incategory:"CC-Zero" ambient') == ["File:A.flac", "File:B.ogg"]
+    assert await c.search_titles('filetype:audio incategory:"CC-Zero" ambient') == [
+        "File:A.flac",
+        "File:B.ogg",
+    ]
     req = rec.requests[0]
     assert req.headers["user-agent"] == UA
     q = dict(req.url.params)
@@ -65,7 +77,9 @@ async def test_imageinfo_returns_pages_in_title_order_and_batches() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         titles = request.url.params["titles"].split("|")
         assert request.url.params["prop"] == "imageinfo|categories|templates"
-        assert "extmetadata" in request.url.params["iiprop"] and "sha1" in request.url.params["iiprop"]
+        assert (
+            "extmetadata" in request.url.params["iiprop"] and "sha1" in request.url.params["iiprop"]
+        )
         pages = [{"title": t, "imageinfo": [{"sha1": "0" * 40}]} for t in titles]
         return httpx.Response(200, json={"query": {"pages": list(reversed(pages))}})
 
@@ -176,10 +190,14 @@ async def test_download_verifies_sha1_and_returns_sha256() -> None:
 
 
 async def test_download_byte_cap_declared_and_streamed() -> None:
-    c, _, _ = _client(lambda r: httpx.Response(200, headers={"Content-Length": "5000"}, content=b"x" * 5000), max_bytes_per_file=1000)
+    c, _, _ = _client(
+        lambda r: httpx.Response(200, headers={"Content-Length": "5000"}, content=b"x" * 5000),
+        max_bytes_per_file=1000,
+    )
     with pytest.raises(CandidateInvalidError) as exc:
         await c.download(FILE_URL, expected_sha1="0" * 40)
     assert exc.value.reason == "too_large"
+
     # Content-Length が嘘 / 無い場合も流しながら打ち切る
     async def gen():
         for _ in range(10):
@@ -228,7 +246,9 @@ async def test_download_gone_is_candidate_invalid_and_5xx_transient() -> None:
 
 
 async def test_redirects_are_not_followed() -> None:
-    c, rec, _ = _client(lambda r: httpx.Response(302, headers={"Location": "https://evil.example/x.flac"}))
+    c, rec, _ = _client(
+        lambda r: httpx.Response(302, headers={"Location": "https://evil.example/x.flac"})
+    )
     with pytest.raises(CandidateInvalidError) as exc:
         await c.download(FILE_URL, expected_sha1="0" * 40)
     assert exc.value.reason == "redirect_not_followed" and len(rec.requests) == 1
