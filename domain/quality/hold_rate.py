@@ -140,10 +140,10 @@ class DecisionRates:
     def to_dict(self) -> dict[str, object]:
         return {
             "total": self.total,
-            "pass": self.passed,
-            "warn": self.warn,
-            "review": self.review,
-            "block": self.block,
+            "passed": self.passed,
+            "warned": self.warn,
+            "reviewed": self.review,
+            "blocked": self.block,
             "inspection_unavailable": self.inspection_unavailable,
             "upload_allowed": self.upload_allowed,
             "pass_rate": self.rate(self.passed),
@@ -156,25 +156,18 @@ class DecisionRates:
 
 
 def decision_rates(samples: Iterable[GateDecisionSample]) -> DecisionRates:
-    counts = {"pass": 0, "warn": 0, "review": 0, "block": 0, "inspection": 0}
-    total = 0
+    total = passed = warned = reviewed = blocked = inspection = 0
     for sample in samples:
         total += 1
         if sample.allowed:
-            counts[
-                "warn" if sample.reason is QualityReason.UPLOAD_ALLOWED_WITH_WARNINGS else "pass"
-            ] += 1
+            if sample.reason is QualityReason.UPLOAD_ALLOWED_WITH_WARNINGS:
+                warned += 1
+            else:
+                passed += 1
         elif cause_of(sample) is HoldCause.INSPECTION:
-            counts["inspection"] += 1
+            inspection += 1
         elif sample.reason is QualityReason.REPORT_BLOCKED:
-            counts["block"] += 1
+            blocked += 1
         else:
-            counts["review"] += 1
-    return DecisionRates(
-        total,
-        counts["pass"],
-        counts["warn"],
-        counts["review"],
-        counts["block"],
-        counts["inspection"],
-    )
+            reviewed += 1
+    return DecisionRates(total, passed, warned, reviewed, blocked, inspection)

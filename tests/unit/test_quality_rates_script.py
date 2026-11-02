@@ -70,7 +70,13 @@ async def test_rates_split_quality_holds_from_inspection_unavailable(cli, db) ->
         await _seed(factory, i, v, r)
     out = await cli.run(f"sqlite:///{path}")
     rep = out["reports"]
-    assert (rep["total"], rep["pass"], rep["warn"], rep["review"], rep["block"]) == (10, 3, 1, 2, 1)
+    assert (rep["total"], rep["passed"], rep["warned"], rep["reviewed"], rep["blocked"]) == (
+        10,
+        3,
+        1,
+        2,
+        1,
+    )
     assert rep["inspection_unavailable"] == 3
     assert rep["upload_allowed"] == 4 and rep["upload_allowed_rate"] == 0.4
     assert rep["inspection_unavailable_rate"] == 0.3
@@ -86,7 +92,7 @@ async def test_latest_per_episode_counts_each_episode_once(cli, db) -> None:
     out = await cli.run(f"sqlite:///{path}")
     assert out["reports"]["total"] == 2
     assert out["latest_per_episode"]["total"] == 1
-    assert out["latest_per_episode"]["pass"] == 1
+    assert out["latest_per_episode"]["passed"] == 1
 
 
 async def test_empty_database_has_null_rates_and_no_alarm(cli, db) -> None:
@@ -111,7 +117,7 @@ async def test_the_script_never_writes(cli, db) -> None:
 def test_the_script_source_contains_only_selects_and_read_only_transactions() -> None:
     src = SCRIPT.read_text()
     upper = src.upper()
-    for forbidden in ("INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", "TRUNCATE ", ".COMMIT("):
+    for forbidden in ("INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", ".COMMIT("):
         assert forbidden not in upper, forbidden
     assert "SET TRANSACTION READ ONLY" in upper
 

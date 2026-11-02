@@ -8,7 +8,8 @@
 YouTube には触れない。DB の URL は**必ず明示**する（既定値は無い。本番を誤って読まないため）。
 
 JSON を標準出力へ出す:
-  - ``reports``: 全報告に対する PASS / WARN / REVIEW / BLOCK / inspection_unavailable の件数と率、
+  - ``reports``: 全報告に対する passed / warned / reviewed / blocked / inspection_unavailable の
+    件数と率、
     投稿可能率（PASS + WARN）
   - ``latest_per_episode``: Episode ごとに最新の報告 1 件だけを数えた同じ集計
   - ``recent_hold_alarm``: 直近 10 件中 5 件以上が保留かどうか（内訳つき）
