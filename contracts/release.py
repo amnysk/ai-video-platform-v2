@@ -36,7 +36,9 @@ FEATURE_FLAG_ENV_KEYS: tuple[str, ...] = (
 #: service にだけ ``FLAG: ${FLAG:-false}`` で渡す。読み手が増えたら先にここへ足す
 #: （tests/contract/test_compose_feature_flags.py が compose と entrypoint を突き合わせる）。
 #: ENFORCE: api（手動 upload の門）/ pipeline（自動 upload の門）/ render（使用宣言の書き込み）/
-#: production（地図 ON のときの起動ガード）/ upload（投稿 Activity 内の最後の門と BGM の起動ガード。INV-158）。BGM: render（描画）/ upload（起動ガード・credits）/ bgm-acquisition-worker（収集の起動ガード）。
+#: production（地図 ON のときの起動ガード）/ upload（投稿 Activity 内の最後の門と BGM の起動ガード。
+#: INV-158）。
+#: BGM: render（描画）/ upload（起動ガード・credits）/ bgm-acquisition-worker（収集の起動ガード）。
 #: BGM_ACQUISITION: bgm-acquisition-worker だけ（profile `bgm-acquisition`。既定では起動しない）。
 #: GEO: render / production。COMPOSED: 説明欄を組む api・pipeline（品質 lint）・upload と、
 #: render の起動ガード
