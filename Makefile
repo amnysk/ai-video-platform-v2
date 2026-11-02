@@ -1,7 +1,7 @@
 # schedule-guard.py を動かす python（temporalio 入りの venv）。例: make deploy-workers PYTHON=.venv/bin/python
 PYTHON ?= python
 
-.PHONY: deploy-workers workers-versions temporal-test-namespace help up down logs check-docker-uid worker-dirs worker-build workers-up workers-ps workers-logs migrate smoke smoke-script script-worker lint fmt types test test-unit test-integration test-live check
+.PHONY: bgm-preview deploy-workers workers-versions temporal-test-namespace help up down logs check-docker-uid worker-dirs worker-build workers-up workers-ps workers-logs migrate smoke smoke-script script-worker lint fmt types test test-unit test-integration test-live check
 
 help:
 	@grep -E '^[a-z-]+:' Makefile | cut -d: -f1 | tail -n +2
@@ -14,6 +14,9 @@ down:
 
 logs:
 	docker compose --profile core logs -f api dummy-worker
+
+bgm-preview:    ## BGM 入り動画を本番の外で試聴用に描く（PREVIEW ONLY）。例: make bgm-preview ARGS="render EXPORT --catalog CAT --track ID --out OUT"
+	PYTHONPATH=. $(PYTHON) scripts/bgm_preview.py $(ARGS)
 
 check-docker-uid:  ## AVP_UID=0（rootless 用）を rootful Docker で使うと本物の root になるので止める
 	@uid="$${AVP_UID:-$$(sed -n 's/^AVP_UID=//p' .env 2>/dev/null)}"; \

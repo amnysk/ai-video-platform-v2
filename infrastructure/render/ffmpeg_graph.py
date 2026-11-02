@@ -130,11 +130,16 @@ def _bgm_lines(
     audio = plan.profile.audio
     out: list[str] = []
     ducked = [i for i, c in enumerate(bgm.cues) if c.ducking == "duck_under_voice"]
+    # 計測用 music stem は声の mix を最後に使わない。使われない枝（anullsink）を asplit に残すと、
+    # 誰も引かない枝が詰まって sidechain 側が飢え、ffmpeg 7.1.1 が EOF 直前で固まることがある
+    # （docs/testing/bgm-speech-probe-hang-rationale.md）。声の枝は sidechain の分だけ作る。
+    keep_vmix = stem != "music" or not ducked
+    sc_labels = "".join(f"[sc{j}]" for j in range(len(ducked)))
     out.append(
         f"[abase]{voice_labels}amix=inputs={len(plan.voices) + 1}:duration=first:"
         f"dropout_transition=0:normalize=0,atrim=duration={total}"
         + (
-            f",asplit={len(ducked) + 1}[vmix]" + "".join(f"[sc{j}]" for j in range(len(ducked)))
+            f",asplit={len(ducked) + keep_vmix}{'[vmix]' if keep_vmix else ''}{sc_labels}"
             if ducked
             else "[vmix]"
         )
@@ -161,7 +166,8 @@ def _bgm_lines(
     bgm_labels = "".join(f"[d{k}]" for k in range(len(bgm.cues)))
     if stem == "music":
         # 計測用: ducking 後の BGM だけ（声は含めない）。本番の描画には使わない
-        out.append("[vmix]anullsink")
+        if keep_vmix:  # ducking 無し: sidechain が無く詰まる相手がいないので従来どおり捨てる
+            out.append("[vmix]anullsink")
         out.append(
             f"{bgm_labels}amix=inputs={len(bgm.cues)}:duration=first:"
             f"dropout_transition=0:normalize=0,atrim=duration={total}[aout]"

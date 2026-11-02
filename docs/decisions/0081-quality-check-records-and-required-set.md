@@ -148,6 +148,18 @@ class QualityRecordWriter(Protocol):
 - 承認は `quality_manual_approvals` に（誰・種別・いつ・対象 hash・`report_id`）を書いてから workflow を起動する。
   書けなければ起動しない。BLOCK と作成失敗は従来どおり 409（承認では解放できない）。PASS / WARN は承認者を要しない。
 
+#### 9a. 所有者の host CLI（2026-11-02。API 認証が無効の本番での唯一の REVIEW 解放経路）
+
+`AVP_API_AUTH_MODE=disabled`（ADR-0080 追補）では `get_upload_approver(None)` が `None` で、API からは REVIEW を解放できない
+（`approver_unknown`）。そこで `scripts/quality-approve.py <episode_id> --owner-approval OWNER-<yyyymmdd>-<id> [--execute]` を足す。
+
+- **所有者本人の行為**。host で所有者が実行する。`AGENT-…:OWNER-…`（委任）・種別なし・形違いは `domain.approval.parse_approval_reference`
+  の検証と種別（`OWNER` のみ）で拒否する（検証器を複製しない）。承認者は `UploadApprover(OWNER, "host-cli-<ref>")`。
+- 既定は dry-run（`evaluate(manual=True)` の結果を出すだけ。承認行も workflow 起動も無い）。`--execute` で、投稿受領（`upload_receipt`）が
+  無く、結果が REVIEW の解放可（`review_approved`）のときだけ、API と**同じ関数** `start_upload`（承認の記録 → `upload_workflow_id` での
+  起動）を呼ぶ。BLOCK・記録欠落・例外・flag OFF・受領済みは何も書かず終了コード 2。承認を書けなければ起動しない。
+- 公開範囲は private のまま。upload の挙動は変えない。API の分岐は変えない（再利用であって複製ではない）。
+
 ### 10. 設定キー・語彙と §8 の grep（実施した件数）
 
 実装前に `grep -rn "<key>" apps/ workers/ domain/ infrastructure/ contracts/ docs/` を走らせた。

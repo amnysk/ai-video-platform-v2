@@ -26,3 +26,22 @@ FEATURE_FLAG_ENV_KEYS: tuple[str, ...] = (
     "GEO_MAPS_ENABLED",
     UPLOAD_DESCRIPTION_COMPOSITION_ENV,
 )
+
+#: 各 flag を読む compose service（R3。**唯一の宣言元**）。``compose.yaml`` はここに挙げた
+#: service にだけ ``FLAG: ${FLAG:-false}`` で渡す。読み手が増えたら先にここへ足す
+#: （tests/contract/test_compose_feature_flags.py が compose と entrypoint を突き合わせる）。
+#: ENFORCE: api（手動 upload の門）/ pipeline（自動 upload の門）/ render（使用宣言の書き込み）/
+#: production（地図 ON のときの起動ガード）。BGM: render（描画）/ upload（起動ガード・credits）。
+#: GEO: render / production。COMPOSED: 説明欄を組む api・pipeline（品質 lint）・upload と、
+#: render の起動ガード
+FEATURE_FLAG_SERVICES: dict[str, tuple[str, ...]] = {
+    QUALITY_GATE_ENFORCE_ENV: ("api", "pipeline-worker", "render-worker", "production-worker"),
+    "BGM_ENABLED": ("render-worker", "upload-worker"),
+    "GEO_MAPS_ENABLED": ("render-worker", "production-worker"),
+    UPLOAD_DESCRIPTION_COMPOSITION_ENV: (
+        "api",
+        "pipeline-worker",
+        "render-worker",
+        "upload-worker",
+    ),
+}

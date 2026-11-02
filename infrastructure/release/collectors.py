@@ -10,10 +10,11 @@ Schedule の変更・有料 API・YouTube は呼ばない
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import pathlib
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -33,6 +34,7 @@ from domain.release_preflight import (
     Relation,
     ReservationView,
     TargetInfo,
+    flag_is_on,
 )
 from infrastructure.api_tokens import read_token_file
 from infrastructure.config import Settings
@@ -75,10 +77,43 @@ def _dotenv_value(path: pathlib.Path, key: str) -> str | None:
     return None
 
 
+#: service 名 -> 解決後の environment（``docker compose config`` の形）
+ComposeEnvironment = Callable[[], Mapping[str, Mapping[str, str]]]
+
+
 class RealCollectors:
-    def __init__(self, repo: pathlib.Path, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        repo: pathlib.Path,
+        settings: Settings | None = None,
+        compose_environment: ComposeEnvironment | None = None,
+    ) -> None:
         self._repo = repo
         self._settings = settings
+        self._compose_environment = compose_environment
+
+    def _resolved_compose_environment(self) -> Mapping[str, Mapping[str, str]]:
+        """compose が container に渡す environment の解決後の値（読み取りのみ。R3）。
+
+        注入が無ければ ``docker compose --profile core config``（override ファイルと ``.env``・
+        プロセス環境の補間を deploy と同じ規則で解決する）。repo に compose.yaml が無い対象は空。
+        """
+        if self._compose_environment is not None:
+            return self._compose_environment()
+        if not (self._repo / "compose.yaml").exists():
+            return {}
+        out = _ok(
+            ["docker", "compose", "--profile", "core", "config", "--format", "json"], self._repo
+        )
+        try:
+            services = json.loads(out).get("services", {})
+        except (ValueError, AttributeError) as exc:
+            raise CollectorUnavailable("docker compose config: unparsable output") from exc
+        return {
+            str(name): {str(k): str(v) for k, v in (svc.get("environment") or {}).items()}
+            for name, svc in services.items()
+            if isinstance(svc, dict)
+        }
 
     @property
     def settings(self) -> Settings:
@@ -274,18 +309,27 @@ class RealCollectors:
         return from_file
 
     def feature_flag_settings(self) -> dict[str, str | None]:
-        """新機能 flag の生の値。出所は repo の ``.env``（deploy が適用する値。ADR-0080 §A）。
+        """新機能 flag の生の値（ADR-0080 §A / R3）。
 
-        プロセス環境に同じキーがあって ``.env`` と違うなら、どちらが効くか確定できないので
-        ``CollectorUnavailable``（→ UNKNOWN）。
+        出所は repo の ``.env``（deploy が適用する値）と、compose が各 service に解決した
+        実効値の両方。プロセス環境が ``.env`` と違う、compose の解決値が ``.env`` と ON/OFF で
+        違う（override の literal など）、service 間で割れる、のいずれかなら、どれが効くか
+        確定できないので ``CollectorUnavailable``（→ UNKNOWN。READY にしない）。
         """
+        resolved = self._resolved_compose_environment()
         values: dict[str, str | None] = {}
         for key in FEATURE_FLAG_ENV_KEYS:
             from_file = _dotenv_value(self._repo / ".env", key)
             from_env = os.environ.get(key)
             if from_env is not None and from_env.strip().strip("\"'") != from_file:
                 raise CollectorUnavailable(f"{key}: process environment differs from the repo .env")
-            values[key] = from_file
+            seen = {env[key] for env in resolved.values() if key in env}
+            if len({flag_is_on(v) for v in seen}) > 1:
+                raise CollectorUnavailable(f"{key}: compose services resolve it differently")
+            effective = sorted(seen)[0] if seen else None
+            if effective is not None and flag_is_on(effective) != flag_is_on(from_file):
+                raise CollectorUnavailable(f"{key}: compose resolves it differently from .env")
+            values[key] = from_file if from_file is not None else effective
         return values
 
     def api_token_probe(self) -> ApiTokenProbe:

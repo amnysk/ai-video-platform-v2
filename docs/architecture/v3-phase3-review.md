@@ -193,10 +193,11 @@ ADR-0081 は今回の release で初めて入るので、e3c9555 には存在せ
 
 ### MINOR
 
+- **R3（解消: claude/p4-flag-wiring）.** 4 flag を読む service にだけ `${FLAG:-false}` で渡す配線（`contracts/release.py::FEATURE_FLAG_SERVICES`、契約テスト `tests/contract/test_compose_feature_flags.py`）と、preflight が `docker compose config` の解決値も見る（`.env` と食い違えば UNKNOWN）対応を入れた。手順は release-runbook 3c。以下は発見時の記述。
 - **R3.** `compose.yaml` が container へ渡す新機能 flag は `BGM_ENABLED` だけ（`AVP_QUALITY_GATE_ENFORCE`・`GEO_MAPS_ENABLED`・`AVP_UPLOAD_DESCRIPTION_COMPOSED` は無い。e3c9555 でも同じ）。
   (a) これら 3 つを ON にする手段が runbook に無い（compose の編集が要る）。(b) preflight の `feature_flag_settings` は `.env` しか見ないので、compose の override や container の env で ON にされた flag は検出されない（`enables` の強制はその分だけ穴がある）。
   修正案: preflight は `docker compose config` の解決後の `environment` を読む。flag の受け渡しを compose に明記する。
-- **R4.** 使用宣言は新しく描いた動画にしか書かれない。ENFORCE を ON にした時点で既に描画済みの動画（同じ入力で再描画は skip）は宣言を持たず、永久に REVIEW（手動承認は可）。自動投稿を待っている既存 Episode が止まる。ENFORCE を ON にする手順に「既存動画の扱い（再描画 or 宣言の補完）」を書く。
+- **R4（解消。ADR-0086 追補 R4 / INV-149）.** 使用宣言は新しく描いた動画にしか書かれない。ENFORCE を ON にした時点で既に描画済みの動画（同じ入力で再描画は skip）は宣言を持たず、永久に REVIEW（手動承認は可）。自動投稿を待っている既存 Episode が止まる。ENFORCE を ON にする手順に「既存動画の扱い（再描画 or 宣言の補完）」を書く。
 - **R5.** preflight の `api_token_file` は `AVP_UID` の既定を 1000 とみなす。`.env` に無く実 UID が違う環境では BLOCKED（安全側。誤検知）。
 - **R6.** `FfmpegSpeechMarginProbe` は描画のたびに追加の ffmpeg を走らせる（BGM ON のときだけ）。実測で支障はなかった（下記）が、長尺での時間は未計測。
 
@@ -292,8 +293,8 @@ pre-deploy の必須チェック全 16 件と、通すために必要なこと�
 
 | ID | 重大度 | 内容 |
 |---|---|---|
-| R3 | MINOR（機能を ON にする前に対応） | `compose.yaml` が container に渡す新機能 flag は `BGM_ENABLED` だけ。`AVP_QUALITY_GATE_ENFORCE` / `GEO_MAPS_ENABLED` / `AVP_UPLOAD_DESCRIPTION_COMPOSED` を ON にする手段が runbook に無く、preflight の flag 検出は `.env` しか見ない（compose override での ON は検出できない） |
-| R4 | MINOR | ENFORCE を ON にする前に描画済みの動画は使用宣言が無く、永久に REVIEW |
+| R3 | 解消 | compose が flag を読む全 service へ `${FLAG:-false}` で渡す（`FEATURE_FLAG_SERVICES`）。preflight は `docker compose config` の解決値も照合する |
+| R4 | 解消 | skip 経路で、入力 hash が「BGM・地図なし」を証明する動画にだけ not used を補う（INV-149）。BGM / 地図入りで描画済みの動画は再描画まで REVIEW |
 | R5 | MINOR | preflight の `AVP_UID` 既定 1000（誤検知は安全側） |
 | R6 | MINOR | 追加の話者マージン測定の所要時間（長尺）は未計測 |
 | m3b | MINOR | TRUNCATE はまだ DB で拒否されない（0020 で対応予定） |

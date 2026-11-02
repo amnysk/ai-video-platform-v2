@@ -65,10 +65,24 @@ def test_the_music_stem_reuses_the_real_bgm_chain_and_leaves_nothing_dangling() 
     # 本番の cue ごとの鎖（fade・level・遅延・ducking）が一字一句同じ部分を含む（入力番号だけ違う）
     chain = [ln for ln in real.splitlines() if ln.startswith("[b0][sc0]sidechaincompress")]
     assert chain and all(ln in stem for ln in chain)
-    assert "[vmix]anullsink" in stem and stem.rstrip().endswith("[aout]")
+    assert stem.rstrip().endswith("[aout]")
     assert "[v0]" not in stem and "concat" not in stem  # 映像を含まない
     # 入力番号は 0 起点（ナレーション → cue）
     assert "[0:a:0]" in stem and "[2:a:0]" in stem and "[4:a:0]" not in stem
+
+
+def test_the_music_stem_has_no_unconsumed_branch_that_can_deadlock_ffmpeg() -> None:
+    """声の mix の枝は sidechain の分だけ。誰も引かない枝（anullsink）を残すと ffmpeg が固まる。
+
+    実測（Episode 48f4eddb、固定版 7.1.1、無負荷、同一入力）: 旧 graph は 150 回中 14 回・7 回が
+    300 秒の timeout まで戻らず、枝を除いた graph は 200 回中 0 回。
+    """
+    stem = build_bgm_stem_filtergraph(bgm_plan(), _mix())
+    assert "anullsink" not in stem and "[vmix]" not in stem
+    split = next(ln for ln in stem.splitlines() if "asplit=" in ln)
+    n = int(split.split("asplit=")[1].split("[")[0])
+    outputs = split.split("asplit=")[1].count("[")
+    assert n == outputs == stem.count("sidechaincompress")  # 枝は全部 sidechain が使う
 
 
 def test_the_voice_stem_is_the_narration_bus_of_the_bgm_less_render() -> None:

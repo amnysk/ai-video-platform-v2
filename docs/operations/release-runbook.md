@@ -37,6 +37,24 @@ Status: **Proposed**（ADR-0050 / INV-65）。所有者が承認するまで、�
    所有者が無認証で deploy すると決めたとき（家庭内 LAN・単独利用）は、対象の `.env` に `AVP_API_AUTH_MODE=disabled` を
    書く。このときだけ `api_token_file` は PASS（"api auth disabled by owner decision"）。プロセス環境と `.env` が
    食い違えば UNKNOWN。既定は `required`（ADR-0080 追補 2026-11-01）
+3c. **新機能 flag の渡し方と ON にする手順**（R3）。コンテナに `.env` は無く、`compose.yaml` が渡した環境変数だけが
+   効く。各 flag は読む service にだけ `FLAG: ${FLAG:-false}` で渡される（既定 OFF。唯一の宣言元は
+   `contracts/release.py::FEATURE_FLAG_SERVICES`）:
+
+   | flag | 渡す service |
+   |---|---|
+   | `AVP_QUALITY_GATE_ENFORCE` | api, pipeline-worker, render-worker, production-worker |
+   | `BGM_ENABLED` | render-worker, upload-worker |
+   | `GEO_MAPS_ENABLED` | render-worker, production-worker |
+   | `AVP_UPLOAD_DESCRIPTION_COMPOSED` | api, pipeline-worker, render-worker, upload-worker |
+
+   ON にするには対象の `.env` に 1 行書く（値は全 service に同じものが渡る）。前提: `BGM_ENABLED` は
+   `AVP_UPLOAD_DESCRIPTION_COMPOSED=true` が要り（render / upload の起動ガード）、`GEO_MAPS_ENABLED` は
+   `AVP_QUALITY_GATE_ENFORCE=true` が要る（render / production の起動ガード）。`AVP_QUALITY_GATE_ENFORCE` を ON にする前に、
+   描画済みで使用宣言の無い動画の扱いを決める（R4）。変更の反映は該当 service の再作成（deploy-workers）。
+   preflight は `.env`・プロセス環境に加えて `docker compose --profile core config` の解決後の environment も読み、
+   `.env` と ON/OFF が違う（override の literal ON など）・service 間で割れる・解決に失敗した、のいずれかなら UNKNOWN。
+   `AVP_UPLOAD_DESCRIPTION_WITHOUT_MARKER` は compose に渡さない（本番で ON にしてはならない）。
 4. バックアップ manifest（`python scripts/backup.py run` の出力 `<root>/<backup_id>/manifest.json` を渡す。
    DB dump / MinIO / Temporal 各 24h 以内。`--backup-max-age-hours` は最大 720。形式の最小形）:
    `{"components": {"db_dump": {"created_at": "<ISO8601 with TZ>"}, "minio": {...}, "temporal": {...}}}`

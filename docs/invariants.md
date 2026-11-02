@@ -1288,7 +1288,7 @@ workflow・Activity・storyboard・production・render の計画側から import
 dataclass の変更は無い）、既存の `render_plan_sha256` / filtergraph は接続前と byte 単位で同じ。
 **機械検査**: `tests/unit/test_geo_maps_flag_off.py::test_the_flag_defaults_to_off_and_is_read_from_the_environment`
 / `tests/unit/test_geo_maps_flag_off.py::test_with_the_flag_off_nothing_is_rendered`
-/ `tests/unit/test_geo_maps_flag_off.py::test_the_flag_is_not_exposed_in_any_deployment_file`
+/ `tests/unit/test_geo_maps_flag_off.py::test_the_flag_is_exposed_only_as_an_off_default_in_compose`
 / `tests/unit/test_geo_maps_flag_off.py::test_render_identity_and_filtergraph_are_byte_identical_to_before`
 / `tests/architecture/test_geo_maps_boundaries.py::test_production_side_does_not_import_the_map_parts`
 （flag ON の挙動は部品の呼び出しまで。ON にしても workflow には何も起きない。接続は後続 →
@@ -1440,6 +1440,11 @@ gate を過不足なく含まなければ書けない・読んでも無効。技
 / `...::test_when_the_approval_cannot_be_recorded_nothing_is_started`
 / `tests/unit/test_quality_approval_and_wiring.py::test_anything_unknown_is_refused_and_never_raises`
 / `tests/unit/test_quality_gate_service.py::test_only_a_known_owner_can_have_an_approval_recorded`
+
+（INV-129 追補 2026-11-02）API 認証が無効（`AVP_API_AUTH_MODE=disabled`）のとき、REVIEW を解放する経路は所有者の host CLI
+`scripts/quality-approve.py`（`--owner-approval OWNER-…` と `--execute`）だけ。委任（`AGENT-…`）は拒否し、承認の記録は同じ
+`start_upload` を通す（承認が書けなければ起動しない）。新しい不変条件は足さない。
+**機械検査**: `tests/unit/test_quality_approve_script.py`（各テストの理由は `docs/testing/quality-approve-rationale.md`）
 
 ### INV-130 `AVP_QUALITY_GATE_ENFORCE` が OFF（既定）のとき、gate・手動経路は検査記録を読まず書かず、挙動は導入前と同一
 OFF ではサービスを組み立てず（`build_quality_service` は `None`。MinIO クライアントも作らない）、`upload_gate`・
@@ -1639,7 +1644,7 @@ Render は sha256 検証済みの `render_font_path`（CJK）のバイト列で�
 / `tests/unit/test_geo_p3_infra.py::test_the_base_caption_is_part_of_the_layout`
 / `tests/unit/test_geo_p3_infra.py::test_a_basemap_changes_the_image_and_its_identity_only_when_given`
 
-## AK. BGM・地図の品質検査の結線（ADR-0086。INV-146〜148。既存 3 flag の背後、新しい flag なし）
+## AK. BGM・地図の品質検査の結線（ADR-0086。INV-146〜149。既存 3 flag の背後、新しい flag なし）
 
 ### INV-146 使用宣言は ENFORCE が ON のときだけ、final_video の行を記録した後に書かれ、書けなくても描画は成功する
 `AVP_QUALITY_GATE_ENFORCE` が OFF（既定）なら writer が渡されず、宣言も証跡の追加も DB / MinIO への書き込みは 1 つも増えない。
@@ -1678,6 +1683,18 @@ upload worker はその組み合わせで**起動しない**（`require_descript
 / `tests/unit/test_quality_wiring_gate.py::test_an_unreadable_evidence_is_an_error_not_an_empty_credit`
 / `tests/unit/test_bgm_credit_startup_guard.py::test_bgm_on_with_composition_off_refuses_to_start`
 / `tests/unit/test_bgm_credit_startup_guard.py::test_both_workers_call_the_guard`
+
+### INV-149 再利用する動画の使用宣言は、現行の入力 hash が「BGM・地図なし」を証明するときだけ not used で補い、それ以外は書かない
+`AVP_QUALITY_GATE_ENFORCE` が ON（writer あり）で同じ入力のため描画を skip する経路に限り、現行の `render_input_hash` に BGM・地図の
+識別子が入っていなければ BGM・MAP とも not used を宣言する（導入前に描画された動画を gate が REVIEW にし続けない）。
+識別子が入っている（使った可能性がある）動画には宣言しない（REVIEW のまま。「使っていない」を推測で書かない）。writer が無い
+（OFF）なら何も書かない。冪等（同じ主張は既存を返す）、追記のみ、動画の bytes・行・workflow・Activity の署名は変わらない。
+**機械検査**: `tests/unit/test_render_skip_declaration.py::test_a_pre_enforce_render_gets_both_not_used_declarations_on_the_skip_path`
+/ `tests/unit/test_render_skip_declaration.py::test_the_skip_path_declares_once_and_is_idempotent`
+/ `tests/unit/test_render_skip_declaration.py::test_the_skip_path_writes_nothing_while_enforce_is_off`
+/ `tests/unit/test_render_skip_declaration.py::test_a_bgm_identity_in_the_hash_is_never_declared_not_used`
+/ `tests/unit/test_render_skip_declaration.py::test_a_geo_identity_in_the_hash_is_never_declared_not_used`
+/ `tests/unit/test_render_skip_declaration.py::test_a_failing_declaration_on_the_skip_path_does_not_fail_the_render`
 
 ### 補足（INV-126 の拡張。ADR-0086 §6）追記専用は DELETE も拒否し、承認は同じ episode の報告にしか結べない
 **TRUNCATE の拒否は 0020 に分ける**（ADR-0081 追補。0019 は走査器を素のまま通る。0020 が入るまで TRUNCATE は可能。残余リスク）。
