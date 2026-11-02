@@ -198,3 +198,33 @@ OFF なら収集 worker は起動せず、ネットワークに触れない。`G
   - migration 0021 は本番 DB の変更で、所有者の承認が要る。0020 の採番は他の枝と調整が要る
   - フォールバックの梯子のため、BGM 入りの Episode は描画前の音声 stem の測定が最大 4 回増える（音声だけで数秒〜十数秒）
   - 校正は 1 Episode・CK61 の実測が根拠で、他の曲の安全な持ち上げ幅は描画前の実測に頼る
+
+## 追補（2026-11-02、実装時の決定）
+
+- **収集の需要は別表** `bgm_acquisition_demands`（`bgm_acquisition_runs` に `kind` 列を足すのではなく）。需要は、その要求時刻より後に
+  完了した実行が無い間 pending。再要求は実行があり 24 時間経った後だけ（migration 0021 の docstring）。0021 は 4 表で、downgrade は
+  行があれば拒否する。
+- **port の追加**: `BgmCatalogRepository` は変えず、確定の有無を問う `FinalizableCatalogRepository.is_selection_finalized` を足した。
+  Render 側は `domain/render/ports.py` の `SelectingBgmSource`（`load_for_render` / `prepare_candidate` / `finalize`）で、既存の
+  `BgmSource.load`（`LocalDirectoryBgmSource`、プレビュー用）も引き続き受ける。需要の hash は `domain.music.requirements.requirements_sha256`
+  が唯一の定義。
+- **§5 の「点の足りない曲」**: 最上位が `MIN_SELECTION_SCORE` 未満なら**BGM 無し**（`BELOW_MIN_SCORE`）とし、需要を積む。合わない曲を
+  鳴らすより無い方が安全側という判断。実測ラウドネスの無い曲は配置できないので点数の対象外。
+- **§2 の係争**: 削除依頼・係争の印がある曲は REVIEW ではなく **REJECT**（ダウンロードも登録もしない）。CC0 の表記は `CC0` / `CC0 1.0`
+  だけを認め、記号の混じる表記（`CC0?`、`PD / CC0`）は不明として REJECT。検索は `incategory:"CC-Zero"` に限る（取りこぼしは許容）。
+  証拠の key は `music/evidence/<証拠の sha256>.json`。証拠の sha256 は infrastructure（`commons_evidence.py`）が計算する
+  （`domain/music` は `domain.artifact` を import しない境界のため）。
+- **§3 の Wikimedia 方針**: User-Agent に連絡先が要るため `BGM_ACQUISITION_CONTACT` が無ければ収集 worker は起動しない。自動取得した曲は
+  mood タグ無し・`energy="medium"` で登録されるため、タグが付くまで選曲の点は低い（既知の制限）。
+- **§9 の投稿経路**: `UploadWorkflow` を直接起動すると `upload_gate` を通らずに YouTube へ届く経路が**実在した**。`upload` Activity 自身が
+  ENFORCE ON のとき `QualityGateService.evaluate(manual=True)` を通す（PASS / WARN、または現行 final_video の sha に結び付く owner の承認が
+  ある REVIEW だけ）。拒否は `UploadQualityRefusedError`（needs_input、再試行しない）。このため `upload-worker` も
+  `AVP_QUALITY_GATE_ENFORCE` を読む。ENFORCE OFF では何も読まず書かない（INV-130）。
+- **§10 の compose**: `bgm-acquisition-worker` は profile `bgm-acquisition` の opt-in。`deploy-workers.sh` は自動で profile を有効にしないよう
+  `OPT_IN_SERVICES` で除外し、所有者が `--profile bgm-acquisition` で作り直す。収集 worker も ENFORCE を要求する（鎖 ACQUISITION → BGM →
+  ENFORCE を guard の唯一の定義で確かめる）。
+- **§8 の分類**: 一時的 = `TimeoutError` / `ConnectionError` / その他の `OSError` / SQLAlchemy の接続系 / MinIO の InternalError・SlowDown・
+  ServiceUnavailable・RequestTimeout、恒久 = hash 不一致・契約違反・`FileNotFoundError`・`IntegrityError`・未知の例外。包んだ例外は
+  `__cause__` に従う。決定の理由が `inspection_unavailable` になるのは、保留が全て検査障害由来のときだけ。保留率の警報は anomaly kind
+  `QUALITY_GATE_HOLD_RATE_HIGH` を足すため **migration 0022**（CHECK の拡張、0021 の次）が要る。WARN へ変えた検査は無い（監査の結果、
+  決定論で「軽微」と言える既存の BLOCK / REVIEW が無かった）。
