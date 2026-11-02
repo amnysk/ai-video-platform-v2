@@ -780,7 +780,10 @@ class RenderActivities:
             return evaluate_speech_intelligibility(levels)
         except (RenderEngineFailedError, OSError, ValueError) as exc:
             logger.warning(
-                "bgm speech margin not measured episode=%s error=%s", episode_id, type(exc).__name__
+                "bgm speech margin not measured episode=%s error=%s: %s",
+                episode_id,
+                type(exc).__name__,
+                str(exc)[:300],
             )
             return None
 
