@@ -77,3 +77,17 @@ def test_a_failing_compose_resolution_is_unknown(tmp_path: Path) -> None:
 
     with pytest.raises(CollectorUnavailable):
         RealCollectors(repo, compose_environment=boom).feature_flag_settings()
+
+
+def test_the_acquisition_flag_is_reported_from_dotenv_and_unset_is_none(tmp_path: Path) -> None:
+    """INV-159: 新しい flag も release record に載る（.env の値。未設定は None = OFF 扱い）。"""
+    on = _collectors(tmp_path, "BGM_ACQUISITION_ENABLED=true\n", {}).feature_flag_settings()
+    assert on["BGM_ACQUISITION_ENABLED"] == "true"
+    unset = _collectors(tmp_path, "", {}).feature_flag_settings()
+    assert unset["BGM_ACQUISITION_ENABLED"] is None
+
+
+def test_a_literal_acquisition_on_in_compose_is_unknown_not_ready(tmp_path: Path) -> None:
+    resolved = {"bgm-acquisition-worker": {"BGM_ACQUISITION_ENABLED": "true"}}
+    with pytest.raises(CollectorUnavailable, match="BGM_ACQUISITION_ENABLED"):
+        _collectors(tmp_path, "BGM_ACQUISITION_ENABLED=false\n", resolved).feature_flag_settings()

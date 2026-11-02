@@ -31,7 +31,10 @@ from infrastructure.db.repositories import OperationalSwitchRepository
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.music.credits import BgmCreditSource
-from infrastructure.music.guard import require_description_composition_for_bgm
+from infrastructure.music.guard import (
+    require_description_composition_for_bgm,
+    require_quality_gate_enforce_for_bgm,
+)
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
 from infrastructure.temporal.run_inspector import TemporalWorkflowRunInspector
@@ -152,6 +155,9 @@ async def main() -> None:
     channel_id = require_channel_id(settings)
     require_description_composition_for_bgm(
         bgm_on=settings.bgm_enabled, composition_enabled=description_composition_enabled()
+    )
+    require_quality_gate_enforce_for_bgm(
+        bgm_on=settings.bgm_enabled, enforce_on=settings.quality_gate_enforce
     )
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as http:
         uploader = build_uploader(settings, http)
