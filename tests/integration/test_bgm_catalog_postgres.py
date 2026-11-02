@@ -235,10 +235,20 @@ async def test_concurrent_save_selection_once_one_row_same_decision(factory) -> 
     episode = str(uuid.uuid4())
     # 競合する 2 つの別の決定（別の曲）。後勝ちしないこと
     d_a = select_for_episode(
-        episode, req, [entry_for(loud_track("bgm-a", "a"))], {}, NOW, brand=DEFAULT_BRAND_POLICY
+        episode,
+        req,
+        [entry_for(loud_track("bgm-a", "a", mood_tags=(req.mood,)))],
+        {},
+        NOW,
+        brand=DEFAULT_BRAND_POLICY,
     )
     d_b = select_for_episode(
-        episode, req, [entry_for(loud_track("bgm-b", "b"))], {}, NOW, brand=DEFAULT_BRAND_POLICY
+        episode,
+        req,
+        [entry_for(loud_track("bgm-b", "b", mood_tags=(req.mood,)))],
+        {},
+        NOW,
+        brand=DEFAULT_BRAND_POLICY,
     )
     assert d_a.track_id != d_b.track_id
     decisions = [d_a, d_b] * 4
@@ -264,7 +274,12 @@ async def test_finalize_selection_is_once_and_recent_usage_counts_finalized(fact
     )
     episode = str(uuid.uuid4())
     d = select_for_episode(
-        episode, req, [entry_for(loud_track("bgm-a", "a"))], {}, NOW, brand=DEFAULT_BRAND_POLICY
+        episode,
+        req,
+        [entry_for(loud_track("bgm-a", "a", mood_tags=(req.mood,)))],
+        {},
+        NOW,
+        brand=DEFAULT_BRAND_POLICY,
     )
     await repo.save_selection_once(d, decided_at=NOW)
     assert await repo.recent_usage(window=10) == {}  # 未確定は数えない
