@@ -492,6 +492,15 @@ class UploadIntegrityError(PermanentError):
     """
 
 
+class UploadQualityRefusedError(NeedsInputError):
+    """品質 gate が PASS / WARN を返さなかった（ADR-0087 §9 / INV-158）。YouTube を呼ばずに止める。
+
+    ``AVP_QUALITY_GATE_ENFORCE`` が ON のとき ``upload`` Activity が投稿の直前に出す最後の門。
+    判定の理由コード（``quality: <code>``）を含める。検査をやり直す・所有者が REVIEW を承認する
+    ことで回復するので needs_input（自動 retry しない）。
+    """
+
+
 class UploadsPausedError(NeedsInputError):
     """``UPLOADS_PAUSED`` が有効。session を開始する前に止める（failure-policy §7）。"""
 

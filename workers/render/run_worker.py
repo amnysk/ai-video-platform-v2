@@ -26,7 +26,10 @@ from infrastructure.geo.service import GeoRenderService
 from infrastructure.geo.source import LocalDirectoryGeoSource
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.media.probe import PillowAvMediaProbe
-from infrastructure.music.guard import require_description_composition_for_bgm
+from infrastructure.music.guard import (
+    require_description_composition_for_bgm,
+    require_quality_gate_enforce_for_bgm,
+)
 from infrastructure.quality.wiring import build_quality_record_writer
 from infrastructure.render.bgm_intelligibility import FfmpegSpeechMarginProbe
 from infrastructure.render.bgm_source import LocalDirectoryBgmSource
@@ -107,6 +110,9 @@ async def main() -> None:
     # ADR-0077: 設定 ON のときだけ供給元と測定を渡す。OFF は導入前と同一
     require_description_composition_for_bgm(
         bgm_on=settings.bgm_enabled, composition_enabled=description_composition_enabled()
+    )
+    require_quality_gate_enforce_for_bgm(
+        bgm_on=settings.bgm_enabled, enforce_on=settings.quality_gate_enforce
     )
     bgm_source = None
     loudness_probe = None

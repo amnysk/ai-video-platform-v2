@@ -25,8 +25,10 @@ READER_MARKERS: dict[str, tuple[str, ...]] = {
         "build_quality_service",
         "build_quality_record_writer",
         "require_quality_gate",
+        "require_quality_gate_enforce_for_bgm",
     ),
-    "BGM_ENABLED": ("bgm_enabled",),
+    "BGM_ENABLED": ("bgm_enabled", "require_bgm_for_acquisition"),
+    "BGM_ACQUISITION_ENABLED": ("bgm_acquisition_enabled", "require_bgm_for_acquisition"),
     "GEO_MAPS_ENABLED": ("geo_maps_enabled",),
     "AVP_UPLOAD_DESCRIPTION_COMPOSED": (
         "description_composition_enabled",
@@ -75,3 +77,23 @@ def test_every_entrypoint_that_reads_a_flag_is_in_the_declared_reader_list() -> 
             if any(m in text for m in markers) and name not in FEATURE_FLAG_SERVICES[key]:
                 missing.append(f"{name} reads {key}")
     assert not missing, missing
+
+
+def test_the_acquisition_worker_is_opt_in_by_profile_and_never_part_of_core() -> None:
+    """INV-159: 収集 worker は既定で起動せず、flag 3 つ（OFF の既定）以外を渡さない。"""
+    svc = COMPOSE["services"]["bgm-acquisition-worker"]
+    assert svc["profiles"] == ["bgm-acquisition"]
+    assert "core" not in svc["profiles"]
+    assert svc["command"][-1] == "workers.bgm_acquisition.run_worker"
+    env = _env("bgm-acquisition-worker")
+    assert env["BGM_ACQUISITION_ENABLED"] == "${BGM_ACQUISITION_ENABLED:-false}"
+    # 課金・投稿の secret は持たせない
+    forbidden = ("FAL_KEY", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REFRESH_TOKEN_PATH")
+    assert not [k for k in forbidden if k in env]
+
+
+def test_geo_maps_stays_off_by_default_everywhere() -> None:
+    for name in COMPOSE["services"]:
+        env = _env(name)
+        if "GEO_MAPS_ENABLED" in env:
+            assert env["GEO_MAPS_ENABLED"] == "${GEO_MAPS_ENABLED:-false}", name

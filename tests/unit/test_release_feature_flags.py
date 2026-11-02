@@ -27,12 +27,13 @@ def _approval_result(extra: dict[str, Any], flags: Mapping[str, str | None] | No
     return next(r for r in _run(fake).results if r.name == "owner_approval")
 
 
-def test_the_flag_list_is_the_four_new_features_and_each_is_a_default_off_setting() -> None:
+def test_the_flag_list_is_the_new_features_and_each_is_a_default_off_setting() -> None:
     assert set(FEATURE_FLAG_ENV_KEYS) == {
         "AVP_QUALITY_GATE_ENFORCE",
         "BGM_ENABLED",
         "GEO_MAPS_ENABLED",
         "AVP_UPLOAD_DESCRIPTION_COMPOSED",
+        "BGM_ACQUISITION_ENABLED",
     }
     from contracts.upload import UPLOAD_DESCRIPTION_COMPOSITION_ENV, description_composition_enabled
 

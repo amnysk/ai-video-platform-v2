@@ -1744,11 +1744,39 @@ migration 0019（未適用のため編集）が 4 表に DELETE 拒否のトリ�
 
 
 ### INV-158 `AVP_QUALITY_GATE_ENFORCE` が ON なら、全ての投稿経路が YouTube を呼ぶ前に同じ gate を通り、PASS / WARN 以外は投稿しない
-（本文と **機械検査** は担当の枝が記入する）
+YouTube を呼べる経路は 5 つで、全てが `QualityGateService.evaluate` の判定に従う: ① 通常の Episode Workflow（`upload_gate` が
+自動の規則で判定）、② 手動 API `POST /episodes/{id}/upload`（手動の規則。REVIEW は所有者の承認を記録してから起動）、
+③ `UploadWorkflow` の直接起動（Temporal CLI・スクリプト）、④ `upload` Activity の再試行・再配送、⑤ 過去 Episode の再投稿。
+③④⑤は ①② の門を通らずに `upload` Activity に届きうるため、**ENFORCE が ON のとき `upload` Activity 自身が、予約・session
+の前（YouTube に触れる前）に同じ `evaluate(manual=True)` を呼ぶ**（多層防御。`workers/upload/activities.py::_require_quality_gate`）。
+PASS / WARN は通る。REVIEW は、現行 final_video の hash に結び付いた**所有者**（`approver_kind=owner`）の承認記録
+（`quality_manual_approvals`。INV-129）があるときだけ通り、`agent_delegated` の行・別 Episode の承認は数えない。BLOCK・
+作成失敗・例外・サービス無し・古い/欠けた記録は `UploadQualityRefusedError`（needs_input・retry しない）で、予約も session も
+作らない。投稿済み（spent）の予約は gate より前に既存の受領を返し、YouTube を呼ばない。過去の PASS 記録は hash・入力 hash・
+規則版が一致し有効期間内のときだけ再利用され、期限切れで再検査できなければ拒否される（INV-126）。OFF のときはこの門は何も
+読まず書かない（INV-130）。二重投稿は予約台帳（spent / dispatched）・マーカー・upload key（`compute_upload_key`）が引き続き止める。
+**機械検査**: `tests/unit/test_upload_path_quality_gate.py`（`test_a_refused_decision_never_reaches_youtube` /
+`...::test_a_producer_block_never_reaches_youtube_even_with_an_owner_approval` / `...::test_a_review_with_the_owner_approval_recorded_proceeds` /
+`...::test_a_review_with_only_a_delegated_agent_approval_is_refused` / `...::test_enforce_off_never_touches_the_service_or_the_quality_tables` /
+`...::test_a_past_pass_is_reused_for_the_same_video_without_new_check_records` / `...::test_a_past_pass_is_refused_once_it_is_stale_and_cannot_be_regenerated`)
+/ `tests/unit/test_upload_double_upload_paths.py`（再配送・応答喪失・dispatched・マーカー・uploaded の再入場・`upload_gate` の spent）
+/ `tests/unit/test_quality_gate_persisted_wiring.py`（①②の経路）/ `tests/unit/test_bgm_auto_billing_safety.py`（再描画・拒否・再試行で fal の台帳が増えない）
+/ `tests/unit/test_bgm_auto_replay.py`（workflow の replay。決定性を崩さない）
 
 
 ### INV-159 `BGM_ENABLED` は説明欄の構成と `AVP_QUALITY_GATE_ENFORCE` を、`BGM_ACQUISITION_ENABLED` は `BGM_ENABLED` を要求し、全 OFF は導入前と同一
-（本文と **機械検査** は担当の枝が記入する）
+有効化の順序は `AVP_UPLOAD_DESCRIPTION_COMPOSED` → `AVP_QUALITY_GATE_ENFORCE` → `BGM_ENABLED` → `BGM_ACQUISITION_ENABLED`。
+worker が起動時に強制する（`infrastructure/music/guard.py`）: `BGM_ENABLED=true` は説明欄の構成（`require_description_composition_for_bgm`）
+**と** `AVP_QUALITY_GATE_ENFORCE=true`（`require_quality_gate_enforce_for_bgm`）を render / upload worker で要求し、
+`BGM_ACQUISITION_ENABLED=true` は `BGM_ENABLED=true`（`require_bgm_for_acquisition`）を収集 worker で要求する。満たさなければ
+`SystemExit` で Temporal に繋ぐ前に止まる。収集 worker は compose の profile `bgm-acquisition` にだけ置き、`--profile core` の
+deploy では起動しない（Temporal Schedule は所有者だけが作る）。新しい flag はキー名を `contracts.music_sources` が、release の
+flag 一覧と読み手 service を `contracts/release.py` が唯一の宣言元として持ち、release record に載る。`GEO_MAPS_ENABLED` は
+既定 OFF のまま。4 つ全て OFF のとき、品質サービス・使用宣言の writer・BGM の供給元・収集 worker のどれも組み立てない。
+**機械検査**: `tests/unit/test_bgm_flag_chain_guard.py`（各ガードの全組み合わせ・render / upload の呼び出し・全 OFF の組み立て）
+/ `tests/contract/test_compose_feature_flags.py`（compose の渡し先と既定 false・収集 worker が profile 限定・`GEO_MAPS_ENABLED` の既定）
+/ `tests/contract/test_deploy_workers.py::test_opt_in_services_are_exactly_the_declared_ones_and_outside_core`
+/ `tests/unit/test_release_feature_flags.py` / `tests/unit/test_release_effective_flags.py`（release record に新 flag が載る）
 
 
 **INV-133 の改訂（ADR-0087 §2）**: 「承認は人の証拠なしに生まれない」を「承認は証拠なしに生まれない。人の承認（`owner`）か、
