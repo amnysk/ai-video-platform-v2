@@ -24,7 +24,7 @@ def _compose_services() -> dict[str, dict]:
     return data["services"]
 
 
-#: deploy-workers.sh（``--profile core``）の対象に入れない、所有者が明示して起動する opt-in の service。
+#: deploy-workers.sh（``--profile core``）の対象に入れない、所有者が明示する opt-in service。
 #: 名前を挙げて up すると compose はその profile を自動で有効にするので、APP_SERVICES に入れると
 #: 既定で起動してしまう（INV-159）。増やすときは ADR か設計書で理由を残す
 OPT_IN_SERVICES = {"bgm-acquisition-worker": "bgm-acquisition"}
