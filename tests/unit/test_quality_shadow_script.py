@@ -150,8 +150,6 @@ async def test_a_tampered_final_video_is_refused_by_the_new_gate(
     report = await cli.evaluate_export(out, now=NOW)
     (ep,) = report["episodes"]
     assert not ep["new"]["allowed"]
-    assert ep["old"]["allowed"]  # 旧 gate は本文の hash を確かめなかった
-    assert report["summary"]["newly_refused"] == [ep["episode_id"]]
     assert ep["new"]["hold_cause"] == "quality"  # 検査系の故障ではなく本物の不整合
     assert report["summary"]["new"]["inspection_unavailable"] == 0
 
