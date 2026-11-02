@@ -113,3 +113,68 @@ def recent_hold_alarm(
         quality_holds=causes.count(HoldCause.QUALITY),
         inspection_holds=causes.count(HoldCause.INSPECTION),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRates:
+    """判定の件数と率。``quality_rates.py`` と ``quality_shadow.py`` が共有する唯一の定義。
+
+    ``review`` / ``block`` は品質の保留。``inspection_unavailable`` は検査系の故障による保留
+    （``INSPECTION_CAUSE_REASONS``）で、品質の率に混ぜない。
+    """
+
+    total: int
+    passed: int
+    warn: int
+    review: int
+    block: int
+    inspection_unavailable: int
+
+    @property
+    def upload_allowed(self) -> int:
+        return self.passed + self.warn
+
+    def rate(self, count: int) -> float | None:
+        return round(count / self.total, 4) if self.total else None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "total": self.total,
+            "pass": self.passed,
+            "warn": self.warn,
+            "review": self.review,
+            "block": self.block,
+            "inspection_unavailable": self.inspection_unavailable,
+            "upload_allowed": self.upload_allowed,
+            "pass_rate": self.rate(self.passed),
+            "warn_rate": self.rate(self.warn),
+            "review_rate": self.rate(self.review),
+            "block_rate": self.rate(self.block),
+            "inspection_unavailable_rate": self.rate(self.inspection_unavailable),
+            "upload_allowed_rate": self.rate(self.upload_allowed),
+        }
+
+
+def decision_rates(samples: Iterable[GateDecisionSample]) -> DecisionRates:
+    counts = {"pass": 0, "warn": 0, "review": 0, "block": 0, "inspection": 0}
+    total = 0
+    for sample in samples:
+        total += 1
+        if sample.allowed:
+            counts[
+                "warn" if sample.reason is QualityReason.UPLOAD_ALLOWED_WITH_WARNINGS else "pass"
+            ] += 1
+        elif cause_of(sample) is HoldCause.INSPECTION:
+            counts["inspection"] += 1
+        elif sample.reason is QualityReason.REPORT_BLOCKED:
+            counts["block"] += 1
+        else:
+            counts["review"] += 1
+    return DecisionRates(
+        total,
+        counts["pass"],
+        counts["warn"],
+        counts["review"],
+        counts["block"],
+        counts["inspection"],
+    )
