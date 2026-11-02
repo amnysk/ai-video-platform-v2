@@ -49,6 +49,7 @@ FEATURE_FLAG_SERVICES: dict[str, tuple[str, ...]] = {
         "render-worker",
         "production-worker",
         "upload-worker",
+        "bgm-acquisition-worker",
     ),
     "BGM_ENABLED": ("render-worker", "upload-worker", "bgm-acquisition-worker"),
     BGM_ACQUISITION_ENV: ("bgm-acquisition-worker",),

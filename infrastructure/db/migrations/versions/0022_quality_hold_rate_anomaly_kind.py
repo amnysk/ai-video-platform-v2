@@ -6,8 +6,9 @@ preflight への宣言で、宣言と ``upgrade()`` の 2 文が一致すると�
 （ADR-0060 / INV-82）。
 
 番号について: ADR-0087 §4 は 0020（agent-tools）と 0021（BGM カタログ）を他の枝に予約している。
-この migration は **0022** を名乗り、統合枝（claude/bgm-auto-integration）で 0021（BGM カタログ）の次に置く
-（``down_revision = "0021"``）。0020 は他の枝の予約で、後から入る側が ``down_revision`` を付け替える。
+この migration は **0022** を名乗り、統合枝で 0021（BGM カタログ）の次に置く
+（``down_revision = "0021"``）。0020 は他の枝の予約で、後から入る側が
+``down_revision`` を付け替える。
 
 Revision ID: 0022
 Revises: 0021

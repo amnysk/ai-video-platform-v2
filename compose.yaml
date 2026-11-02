@@ -519,11 +519,23 @@ services:
     depends_on: *deps-minio
     environment:
       AVP_SERVICE_NAME: bgm-acquisition-worker
+      AVP_QUALITY_GATE_ENFORCE: ${AVP_QUALITY_GATE_ENFORCE:-false}
       BGM_ENABLED: ${BGM_ENABLED:-false}
       BGM_ACQUISITION_ENABLED: ${BGM_ACQUISITION_ENABLED:-false}
+      # Wikimedia User-Agent 方針の連絡先（メール / URL）。未設定なら worker は起動しない
+      BGM_ACQUISITION_CONTACT: ${BGM_ACQUISITION_CONTACT:-}
       <<: *app-env
       AI_VIDEO_WORK_ROOT: ${AI_VIDEO_WORK_ROOT:-/mnt/minio-hdd/ai-video-work}
+      # 音源の検査（形式・尺・ラウドネス）。render-worker と同じ固定版
+      RENDER_FFMPEG_PATH: /opt/avp/ffmpeg/ffmpeg
+      RENDER_FFMPEG_SHA256: ${RENDER_FFMPEG_SHA256:-810f94020e76e2b58fb44759a322e86bea5d213ebededad7471f3a15b0bf2c5c}
+      RENDER_FFPROBE_PATH: /opt/avp/ffmpeg/ffprobe
+      RENDER_FFPROBE_SHA256: ${RENDER_FFPROBE_SHA256:-4818b8964b5d7b699370628a4154c97e88205678ee506ca72e9330600e917667}
     volumes:
+      - type: bind
+        source: ${AVP_FFMPEG_DIR:-${HOME}/.local/share/avp/ffmpeg/7.1.1}
+        target: /opt/avp/ffmpeg
+        read_only: true
       - *work-root
     command: ["python", "-m", "infrastructure.runtime.worker_entry", "workers.bgm_acquisition.run_worker"]
     healthcheck:

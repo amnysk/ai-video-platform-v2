@@ -54,8 +54,17 @@ def test_worker_refuses_to_start_unless_both_flags_are_on(kw: dict) -> None:
     assert "BGM_ACQUISITION_ENABLED" in str(exc.value)
 
 
-def test_worker_starts_when_both_flags_are_on() -> None:
-    require_enabled(_settings(bgm_acquisition_enabled=True, bgm_enabled=True))
+def test_worker_refuses_to_start_when_the_gate_is_not_enforced() -> None:
+    # INV-159 の鎖: ACQUISITION → BGM → AVP_QUALITY_GATE_ENFORCE（ADR-0087 §10）
+    with pytest.raises(SystemExit) as exc:
+        require_enabled(_settings(bgm_acquisition_enabled=True, bgm_enabled=True))
+    assert "AVP_QUALITY_GATE_ENFORCE" in str(exc.value)
+
+
+def test_worker_starts_when_the_whole_flag_chain_is_on() -> None:
+    require_enabled(
+        _settings(bgm_acquisition_enabled=True, bgm_enabled=True, AVP_QUALITY_GATE_ENFORCE=True)
+    )
 
 
 @pytest.mark.parametrize("contact", [None, "", "   "])

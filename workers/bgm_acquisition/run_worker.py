@@ -12,7 +12,6 @@ compose service ``bgm-acquisition-worker`` として動かす。task queue ``bgm
 from __future__ import annotations
 
 import asyncio
-import importlib
 import logging
 import os
 from datetime import UTC, datetime
@@ -25,10 +24,15 @@ from contracts.music_render import BGM_SETTING_KEY
 from contracts.music_sources import BGM_ACQUISITION_SETTING_KEY, BGM_ACQUISITION_TASK_QUEUE
 from domain.music.ports import BgmCatalogRepository
 from infrastructure.config import Settings
+from infrastructure.db.bgm_repositories import SqlBgmCatalogRepository
 from infrastructure.db.session import session_factory_from_settings
 from infrastructure.logging.temporal import worker_interceptors
 from infrastructure.music.acquisition import AcquisitionService
 from infrastructure.music.audio_inspect import FfmpegAudioInspector
+from infrastructure.music.guard import (
+    require_bgm_for_acquisition,
+    require_quality_gate_enforce_for_bgm,
+)
 from infrastructure.music.sources.commons import CommonsClient
 from infrastructure.storage.minio_store import MinioArtifactStore
 from infrastructure.temporal.connect import connect_with_retry
@@ -48,11 +52,10 @@ def require_enabled(settings: Settings) -> None:
             "bgm acquisition worker: BGM_ACQUISITION_ENABLED is not true; refusing to start "
             "(this worker is the only one that touches the network for music)"
         )
-    if not getattr(settings, BGM_SETTING_KEY):
-        raise SystemExit(
-            "bgm acquisition worker: BGM_ACQUISITION_ENABLED requires BGM_ENABLED=true "
-            "(ADR-0087 §10)"
-        )
+    bgm_on = bool(getattr(settings, BGM_SETTING_KEY))
+    # INV-159 の鎖（ACQUISITION → BGM → ENFORCE）は guard の唯一の定義で確かめる
+    require_bgm_for_acquisition(acquisition_on=True, bgm_on=bgm_on)
+    require_quality_gate_enforce_for_bgm(bgm_on=bgm_on, enforce_on=settings.quality_gate_enforce)
 
 
 def build_user_agent(contact: str | None) -> str:
@@ -67,8 +70,7 @@ def build_user_agent(contact: str | None) -> str:
 
 def build_repository(session_factory: async_sessionmaker[AsyncSession]) -> BgmCatalogRepository:
     """PostgreSQL 版 catalog（``infrastructure/db/bgm_repositories.py``）。"""
-    module = importlib.import_module("infrastructure.db.bgm_repositories")
-    return module.SqlBgmCatalogRepository(session_factory)  # type: ignore[no-any-return]
+    return SqlBgmCatalogRepository(session_factory)
 
 
 def build_worker(client: Client, activities: BgmAcquisitionActivities) -> Worker:
