@@ -1706,3 +1706,25 @@ migration 0019（未適用のため編集）が 4 表に DELETE 拒否のトリ�
 / `tests/contract/test_migration_0019_quality.py::test_episode_foreign_keys_restrict_and_the_approval_fk_includes_the_episode`
 / `tests/integration/test_quality_records_postgres.py::test_delete_is_refused_on_every_table`
 / `tests/integration/test_quality_records_postgres.py::test_an_approval_cannot_point_at_another_episodes_report`
+
+## AL. BGM の自動収集・自動選曲・フォールバック、品質ゲートの検査障害（ADR-0087。INV-150〜159）
+
+番号 INV-150〜159 は ADR-0087 の予約。各条件の本文と**機械検査**は、それを強制するテストと同じコミットで書く。
+
+- INV-150 自動承認は「自動取得が許されたソースの CC0・本人の作品・制限なし・係争なし」だけ。それ以外は REVIEW（隔離）か REJECT
+- INV-151 `policy` の承認は規則の版と証拠の sha256 に結び付き、版が今と違う曲は選曲に出ない
+- INV-152 収集した曲は隔離（`quarantined`）で登録され、上限（回数・容量・時間）を超えず、ネットワークは収集の部品だけが触る
+- INV-153 選曲は決定的で説明可能（項目ごとの点）。Episode ごとに 1 回だけ決めて保存し、再実行は保存した決定を使う
+- INV-154 適用する gain は曲の持ち上げ幅 + 役割の値で上限を超えず、発話中の差 12 LU 以上を描画前に実測する
+- INV-155 フォールバックは上限つきの 1 本の梯子（減衰 1 回 → 次点 1 曲 → BGM 無し）で、fal・production に触れず理由が残る
+- INV-156 品質ゲートは検査系の一時障害を上限つきで内部再試行し、記録できない必須検査は PASS にせず `inspection_unavailable` で区別する
+- INV-157 WARN は決定論の検査が WARN と判定したものだけで、BLOCK・REVIEW を緩める経路は無い
+- INV-158 `AVP_QUALITY_GATE_ENFORCE` が ON なら、全ての投稿経路が YouTube を呼ぶ前に同じ gate を通り、PASS / WARN 以外は投稿しない
+- INV-159 `BGM_ENABLED` は説明欄の構成と `AVP_QUALITY_GATE_ENFORCE` を、`BGM_ACQUISITION_ENABLED` は `BGM_ENABLED` を要求し、全 OFF は導入前と同一
+
+**INV-133 の改訂（ADR-0087 §2）**: 「承認は人の証拠なしに生まれない」を「承認は証拠なしに生まれない。人の承認（`owner`）か、
+規則の版と保存した API 応答の sha256 を持つ規則の承認（`policy`、INV-150/151）のどちらか」と読み替える。内容 sha256 による同一性・
+重複の扱いは変えない。
+
+**INV-136 の改訂（ADR-0087 §7）**: 「BGM 入りのラウドネス不合格は BGM 無しへ自動で落とさない」を廃止し、INV-155 の梯子
+（BGM 無しで 1 回だけ再描画し再検査。BGM 無しでも不合格なら従来どおり needs_input）に置き換える。黙って落とさず理由を記録する点は維持。
