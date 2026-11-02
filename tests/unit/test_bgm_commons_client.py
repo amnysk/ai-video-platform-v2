@@ -17,6 +17,18 @@ FIX = Path(__file__).resolve().parents[1] / "fixtures" / "bgm_commons"
 FILE_URL = "https://upload.wikimedia.org/wikipedia/commons/4/49/x.flac"
 
 
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """INV-152: 収集のテストは通信しない。ソケットの接続が起きたら即失敗させる。"""
+    import socket
+
+    def refuse(self: socket.socket, *args: object, **kwargs: object) -> None:
+        raise AssertionError("network access attempted in an acquisition test")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+
+
 class Recorder:
     def __init__(self, handler):
         self.requests: list[httpx.Request] = []

@@ -34,6 +34,18 @@ DEMAND = "d" * 64
 REQ = {"mood": "calm", "culture": "japanese", "energy": "low", "tempo_band": "slow"}
 
 
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """INV-152: 収集のテストは通信しない。ソケットの接続が起きたら即失敗させる。"""
+    import socket
+
+    def refuse(self: socket.socket, *args: object, **kwargs: object) -> None:
+        raise AssertionError("network access attempted in an acquisition test")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+
+
 def fixture_page(name: str, data: bytes, *, ext: str = "flac", duration_s: float = 120.0) -> dict:
     page = pages_from_response(json.loads((FIX / f"{name}.json").read_text("utf-8")))[0]
     page = copy.deepcopy(page)
