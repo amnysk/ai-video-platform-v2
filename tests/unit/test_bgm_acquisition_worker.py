@@ -1,4 +1,4 @@
-"""収集 worker の起動条件（INV-159）と Workflow / Activity（INV-152）。時間スキップの Temporal を使う。"""
+"""収集 worker の起動条件（INV-159）と Workflow / Activity（INV-152）。時間スキップの Temporal。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from contracts.bgm_acquisition_activities import (
     BGM_ACQUISITION_MAX_ATTEMPTS,
     BGM_ACQUISITION_MAX_DEMANDS_PER_WORKFLOW,
     BGM_ACQUISITION_RUN_DEMAND_ACTIVITY,
+    BGM_ACQUISITION_WORKFLOW_NAME,
     BgmAcquisitionInput,
     BgmAcquisitionOutput,
     DemandRef,
@@ -147,7 +148,7 @@ async def _run(
         env.client, task_queue=queue, workflows=[BgmAcquisitionWorkflow], activities=acts
     ):
         return await env.client.execute_workflow(
-            BgmAcquisitionWorkflow.run,
+            BGM_ACQUISITION_WORKFLOW_NAME,
             inp or BgmAcquisitionInput(),
             id=f"bgm-acq-{uuid.uuid4().hex[:8]}",
             task_queue=queue,
