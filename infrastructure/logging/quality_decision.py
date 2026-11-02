@@ -9,6 +9,7 @@ import logging
 
 from contracts.log_contract import EventName, LogStage, Outcome
 from domain.quality.deterministic import QualityAssessment
+from domain.quality.hold_rate import GateDecisionSample, cause_of
 from infrastructure.logging.emit import emit, log_guard
 
 
@@ -21,6 +22,7 @@ def log_quality_decision(
     rule_version: str,
     assessment: QualityAssessment,
     actor: str | None = None,
+    inspection_retries: int = 0,
 ) -> None:
     """``path`` は ``auto`` | ``manual``。拒否は upload.skipped、許可・承認は log.record。"""
     allowed = assessment.decision.allowed
@@ -36,6 +38,12 @@ def log_quality_decision(
         attributes["actor"] = actor  # 手動経路: 誰（owner / agent）の承認か（ADR-0080）
     if assessment.verdict is not None:
         attributes["verdict"] = assessment.verdict.value
+    # 保留の原因が品質か検査系の故障か（INV-156）。許可なら付けない
+    cause = cause_of(GateDecisionSample(allowed, assessment.decision.reason_code))
+    if cause is not None:
+        attributes["hold_cause"] = cause.value
+    if inspection_retries:
+        attributes["inspection_retries"] = inspection_retries  # 内部再試行で回復した一時障害の数
     with log_guard():
         emit(
             logger,
