@@ -6,13 +6,11 @@ preflight への宣言で、宣言と ``upgrade()`` の 2 文が一致すると�
 （ADR-0060 / INV-82）。
 
 番号について: ADR-0087 §4 は 0020（agent-tools）と 0021（BGM カタログ）を他の枝に予約している。
-この migration は **0022** を名乗り、この枝では 0019 の次に置く（``down_revision = "0019"``）。
-他の枝が先に入ったら、後から入る側が ``down_revision`` を付け替える。
-**統合時は ``down_revision = "0021"`` にする**（0021 = BGM カタログ。並行する枝が ``"0019"`` から
-作る。この枝では単独で通すために ``"0019"`` のまま。統合担当が付け替える）。
+この migration は **0022** を名乗り、統合枝（claude/bgm-auto-integration）で 0021（BGM カタログ）の次に置く
+（``down_revision = "0021"``）。0020 は他の枝の予約で、後から入る側が ``down_revision`` を付け替える。
 
 Revision ID: 0022
-Revises: 0019
+Revises: 0021
 Create Date: 2026-11-02
 """
 
@@ -22,7 +20,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0022"
-down_revision: str | None = "0019"
+down_revision: str | None = "0021"
 branch_labels = None
 depends_on = None
 
