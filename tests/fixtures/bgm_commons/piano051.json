@@ -1,0 +1,108 @@
+{
+ "batchcomplete": "",
+ "query": {
+  "normalized": [
+   {
+    "from": "File:Piano_test_051.wav",
+    "to": "File:Piano test 051.wav"
+   }
+  ],
+  "pages": {
+   "122227954": {
+    "imageinfo": [
+     {
+      "descriptionshorturl": "https://commons.wikimedia.org/w/index.php?curid=122227954",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Piano_test_051.wav",
+      "duration": 581.8781632653062,
+      "extmetadata": {
+       "Artist": {
+        "source": "commons-desc-page",
+        "value": "<bdi><a href=\"https://www.wikidata.org/wiki/Q115464159\" class=\"extiw\" title=\"d:Q115464159\"><span title=\"developer analyst and photographer from Venezuela\">Wilfredor</span></a></bdi>"
+       },
+       "Assessments": {
+        "hidden": "",
+        "source": "commons-categories",
+        "value": ""
+       },
+       "AttributionRequired": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "false"
+       },
+       "Categories": {
+        "hidden": "",
+        "source": "commons-categories",
+        "value": "CC-Zero|Piano sonatas|Self-published work|Media created with Nikon Z7ii provided by the Quebec WikiClub in 2022|Pianos by Wilfredor|Music sounds by Wilfredor|Images of Canada by User:Wilfredor"
+       },
+       "CommonsMetadataExtension": {
+        "hidden": "",
+        "source": "extension",
+        "value": 1.2
+       },
+       "Copyrighted": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "True"
+       },
+       "Credit": {
+        "source": "commons-desc-page",
+        "value": "<span class=\"int-own-work\" lang=\"en\">Own work</span>"
+       },
+       "DateTime": {
+        "hidden": "",
+        "source": "mediawiki-metadata",
+        "value": "2022-08-23 01:07:36"
+       },
+       "DateTimeOriginal": {
+        "source": "commons-desc-page",
+        "value": "2022-08-22"
+       },
+       "ImageDescription": {
+        "source": "commons-desc-page",
+        "value": "Piano test practice"
+       },
+       "License": {
+        "hidden": "",
+        "source": "commons-templates",
+        "value": "cc0"
+       },
+       "LicenseShortName": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": "CC0"
+       },
+       "LicenseUrl": {
+        "source": "commons-desc-page",
+        "value": "http://creativecommons.org/publicdomain/zero/1.0/deed.en"
+       },
+       "ObjectName": {
+        "source": "mediawiki-metadata",
+        "value": "Piano test 051"
+       },
+       "Restrictions": {
+        "hidden": "",
+        "source": "commons-desc-page",
+        "value": ""
+       },
+       "UsageTerms": {
+        "source": "commons-desc-page",
+        "value": "Creative Commons Zero, Public Domain Dedication"
+       }
+      },
+      "height": 0,
+      "mime": "audio/wav",
+      "sha1": "97f31f730ac0f1c37da8faa6b28005b32a5e662f",
+      "size": 102643480,
+      "timestamp": "2022-08-23T01:07:36Z",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/b/b8/Piano_test_051.wav?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "width": 0
+     }
+    ],
+    "imagerepository": "local",
+    "ns": 6,
+    "pageid": 122227954,
+    "title": "File:Piano test 051.wav"
+   }
+  }
+ }
+}
