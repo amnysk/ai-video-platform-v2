@@ -283,6 +283,7 @@ async def test_a_unmeasurable_margin_keeps_the_render_and_leaves_the_evidence_un
     )
     assert evidence.speech is None
     assert "speech margin not measured" in caplog.text
+    assert "ffmpeg died" in caplog.text  # 型名だけでは原因が分からない
 
 
 async def test_too_loud_music_is_stored_as_a_failed_margin(
