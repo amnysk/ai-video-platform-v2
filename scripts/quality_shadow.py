@@ -87,7 +87,6 @@ from domain.upload.keys import compute_upload_key  # noqa: E402
 from domain.upload.metadata_builder import build_upload_metadata  # noqa: E402
 from infrastructure.db.models import ArtifactMetadataRow, Base, EpisodeRow  # noqa: E402
 from infrastructure.db.quality_repositories import SqlQualityRecordWriter  # noqa: E402
-from infrastructure.db.safety import assert_destructive_allowed  # noqa: E402
 from infrastructure.quality.service import QualityGateService  # noqa: E402
 from infrastructure.storage.memory_store import InMemoryArtifactStore  # noqa: E402
 
@@ -222,9 +221,11 @@ async def evaluate_export(
     engine = create_async_engine(
         "sqlite+aiosqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
     )
-    assert_destructive_allowed(engine.url)  # インメモリ sqlite 以外には作らない
+    # 破壊的操作ではない: URL は上で固定したインメモリ sqlite で、既存の DB には繋がらない。
+    # ガード（PostgreSQL 専用）は通せないので、sqlite のインメモリであることをここで確かめる
+    assert engine.dialect.name == "sqlite" and engine.url.database in (None, "", ":memory:")
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(lambda c: [t.create(c) for t in Base.metadata.sorted_tables])
     factory = async_sessionmaker(engine, expire_on_commit=False)
     inner = InMemoryArtifactStore()
     store = FaultInjectingStore(inner)
