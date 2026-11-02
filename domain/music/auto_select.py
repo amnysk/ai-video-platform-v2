@@ -19,6 +19,8 @@ from contracts.music_selection import (
     FallbackReason,
     FallbackStep,
     MusicRequirements,
+    ScoreBreakdown,
+    ScoreItem,
 )
 from domain.music.ports import CatalogEntry
 from domain.music.requirements import requirements_sha256
@@ -67,7 +69,7 @@ def select_for_episode(
             acquisition_requested=True,
         )
     best = ranked[0]
-    if best.total < MIN_SELECTION_SCORE:
+    if not is_suitable(best):
         return _decision(
             ranked=ranked,
             fallback=(
@@ -82,12 +84,23 @@ def select_for_episode(
     )
 
 
+def is_suitable(breakdown: ScoreBreakdown) -> bool:
+    """「適切な曲」か（ADR-0087 §5）。最低点に加えて mood が（主・副のどちらかで）合うこと。
+
+    mood 以外の項目（尺・鮮度・リスク・ブランド等）だけで最低点に届くため、点だけでは
+    「合わない曲しか無い」を判定できない（独立レビュー F1。実データで tense の Episode に
+    calm の曲が最低点ちょうどで選ばれた）。
+    """
+    mood = dict(breakdown.items).get(ScoreItem.MOOD, 0)
+    return breakdown.total >= MIN_SELECTION_SCORE and mood > 0
+
+
 def ladder_candidates(decision: BgmSelectionDecision, *, limit: int) -> tuple[str, ...]:
-    """梯子で試す曲（最上位から、``MIN_SELECTION_SCORE`` 以上のものだけ、最大 ``limit`` 曲）。"""
+    """梯子で試す曲（最上位から、``is_suitable`` のものだけ、最大 ``limit`` 曲）。"""
     if decision.track_id is None:
         return ()
-    ids = [b.track_id for b in decision.ranked if b.total >= MIN_SELECTION_SCORE]
+    ids = [b.track_id for b in decision.ranked if is_suitable(b)]
     return tuple(ids[:limit])
 
 
-__all__ = ["RANKED_LIMIT", "ladder_candidates", "select_for_episode"]
+__all__ = ["RANKED_LIMIT", "is_suitable", "ladder_candidates", "select_for_episode"]

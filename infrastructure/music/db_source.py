@@ -103,6 +103,17 @@ class DbBgmSource:
             return BgmRenderSelection(
                 decision=decision, finalized=True, data=BgmSourceData(decision.cue_sheet)
             )
+        fmt = BGM_VIDEO_FORMAT_BY_PROFILE_ID.get(ctx.plan.profile.profile_id)
+        # 確定済みの決定の再利用でも、描画の直前に同じ門（INV-97 + INV-151 の規則の版）を通す
+        # （独立レビュー F3: 確定後に規則の版が上がった自動承認の曲を再試行で鳴らさない）
+        if fmt is None or not passes_license_gate(track, now=ctx.now, fmt=fmt):
+            logger.warning(
+                "bgm not used episode=%s track=%s reason=%s (finalized decision kept)",
+                ctx.episode_id,
+                track.track_id,
+                FallbackReason.LICENSE_RECHECK_FAILED.value,
+            )
+            return BgmRenderSelection(decision=decision, finalized=True, data=BgmSourceData(None))
         path = await self._fetch(ctx, track)
         shas = {track.track_id: file_sha256(path) if path is not None else None}
         return BgmRenderSelection(

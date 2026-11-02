@@ -3,7 +3,8 @@
 - 既定は ``--dry-run``（何も書かず、何を登録するかだけ表示する）。DB に書くには ``--apply`` と
   ``--database-url`` と ``--yes`` の全てが要る。本番に向けて実行するのは所有者の判断
 - 取り込んだ曲は**常に隔離**（``quarantined`` / ``unverified``）。承認は持ち越さない
-- 承認は別の明示操作 ``--approve-as-owner <track_id> --evidence-sha256 <hex>`` で、
+- 承認は別の明示操作 ``--approve-as-owner <track_id> --evidence-file <path>``（証拠の
+  ファイルの sha256 をこのツールが計算する。手で打った hash は受け付けない） で、
   ``--mix-gain-offset-db`` で試聴で決めた持ち上げ幅（CK61 は 6）を同時に記録する
 - 原本は ``music/originals/<sha256>.<ext>`` へ置き、読み戻して sha256 を照合する
 """
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import sys
 from collections.abc import Sequence
@@ -129,9 +131,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--database-url", help="書き込み先（--apply と --yes が要る）")
     p.add_argument("--yes", action="store_true", help="DB URL に対する実行を確認する")
     p.add_argument("--approve-as-owner", metavar="TRACK_ID")
-    p.add_argument("--evidence-sha256")
+    p.add_argument(
+        "--evidence-file",
+        type=Path,
+        help="ライセンス証拠のファイル（規約の保存・API 応答等）。sha256 はここから計算する",
+    )
     p.add_argument("--mix-gain-offset-db", type=int, default=0)
     return p
+
+
+def evidence_sha256_of(path: Path | None) -> str | None:
+    """証拠ファイルの sha256。無い・空・読めないなら ``None``（承認しない。独立レビュー F6）。"""
+    if path is None or not path.is_file():
+        return None
+    data = path.read_bytes()
+    return hashlib.sha256(data).hexdigest() if data else None
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -152,14 +166,15 @@ async def _run(args: argparse.Namespace) -> int:
         repo = SqlBgmCatalogRepository(async_sessionmaker(engine, expire_on_commit=False))
         store = MinioArtifactStore.from_settings(Settings())
     if args.approve_as_owner:
-        if not args.evidence_sha256:
-            print("--approve-as-owner needs --evidence-sha256")
+        evidence = evidence_sha256_of(args.evidence_file)
+        if evidence is None:
+            print("--approve-as-owner needs --evidence-file pointing at a non-empty file")
             return 2
         assert repo is not None
         track = await approve_as_owner(
             repo,
             args.approve_as_owner,
-            evidence_sha256=args.evidence_sha256,
+            evidence_sha256=evidence,
             mix_gain_offset_db=args.mix_gain_offset_db,
             now=now,
         )

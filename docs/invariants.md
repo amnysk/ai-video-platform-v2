@@ -1737,7 +1737,8 @@ CC0 1.0 の公開宣言、`AttributionRequired` が明示的に false、`Credit`
 `license_policy_version = BGM_LICENSE_POLICY_VERSION` と `license_evidence_sha256`（保存した API 応答の正準 JSON の sha256）と
 `license_checked_at` を持つ。版を持たない `policy` 承認は契約（`BgmTrack`）で作れない。収集は承認時にこの 3 つを書き、
 証拠の本体を MinIO `music/evidence/<sha256>.json` に残して読み戻して sha256 を照合する。
-**機械検査**: `tests/contract/test_music_acquisition_contracts.py::test_a_policy_approval_must_name_its_policy_version`
+**機械検査**: `tests/unit/test_render_activities_bgm_auto.py::test_a_finalized_decision_is_rechecked_before_it_is_reused`
+/ `tests/contract/test_music_acquisition_contracts.py::test_a_policy_approval_must_name_its_policy_version`
 / `tests/unit/test_bgm_license_policy.py::test_approve_track_requires_an_auto_approve_decision`
 / `tests/unit/test_bgm_commons_facts.py::test_evidence_sha256_is_the_canonical_json_hash_of_the_stored_payload`
 / `tests/unit/test_bgm_acquisition_service.py::test_cc0_own_work_is_registered_then_promoted_with_evidence`
@@ -1773,13 +1774,16 @@ Temporal の収集 Workflow は決定的で、需要を逐次・上限件数ま�
 
 
 ### INV-153 選曲は決定的で説明可能（項目ごとの点）。Episode ごとに 1 回だけ決めて保存し、再実行は保存した決定を使う
+「適切な曲」は最低点 `MIN_SELECTION_SCORE` に**加えて** mood が（主・副のどちらかで）合う曲だけ（`is_suitable`。規則 select-2）。
+合わない曲しか無ければ BGM 無しで需要を積む（mood 以外の項目だけで最低点に届くため、点だけでは判定しない）。
 選曲は純粋関数の列（`derive_requirements` -> `score_candidates` -> `select_for_episode`）で、語彙表は `domain/music/lexicon.py`
 だけが定義し、LLM を使わない。同じ入力は同じ要件・同じ順序で、カタログの並びに依らず、同点は `track_id`。点は項目ごとの加点
 （`ScoreBreakdown`）で説明でき、隔離・未検証・失効・形式不可・版違いの `policy` 承認（INV-151）・ブランド不許可・ラウドネス未測定の
 曲には点を付けない。決定は Render の内側で Episode ごとに 1 回だけ作り、`save_selection_once`（`episode_id` UNIQUE。同時でも 1 行、
 上書きしない）で保存する。確定（`finalize_selection`）後の再実行・再試行は保存した決定を使い、梯子も再選曲も走らない。
 適切な曲が無いときは待たずに需要を積むだけで BGM 無しで進む。
-**機械検査**: `tests/unit/test_bgm_auto_select.py::test_the_same_episode_rerun_and_a_shuffled_catalog_give_the_same_decision`
+**機械検査**: `tests/unit/test_bgm_review_findings.py::test_a_track_whose_mood_does_not_match_is_never_suitable_even_at_the_minimum_score`
+/ `tests/unit/test_bgm_auto_select.py::test_the_same_episode_rerun_and_a_shuffled_catalog_give_the_same_decision`
 / `tests/unit/test_bgm_auto_select.py::test_ties_break_by_track_id_and_input_order_never_matters`
 / `tests/unit/test_bgm_auto_select.py::test_quarantined_unverified_expired_and_wrong_format_tracks_are_never_scored`
 / `tests/unit/test_bgm_auto_select.py::test_policy_approval_with_a_stale_rule_version_is_not_scored_but_owner_approval_is`

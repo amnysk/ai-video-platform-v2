@@ -19,7 +19,8 @@ from contracts.music import BGM_TRACK_ID_PATTERN, Energy, MusicCueSheet, VideoFo
 
 #: 選曲の規則の版。要件の導出・点数の重み・フォールバックの梯子を変えたら上げる。
 #: 保存済みの決定は版に依らず再利用する（同じ Episode の再実行は同じ曲。INV-153）
-BGM_SELECTION_RULE_VERSION = "select-1"
+#: select-2: 「適切」に mood の一致を要求、cut 数で energy を high にしない（独立レビュー F1 / F2）
+BGM_SELECTION_RULE_VERSION = "select-2"
 #: 既定のブランド（多ブランド化までの単一値）
 DEFAULT_BRAND_ID = "default"
 

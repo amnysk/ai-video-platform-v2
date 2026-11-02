@@ -367,6 +367,34 @@ async def test_an_expired_track_is_rejected_at_the_recheck_before_rendering(
     assert late.failure is FallbackReason.LICENSE_RECHECK_FAILED and late.data is None
 
 
+async def test_a_finalized_decision_is_rechecked_before_it_is_reused(
+    session_factory, artifact_store, tmp_path
+) -> None:
+    """F3（独立レビュー）: 確定済みの決定を再利用する経路も、描画直前の門を通る。"""
+    from domain.render.ports import BgmRenderContext
+    from tests.support.bgm_render import placement_plan
+
+    seed, repo, source, speech, h = await _setup(session_factory, artifact_store, tmp_path)
+    await _seed_track(repo, artifact_store, "bgm-a", valid_until=NOW + timedelta(hours=1))
+    await _admit_and_render(h, seed, run="run-1")
+    assert await repo.is_selection_finalized(seed.episode_id)
+
+    def ctx(now) -> BgmRenderContext:
+        return BgmRenderContext(
+            episode_id=seed.episode_id,
+            plan=placement_plan(),
+            script=None,  # type: ignore[arg-type]  (確定済みの経路は台本を読まない)
+            storyboard=None,  # type: ignore[arg-type]
+            work_dir=tmp_path / "wd2",
+            now=now,
+        )
+
+    fresh = await source.load_for_render(ctx(NOW))
+    assert fresh.finalized and fresh.data is not None and fresh.data.cue_sheet is not None
+    late = await source.load_for_render(ctx(NOW + timedelta(hours=2)))
+    assert late.finalized and late.data is not None and late.data.cue_sheet is None
+
+
 # --------------------------------------------------------------------------- 候補なし・故障
 
 

@@ -24,7 +24,8 @@ Temporal・provider・YouTube には接続しない）。書き出しには何�
 
     ``usage.json`` が無い Episode は既定で「BGM・地図とも不使用」と宣言したものとして評価する
     （過去の Episode は宣言を持たないため。``--no-assume-usage`` で宣言なしにすると
-    ``usage_declaration_missing`` の REVIEW になる）。``bgm`` / ``map`` が true の Episode は、
+    検査ごとの理由が ``usage_declaration_missing`` の REVIEW、
+    判定の理由は集約の ``report_needs_review`` になる）。``bgm`` / ``map`` が true の Episode は、
     証跡と producer が書き出しに無いので ``required_check_missing`` の REVIEW になる（本物の欠落）。
 
 2 つの gate:

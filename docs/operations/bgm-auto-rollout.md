@@ -69,11 +69,17 @@ upload worker はこの値で、投稿 Activity の中に最後の門（INV-158�
    スマホではほぼ聞こえないため、**取込時に `--mix-gain-offset-db 6`** を付ける（+6 dB でも発話との差 12 LU の余裕を満たすことは
    確認済み。Shika は +3 dB で既に 12 LU を割るので持ち上げない）。
    ```bash
-   python scripts/bgm_catalog_import.py --catalog <catalog dir> --track bgm-cc0-ambient-ck61 --mix-gain-offset-db 6
+   # (a) 隔離で取込（既定は dry-run。書くには --apply --database-url ... --yes）
+   python scripts/bgm_catalog_import.py --catalog <catalog.json> --originals-dir <原本のディレクトリ>
+   python scripts/bgm_catalog_import.py --catalog <catalog.json> --originals-dir <原本のディレクトリ> \
+     --apply --database-url <本番 DB URL> --yes
+   # (b) 所有者の承認（別の明示操作）。証拠の sha256 はファイルから計算する（手で打った hash は受け付けない）
+   python scripts/bgm_catalog_import.py --approve-as-owner bgm-cc0-ambient-ck61 \
+     --evidence-file ~/.local/share/avp2/bgm-candidates-20261102/bgm-candidates/ck61/commons_api.json \
+     --mix-gain-offset-db 6 --database-url <本番 DB URL> --yes
    ```
-   取込は承認を持ち越さない。取込後に所有者が曲ごとの承認を記録する（`license_approver_kind=owner`）。
-   `scripts/bgm_catalog_import.py` は ADR-0087 §4 で計画された取込スクリプト（別の枝で実装中。マージ前は無い）。
-   引数は実装に従う（`--help`）。**所有者の承認の前に実行しない**。
+   取込は承認を持ち越さない（全曲 `quarantined` / `unverified` で入る）。承認は (b) だけで、`license_approver_kind=owner` が記録される。
+   **所有者の承認の前に (b) を実行しない**。前提: migration 0021・0022 が適用済み。
 2. `.env`: `BGM_ENABLED=true` → render / upload（と、使うなら収集 worker）を再作成。
    COMPOSED / ENFORCE が OFF なら、render と upload は `SystemExit` で起動しない。
 - 確認 `[R]`: 直近の Episode を BGM 付きで描画した動画の `bgm.selection` ログ（曲・適用 gain・理由）、gate の BGM 検査が PASS、

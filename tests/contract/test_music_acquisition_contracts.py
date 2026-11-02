@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from contracts.music import BgmTrack
 from contracts.music_selection import (
+    BGM_SELECTION_RULE_VERSION,
     FALLBACK_MAX_GAIN_STEPS,
     FALLBACK_MAX_TRACKS,
     BgmSelectionDecision,
@@ -101,7 +102,7 @@ def test_a_selection_decision_without_a_track_is_valid_no_bgm() -> None:
     )
     decision = BgmSelectionDecision(
         episode_id="00000000-0000-0000-0000-000000000001",
-        rule_version="select-1",
+        rule_version=BGM_SELECTION_RULE_VERSION,
         requirements=req,
         requirements_sha256=SHA,
     )

@@ -36,7 +36,12 @@ async def test_selection_and_persistence_never_open_a_network_connection(
         script, make_storyboard(script), fmt="shorts", brand=DEFAULT_BRAND_POLICY
     )
     decision = select_for_episode(
-        EPISODE, req, [entry_for(loud_track("bgm-a", "a"))], {}, NOW, brand=DEFAULT_BRAND_POLICY
+        EPISODE,
+        req,
+        [entry_for(loud_track("bgm-a", "a", mood_tags=(req.mood,)))],
+        {},
+        NOW,
+        brand=DEFAULT_BRAND_POLICY,
     )
     repo = SqlBgmCatalogRepository(session_factory)
     saved = await repo.save_selection_once(decision, decided_at=NOW)

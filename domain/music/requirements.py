@@ -35,8 +35,9 @@ _DENSITY_BOUNDS_PER_MILLE: dict[str, tuple[int, int]] = {
     "en": (1_800, 3_000),
 }
 #: 1 分あたりの場面数の境
-_FAST_CUTS_PER_MINUTE = 8
-_SLOW_CUTS_PER_MINUTE = 4
+#: 本番の Shorts 17 本は 1 分あたり 12〜17 cut が普通（独立レビュー F2）。
+#: cut の数だけで high にしない
+_FAST_CUTS_PER_MINUTE = 24
 _MAX_SECONDARY_MOODS = 2
 
 
@@ -64,9 +65,7 @@ def _density(script: ScriptArtifact) -> NarrationDensity:
 def _energy(tension: Tension, cuts_per_minute: int) -> Energy:
     if tension == "high" or cuts_per_minute >= _FAST_CUTS_PER_MINUTE:
         return "high"
-    if tension == "low" and cuts_per_minute <= _SLOW_CUTS_PER_MINUTE:
-        return "low"
-    return "medium"
+    return "low" if tension == "low" else "medium"
 
 
 _TEMPO: dict[Energy, TempoBand] = {"low": "slow", "medium": "moderate", "high": "fast"}

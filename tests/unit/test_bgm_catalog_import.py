@@ -96,8 +96,21 @@ async def test_a_missing_original_is_reported_and_not_registered(tmp_path, sessi
 def test_writing_without_a_database_url_and_yes_is_refused(tmp_path, capsys) -> None:
     for argv in (["--apply"], ["--apply", "--database-url", "postgresql+asyncpg://x/y"]):
         assert tool.main(argv) == 2
-    assert tool.main(["--approve-as-owner", "bgm-x", "--evidence-sha256", "e" * 64]) == 2
+    assert tool.main(["--approve-as-owner", "bgm-x", "--evidence-file", "/nonexistent"]) == 2
     assert "refusing" in capsys.readouterr().out
+
+
+def test_the_evidence_hash_is_computed_from_a_real_file_never_typed_in(tmp_path) -> None:
+    # F6（独立レビュー）: 手で打った 64 桁の hex では承認できない。証拠のバイト列から計算する
+    import hashlib
+
+    evidence = tmp_path / "terms.html"
+    evidence.write_bytes(b"CC0 1.0 deed snapshot")
+    assert tool.evidence_sha256_of(evidence) == hashlib.sha256(b"CC0 1.0 deed snapshot").hexdigest()
+    (tmp_path / "empty").write_bytes(b"")
+    assert tool.evidence_sha256_of(tmp_path / "empty") is None
+    assert tool.evidence_sha256_of(tmp_path / "missing") is None
+    assert tool.evidence_sha256_of(None) is None
 
 
 def test_the_tool_never_imports_fal_or_production() -> None:
